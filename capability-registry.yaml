@@ -1,4 +1,4 @@
-# LIUHAO X v3.0 — Capability Registry (machine-readable)
+# LiuHao AI OS · 鎏灏智能中枢 — Capability Registry (machine-readable)
 # 已与 docs/spec/CAPABILITY-REGISTRY.md 同步 (2026-09-06):
 #   14 项全含 security/audit/plugin; 状态统一 PARTIALLY_IMPLEMENTED;
 #   id 改为 LHX-C-NNN 并保留 legacy_id; 追溯用 UB-A1 锚点。

@@ -1,4 +1,4 @@
-"""LIUHAO X 内核标准化基座（Phase 2，增量引入）。
+"""鎏灏智能中枢 内核标准化基座（Phase 2，增量引入）。
 
 为全部 14 个 kernel 建立统一契约：
 - ``KernelLifecycle``：标准生命周期状态机。

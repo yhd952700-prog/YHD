@@ -242,6 +242,11 @@ $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($iss, $content, $utf8Bom)
 $before = Join-Path $buildDir "assets\BEFORE-INSTALL.txt"
 [System.IO.File]::WriteAllText($before, (Get-Content -Raw -Encoding UTF8 -LiteralPath $before), $utf8Bom)
+Write-Step "品牌字面硬门禁（编译前）"
+& $Python (Join-Path $Root "packaging\brand_guard.py") --payload $PayloadApp --iss $iss
+if ($LASTEXITCODE -ne 0) {
+    throw "品牌字面硬门禁未通过：旧主名 / 错字 / 死域名 / 旧版本号，停止编译安装器。"
+}
 
 $iscc = $null
 $candidates = @(

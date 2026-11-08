@@ -40,7 +40,7 @@ def build_provider(provider_type: str, model: str):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="鎏灏（LIUHAO X）命令行对话")
+    parser = argparse.ArgumentParser(description="LiuHao AI OS · 鎏灏智能中枢 命令行对话")
     parser.add_argument(
         "--provider",
         default=os.environ.get("AI_PROVIDER_TYPE", "ollama"),
@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
 @observe("chat.repl")
 def repl(assistant: LiuHaoAssistant) -> int:
     print("=" * 60)
-    print("  鎏灏（LIUHAO X）— AI 操作系统")
+    print("  LiuHao AI OS · 鎏灏智能中枢 — AI 操作系统")
     st = assistant.stats()
     print(f"  provider={st['provider']}  model={st['model']}")
     print("  输入消息开始对话；/stats 状态 /reset 清史 /quit 退出")

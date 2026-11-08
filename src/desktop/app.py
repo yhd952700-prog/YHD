@@ -381,12 +381,12 @@ class DesktopApp:
 
     def _tooltip_text(self) -> str:
         if self._boot_pending:
-            return "鎏灏 · 正在启动…"
+            return f"{APP_NAME} · 正在启动…"
         if self.service.is_running():
-            return f"鎏灏 · 运行中 · {self._console_url()}"
+            return f"{APP_NAME} · 运行中 · {self._console_url()}"
         if self.service.last_error:
-            return "鎏灏 · 启动失败（详见桌面窗口）"
-        return "鎏灏 · 服务已停止"
+            return f"{APP_NAME} · 启动失败（详见桌面窗口）"
+        return f"{APP_NAME} · 服务已停止"
 
     def _open_console(self) -> None:
         webbrowser.open(self._console_url_with_proof())
@@ -494,7 +494,7 @@ class DesktopApp:
             self._labels["stop"].config(text=f"最近停止：{_describe_stop(result)}")
         self._refresh_status_text(running=False)
         if self._tray is not None and not self._closing:
-            self._tray.set_tooltip("鎏灏 · 服务已停止（托盘仍在运行）")
+            self._tray.set_tooltip(f"{APP_NAME} · 服务已停止（托盘仍在运行）")
             if result.get("forced"):
                 self._tray.notify(
                     "服务已强制停止",

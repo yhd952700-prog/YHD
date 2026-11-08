@@ -164,7 +164,7 @@ STDLIB_SKIP_DIRS: Tuple[str, ...] = (
 )
 
 _IGNORE = shutil.ignore_patterns(
-    "__pycache__", "*.pyc", "*.pyo",
+    "__pycache__", "*.pyc", "*.pyo", "*.egg-info",
     "*.db", "*.db-wal", "*.db-shm", "*.sqlite3", "*.sqlite3-wal", "*.sqlite3-shm",
 )
 
@@ -288,6 +288,19 @@ def _reset_out(out_dir: Path) -> None:
         else:
             entry.unlink()
 
+
+def _assert_brand_guard(app_dir: Path) -> None:
+    """品牌字面硬门禁：旧主名/错字/死域名/旧版本号出现即中止打包。"""
+    if str(Path(__file__).resolve().parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import brand_guard  # noqa: PLC0415  同目录脚本模块
+
+    violations = brand_guard.scan(payload=app_dir, repo_root=REPO_ROOT)
+    if violations:
+        raise SystemExit(
+            "品牌字面门禁未通过（payload 组装中止）：\n  " + "\n  ".join(violations)
+        )
+    print("      品牌门禁 -> 主名 / 版本 / 旧名 / 错字 / 死域名 全部通过")
 
 def _copy_notices(app_dir: Path) -> int:
     """随包分发第三方许可证声明与运行时/前端许可证文本。
@@ -754,6 +767,7 @@ def build(out_dir: Path, version: str) -> int:
     print(f"      入口     -> LiuHao.bat / START-HERE.txt"
           f"{' / assets/liuhao.ico' if icon_ok else ''}")
     print(f"      许可证   -> THIRD-PARTY-NOTICES.txt / licenses（{notices_count} 个文件）")
+    _assert_brand_guard(app_dir)
     _assert_payload_hygiene(app_dir)
     print("      凭据检查 -> 未发现 auth_secrets / human_identities / servers.json / .env")
 

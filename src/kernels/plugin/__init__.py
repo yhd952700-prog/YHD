@@ -1,4 +1,4 @@
-"""Plugin Registry — Central plugin management for LIUHAO X v3.0
+"""Plugin Registry — Central plugin management for LiuHao AI OS · 鎏灏智能中枢 v3.0
 
 The Plugin Kernel provides a centralized registry for discovering, loading,
 and managing kernel plugins. Supports hot-loading, version compatibility,
