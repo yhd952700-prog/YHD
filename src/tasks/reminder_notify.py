@@ -97,9 +97,15 @@ def default_reminder_outbox() -> str:
     return os.path.join(base, "reminders_outbox.jsonl")
 
 
+def _no_window_flag() -> int:
+    """让子进程不弹控制台窗口；非 Windows 上该参数无意义，返回 0。"""
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
 def _outbox_has_key(path: str, idempotency_key: str) -> bool:
     """出站队列里是否已有同一幂等键（O(行数)，提醒量级下可忽略）。"""
-
     try:
         with open(path, "r", encoding="utf-8") as handle:
             for line in handle:
@@ -154,7 +160,7 @@ class ConsoleOutboxNotifier:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError as exc:
             return [NotifyResult(self.channel, False, f"outbox write failed: {exc}")]
-        banner = f"\n===== 鎏灏提醒 =====\n{title}\n{body}\n====================\n"
+        banner = f"\n===== {title} =====\n{body}\n{'=' * (len(title) + 12)}\n"
         try:
             print(banner, file=sys.stderr, flush=True)
         except Exception:  # noqa: BLE001 - 控制台不可用不影响落盘
@@ -172,7 +178,9 @@ $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Icon = [System.Drawing.SystemIcons]::Information
 $icon.Visible = $true
 $icon.ShowBalloonTip(10000, [string]$payload.title, [string]$payload.body, [System.Windows.Forms.ToolTipIcon]::Info)
-Start-Sleep -Milliseconds 1200
+# 3 秒：短于 1.5 秒时 Win10/11 转成的 toast 常常还没来得及进通知中心就被回收，
+# 用户只看到托盘图标闪一下。该进程由调用方后台线程承担，不会卡住主流程。
+Start-Sleep -Milliseconds 3000
 $icon.Dispose()
 Write-Output "BALLOON_OK"
 """
@@ -225,6 +233,8 @@ class WindowsBalloonNotifier:
                     executable,
                     "-NoProfile",
                     "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
@@ -234,6 +244,9 @@ class WindowsBalloonNotifier:
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
+                # 网关/桌面壳都是无控制台进程；不加这个标志，每次提醒都会
+                # 闪一个黑色 PowerShell 窗口，比提醒本身更打扰。
+                creationflags=_no_window_flag(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return [NotifyResult(self.channel, False, f"balloon failed: {exc}")]

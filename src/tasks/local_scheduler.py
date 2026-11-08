@@ -181,8 +181,18 @@ def _default_audit(action: str, outcome: str, details: Dict[str, Any]) -> None:
             outcome,
             details={"action": action, **details},
         )
-    except Exception:  # noqa: BLE001 - 死信已落盘，通知失败只记录，不回滚状态
-        logger.exception("local scheduler audit write failed (action=%s)", action)
+    except Exception as exc:  # noqa: BLE001 - 死信已落盘，通知失败只记录，不回滚状态
+        from src.common.atomic_write import is_storage_failure
+
+        if is_storage_failure(exc):
+            # 磁盘满/只读：中文可行动提示，不刷英文堆栈（后台心跳会周期性重试）。
+            logger.error(
+                "本地调度器审计写入失败（action=%s）：磁盘已满或数据目录只读/被占用；"
+                "调度状态已保存在死信表，本次审计链缺一条。请清理磁盘空间或解除只读后重试。",
+                action,
+            )
+        else:
+            logger.exception("local scheduler audit write failed (action=%s)", action)
 
 
 class LocalScheduler:
