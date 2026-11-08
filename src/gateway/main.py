@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import threading
+from _thread import start_new_thread as _start_new_thread
 from contextlib import asynccontextmanager
 
 # 启动阶段计时：必须最先导入（它持有进程内最早的时钟基准 T0）。
@@ -447,6 +448,7 @@ def load_runtime_config() -> Dict[str, Any]:
         "limits": {
             "max_body_bytes": int((limits_cfg or {}).get("max_body_bytes") or 0),
             "max_upload_bytes": int((limits_cfg or {}).get("max_upload_bytes") or 0),
+            "max_backup_bytes": int((limits_cfg or {}).get("max_backup_bytes") or 0),
             "rate_limit_per_minute": int(
                 (limits_cfg or {}).get("rate_limit_per_minute") or 0
             ),
@@ -630,6 +632,71 @@ class LoopStallWatchdog:
             self._task.cancel()
 
 
+def install_nonblocking_worker_start() -> bool:
+    """让 anyio 的同步工作线程"启动但不等待启动完成"（D-1 根治）。
+
+    为什么必须这么做
+    ----------------
+    ``anyio`` 在**事件循环线程上**按需创建线程池工作线程，走的是
+    ``threading.Thread.start()``，而其中 ``self._started.wait()`` **没有超时**。
+    2026-11-07 的实测（`post30` 之后的 `rss8h`，见
+    ``docs/operations/soak-report-2026-11-08.md`` §12.7）：宿主 CPU 100% 时，
+    新线程在 bootstrap 阶段卡住不再推进，事件循环就**永久**停在
+    ``Thread.start`` 里，``/v1/health``、``/v1/metrics``、``/v1/ready`` 全部
+    停摆 967 秒以上，看门狗每 15 秒告警却无法自愈，只能重启。
+
+    同一时刻 ``liuhao-diag`` 线程也卡在**同一行**（``ThreadingMixIn`` 也是
+    每个连接 ``Thread.start``），诊断口因此失联 —— 这不是某一把业务锁，
+    而是**进程级的"新线程跑不起来"**。既有线程照常运行（看门狗一直在写日志），
+    所以也不是 GIL 饥饿。
+
+    补丁做什么
+    ----------
+    只替换 anyio 自己的 ``WorkerThread.start``：线程照常创建、任务照常入队，
+    唯独省掉"等新线程真正跑起来"这一步。这样即使线程创建停滞，最多是**触发
+    它的那一个请求**拿不到结果（按满载策略由外层限流/超时收口），事件循环和
+    探针接口继续工作 —— 从"整站僵死"降级为"个别变慢/503"。
+
+    返回是否安装成功；任何失败只记日志，绝不阻断启动。
+    """
+
+    try:
+        from anyio._backends import _asyncio as _anyio_asyncio
+    except Exception:  # pragma: no cover - 依赖缺失时保持原行为
+        logger.warning("anyio 线程池非阻塞启动补丁不可用（导入失败）", exc_info=True)
+        return False
+
+    worker_cls = getattr(_anyio_asyncio, "WorkerThread", None)
+    if worker_cls is None:  # pragma: no cover - anyio 版本变化
+        logger.warning("anyio WorkerThread 不存在，跳过非阻塞启动补丁")
+        return False
+    if getattr(worker_cls, "_liuhao_nonblocking_start", False):
+        return True
+
+    limbo_lock = getattr(threading, "_active_limbo_lock", None)
+    limbo = getattr(threading, "_limbo", None)
+    if limbo_lock is None or limbo is None:  # pragma: no cover - CPython 内部结构变化
+        logger.warning("threading 内部结构缺失，跳过非阻塞启动补丁")
+        return False
+
+    def _start(self) -> None:  # type: ignore[no-untyped-def]
+        if self._started.is_set():
+            raise RuntimeError("threads can only be started once")
+        with limbo_lock:
+            limbo[self] = self
+        try:
+            _start_new_thread(self._bootstrap, ())
+        except Exception:
+            with limbo_lock:
+                limbo.pop(self, None)
+            raise
+
+    worker_cls.start = _start
+    worker_cls._liuhao_nonblocking_start = True
+    logger.info("anyio 线程池已切换为“启动不阻塞事件循环”（D-1 护栏）")
+    return True
+
+
 class HostGuardMiddleware:
     """Host 白名单 + 写请求 Origin 校验（纵深防御，纯 ASGI）。
 
@@ -776,6 +843,18 @@ async def lifespan(app: FastAPI):
     # Startup
     _startup_begin_run()
     logger.info("Starting LiuHao AI OS Gateway...")
+
+    # D-1 护栏：必须在任何请求进入线程池之前装好。它只影响 anyio 的工作线程
+    # 启动方式（不再在事件循环里无限等新线程跑起来），失败也不阻断启动。
+    install_nonblocking_worker_start()
+    # 探针线程池同样在启动时就建好全部线程，避免"第一个 /v1/health 请求"
+    # 在事件循环里现场 Thread.start（与上面同一个卡点）。
+    try:
+        from .health import warm_probe_pool
+
+        warm_probe_pool()
+    except Exception:  # pragma: no cover - 预热失败不影响服务
+        logger.warning("探针线程池预热调用失败（忽略）", exc_info=True)
     _startup_mark("lifespan 启动开始")
     # 每次启动都是一份新的降级清单：上一次进程的失败不能污染 /v1/startup。
     try:
@@ -1296,6 +1375,23 @@ async def lifespan(app: FastAPI):
         )
     _startup_mark("指标评估循环启动完成")
 
+    # 首屏的**第一个**静态响应是 ``StaticFiles.get_response`` 的首次调用：
+    # 它先把 stat 丢进 anyio 线程池，而线程池要到第一次调用才建 worker。
+    # 实测（同进程、同一份 dist）首次 316.7ms、第二次 5.5ms——差的是
+    # mimetypes 首次读注册表 + 线程池首次建 worker。mimetypes 已在挂载期
+    # 开线程预热（与路由注册重叠），这里只需把 anyio 线程池热起来，再给
+    # 那个并行线程一个有界收尾。
+    static_warm = getattr(app.state, "console_static_warm_thread", None)
+    if static_warm is not None:
+        static_warm.join(1.5)
+    try:
+        import anyio
+
+        await anyio.to_thread.run_sync(lambda: None)
+    except Exception:  # noqa: BLE001 - 预热失败不影响启动
+        logger.debug("anyio 线程池预热失败", exc_info=True)
+    _startup_mark("静态服务线程池预热完成")
+
     # 核心就绪：登录（密钥/JWT/RBAC/身份）、对话路由、模型配置路由此时都已
     # 真实可用。下面的"对话链预热"只是让第一次发消息不必再等导入，**不**阻塞
     # 就绪；预热失败必须响（日志 + /v1/startup.background.errors），绝不能
@@ -1391,30 +1487,89 @@ async def lifespan(app: FastAPI):
         _run_background_step("预热对话链（LLM/provider/会话存储）", _warm_chat)
         _bg_finished()
 
+    # 首屏优先：对话链预热会同步导入 LLM / provider / 会话存储，占着 GIL 时
+    # 浏览器发出的第一个 ``/`` 与 ``/v1/auth/config`` 会被饿住（安装版实测
+    # 首屏白等 1.1s，更差的时候 2~3s）。所以预热不再"到点就抢 CPU"，而是等
+    # **首屏那一屏真的发出去之后**再开始：console 的 404 兜底在响应结束时
+    # ``set()`` ``app.state.first_screen_served``，本线程等它，最多等
+    # ``LIUHAO_WARMUP_GRACE_S`` 秒（默认 10s，没有浏览器打开时兜底）。
+    # 设为 0 恢复"就绪后立刻预热"的旧行为（用于 A/B）。
+    def _warmup_grace_seconds() -> float:
+        raw = (os.environ.get("LIUHAO_WARMUP_GRACE_S") or "").strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                logger.warning("LIUHAO_WARMUP_GRACE_S=%r 不是数字，按默认 10s", raw)
+        return 10.0
+
+    def _start_local_scheduler() -> None:
+        try:
+            from ..tasks.scheduler_host import HostedLocalScheduler
+
+            hosted_scheduler = HostedLocalScheduler()
+            hosted_scheduler.start()
+            app.state.local_scheduler_host = hosted_scheduler
+            _startup_mark(f"本地排程器：{hosted_scheduler.reason}")
+        except Exception as _sched_exc:  # noqa: BLE001 - 托管失败不能阻断启动
+            logger.error(
+                "LOCAL SCHEDULER HOST FAILED TO START -- 提醒将不会被触发：%s",
+                _sched_exc,
+                exc_info=True,
+            )
+            app.state.local_scheduler_host = None
+
+    def _scheduler_grace_seconds() -> float:
+        """排程器延后多久启动。
+
+        排程器要导入 ``tasks.scheduler_host`` → ``local_handlers`` →
+        ``local_scheduler`` 一整条链；实测（安装版冷启动）这一步在高负载下要
+        2.4s，而且它和对话链预热都占 GIL——首屏的 ``/`` 请求会被饿住。
+        这里给它一个比对话链更长的窗口，等登录框渲染完再起；提醒是分钟级
+        节奏，晚几秒无感。``LIUHAO_SCHEDULER_GRACE_S`` 可覆盖，0 = 旧行为。
+        """
+        raw = (os.environ.get("LIUHAO_SCHEDULER_GRACE_S") or "").strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                logger.warning(
+                    "LIUHAO_SCHEDULER_GRACE_S=%r 不是数字，按默认 8s", raw
+                )
+        return 8.0
+
+    def _deferred_background() -> None:
+        grace = _warmup_grace_seconds()
+        if grace > 0:
+            # 等首屏发出去（或超时兜底），再让首屏的静态资源落地一小会儿。
+            app.state.first_screen_served.wait(grace)
+            time.sleep(0.5)
+        _warm_chat_stack()
+
+    def _deferred_scheduler() -> None:
+        grace = _scheduler_grace_seconds()
+        if grace > 0:
+            time.sleep(grace)
+        _start_local_scheduler()
+
+    # 关闭流程用 getattr 默认 None 读这个属性；先置 None，避免"线程还没跑完
+    # 就 Shutdown"时 AttributeError。
+    app.state.local_scheduler_host = None
+    app.state.first_screen_served = threading.Event()
+    _sched_thread = threading.Thread(
+        target=_deferred_scheduler, name="local-scheduler-host", daemon=True
+    )
+    _sched_thread.start()
+    app.state.scheduler_host_thread = _sched_thread
     _warm_thread = threading.Thread(
-        target=_warm_chat_stack, name="chat-stack-warmup", daemon=True
+        target=_deferred_background, name="chat-stack-warmup", daemon=True
     )
     _warm_thread.start()
     app.state.chat_warmup_thread = _warm_thread
-    _startup_mark("核心就绪（登录/对话/模型配置可用），对话链转入后台预热")
-
-    # 本地排程器：提醒 / 心跳 / 更新检查的唯一触发源。桌面与命令行启动链都
-    # 只拉起网关，过去没有任何进程 run() 它，导致"提醒到点不响且无报错"。
-    # 跨进程锁保证与 supervisor 的 liuhao-scheduler 不会双跑；失败只记日志。
-    try:
-        from ..tasks.scheduler_host import HostedLocalScheduler
-
-        hosted_scheduler = HostedLocalScheduler()
-        hosted_scheduler.start()
-        app.state.local_scheduler_host = hosted_scheduler
-        _startup_mark(f"本地排程器：{hosted_scheduler.reason}")
-    except Exception as _sched_exc:  # noqa: BLE001 - 托管失败不能阻断启动
-        logger.error(
-            "LOCAL SCHEDULER HOST FAILED TO START -- 提醒将不会被触发：%s",
-            _sched_exc,
-            exc_info=True,
-        )
-        app.state.local_scheduler_host = None
+    _startup_mark(
+        "核心就绪（登录/对话/模型配置可用），对话链延后 "
+        f"{_warmup_grace_seconds()}s、排程器延后 {_scheduler_grace_seconds()}s 后台启动"
+    )
 
     _startup_report()
 
@@ -1630,6 +1785,7 @@ def get_app() -> FastAPI:
         BodyLimitMiddleware,
         max_body_bytes=int(limits.get("max_body_bytes") or 0),
         max_upload_bytes=int(limits.get("max_upload_bytes") or 0),
+        max_backup_bytes=int(limits.get("max_backup_bytes") or 0),
     )
 
     # 全局单客户端每分钟预算（server.limits.rate_limit_per_minute）。
@@ -1955,6 +2111,32 @@ def get_app() -> FastAPI:
     # 生产化就绪(/v1/metrics/prometheus /v1/ready/subsystems)、auth(/v1/auth/*)、
     # 以及同源静态驾驶舱（登录页本身必须能在未登录时加载）。
     from .policy import require_human_principal as _require_human
+    from .account_context import (
+        deny as _deny_account,
+        require_account_principal as _require_account,
+    )
+
+    # 设置类写操作的收敛闸门：成员可读，写只归根账号。
+    #
+    # 为什么按方法而不是逐端点挂：``/v1/settings/logs`` 与 ``/v1/network/research``
+    # 都是"读同一个资源 + 写同一个资源"的 REST 形状，读要留给成员（他们需要知道
+    # 当前策略），写必须收归根账号。挂在 include_router 这一层，新增的写端点会
+    # 自动继承，不会因为忘了加依赖而重新开口子。
+    #
+    # 拒绝走 ``account_context.deny``：稳定错误码 + 顶层 ``code``/``message``，
+    # 前端能直接读出"只能查看、不能修改"，而不是一句无信息的 403。
+    def _require_settings_owner(
+        request: Request, context=Depends(_require_account)
+    ):
+        if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+            return context
+        if not context.is_root:
+            raise _deny_account(
+                403,
+                "SETTINGS_ROOT_ONLY",
+                "该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。",
+            )
+        return context
 
     app.include_router(health_router)
 
@@ -1977,6 +2159,11 @@ def get_app() -> FastAPI:
     from .diagnostic_bundle import router as diagnostics_router
     app.include_router(diagnostics_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：diagnostics 完成")
+
+    # 日志占用与保留设置：成员只读，保存/清理仅根账号（持久化到数据目录）。
+    from .log_settings import router as log_settings_router
+    app.include_router(log_settings_router, dependencies=[Depends(_require_settings_owner)])
+    _startup_mark("路由：log settings 完成")
 
     # Knowledge base: canonical /v1/knowledge (unified with the rest of the
     # gateway) plus a deprecated /knowledge alias for existing clients.
@@ -2063,9 +2250,9 @@ def get_app() -> FastAPI:
     # 网络只读面（LHX-C-009 缺口）：把网络总线里**真实发生**的消息与统计摊开给人看，
     # 只读、人类主权闸门。后端直接复用网络内核进程单例的 stats() 与 get_message_history()，
     # 绝不另建一份可能分叉/造假的副本。与其余业务面一致挂 require_human_principal 闸门。
-    # 严格只读：不建任何 send/写端点（真实外部 send 是安全风险且无真实路径）。
+    # 消息面严格只读；联网检索开关是本地偏好：成员可读，写入仅根账号。
     from .networks import router as networks_router
-    app.include_router(networks_router, dependencies=[Depends(_require_human)])
+    app.include_router(networks_router, dependencies=[Depends(_require_settings_owner)])
 
     # 模型管理面（模型配置中心）：界面新增/编辑/删除/设为默认 + 连通性测试。
     # 读端点对所有已登录人类开放；写端点由 router 内的 require_model_admin

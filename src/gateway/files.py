@@ -171,7 +171,8 @@ def list_files(
         if not os.path.exists(physical_root):
             # 该账号还没有任何产物：空空间是事实，不是错误。
             return {
-                "root": physical_root,
+                # 成员响应不下发本机绝对路径；根账号保留完整路径用于排障。
+                "root": physical_root if context.is_root else "<账号空间>",
                 "path": logical_dir,
                 "account": owner or None,
                 "count": 0,
@@ -203,7 +204,8 @@ def list_files(
             }
         )
     return {
-        "root": physical_root,
+        # 成员响应不下发本机绝对路径；根账号保留完整路径用于排障。
+        "root": physical_root if context.is_root else "<账号空间>",
         "path": logical_dir,
         "account": owner or None,
         "count": len(entries),
@@ -255,7 +257,8 @@ def read_file(
             detail="不是 UTF-8 文本（二进制文件请在文件系统查看）",
         )
     return {
-        "root": physical_root,
+        # 成员响应不下发本机绝对路径；根账号保留完整路径用于排障。
+        "root": physical_root if context.is_root else "<账号空间>",
         "path": logical_path,
         "account": owner or None,
         "size": size,

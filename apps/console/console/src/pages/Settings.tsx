@@ -14,11 +14,14 @@ import type { ReactElement } from 'react'
 import type { DeviceMode, DeviceModeState, Theme } from '../lib/mode'
 import { DEVICE_MODES, MODE_HINTS, MODE_LABELS } from '../lib/mode'
 import type { Session } from '../lib/auth'
+import { apiFetch, useApi } from '../lib/api'
 import { humanDuration, permissionLabel, toneVar, useNow } from '../lib/format'
 import type { OsNotification } from '../components/Shell'
 import { Card, Dot } from '../components/ui'
 import { ModelManager } from '../components/ModelManager'
 import { DiagnosticsExport } from '../components/DiagnosticsExport'
+import { LogRetentionPanel } from '../components/LogRetentionPanel'
+import { UpgradePanel } from '../components/UpgradePanel'
 import { getReducedMotion, setReducedMotion } from '../lib/reducedMotion'
 import {
   IconCheck,
@@ -34,6 +37,8 @@ export interface SettingsProps {
   session: Session
   notifications: OsNotification[]
   onLogout: () => void
+  /** 深链 `?p=settings&model=<目标>` 带来的模型；见 ModelManager 的同名参数。 */
+  focusModelId?: string | null
 }
 
 const MODE_ICON: Record<DeviceMode, (props: { size?: number }) => ReactElement> = {
@@ -48,7 +53,25 @@ interface InstallPromptEvent extends Event {
   userChoice?: Promise<{ outcome: 'accepted' | 'dismissed' }>
 }
 
-export function Settings({ device, session, notifications, onLogout }: SettingsProps) {
+/** `GET/PUT /v1/network/research`：联网检索的开关状态与告知文案。 */
+interface ResearchState {
+  enabled: boolean
+  stored_enabled: boolean
+  /** 环境变量在强制覆盖时，界面开关改了也不生效 —— 必须如实说明。 */
+  env_override: boolean
+  providers: string[]
+  provider_hosts: string[]
+  disclosure: string
+  max_phrase_chars: number
+}
+
+export function Settings({
+  device,
+  session,
+  notifications,
+  onLogout,
+  focusModelId,
+}: SettingsProps) {
   const { mode, detected, override, theme, setOverride, setTheme } = device
 
   // 安装提示：桌面端会触发 beforeinstallprompt，手机端（iOS Safari）不会 —— 后者
@@ -90,6 +113,34 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
     if (choice?.outcome === 'accepted') setStandalone(true)
     setInstallEvent(null)
   }, [installEvent])
+
+  // 联网检索：默认关闭。开启前必须把「检索词会发到哪几个站点」说清楚。
+  const research = useApi<ResearchState>('/v1/network/research', 0)
+  const [researchBusy, setResearchBusy] = useState(false)
+  const [researchError, setResearchError] = useState<string | null>(null)
+  const researchOn = research.data?.enabled ?? false
+  // 写策略只归根账号：成员保留只读视角，避免点一下就是 403。
+  const canManageSettings = session.isRoot
+
+  const setResearch = useCallback(
+    async (next: boolean) => {
+      setResearchBusy(true)
+      setResearchError(null)
+      try {
+        await apiFetch<ResearchState>('/v1/network/research', {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: next }),
+        })
+        research.reload()
+      } catch (err) {
+        setResearchError(err instanceof Error ? err.message : '保存失败')
+      } finally {
+        setResearchBusy(false)
+      }
+    },
+    // research.reload 是稳定引用（useApi 内部 useCallback）；依赖只列它即可。
+    [research.reload],
+  )
 
   // 剩余时长必须来自"状态化的时间"：在渲染里直接调 `Date.now()` 是不纯的
   // （同样的 props 会渲染出不同结果），React 的纯度检查会拦下来。
@@ -185,7 +236,94 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
         sub="新增 / 编辑 / 删除模型配置；测试连通并保存后，下一条消息即生效。密钥只显示首尾几位，不显示完整值。"
         span={12}
       >
-        <ModelManager session={session} />
+        <ModelManager session={session} focusModelId={focusModelId} />
+      </Card>
+
+      <Card
+        id="settings-privacy"
+        title="隐私与联网"
+        sub="这里决定「什么内容可以离开本机」。默认状态：除了你自己配置的模型，没有任何外发。"
+        span={12}
+      >
+        <div className="os-note" role="note" style={{ marginBottom: 12 }}>
+          <span>
+            <strong>知识库向量化：</strong>
+            默认只在本机 Ollama 上运行；只有你显式选择云端向量化服务，文档分片才会发到那家厂商。
+            环境里存在 <code>OPENAI_API_KEY</code> 不再自动改走云端。
+          </span>
+        </div>
+
+        {!canManageSettings && (
+          <div className="os-note" role="note" style={{ marginBottom: 12 }}>
+            <span>该设置由主账号统一管理，当前账号只能查看。</span>
+          </div>
+        )}
+
+        <label className="os-check" htmlFor="settings-web-research">
+          <input
+            id="settings-web-research"
+            type="checkbox"
+            checked={researchOn}
+            disabled={!canManageSettings || researchBusy || research.loading || !research.data}
+            onChange={(event) => {
+              if (!canManageSettings) return
+              void setResearch(event.target.checked)
+            }}
+          />
+          允许「联网检索」：把检索词发到 hn.algolia.com / api.github.com / export.arxiv.org 三个公开接口
+        </label>
+
+        {researchError && (
+          <div className="os-alert" role="alert">
+            <span>{researchError}</span>
+          </div>
+        )}
+
+        {research.data && (
+          <>
+            {researchOn ? (
+              <p className="os-note" role="status">
+                <span>{research.data.disclosure}</span>
+              </p>
+            ) : (
+              <p className="os-note" role="status">
+                <span>
+                  当前关闭：助手不会向任何外部站点发送检索词，只会用本机模型与你配置的模型服务商。
+                </span>
+              </p>
+            )}
+            <p className="os-note">
+              <span>
+                开启后只发送<strong>提炼后的关键词</strong>（最多 {research.data.max_phrase_chars} 个字符）：
+                会先去掉邮箱、电话、密钥和链接。只发送提炼后的关键词；不发送你的对话内容、对话历史、个人画像、账号信息或 API Key。
+                关闭后立即生效，无需重启。
+              </span>
+            </p>
+            {research.data.env_override && (
+              <p className="os-note" role="alert">
+                <span>
+                  当前进程的环境变量 <code>LIUHAO_WEB_RESEARCH</code> 正在强制覆盖这个开关，
+                  界面上的修改不会改变实际行为。要由界面控制，请先移除该环境变量。
+                </span>
+              </p>
+            )}
+          </>
+        )}
+      </Card>
+
+      <Card
+        id="settings-upgrade"
+        title="软件更新"
+        sub="检查新版本、下载并安装；安装失败或新版本启动不通过会自动回滚到升级前的版本。"
+        span={12}
+      >
+        {canManageSettings ? (
+          <UpgradePanel />
+        ) : (
+          <p className="os-note" role="note">
+            软件更新由主账号统一管理；当前账号不提供检查、安装与回滚操作。
+          </p>
+        )}
       </Card>
 
       <Card title="外观主题" sub="可跟随形态，也可手动指定" span={6}>
@@ -312,6 +450,14 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
             )}
           </>
         )}
+      </Card>
+
+      <Card
+        title="日志与磁盘"
+        sub="看占用、改保留策略、立即清理 —— 只删旧备份，不动正在写的日志"
+        span={12}
+      >
+        <LogRetentionPanel canManage={canManageSettings} />
       </Card>
 
       <Card title="遇到问题" sub="导出排障信息 —— 先看清包含什么，再决定发给谁" span={12}>

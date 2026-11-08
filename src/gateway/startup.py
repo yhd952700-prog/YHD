@@ -38,9 +38,31 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from ..common.redaction import redact_log_text
 from . import startup_profile
 
 router = APIRouter(prefix="/v1", tags=["startup"])
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+
+def _sanitize(value):
+    """公开启动页的结构化脱敏：去掉绝对路径/用户名，并遮蔽非回环监听地址。"""
+    if isinstance(value, str):
+        # 免鉴权接口用更严的日志级脱敏：任意绝对路径都折叠成 <本地路径>/文件名。
+        return redact_log_text(value)
+    if isinstance(value, list):
+        return [_sanitize(item) for item in value]
+    if isinstance(value, dict):
+        result = {key: _sanitize(item) for key, item in value.items()}
+        host = str(result.get("host") or "")
+        if host and host not in _LOOPBACK_HOSTS:
+            result["host"] = "<本机地址>"
+        if result.get("key_fp"):
+            # 密钥指纹没有必要出现在免鉴权的启动页上。
+            result["key_fp"] = "<已省略>"
+        return result
+    return value
 
 
 @router.get("/startup", include_in_schema=False)
@@ -68,9 +90,9 @@ def get_startup_status() -> JSONResponse:
             "elapsed_ms": snapshot["elapsed_ms"],
             "started_at_unix": snapshot["started_at_unix"],
             "stages": snapshot["stages"],
-            "background": snapshot["background"],
-            "degraded": degraded,
-            "startup_check": boot_report.last_startup_check(),
+            "background": _sanitize(snapshot["background"]),
+            "degraded": _sanitize(degraded),
+            "startup_check": _sanitize(boot_report.last_startup_check()),
         },
         headers={"Cache-Control": "no-store"},
     )

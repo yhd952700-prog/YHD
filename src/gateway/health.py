@@ -11,14 +11,130 @@ Provides:
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 from typing import Dict, Any
+import asyncio
+import logging
+import threading
 import time
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
+from ..common.redaction import redact_log_text
+from ..observability.boot_report import display_path
 from ..gateway.rate_limiter import get_rate_limiter
 from ..gateway.contract import API_CONTRACT_VERSION
 from ..version import APP_VERSION
 from .display import decorate_health_check, provider_label, status_label
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# 探针隔离（D-1 / D-2）
+# ============================================================================
+# 这三个探针（/v1/health、/v1/ready、/v1/metrics）曾经把各自的同步 I/O
+# （模型配置库读取、密钥库统计、审计统计、身份/围栏自检……）直接跑在**事件
+# 循环线程**上。宿主 CPU 吃满时一次这样的读就能占住事件循环数秒，所有请求
+# （包括 /v1/health）一起排队——表现就是"整站僵死、只有重启能恢复"。
+#
+# 现在：探针只做内存读或线程池里的有界工作。探针线程池与业务线程池
+# （anyio 的 40 个 token，被慢模型调用占满）**完全分离**，业务再忙也堵不住
+# 探针；真取不到数据就快速返回 503 + 中文原因，绝不把事件循环拖住。
+_PROBE_TIMEOUT_SECONDS = 2.0
+_PROBE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="liuhao-probe")
+
+
+class ProbeTimeout(RuntimeError):
+    """探针在预算内拿不到结果：如实报忙，而不是无限等待。"""
+
+
+async def _run_probe(fn, timeout: float = _PROBE_TIMEOUT_SECONDS):
+    """在线程池里跑同步采集，带硬超时；超时立刻抛 :class:`ProbeTimeout`。
+
+    ``shield`` 保证超时不会取消正在跑的采集（线程无法被取消），下一次调用
+    仍可复用线程池；超时的那次结果被丢弃，调用方返回 503。
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(_PROBE_POOL, fn)
+    try:
+        return await asyncio.wait_for(asyncio.shield(future), timeout)
+    except asyncio.TimeoutError as exc:
+        raise ProbeTimeout(f"probe exceeded {timeout}s") from exc
+
+
+def warm_probe_pool(count: int = 4) -> int:
+    """启动时把探针线程池的线程**全部先建好**。
+
+    为什么：``ThreadPoolExecutor`` 的线程是"第一次 submit 时才创建"，而创建
+    走的是 ``threading.Thread.start()`` —— 实测满载时这一行会在事件循环线程上
+    无超时阻塞（D-1 的第二入口，见 soak 报告 §12.8）。``_run_probe`` 正是用
+    ``loop.run_in_executor(_PROBE_POOL, ...)``，所以**第一个**探针请求就会在
+    事件循环里建线程。预热之后，探针路径上不再有任何运行期线程创建：
+    ``/v1/health`` 是最后一道可用性保障，不能把它的第一条请求赌在 Thread.start 上。
+
+    返回成功预建的线程数；失败只记日志，不阻断启动。
+    """
+    try:
+        workers = max(1, int(count))
+        list(_PROBE_POOL.map(lambda _: None, range(workers)))
+        return workers
+    except Exception:  # pragma: no cover - 预热失败不影响服务
+        logger.warning("探针线程池预热失败（不影响启动）", exc_info=True)
+        return 0
+
+
+def _busy_response(kind: str, trace_id: str, detail: str = "") -> JSONResponse:
+    """探针取数超时的快速失败响应（503 + 中文原因 + Retry-After）。"""
+    payload: Dict[str, Any] = {
+        "status": "busy",
+        "status_label": "繁忙",
+        "reason": "probe_timeout",
+        "service": "liuhao-gateway",
+        "timestamp": time.time(),
+        "trace_id": trace_id,
+        "user_message": (
+            f"{kind}暂时取不到数据：系统正在处理较慢的请求，探针已快速返回，"
+            "服务本身仍在运行，请 1 秒后重试。"
+        ),
+    }
+    if detail:
+        payload["detail"] = detail
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        headers={"Retry-After": "1"},
+        content=payload,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 存活探针的 provider 快照：绝不在请求路径上读模型配置库
+# ---------------------------------------------------------------------------
+# ``ai_provider_status()`` 会读模型配置库（SQLite）。放在事件循环上就是
+# D-1 的僵死入口。这里用一个"最多 5 秒旧"的内存快照：命中最快（零 I/O），
+# 过期时在探针线程池里刷新，超时就用旧值并标注 ``stale`` —— 存活探针的
+# 语义是"进程还能响应"，不是"配置库还能读"。
+_PROVIDER_SNAPSHOT_TTL = 5.0
+_provider_snapshot: Dict[str, Any] = {}
+_provider_snapshot_at: float = 0.0
+_provider_snapshot_lock = threading.Lock()
+
+
+def _provider_snapshot_for_probe() -> Dict[str, Any]:
+    """返回 provider 状态快照；过期则在**当前线程**刷新（探针池线程）。"""
+    global _provider_snapshot, _provider_snapshot_at
+    with _provider_snapshot_lock:
+        age = time.time() - _provider_snapshot_at
+        if _provider_snapshot and age <= _PROVIDER_SNAPSHOT_TTL:
+            return dict(_provider_snapshot)
+    try:
+        from ..ai.providers import ai_provider_status
+
+        snapshot = ai_provider_status()
+    except Exception:  # pragma: no cover - 配置读失败不该让探针失败
+        snapshot = {"type": "unknown", "mode": "unknown", "simulated": False}
+    with _provider_snapshot_lock:
+        _provider_snapshot = dict(snapshot)
+        _provider_snapshot_at = time.time()
+        return dict(_provider_snapshot)
 
 
 def _decorate_ai_provider(ai: Dict[str, Any]) -> Dict[str, Any]:
@@ -54,16 +170,32 @@ async def liveness_probe(request: Request) -> JSONResponse:
     Liveness probe - Kubernetes 检查容器是否存活。
 
     返回 200 表示容器运行正常，可以被调度器调用。
+
+    这是**纯内存路径**：不读配置库、不碰审计库、不开连接。provider 状态来自
+    探针线程池维护的 5 秒快照；即使宿主 CPU 满载，本端点也只会花几十微秒。
+    取不到快照时如实标注 ``stale``，但依然返回 200 —— "进程能响应"是它唯一的
+    语义，不能因为下游慢就判死。
     """
     trace_id = request.headers.get("X-Trace-ID", "unknown")
 
-    # Honest provider-mode surfacing (MOCK vs REAL) -- never silently simulated.
     try:
-        from ..ai.providers import ai_provider_status
-
-        ai_provider = ai_provider_status()
-    except Exception:
+        ai_provider = await _run_probe(_provider_snapshot_for_probe, timeout=0.5)
+    except ProbeTimeout:
+        with _provider_snapshot_lock:
+            ai_provider = (
+                dict(_provider_snapshot)
+                if _provider_snapshot
+                else {"type": "unknown", "mode": "unknown", "simulated": False}
+            )
+    except Exception:  # pragma: no cover - 探针失败不改变存活判定
         ai_provider = {"type": "unknown", "mode": "unknown", "simulated": False}
+
+    with _provider_snapshot_lock:
+        snapshot_age = (
+            round(time.time() - _provider_snapshot_at, 1) if _provider_snapshot_at else None
+        )
+    ai_provider = _decorate_ai_provider(ai_provider)
+    ai_provider["snapshot_age_seconds"] = snapshot_age
 
     return JSONResponse(
         content={
@@ -73,7 +205,7 @@ async def liveness_probe(request: Request) -> JSONResponse:
             "trace_id": trace_id,
             "version": APP_VERSION,
             "api_contract": API_CONTRACT_VERSION,
-            "ai_provider": _decorate_ai_provider(ai_provider),
+            "ai_provider": ai_provider,
             "status_label": status_label("ok"),
             "user_message": "服务正在运行，可以接收请求",
         },
@@ -81,8 +213,7 @@ async def liveness_probe(request: Request) -> JSONResponse:
     )
 
 
-@health_router.get("/ready", include_in_schema=False)
-async def readiness_probe(request: Request) -> JSONResponse:
+def _readiness_payload_sync(trace_id: str) -> tuple:
     """
     Readiness probe - Kubernetes 检查服务是否就绪接受流量。
 
@@ -92,8 +223,11 @@ async def readiness_probe(request: Request) -> JSONResponse:
     - RBAC Manager
     - Encryption Manager
     - Rate Limiter
+
+    注意：本函数是**同步**的，只在探针线程池里执行，绝不在事件循环上跑。
+    它要读密钥库、审计库、身份/围栏状态，任何一次读都可能被下游锁拖住；
+    放在事件循环上就是 D-1 的"整站僵死"入口（见模块顶部说明）。
     """
-    trace_id = request.headers.get("X-Trace-ID", "unknown")
     errors: list = []
     checks: Dict[str, Any] = {}
 
@@ -491,15 +625,20 @@ async def readiness_probe(request: Request) -> JSONResponse:
 
         usage = usage_health()
         ledger_ok = not usage.get("consecutive_failures")
+        # /v1/health 与 /v1/ready 免鉴权：只给脱敏后的位置，不下发绝对路径。
+        ledger = dict(usage)
+        ledger["path"] = display_path(usage.get("path"))
+        if ledger.get("last_error"):
+            ledger["last_error"] = redact_log_text(str(ledger["last_error"]))
         checks["usage_ledger"] = {
             "status": "healthy" if ledger_ok else "degraded",
-            **usage,
+            **ledger,
         }
         if not ledger_ok:
             errors.append(
                 "Usage Ledger: "
-                f"{usage.get('consecutive_failures')} consecutive write failure(s); "
-                f"last error: {usage.get('last_error')}"
+                f"{ledger.get('consecutive_failures')} consecutive write failure(s); "
+                f"last error: {ledger.get('last_error')}"
             )
     except Exception as e:  # pragma: no cover - defensive
         checks["usage_ledger"] = {"status": "unhealthy", "error": str(e)}
@@ -533,14 +672,14 @@ async def readiness_probe(request: Request) -> JSONResponse:
         line = verdict.to_error_line()
         if line:
             errors.append(line)
-    except Exception as e:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive
         # Fail LOUD, not open: if the arming self-check cannot run we cannot
         # claim the sovereignty gate is armed.
         checks["kernel_policy_enforcement"] = {
             "status": "unhealthy",
-            "error": f"C-2 arming self-check failed: {str(e)}",
+            "error": "安全策略自检暂时无法运行，请到诊断页查看技术细节。",
         }
-        errors.append(f"Kernel Policy Enforcement: arming self-check error: {str(e)}")
+        errors.append("安全策略自检暂时无法运行，请到诊断页查看技术细节。")
 
     # 逐项补"人话"字段；status 等机器字段原样保留（诊断页/旧调用方不受影响）。
     for name, check in checks.items():
@@ -582,11 +721,25 @@ async def readiness_probe(request: Request) -> JSONResponse:
         else status.HTTP_503_SERVICE_UNAVAILABLE
     )
 
+    return response_data, status_code
+
+
+@health_router.get("/ready", include_in_schema=False)
+async def readiness_probe(request: Request) -> JSONResponse:
+    """就绪探针：采集在探针线程池里跑，超时快速返回 503（中文原因）。"""
+    trace_id = request.headers.get("X-Trace-ID", "unknown")
+    try:
+        response_data, status_code = await _run_probe(
+            lambda: _readiness_payload_sync(trace_id)
+        )
+    except ProbeTimeout as exc:
+        return _busy_response("就绪检查", trace_id, str(exc))
+    except Exception as exc:  # pragma: no cover - 采集自身出错也必须如实报
+        return _busy_response("就绪检查", trace_id, f"{type(exc).__name__}: {exc}")
     return JSONResponse(content=response_data, status_code=status_code)
 
 
-@health_router.get("/metrics", include_in_schema=False)
-async def metrics_endpoint(request: Request) -> JSONResponse:
+def _metrics_payload_sync(trace_id: str) -> Dict[str, Any]:
     """
     Metrics endpoint - 返回详细的系统指标。
 
@@ -605,9 +758,10 @@ async def metrics_endpoint(request: Request) -> JSONResponse:
     ``uptime_seconds`` 也曾直接填 ``time.time()``，是时间戳而不是运行时长。
     现在按真实可得的数据计算：过期的密钥数从 ``by_status`` 里数出来，
     运行时长用本模块加载时刻起算。
-    """
-    trace_id = request.headers.get("X-Trace-ID", "unknown")
 
+    与就绪探针同理：本函数只在探针线程池执行。``get_key_stats()`` 要读密钥库，
+    放在事件循环上等于把指标端点变成第二个僵死入口（D-2）。
+    """
     # Gather metrics from all components
     key_mgr = get_api_key_manager()
     key_stats = key_mgr.get_key_stats()
@@ -640,4 +794,17 @@ async def metrics_endpoint(request: Request) -> JSONResponse:
         },
     }
 
+    return metrics_data
+
+
+@health_router.get("/metrics", include_in_schema=False)
+async def metrics_endpoint(request: Request) -> JSONResponse:
+    """指标端点：采集在探针线程池里跑，超时快速返回 503（中文原因）。"""
+    trace_id = request.headers.get("X-Trace-ID", "unknown")
+    try:
+        metrics_data = await _run_probe(lambda: _metrics_payload_sync(trace_id))
+    except ProbeTimeout as exc:
+        return _busy_response("指标采集", trace_id, str(exc))
+    except Exception as exc:  # pragma: no cover - 采集自身出错也必须如实报
+        return _busy_response("指标采集", trace_id, f"{type(exc).__name__}: {exc}")
     return JSONResponse(content=metrics_data, status_code=status.HTTP_200_OK)

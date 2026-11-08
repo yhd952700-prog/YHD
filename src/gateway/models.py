@@ -35,14 +35,15 @@ from .account_context import (
 )
 from ..kernels.identity import _accounts
 from ..ai.model_config import (
+    ApiKeyFormatError,
     ModelConfigError,
     SUPPORTED_PROVIDERS,
     get_model_config_store,
     is_masked_placeholder,
+    normalize_api_key,
     vendor_for,
 )
-from ..ai.model_discovery import fetch_model_list
-from ..ai.providers import ProviderFactory, provider_from_config
+from ..ai.providers import ProviderFactory, provider_from_config, sanitize_upstream_detail
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def require_model_admin(payload=Depends(require_bearer_payload)):
         return payload
     raise HTTPException(
         status_code=403,
-        detail="只有管理员（admin 权限或 L0 人类主权）可以修改模型配置",
+        detail="只有管理员可以修改模型配置。请换用管理员账号后再试。",
     )
 
 
@@ -98,7 +99,7 @@ class ModelPayload(BaseModel):
     model: str = Field(..., min_length=1, max_length=128, description="模型名，如 qwen2.5:3b")
     base_url: Optional[str] = Field(None, max_length=512, description="可选自定义端点")
     api_key: Optional[str] = Field(
-        None, max_length=512, description="API Key（加密落盘；mock/ollama 可留空）"
+        None, description="API Key（加密落盘；mock/ollama 可留空）"
     )
     timeout: float = Field(30.0, ge=1.0, le=600.0, description="请求超时（秒）")
     enabled: bool = Field(True, description="是否启用")
@@ -113,18 +114,27 @@ class ModelUpdatePayload(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = Field(None, min_length=1, max_length=128)
     base_url: Optional[str] = Field(None, max_length=512)
-    api_key: Optional[str] = Field(None, max_length=512, description="留空表示不修改")
+    api_key: Optional[str] = Field(None, description="留空表示不修改")
     timeout: Optional[float] = Field(None, ge=1.0, le=600.0)
     enabled: Optional[bool] = None
     is_default: Optional[bool] = None
     owner_principal: Optional[str] = Field(None, max_length=64, description="转移 Key 归属")
+    confirm_key_resend: bool = Field(
+        False,
+        description=(
+            "接口地址变更且该模型已有 Key 时，显式确认“把已保存的 Key 发送到新地址”。"
+            "不确认则必须重新输入 Key；该标记不落库，只用于本次更新并写入审计。"
+        ),
+    )
 
 
 class TestPayload(BaseModel):
     provider: str = Field(..., description="provider 类型")
     model: str = Field(..., min_length=1, description="模型名")
     base_url: Optional[str] = Field(None, max_length=512)
-    api_key: Optional[str] = Field(None, max_length=512)
+    #: 不在 HTTP 层卡长度：超长 Key 要由 ``normalize_api_key`` 给出中文 400
+    #: （Pydantic 的 422 只会回一段机器可读的英文）。
+    api_key: Optional[str] = Field(None)
     timeout: float = Field(30.0, ge=1.0, le=600.0)
     model_id: Optional[str] = Field(
         None, description="已保存配置的 id：用它填 base_url/密钥（表单可只改模型名）"
@@ -134,7 +144,7 @@ class TestPayload(BaseModel):
 class DiscoverPayload(BaseModel):
     provider: str = Field(..., description="provider 类型")
     base_url: Optional[str] = Field(None, max_length=512)
-    api_key: Optional[str] = Field(None, max_length=512)
+    api_key: Optional[str] = Field(None)
     timeout: float = Field(10.0, ge=1.0, le=60.0)
     model_id: Optional[str] = Field(
         None, description="已保存配置的 id：复用它保存的端点与密钥（表单可只留空 Key）"
@@ -184,6 +194,67 @@ _PROVIDER_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
 
 def _normalize_url(value: Optional[str]) -> str:
     return (value or "").strip().rstrip("/")
+
+
+def _origin_of(raw: Optional[str]) -> str:
+    """``scheme://host:port``（缺省端口显式化）；非法返回空串。
+
+    "是不是同一个目标"必须按完整来源比较：只比主机名会让
+    ``http://127.0.0.1:9999`` 与 ``http://127.0.0.1:11434`` 被当成同一处，
+    而把已存 Key 发往新端口恰恰是本轮要关掉的路径。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = f"http://{text}"
+    try:
+        parsed = urlparse(text)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        return ""
+    if scheme not in ("http", "https") or not host:
+        return ""
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return f"{scheme}://{host}:{port}"
+
+
+def _same_target(left: Optional[str], right: Optional[str]) -> bool:
+    origin = _origin_of(left)
+    return bool(origin) and origin == _origin_of(right)
+
+
+def _audit_key_target_change(
+    actor: str,
+    model_id: str,
+    previous: Optional[str],
+    current: Optional[str],
+    *,
+    key_resent: bool,
+    key_reentered: bool,
+) -> None:
+    """把“Key 将被发往新目标”记进审计（只记来源，不记者 URL 路径/查询串）。"""
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        get_identity_manager().record_event(
+            action="key.base_url_changed",
+            actor=actor,
+            target=model_id,
+            outcome="allowed",
+            details={
+                "model_config_id": model_id,
+                "previous_target": _origin_of(previous),
+                "new_target": _origin_of(current),
+                "stored_key_resent": key_resent,
+                "key_reentered": key_reentered,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("model base_url change audit failed for %s", model_id, exc_info=True)
 
 
 def _local_ollama_urls() -> set:
@@ -295,7 +366,8 @@ def pricing_status(model_id: str) -> Dict[str, Any]:
         return {
             "priced": False,
             "price_per_1k_tokens": None,
-            "source": str(_pricing_path()),
+            # 只下发固定的相对位置，不下发本机绝对路径（成员响应不应带盘符路径）。
+            "source": "config/model_pricing.json",
             "note": (
                 "未定价：config/model_pricing.json 中没有该模型；"
                 "配额守卫会把它记为未解析成本（不是 0，也不是免费）"
@@ -304,7 +376,8 @@ def pricing_status(model_id: str) -> Dict[str, Any]:
     return {
         "priced": True,
         "price_per_1k_tokens": price,
-        "source": str(_pricing_path()),
+        # 同上：已定价与未定价分支都不能下发本机绝对路径。
+        "source": "config/model_pricing.json",
         "note": "",
     }
 
@@ -547,11 +620,55 @@ def update_model(
     scope = key_scope_for(principal=ctx.principal)
     _guard_visible(scope, stored.get("owner_principal"))
     data = payload.model_dump(exclude_unset=True)
+    # 二次确认只服务于本次判断，绝不能作为字段落库。
+    confirm_resend = bool(data.pop("confirm_key_resend", False))
+    raw_key = str(data.get("api_key") or "").strip()
+    key_reentered = bool(raw_key and not is_masked_placeholder(raw_key))
+    previous_url = stored.get("base_url")
+    previous_provider = str(stored.get("provider") or "").strip().lower()
+    target_changed = False
     if "base_url" in data:
         provider = data.get("provider") or stored.get("provider")
         data["base_url"] = _validate_base_url(
-            data["base_url"], provider=provider, stored_url=stored.get("base_url")
+            data["base_url"], provider=provider, stored_url=previous_url
         ) or None
+        target_changed = _normalize_url(str(data["base_url"] or "")) != _normalize_url(
+            str(previous_url or "")
+        )
+    provider_changed = (
+        "provider" in data
+        and str(data.get("provider") or "").strip().lower() != previous_provider
+    )
+    # base_url 为空时目标由 provider 的默认端点决定：换 provider 也等于换目标。
+    if provider_changed and not _normalize_url(str(previous_url or "")):
+        target_changed = True
+    # 已保存 Key 不能因为改地址就自动跟着走：要么重新输入 Key，要么显式确认
+    # “把 Key 发往新地址”。确认本身必须进审计，事后可追溯谁改的、改去哪。
+    if target_changed and stored.get("api_key_set") and not key_reentered:
+        if not confirm_resend:
+            raise deny(
+                409,
+                "MODEL_KEY_TARGET_CHANGED",
+                "接口地址已变更，但该模型已保存 Key。请重新输入 Key，"
+                "或显式确认“把已保存的 Key 发送到新地址”后再保存。",
+            )
+        _audit_key_target_change(
+            _principal(manager),
+            model_id,
+            previous_url,
+            data.get("base_url"),
+            key_resent=True,
+            key_reentered=False,
+        )
+    elif target_changed and key_reentered:
+        _audit_key_target_change(
+            _principal(manager),
+            model_id,
+            previous_url,
+            data.get("base_url"),
+            key_resent=False,
+            key_reentered=True,
+        )
     if "owner_principal" in data:
         _guard_owner_assign(ctx, data["owner_principal"])
     updated = _run_guarded(
@@ -627,7 +744,8 @@ _PROBE_HINTS = {
     "quota_exhausted": "账户额度已耗尽：请到提供方控制台充值或提升额度",
     "rate_limited": "请求被上游限流：请稍后重试",
     "model_not_found": "模型名不存在：请核对提供方支持的模型 ID",
-    "unreachable": "端点不可达：请检查 base_url、端口与网络",
+    "empty_response": "模型没有返回内容：请重试，或换一个模型/模型服务",
+    "unreachable": "接口地址不可达：请检查接口地址、端口与网络",
     "timeout": "连接超时：请检查网络或调大超时时间",
     "upstream_error": "提供方返回服务端错误：请稍后重试；持续出现请联系提供方",
 }
@@ -648,6 +766,10 @@ def _classify_error(exc: BaseException) -> str:
     kind = getattr(exc, "upstream_kind", None)
     if isinstance(kind, str) and kind in _PROBE_HINTS:
         return kind
+    # 空回复不是"上游服务端错误"：它是 200 成功但没有任何内容，处理方式是
+    # "重试/换模型"，不是"联系提供方"。
+    if getattr(exc, "error_code", None) == "EMPTY_RESPONSE" or name == "provideremptyresponseerror":
+        return "empty_response"
     if "timeout" in name or "timed out" in message or "timeout" in message:
         return "timeout"
     # 各 SDK 的连接失败异常名并不统一：``openai`` 抛 ``APIConnectionError``
@@ -783,6 +905,15 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
     started = time.monotonic()
     try:
         reply = provider.generate("ping", max_tokens=8, temperature=0.0)
+        # 200 + 空内容以前被当成"测试成功"（假绿）：界面显示已连接，但用户
+        # 一发消息就只剩「…」。测试连接必须和真实对话用同一条判空标准。
+        if reply is None or not str(reply).strip():
+            from error_types import ProviderEmptyResponseError
+
+            raise ProviderEmptyResponseError(
+                cfg.get("provider") or "unknown",
+                detail="probe returned no content",
+            )
     except Exception as exc:
         elapsed = round((time.monotonic() - started) * 1000.0, 1)
         reason = _classify_error(exc)
@@ -797,7 +928,14 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
             raw_detail,
         )
         hint = _PROBE_HINTS.get(reason)
-        detail = hint or "连接失败：请检查服务商、模型名与端点设置后重试。"
+        detail = hint or "连接失败：请检查服务商、模型名与接口地址设置后重试。"
+        # 模型名写错时必须把服务端原话带出来（已脱敏、≤200 字符）：
+        # 只说"模型名不存在"用户无法区分是拼错、没开通还是已下线。
+        server_text = sanitize_upstream_detail(
+            getattr(exc, "upstream_detail", "") or ""
+        )
+        if server_text:
+            detail = f"{detail}；服务端返回：{server_text}"
         _audit_probe(cfg, "failure", reason)
         return {
             "ok": False,
@@ -936,6 +1074,7 @@ def _test_cfg(payload: TestPayload, scope=None) -> Dict[str, Any]:
                 payload.model_id,
                 visible_to=scope.visible_to,
                 allow_unowned=scope.allow_unowned,
+                allow_owners=scope.allow_owners,
             )
         if stored is None:
             raise HTTPException(status_code=404, detail=f"模型配置不存在：{payload.model_id}")
@@ -946,8 +1085,16 @@ def _test_cfg(payload: TestPayload, scope=None) -> Dict[str, Any]:
     # 编辑态回传的掩码不是新 Key：测试时回落到已保存的真实 Key。
     if api_key and is_masked_placeholder(api_key):
         api_key = None
+    stored_key_used = False
     if not api_key and stored:
         api_key = stored.get("api_key")
+        stored_key_used = bool(api_key)
+    # 测试连接与真实请求走同一套 Key 规整：去首尾空白（含全角空格），
+    # 中间夹换行/空格直接给中文提示，而不是让 SDK 抛 "Illegal header value"。
+    try:
+        api_key = normalize_api_key(api_key)
+    except ApiKeyFormatError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # 调用方现填的地址按公网收紧；但若它**恰好等于**已保存配置里的地址，
     # 说明该目标已被管理员落盘批准（本机 Ollama 就是这种正常用法），此时
     # 放行私网/回环。这样既关掉了"任意地址探测内网"的 SSRF 面，又不至于把
@@ -959,6 +1106,16 @@ def _test_cfg(payload: TestPayload, scope=None) -> Dict[str, Any]:
         provider=provider,
         stored_url=stored_url,
     )
+    # 已保存的 Key 只能发往保存时的目标。测试时换一个地址——包括只换端口的
+    # 127.0.0.1:xxxx——必须由调用方重新输入 Key；否则"测试连接"就是一条把
+    # 旧 Key 送到新地址的捷径（这正是本轮要关掉的路径）。
+    if stored_key_used and caller_url and not _same_target(caller_url, stored_url):
+        raise deny(
+            409,
+            "MODEL_KEY_TARGET_CHANGED",
+            "测试地址与保存时不一致：为避免把已保存的 Key 发往新地址，"
+            "请重新输入 Key，或先把该地址保存到模型配置。",
+        )
     resolved_url = caller_url or _validate_base_url(
         stored_url, provider=provider, stored_url=stored_url
     )
@@ -990,6 +1147,7 @@ def test_saved_model(
         model_id,
         visible_to=scope.visible_to,
         allow_unowned=scope.allow_unowned,
+        allow_owners=scope.allow_owners,
     )
     if cfg is None:
         raise HTTPException(status_code=404, detail=f"模型配置不存在或已禁用：{model_id}")
@@ -1001,7 +1159,14 @@ def test_saved_model(
         stored_url=cfg.get("base_url"),
     )
     cfg["timeout"] = min(float(cfg.get("timeout") or 30.0), 20.0)
-    return _probe(cfg)
+    result = _probe(cfg)
+    # 把结果落库：只有最近一次真正测通的模型才允许被设为默认。
+    # 记录失败不阻断测试结果本身（用户至少能看到这次为什么不通）。
+    try:
+        _store().mark_verified(model_id, bool(result.get("ok")))
+    except Exception:  # noqa: BLE001
+        logger.warning("could not record probe result for %s", model_id, exc_info=True)
+    return result
 
 
 @router.post("/models/discover")
@@ -1026,6 +1191,7 @@ def discover_models(
             payload.model_id,
             visible_to=scope.visible_to,
             allow_unowned=scope.allow_unowned,
+            allow_owners=scope.allow_owners,
         ) or {}
         if not stored:
             raise HTTPException(
@@ -1035,14 +1201,33 @@ def discover_models(
     api_key = payload.api_key
     if api_key and is_masked_placeholder(api_key):
         api_key = None
+    stored_key_used = False
     if not api_key:
         api_key = stored.get("api_key") or ""
+        stored_key_used = bool(api_key)
+    try:
+        api_key = normalize_api_key(api_key) or ""
+    except ApiKeyFormatError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     stored_url = stored.get("base_url")
     caller_url = _validate_base_url(
         (payload.base_url or "").strip(), provider=provider, stored_url=stored_url
     )
+    # 与“测试连接”同一约束：已保存的 Key 不能被带到一个新目标上。
+    if stored_key_used and caller_url and not _same_target(caller_url, stored_url):
+        raise deny(
+            409,
+            "MODEL_KEY_TARGET_CHANGED",
+            "发现地址与保存时不一致：为避免把已保存的 Key 发往新地址，"
+            "请重新输入 Key，或先把该地址保存到模型配置。",
+        )
     base_url = caller_url or _validate_base_url(
         stored_url or "", provider=provider, stored_url=stored_url
     )
+    # 延迟导入：``model_discovery`` 会连带拉起 ``requests``（冷进程实测约
+    # 274ms）。这个能力只有用户在"发现模型"时才会用到，不该让每一次网关
+    # 启动都为它付钱。只在真正要发请求前才导入。
+    from ..ai.model_discovery import fetch_model_list
+
     return fetch_model_list(provider, base_url or None, api_key, timeout=payload.timeout)

@@ -176,6 +176,21 @@ function readInitialPage(): string {
   return 'overview'
 }
 
+/**
+ * 从 `?model=` 读深链目标模型。
+ *
+ * 桌面端的「去填写 Key」把模型的本地名称带进来，设置页据此自动展开并聚焦
+ * Key 输入框。旧构建不认这个参数（只读 `?p=`），会停在设置页；那一侧由
+ * 桌面端文案提示「请点编辑」，所以这里只负责"新构建能认"。
+ */
+export function readDeepLinkModel(): string {
+  try {
+    return (new URLSearchParams(window.location.search).get('model') ?? '').trim()
+  } catch {
+    return ''
+  }
+}
+
 function App() {
   const device = useDeviceMode()
 
@@ -186,6 +201,10 @@ function App() {
 
   const [session, setSession] = useState<Session | null>(() => getSession())
   const [active, setActive] = useState<string>(() => readInitialPage())
+  /** 设置页要自动展开的模型（来自深链或控制台里的「去填写 Key」）。 */
+  const [focusModel, setFocusModel] = useState<string>(() =>
+    readInitialPage() === 'settings' ? readDeepLinkModel() : '',
+  )
   const [query, setQuery] = useState('')
   /**
    * 为什么回到了登录页。
@@ -356,17 +375,28 @@ function App() {
   }, [session?.token])
 
   /** 切换页面，并把当前页反映到 URL（`?p=`），让深链与刷新都停在原处。 */
-  const navigate = useCallback((key: string) => {
+  const navigate = useCallback((key: string, options?: { model?: string | null }) => {
     setActive(key)
+    const model = key === 'settings' ? (options?.model ?? '').trim() : ''
+    setFocusModel(model)
     try {
       const url = new URL(window.location.href)
       if (key === 'overview') url.searchParams.delete('p')
       else url.searchParams.set('p', key)
+      // `model` 只对设置页有意义；离开设置页就清掉，避免下次进来莫名展开旧模型。
+      if (model) url.searchParams.set('model', model)
+      else url.searchParams.delete('model')
       window.history.replaceState(null, '', url.toString())
     } catch {
       // 受限环境（file:// 预览等）：只做内存内导航，不回写 URL。
     }
   }, [])
+
+  /** 跳到设置页并定位到某个模型（控制台「去填写 Key」的统一出口）。 */
+  const openModelSettings = useCallback(
+    (model?: string | null) => navigate('settings', { model }),
+    [navigate],
+  )
 
   /**
    * 深链白名单：`?p=` 只接受当前身份可见的页面。
@@ -788,7 +818,7 @@ function App() {
           onOpenApproval={() => navigate('approval')}
           canApproveQueue={caps.canApproveQueue}
           onOpenUsage={() => navigate('my-keys')}
-          onConfigureModel={() => navigate('settings')}
+          onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
       {active === 'employees' && <Roster query={query} />}
@@ -796,7 +826,7 @@ function App() {
         <MyEmployees
           query={query}
           onOpenUsage={() => navigate('my-keys')}
-          onConfigureModel={() => navigate('settings')}
+          onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
       {active === 'business' && <BusinessCenter query={query} />}
@@ -811,7 +841,7 @@ function App() {
         <Workbench
           provider={provider}
           onNavigate={(key) => navigate(key)}
-          onConfigureModel={() => navigate('settings')}
+          onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
       {active === 'data' && <DataCenter query={query} />}
@@ -826,7 +856,7 @@ function App() {
       {active === 'files' && <Files query={query} />}
       {active === 'goals' && <Goals query={query} />}
       {active === 'projects' && <Projects query={query} />}
-      {active === 'apps' && <Apps query={query} />}
+      {active === 'apps' && <Apps query={query} canManage={caps.isRoot} />}
       {active === 'events' && <Events query={query} />}
       {active === 'trust' && <Trust query={query} />}
       {active === 'network' && <Network query={query} />}
@@ -867,6 +897,7 @@ function App() {
           session={session}
           notifications={notifications}
           onLogout={() => void doLogout()}
+          focusModelId={focusModel}
         />
       )}
     </Shell>

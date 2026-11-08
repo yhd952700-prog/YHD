@@ -44,14 +44,21 @@ const APP_STATUS_LABELS: Record<string, string> = {
 }
 
 const KERNEL_TYPE_LABELS: Record<string, string> = {
-  agent: '智能体',
+  agent: '员工',
   service: '服务',
   tool: '工具',
   plugin: '插件',
   kernel: '系统组件',
 }
 
-export function Apps({ query }: { query: string }) {
+export function Apps({
+  query,
+  canManage = true,
+}: {
+  query: string
+  /** 插件激活是全局动作：成员可看列表，按钮在点击前就说明只能主账号启用。 */
+  canManage?: boolean
+}) {
   // 列表：每 30 秒轮询一次真实归类态。
   const apps = useApi<AppsResponse>('/v1/plugins', 30_000)
 
@@ -61,6 +68,7 @@ export function Apps({ query }: { query: string }) {
 
   const handleActivate = useCallback(
     async (pluginId: string) => {
+      if (!canManage) return
       setBusyId(pluginId)
       setRowError((prev) => {
         const next = { ...prev }
@@ -85,7 +93,7 @@ export function Apps({ query }: { query: string }) {
         setBusyId(null)
       }
     },
-    [apps],
+    [apps, canManage],
   )
 
   const need = query.trim().toLowerCase()
@@ -106,6 +114,7 @@ export function Apps({ query }: { query: string }) {
           <li>这里是插件与工具：已注册插件由系统列出，激活动作由你触发（真实加载，非占位）。</li>
           <li>列表如实显示每个插件的真实状态（未启用 / 运行中 / 异常）；激活后状态会变为运行中。</li>
           <li>没有插件是真没有，显示「暂无应用」；激活失败会带真实原因，不假装成功。</li>
+          {!canManage && <li>激活由主账号统一管理；当前账号可以查看，按钮会保持禁用。</li>}
         </ul>
       </Card>
 
@@ -172,10 +181,15 @@ export function Apps({ query }: { query: string }) {
                           ) : (
                             <button
                               className="os-btn os-btn-primary"
-                              disabled={busyId === app.plugin_id}
+                              disabled={!canManage || busyId === app.plugin_id}
+                              title={canManage ? undefined : '由主账号统一管理'}
                               onClick={() => void handleActivate(app.plugin_id)}
                             >
-                              {busyId === app.plugin_id ? '激活中…' : '激活'}
+                              {!canManage
+                                ? '仅主账号可激活'
+                                : busyId === app.plugin_id
+                                  ? '激活中…'
+                                  : '激活'}
                             </button>
                           )}
                           {rowError[app.plugin_id] && (
