@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-11-08 实测）**：活跃文档 **269** 篇（不含 `archive/` 与
-> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 269 篇**。该数字由
+> **覆盖状态（2026-11-08 实测）**：活跃文档 **270** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 270 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -114,13 +114,13 @@ docs/
 ├── compliance/         (—)     SBOM · 第三方许可证原文 · 通告
 ├── decisions/          (1)     悬而未决决策登记
 ├── dpi-evidence/       (—)     高 DPI 缩放验收证据（报告 JSON + 截图）
-├── evidence/           (8)     实测证据快照（可复现的基线/差量记录）
+├── evidence/           (9)     实测证据快照（可复现的基线/差量记录）
 ├── governance/         (1)     控制声明裁决登记册（control-claim）
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
 ├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
 ├── l10k/               (1)     L10K 基准设计
 ├── legal/              (1)     法务草稿（EULA，待法务确认，不随产品发布）
-├── operations/         (8)     运维与上线 · 两轮 soak 报告
+├── operations/         (8)     运维与上线 · 两轮 soak 报告（11-07 / 11-08）
 ├── oss-radar/          (8)     开源技术雷达（按路分工的选型与风险记录）
 ├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
 ├── roadmap/            (1)     百万行路线图
@@ -157,7 +157,7 @@ docs/
 
 ---
 
-## 4. 全量清单（269 篇，逐一列出）
+## 4. 全量清单（270 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -352,7 +352,7 @@ docs/
 | [`operations/health-check-spec.md`](operations/health-check-spec.md) | 健康检查规范 |
 | [`operations/scenario-chatbot.md`](operations/scenario-chatbot.md) | 场景案例 |
 | [`operations/WINDOWS-DESKTOP.md`](operations/WINDOWS-DESKTOP.md) | Windows 桌面集成：托盘 / 自启 / 防火墙指引 / 诊断包 / 关于页数据源 |
-| [`operations/soak-report-2026-11-07.md`](operations/soak-report-2026-11-07.md) | 长稳与并发 2 小时 soak 报告（2026-11-07，隔离实例实测） |
+| [`operations/soak-report-2026-11-07.md`](operations/soak-report-2026-11-07.md) | 长稳与并发 2 小时 soak 报告（2026-11-07，隔离实例实测）：并发/审计/内存/DB 增长与修复清单 |
 | [`operations/soak-report-2026-11-08.md`](operations/soak-report-2026-11-08.md) | 长稳与恢复能力复测（2026-11-08，承接前一日；修复与证据见 §12） |
 | [`product/PRODUCT-READINESS.md`](product/PRODUCT-READINESS.md) | 🔴 **产品门禁 P1–P10**（有代码 ≠ 可用） |
 | [`product/KERNEL-PRODUCT-CAPABILITY.md`](product/KERNEL-PRODUCT-CAPABILITY.md) | 14 内核逐个产品成熟度 |
@@ -499,10 +499,11 @@ docs/
 | [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
 | [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
 
-### 4.17 `evidence/`（8）与 `oss-radar/`（8）— 实测证据与开源技术雷达
+### 4.17 `evidence/`（9）与 `oss-radar/`（8）— 实测证据与开源技术雷达
 
 | 文件 | 说明 |
 |---|---|
+| [`evidence/verify-full-416f7109-2026-11-08.md`](evidence/verify-full-416f7109-2026-11-08.md) | 新 tip `416f7109` 全量就绪判定（C1–C12 + C10，含 C7 并发干扰记录） |
 | [`evidence/regression-baseline-coverage-2026-11-06.md`](evidence/regression-baseline-coverage-2026-11-06.md) | 全量回归基线覆盖（2026-11-06） |
 | [`evidence/c7-performance-baseline-2026-11-06.md`](evidence/c7-performance-baseline-2026-11-06.md) | C7 性能基线：从「无基线只能 SKIP」到可判定 |
 | [`evidence/c9-console-payload-2026-11-06.md`](evidence/c9-console-payload-2026-11-06.md) | C9 缺陷修复：升级载荷缺前端 `console/` |
@@ -583,7 +584,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 269 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 270 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |

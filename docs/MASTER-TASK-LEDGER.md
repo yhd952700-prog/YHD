@@ -5,8 +5,13 @@
 > [交付清单](DELIVERY-CHECKLIST.md)、[战略优先级矩阵](strategy-priority-matrix.md)）与本表冲突时，
 > **以本表及可复核的实测证据为准**，并应回改对应文档。
 >
-> 快照：2026-11-06 18:50；本表创建时 HEAD = `b618f8ab679802f5f94628e32bcb9ececa6c8717`（分支 `p36`），
-> **当前冻结 HEAD = `72fd9b17`**（`origin/p36` tip；交付级全量凭证见 E-16）。
+> 快照：2026-11-08；本表创建时 HEAD = `b618f8ab679802f5f94628e32bcb9ececa6c8717`（分支 `p36`）。
+> **`72fd9b17` 的交付凭证已作废**（其全量数字只作历史记录，见 E-16），`b4406497` 的 CI 为 failure（§10.2）。
+> 本轮就绪判定对象 = **新代码 tip `416f7109`**（含 0.1.1 版本号 `f7603a8e` 与四个 ISCC 修复），
+> 全量凭证见 [§11.2](#112-新-tip416f7109-的全量凭证) 与
+> [evidence/verify-full-416f7109-2026-11-08.md](evidence/verify-full-416f7109-2026-11-08.md)。
+> **`416f7109` 只是代码 tip，不是交付冻结 hash**：冻结前置仍欠 8 项（[§11](#11-新一轮冻结前置清单2026-11-08) P-1～P-8）。
+> 本轮 26 个修复/文档提交的逐条登记见 [§10](#10-本轮修复登记2026-11-07)。
 > 交叉验证基线是 `3fa88be0`，其报告 [cross-verify-3fa88be0.md](evidence/cross-verify-3fa88be0.md)
 > 明确写死：**过程凭证，不是交付凭证**。
 
@@ -172,7 +177,7 @@
 
 | # | 还差什么 | 为什么是阻塞 | 关掉的可验证标准 | 对应条目 |
 |---|---|---|---|---|
-| 1 | **没有最终安装包** | `dist/installer/` 为空；没有路径/字节/SHA256，也没有「这版包对应哪个源码提交」 | 产出 `LiuHao-Setup-*.exe` + `SHA256SUMS.txt`，并把源码提交 hash 写进包与文档 | A-01、A-07 |
+| 1 | **没有可交付的最终安装包（有包，但不是这一版）** | `dist/installer/` 现有 0.1.0 四件套（34,731,647 字节 / `01BE18BB…64DA2`，`DELIVERY.txt` 绑定 `f74fa14e`），但**不是 0.1.1、也不是候选 `416f7109` 的产物**；0.1.1 包还卡在 ISCC 编译修复上 | 产出 `LiuHao-Setup-0.1.1.exe` + `SHA256SUMS.txt` + `DELIVERY.txt`，`DELIVERY.txt` 的源码提交 = 冻结 hash；回填 `DELIVERY-CHECKLIST` §0（见 §7 P-2） | A-01、A-07、P-2 |
 | 2 | **没有在干净 Windows 机器上逐字走完** | 历史 E2E 用的是临时构建、`--skip-wizard`、复用向导函数；安装器无法从任何提交复现 | 干净机：双击安装 → 命令行逐字建号/填 Key → 浏览器自动打开 → 首条消息成功；全程录屏/日志 | A-02、A-11、E-13 |
 | 3 | **真实厂商 Key 未端到端验证** | 现只有本地 OpenAI 兼容桩；`invalid_key/key_revoked/quota_exhausted` 分类没在真实云 Key 上复现 | 用真实 DeepSeek（或等价）Key 跑 `scripts/verify_first_run_e2e.py`，保存原始输出 | A-04 |
 | 4 | **安装包内的前端可能过期** | 前端仍在改；不重建 `console/dist` 就会出现「后端新、界面旧」的静默失败 | 前端冻结后重建 dist，跑升级前门禁（缺 `index.html`/签章不符即拒绝） | A-10、E-10 |
@@ -196,15 +201,196 @@
 - 全量基线：[regression-bb6b654c.txt](evidence/regression-bb6b654c.txt)（7458 tests, 0 failed）
 - C9 升级/回滚：[c9-installed-upgrade-2026-11-06.md](evidence/c9-installed-upgrade-2026-11-06.md)、[c9-console-payload-2026-11-06.md](evidence/c9-console-payload-2026-11-06.md)
 - HC-01 裁决：[ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)
+- 新 tip 全量凭证：[verify-full-416f7109-2026-11-08.md](evidence/verify-full-416f7109-2026-11-08.md)（代码 tip `416f7109`，本轮 `--full`）
 - 账号规格：[account-hierarchy.md](account-hierarchy.md)（§5.6 知情边界、§9.10 跨机、§9.11 忘密、§12 现状差距）
 - 缺口登记：[known-gaps.md](known-gaps.md)（D/E/F/R 四组）
 - 需求逐条：[requirements-traceability.md](requirements-traceability.md)（T-01～T-25，已按本表回改）
 
 ---
 
-## 10. 收尾进度与未提交区（2026-11-08 实测）
+## 10. 本轮修复登记（2026-11-07）
 
-### 10.1 已入库：`apps/console` 72 项（六批）
+> 基线 `b4406497`（`origin/p36`），覆盖 `2738e16a..b4406497` 的 26 个提交。
+> §10 使用收口口径：**已完成**＝代码入库且回归可复现；**已验证**＝另有真实进程/真实 HTTP/真实文件系统级证据（非纯 mock）；
+> **待验证**＝实现已入库但缺自动化回归或真实链路复验；**已知缺口**＝本轮未修或外部依赖。
+> 与 §0 的映射：已完成/已验证 → §0「已完成」，待验证 → §0「在跑」，已知缺口 → §0「明确延后」。
+> 本表不合并进 §6 的 63 条原始需求统计，避免两套口径互相污染。
+
+| 编号 | 事项 | 位置 | 修了什么 | 验证方式 | 提交 | 本轮状态 |
+|---|---|---|---|---|---|---|
+| R-01 | 员工库/身份库并发写丢写 | `src/ai/employee_store.py`、`src/kernels/identity/_persistence.py`、`src/common/atomic_write.py` | 读改写加跨实例文件锁并合并远端，临时文件 + 原子替换；并发雇佣不再互相覆盖 | `tests/ai/test_employee_store_concurrency.py`（10 线程真实文件读写） | `c9a83cd5` | **已验证** |
+| R-02 | 凭据/API Key/主密钥/planner 状态并发写 | `src/security/secret_store.py`、`src/security/api_keys.py`、`src/ai/goal_task_graph.py`、`src/gateway/ai_management.py` | 串行化并原子替换写；跨进程读改写不再丢键/覆盖状态 | `tests/test_persistence_concurrency.py`（多进程） | `4fa50ff9` | **已验证** |
+| R-03 | 设置/注册表/RBAC/审计 HWM/插件/可观测性并发写 | `src/gateway/account_settings.py`、`src/model_gateway/model_registry.py`、`src/models/registry.py`、`src/security/rbac.py`、`src/security/audit_logger.py`、`src/plugins/manager.py`、`src/observability/store.py` | 统一 lock+merge 原子写；审计水位单调推进 | `tests/test_persistence_concurrency_secondary.py` | `f206cc51` | **已验证** |
+| R-04 | 管家结论误丢：终态被并发保存覆盖 | `src/ai/goal_task_graph.py` | 目标/任务终态单调合并，`completed` 不被迟到的 `running` 覆盖，结论字段保留 | `tests/test_persistence_concurrency.py` 终态用例 | `b61bf26a` | **已完成** |
+| R-05 | 账号锁死与可恢复初始化（含日志/身份库落数据目录） | `src/gateway/accounts.py`、`src/gateway/auth.py`、`src/kernels/identity/__init__.py`、`src/logging_config.py`、`config/logging.yaml` | 根初始化可中断续跑，失败不把账号永久锁死；日志/身份库按数据目录解析 | `tests/gateway/test_account_root_init_recovery.py`、`tests/kernels/identity/test_identity_data_dir_contract.py`；**但 autouse fixture 打挂 9 个升级用例，见 §10.2 F-01** | `6a2e361e` | **待验证** |
+| R-06 | 恢复码：老根补发、本机自救、契约对齐 | `src/gateway/accounts.py`、`src/gateway/auth.py`、`apps/console/console/src/pages/Recovery.tsx`、`scripts/acceptance/account_tree_e2e.py` | 老根账号补发恢复码、新增本机自救入口，恢复码顺序契约与后端一致 | `tests/gateway/test_account_recovery_legacy_upgrade.py`、`tests/gateway/test_account_root_init_recovery.py` | `49bf52bd` | **已验证** |
+| R-07 | 日志多进程轮转丢记录 | `src/logging_config.py`、`config/logging.yaml`、`src/gateway/audit.py`、`src/gateway/health.py` | 多进程安全轮转与独立日志文件，避免轮转窗口丢/重记录 | `tests/observability/test_logging_multiprocess.py`（双进程真实写）、`test_logging_rotation.py` | `6a2e361e`、`fd396351` | **已验证** |
+| R-08 | 备份不携带记忆/会话，成员可见借用关系 | `src/gateway/account_backup.py`、`src/gateway/account_memory.py`、`src/ai/conversation_store.py`、`src/gateway/account_usage.py` | 备份同时导出内核记忆与会话；成员用量隐藏借用来源；根账号接管路径 | `tests/gateway/test_account_backup_stores.py`、`test_account_usage_privacy.py`、`test_account_adoption.py` | `eaf53a0b` | **已完成** |
+| R-09 | 目标/聊天失败被静默吞掉、并发执行串台 | `src/gateway/chat.py`、`src/gateway/ai_management.py`、`src/kernels/execution/__init__.py`、`src/knowledge/ingest_jobs.py` | 持久化/流式失败改为显式错误事件；并发目标事件按执行隔离 | `tests/gateway/test_goal_truth_concurrency.py`、`test_chat_failure_truth.py`、`tests/kernels/execution/test_concurrent_goal_event_isolation.py` | `301eded5` | **已验证** |
+| R-10 | 聊天失败文案中性化、演示 mock 显式化、工具结果结构化 | `src/gateway/chat.py`、`src/ai/liuhao.py`、`src/ai/providers.py` | 不再回显上游英文原文；演示模式明确标注；工具结果结构统一 | `tests/gateway/test_chat_failure_truth.py`、`tests/test_liuhao_tools.py`；**但新增 `assistant.provider` 直取打挂 3 个 profile 用例，见 §10.2 F-02** | `b4d4052b` | **待验证** |
+| R-11 | 越权：项目/知识库/产物未按账号隔离 | `src/gateway/projects.py`、`src/gateway/files.py`、`src/gateway/chat.py`、`src/knowledge/documents.py`、`src/knowledge/vector_store.py`、`src/api/routes/knowledge.py` | 全部读写按账号作用域过滤；文档删除改 scope 判定而非管理员门槛 | `tests/test_cross_account_isolation.py`、`tests/knowledge/test_documents_admin_api.py`、`tests/gateway/test_projects_persistence_honesty.py` | `913e9b5a`、`682ddb06` | **已验证** |
+| R-12 | 老记忆未迁移、会话键不兼容、会话列表重启为空 | `src/gateway/account_memory.py`、`src/ai/conversation_store.py`、`src/gateway/chat.py`、`src/gateway/main.py` | 0.1.0 老记忆幂等迁移；会话键双向兼容；重启后会话列表仍可列出 | 实现已入库；全量顺序下 `test_chat_history_endpoint_reads_persisted` 失败（单跑通过），且新增 `PERSONAL_CONTEXT_DB_PATH` 未登记门禁变量，见 §10.2 F-03/F-04 | `e474b562` | **待验证** |
+| R-13 | 摘要断字：全角标点链接边界、兜底截断切半句 | `src/ai/llm_support.py` | 按全角标点切分链接边界；兜底摘要按句子边界截断 | `tests/ai/test_llm_support_summary_guards.py` | `f8f5d73b` | **已完成** |
+| R-14 | 失败暴露英文异常/内部术语 | `src/gateway/models.py`、`src/gateway/diagnostic_bundle.py`、`src/gateway/identity.py`、`apps/console/console/src/lib/errorMessage.ts`、`apps/console/console/src/pages/*` | 失败路径改中性中文；新增一键诊断包；控制台文案去内部术语并加文案门禁 | `tests/gateway/test_failure_copy.py`、`tests/gateway/test_diagnostic_bundle.py`、`tests/gateway/test_account_wording.py`、`uiCopyGate.test.ts` | `1c802f17`、`8c04bbcc`、`b4406497` | **已完成** |
+| R-15 | 安装器 D2–D5 与 D 盘默认路径 | `installer/liuhao.iss`、`installer/ChineseSimplified.isl`、`installer/assets/BEFORE-INSTALL.txt`、`packaging/stage_payload.py`、`src/upgrade/manager.py` | D 盘默认与不可用时回退、中文向导、未签名说明、D2 备份嵌套目录 | `tests/test_upgrade_apply_rollback.py`；**0.1.0 安装包构建于 11-06 17:29，早于本提交，未用新包复验** | `9e537633` | **待验证** |
+| R-16 | 交付面文案与许可证随包 | `packaging/licenses/*`、`packaging/THIRD-PARTY-NOTICES.txt`、`packaging/make_release.py`、`docs/INSTALL-WINDOWS.md`、`docs/END-USER-GUIDE.md`、`installer/assets/BEFORE-INSTALL.txt` | 许可证随包、向导脚本名与路径口径统一、Key 指引与发布数字回填 | 许可证文件与 `packaging/stage_payload.py` 白名单核对；文档链接门禁 | `f54c14b1`、`013afd67`、`0e80117d`、`beffaf05` | **已完成** |
+| R-17 | 长跑治理：审计增量校验与保留、目标归档、连接回收 | `src/kernels/audit/verification.py`、`src/kernels/audit/__init__.py`、`src/gateway/audit.py`、`src/gateway/ai_management.py`、`src/ai/providers.py` | 审计校验增量锚定、保留水位、终态目标迁 append-only 分片、provider 连接回收 | `tests/kernels/audit/test_audit_retention.py`、`tests/gateway/test_goals_archive.py`、`tests/test_ready_audit_evidence_consistency.py`；**修复后未重跑 2h soak** | `fd396351` | **待验证** |
+| R-18 | 首启自检探针误判（E-18） | `src/upgrade/startup_probe.py`、`src/upgrade/selfcheck.py`、`src/upgrade/cli.py` | 健康路径多轮重试，兜底 `/openapi.json` 显式标记而非静默 | `tests/test_upgrade_selfcheck.py`（23 passed，自检沙箱） | `22c2e867` | **待验证** |
+
+### 10.1 本轮仍为已知缺口（不得写成已完成）
+
+| 编号 | 事项 | 现状 | 关掉标准 |
+|---|---|---|---|
+| G-1 | 安装包代码签名（E-8） | 无证书/签名流水线，Windows 仍提示「未知发布者」 | 签名校验通过；签名失败拒绝安装并留审计 |
+| G-2 | 席位/授权（seat）类能力 | 本仓库无席位计费、授权数限制或并发席位实现，本轮未做、也未列入本轮范围 | 明确席位模型与授权校验点，并有对应回归 |
+| G-3 | 仅 Windows x64 | 只交付 Windows x64 安装树；macOS/Linux 与 arm64 无产物（E-20 路径矩阵仍开放） | 目标平台产物 + 干净机安装复验 |
+| G-4 | 真实远端升级源 | 升级/回滚只在本机安装树验证；C9 仍为「桌面分发形态差异」 | 真实 CD 源可拉取、可回滚并留存证据 |
+| G-5 | 真实厂商 Key / Anthropic 原生端点（E-5） | 仍只有 OpenAI 兼容桩；Anthropic 原生端点未实网验证 | 真实 Key 跑通首条消息与失败分类 |
+| G-6 | 手机真机（E-14） | 服务端 LAN 可达已验证，真机登录+发消息未验证 | 同一 Wi-Fi 真机完成一次登录+发消息 |
+| G-7 | 8/16GB 低配与 24h 浸泡（E-21、F-1～F-6） | 仅 5 账号 / 2h soak；真睡眠/真拔线/真 ENOSPC 未验证 | 低配机 24h 浸泡 + 真实故障注入 |
+| G-8 | 修复后未重跑 2h soak | R-17 的保留水位/归档只有回归测试，长跑曲线未复验 | 在 `b4406497` 上重跑 2h soak，p50/内存/DB 增长不随运行时长线性上升 |
+
+**§10 四态统计（18 条）：已验证 7 条（R-01/02/03/06/07/09/11）、已完成 5 条（R-04/08/13/14/16）、待验证 6 条（R-05/10/12/15/17/18，其中 R-05/R-10/R-12 为回归红）；已知缺口 8 条（G-1～G-8）。**
+
+### 10.2 发布回归（`b4406497`）红项与根因
+
+`origin/p36` 推送后 CI run `42386438527` **失败**：两腿数字一致（`17 failed / 7705 passed / 40 skipped / 3 xfailed`），
+其余 6 个下游门禁（Guardrails、Guardrails Extended、Security Scan、Linting、Observability、P0 Gate）按 CRITICAL-5 看门狗显式红，未出现「静默跳过」。
+本地用同一 venv 复跑同批文件 **16 failed**（`test_chat_history` 单跑通过、全量顺序失败），确认**不是环境差异**。
+
+| 编号 | 失败面 | 用例数 | 根因提交 | 根因（已定位到行级） | 修复方向（超出本轮 docs-only 边界） |
+|---|---|---|---|---|---|
+| F-01 | 升级状态/备份/自检落点 | 9 | `6a2e361e` | `tests/conftest.py` autouse fixture 无条件 `setenv("LIUHAO_DATA_DIR", tmp_path/data)`，升级器 `resolve_data_dir()` 优先读该变量，导致 `<app>/data/upgrade-state|upgrade-backups` 不再创建 | fixture 不应覆盖升级用例；升级测试应显式传入 data_dir，或 fixture 放行 `test_upgrade_*` |
+| F-02 | profile API | 3 | `b4d4052b` | `src/gateway/chat.py:376/397/398` 直取 `assistant.provider.owner_principal/model`，测试 `FakeAssistant` 无该属性 | 改为 `getattr(..., None)` 兜底，或给 Fake 补 `provider` |
+| F-03 | 会话列表全量顺序为空 | 1 | `e474b562` | 全量顺序下 `test_chat_history_endpoint_reads_persisted` 断言 `0 == 4`；单跑通过 → 用例间数据目录/会话键状态污染 | 迁移应幂等且按用例隔离；补重启后会话列用例 |
+| F-04 | 部署门禁变量判定 | 2 | `e474b562` | 新增 `PERSONAL_CONTEXT_DB_PATH`（`src/gateway/account_memory.py:437`）未登记 `SEED_GATES`/`ALLOWLIST`；另有 `AUDIT_DB_PATH`/`LIUHAO_API_KEY_STORE`/`LIUHAO_ALLOW_SIMULATED_EXECUTION`/`LIUHAO_WORKSPACE_ROOT` 的 `SEED_GATES` 引用行号漂移 | 登记新变量并更新 `SEED_GATES` 引用行 |
+| F-05 | 依赖诚实性 | 1 | `6a2e361e` | `tests/gateway/test_account_root_init_recovery.py` 以 UTF-8 BOM 开头（`EF BB BF`），`ast.parse` 报 `U+FEFF` | 去掉 BOM 重新保存 |
+
+> 结论：**这是真回归，不是 CI 环境问题**。在 docs-only 边界内无法转绿；必须先修 F-01～F-05（涉及 `tests/`、`src/`），
+> 再在新 hash 重跑两腿与全部下游门禁。当前 `b4406497` **不可作为交付冻结候选**。
+
+**2026-11-08 复核（新 tip `416f7109`）**：`b4406497` 之后的 5 个提交
+（`f7603a8e` 版本号 0.1.1、`d57fa52e`/`6b47829b`/`7c0a252a`/`416f7109` 四个 ISCC 编译修复）
+**都没有触及 F-01～F-05 的根因文件**（`tests/conftest.py`、`src/gateway/chat.py`、
+`src/gateway/account_memory.py`、`tests/gateway/test_account_root_init_recovery.py`），
+因此这五类失败在新 tip 上**按预期仍在**——它们只能靠改 `tests/`/`src/` 关掉，而本轮被
+「不改业务代码」的约束挡住。新 tip 的实测数字见 §11.2 与
+[evidence/verify-full-416f7109-2026-11-08.md](evidence/verify-full-416f7109-2026-11-08.md)。
+
+### 10.3 2026-11-08 新登记缺口（七项，逐项写死关掉标准）
+
+> 只登记、不新开修复流。已登记过的项沿用原编号，不另起新号，避免同一件事两个身份。
+
+| 编号 | 事项 | 现状（2026-11-08 实测/代码位置） | 关掉标准（可判真伪） | 原登记 |
+|---|---|---|---|---|
+| G-9 | **Gemini 真实成功调用未验证** | 只有失败路径证据：真实请求到达上游并回 `400 API_KEY_INVALID`，错误分类与中文文案正确；成功路径只有假客户端回归。`91be3d10` 已切 `google.genai`，但**没有一次带真实 Key 的成功回复** | 用真实 Gemini Key 完成一次 `POST /v1/chat` 并收到非空回复（留存时间戳/耗时/模型 id/回复摘要，不含 Key）；`known-gaps` 对应行改「已关闭 + 证据指针」 | 新增 |
+| G-10 | **自定义 Base URL 的 SSRF 风险——结论待评估** | 已有保存/探测面防护：新填地址只接受 http/https、解析后私网/回环/链路本地/保留/多播一律 400（`src/gateway/models.py:807-855`）、探测拒绝跨域重定向（`:712`）；已保存配置放行私网（本机 Ollama）。**未回答**：DNS 重绑定、`allow_private=True` 的调用路径边界、允许/拒绝清单、localhost 字面量限定 | 出书面结论（允许/拒绝清单 + 四个问题逐条答案 + 落地位置），并在任意模型接入验收里带「私网地址被拒」「DNS 重绑定被拒」两条实测。**在此之前写「已防护」但不写「风险已消除」** | 新增（细则见 [DELIVERY-CHECKLIST §7.2](DELIVERY-CHECKLIST.md#72-自定义-base-url-的-ssrf-风险结论待评估不写成已通过)） |
+| G-3 | **仅 Windows x64** | 只产出 Windows x64 安装树；无 macOS/Linux、无 arm64；`E-20` 路径矩阵仍开放 | 目标平台产物 + 干净机安装复验 | §10.1 |
+| G-4 | **无真实 CD / 无真实远端升级源** | 升级、回滚只在本机安装树（`c9-*`/`c9b-*` 证据）；**没有**任何一次从真实 CD 源拉取、校验签名、回滚的实跑。C9 = `NOT VERIFIED` | 真实 CD 源可拉取、可校验、可回滚并留证；否则 C9 只能是 `NOT VERIFIED` | §10.1 |
+| G-6 | **手机未验证** | 服务侧 LAN `192.168.31.171:8000` 返回 200 已验证；真机打开/登录/发消息无设备、无证据 | 同一 Wi-Fi 真机完成一次登录 + 发消息并留屏/日志 | §10.1 |
+| G-11 | **24h 浸泡进行中（未收口）** | 长跑 harness 正在跑（`--minutes 1440`，跨日才结束）；已有 2h soak 与 5 账号数字，**24h 尚未产出结论**；期间发生的 GC/水位/DB 增长曲线都还没有 | 24h 跑完并给出 p50/p95 延迟、RSS、审计库与 WAL 增长曲线，证明**不随运行时长线性上升**；中途崩溃也算不通过 | 新增（关联 E-21） |
+| G-12 | **8/16GB 低配未实测** | 本机 32GB / 24 逻辑核；低配数字只有「不外推」的说明 | 8GB 与 16GB 各跑一轮首启 + 基础对话 + 30 分钟常驻，记录峰值 RSS 与是否触发 OOM/换页 | §10.1 G-7 |
+
+**§10.3 统计：新登记 7 项（新增编号 G-9/G-10/G-11/G-12，沿用 G-3/G-4/G-6）；本轮关闭 0 项。**
+「登记」不等于「可以忽略」：G-9/G-10 属**结论缺失**，G-3/G-4/G-6/G-11/G-12 属**环境/形态缺口**，
+两类都在 §11.1 C 的「可带缺口发布」清单里，但必须随交付说明一起披露。
+
+---
+
+## 11. 新一轮冻结前置清单（2026-11-08）
+
+> **代码 tip（本轮就绪判定的对象）= `416f7109`**。它只解决「安装器能编译」和「版本号 0.1.1」，
+> 不解决 F-01～F-05 的回归红，也没有产出 0.1.1 安装包。**它现在不是交付冻结 hash。**
+> 验收细则（每条含 ① ② ③ 编号条件）在
+> [DELIVERY-CHECKLIST §7](DELIVERY-CHECKLIST.md#7-新一轮冻结前置清单2026-11-07-起算)；
+> 本表是一句话版，冲突时以细则为准。
+
+| 编号 | 前置项 | 什么算完成（一句话） | 状态（2026-11-08） |
+|---|---|---|---|
+| P-1 | 版本号 0.1.1 全链一致 | 源码/pyproject/frontend/iss 全是 0.1.1，版本一致性用例绿，**包名与 `/v1/health` 自报也是 0.1.1** | 前三条已满足；包名与 health 未满足（包是 0.1.0） |
+| P-2 | 安装包重打并绑定源码提交 | `LiuHao-Setup-0.1.1.exe` 四件套齐、SHA256 实测一致、`DELIVERY.txt` 的源码提交 = 冻结 hash、装一次首启 ready | 未完成 |
+| P-3 | 真 Key 对话验收 | 真实厂商 Key 首条消息成功 + 错误 Key 复现 401 且文案中性，原始输出入库 | 未完成 |
+| P-4 | 任意模型接入 | 自定义 `base_url` + 任意 `model` 保存即生效、能对话；非法地址报错可读 | 在跑（工作区未提交） |
+| P-5 | 管家页可用化 | 真实一句话 → 派工 → 汇总，失败分支中性可重试，有 goal id + 事件序列证据 | 在跑（工作区未提交） |
+| P-6 | 两腿回归 + 全部 CI 门禁在冻结 hash 上绿 | 两条工作流同 hash 全 success，两腿数字一致，Guardrails 契约探针真跑、Security Scan 未被上游阻断 | 未完成（`b4406497` 的 CI `42386438527` 为 failure） |
+| P-7 | `--full` 在冻结 hash 的 clean worktree 上重跑 | 跑前 `git status` 干净，逐关数字与日志/JUnit 落盘，C7 若红单独 `--only C7` 定性 | 本轮在跑（对象 `416f7109`） |
+| P-8 | 前端 dist 与源码同源 | 冻结 hash 上重建 `console/dist`，包内引用 hash 一致，登录首屏在 1280×720/1366×768 可见 | 部分 |
+
+## 11.1 宣布 `RELEASE READY=True` 还差什么（必须 / 可以带缺口发布）
+
+机器 `release_ready` 要求 **12 关全 `PASS`**，`FAIL`/`NOT VERIFIED`/`BLOCKED`/`ERROR` 任一项都让它是 `False`。
+
+### A. 必须（机器口径——缺一项就永远是 False）
+
+| 关 | 现状 | 变成 `PASS` 的唯一条件 | 可达性 |
+|---|---|---|---|
+| C9 Deployment / upgrade / rollback | `NOT VERIFIED`（本轮 worktree 无 `.venv`，checker 只能走 `Dockerfile + alembic` 兜底分支） | 在 `.venv` 存在的 checkout 上跑，`scripts/verify_deploy_readiness.py` 退出码 0 且无 `FAIL` 行（docker CLI + compose v2 + alembic 齐备），并把真实升级/回滚链在该环境复跑 | **可达**（环境/形态问题，不是产品缺陷） |
+| C11 HC-01 | `BLOCKED` | 只有**新 ADR** 改变 HC-01 的机器口径才可能（例如给 C11 一个可机器判定的替代口径，并把 HC-01 移出冻结门集合） | **当前不可达**（`check_hc01` 恒 `BLOCKED`；ADR-HC01 §4.3 禁止为变绿改口径） |
+
+> **所以：在 ADR-HC01 仍有效、`check_hc01` 仍按冻结门打印 `BLOCKED` 的前提下，`RELEASE READY=True`
+> 是结构上不可达的。**本轮只把 C11 的**文案**改对（明写「裁决已记录、门按设计冻结」），
+> 没有把状态改成 `PASS`——那会把治理门洗成绿灯。
+
+### B. 必须（交付口径——机器 verdict 不变，但决定敢不敢对外发布）
+
+P-1 版本号全链一致、P-2 安装包重打并绑定 hash、P-3 真 Key 验收、P-4 任意模型接入、
+P-5 管家页可用化、P-6 两腿 + CI 绿、P-7 `--full` 凭证绑定 hash。
+
+### C. 可以带缺口发布（登记 + 披露即可，不阻塞 True）
+
+| 缺口 | 编号 | 可带的原因（一句话） | 必须怎么披露 |
+|---|---|---|---|
+| Gemini 真实成功调用未验证 | G-9 | 失败路径是真实到达上游的证据，成功路径有假客户端回归；缺「有 Key 成功一次」 | 交付说明写「Gemini 仅验证失败分类，成功路径未验证」 |
+| 自定义 Base URL 的 SSRF 结论待评估 | G-10 | 保存/探测面已有防护，缺的是书面威胁建模结论；**不写成「风险已消除」** | 交付说明列「自定义 Base URL 仅建议用于可信端点」 |
+| 仅 Windows x64 | G-3 | 交付形态就是 Windows 桌面安装树 | 系统要求写 Windows 10/11 x64 |
+| 无真实 CD | G-4 | 桌面分发形态差异；安装树升级/回滚已验，但**不等于**真实 CD 已验 | `RELEASE READY=False` 的唯一形态理由，不得写成「已全部验证」 |
+| 无真实远端升级源 | G-4 | 升级源只有本机安装树 | 升级说明写「远端源未接入」 |
+| 手机未验证 | G-6 | 服务端 LAN 可达已验，缺真机 | 手机访问写「实验性，未真机验收」 |
+| 24h 浸泡进行中 | G-11 | 2h soak 已验，24h 在跑未收口 | 性能数字标注「2h 实测，24h 未完成」 |
+| 安装包未签名 | G-1 | 只有「未知发布者」提示 | 安装说明保留未签名步骤 |
+| 8/16GB 低配未实测 | G-12 | 本机 32GB，数字不外推 | 内存要求标注「未在低配实测」 |
+
+**一句话结论**：机器 `True` 卡在 C9（可达）与 C11（需新 ADR）两条口径上；**交付**能不能发布
+卡在 P-1～P-7；其余九项属于「登记 + 披露即可发布」的缺口，一条都不许写成「已全部验证」。
+
+## 11.2 新 tip（`416f7109`）的全量凭证
+
+| 项 | 事实 |
+|---|---|
+| 判定对象 | `416f7109`（代码 tip；`origin/p36` 在合并前的 tip） |
+| worktree | `D:\copilot-worktrees\liuhao-delivery-416f7109`（pin 到 `416f7109`，跑前 `git status --porcelain` 为空） |
+| 解释器 / 命令 | `.venv` Python 3.12.14 / `python -u scripts/verify_readiness.py --only C1,C2,C4,C5,C6,C7,C8,C9,C10,C11` |
+| 机器 verdict | `PASS=7  FAIL=0  BLOCKED=1  NOT_VERIFIED=2  ERROR=0` → **`RELEASE READY = False`** |
+| 逐关数字 | [DELIVERY-CHECKLIST §5.12](DELIVERY-CHECKLIST.md#512-新-tip-416f7109-的就绪凭证2026-11-08) 与 [evidence/verify-full-416f7109-2026-11-08.md](evidence/verify-full-416f7109-2026-11-08.md) |
+| C3 / C12 | **本轮未取得凭证**：三次全量尝试都被本机并发清理杀掉（JUnit 0 字节 → 按完整性规则不能读成零失败）。上一可比凭证：CI `b4406497` = `17 failed / 7705 passed / 40 skipped / 3 xfailed`，失败集合 F-01～F-05；F-01～F-05 未修，C12 必红 |
+| C7 | 两次：**1057.0** 与（单独重跑）**1380.1**，阈值 1503.5（基线 2004.7，容差 25%）→ `NOT VERIFIED`（负载不可判，不是回归） |
+| C9 | `NOT VERIFIED`（worktree 无 `.venv`，落 `Dockerfile + alembic` 兜底；`real CD absent=True`） |
+| C11 | `BLOCKED`（状态不变）；本轮只改证据文案，见 ADR-HC01 §1.2 的 2026-11-08 补充 |
+| 文档提交 | `576f46b6`（+ 本次补正提交），新 tip = 该提交 |
+
+**纯文档校验（提交前实跑，原文）**：
+
+```text
+$ git diff --name-only 416f7109..HEAD -- src/ apps/ contracts/ installer/ packaging/
+(无输出)
+```
+
+即：`416f7109` 之后只有文档、证据与就绪脚本（`scripts/verify_readiness.py` 的 C11 文案与
+`CONDITION_META`）变化，`src/ apps/ contracts/ installer/ packaging/` **零改动**。
+`scripts/` 不在上面五个受保护目录内，属本轮明确允许的「就绪脚本判定口径」改动。
+
+
+
+---
+
+## 12. 收尾进度与未提交区（2026-11-08 实测）
+
+> 本节是我方收尾线的实测快照；上游 `origin/p36` 的 §10（本轮修复登记）与 §11（冻结前置）
+> 已原样保留在前，两者不互相覆盖。表中「29 项 / 36 项」均为当时快照，当前未提交项以
+> `git status` 实测为准（软测批 11 个文件仍按裁决冻结，等 ④ 落地）。
+
+
+### 12.1 已入库：`apps/console` 72 项（六批）
 
 | 批次 | 提交 | 内容 | 文件数 | 本批验证 |
 |---|---|---|---|---|
@@ -218,7 +404,7 @@
 收工全量（六批全部落地后）：`npx tsc -b` **0**；`npx vitest run` **49 文件 / 505 条全过**；
 `npm run lint` **0 error / 39 warning**（`[toFixed] OK`）；`pytest tests/test_import_integrity.py` **2 passed**。
 
-### 10.2 未提交：29 项（19:52 实测，流式线仍在写）
+### 12.2 未提交：29 项（19:52 实测，流式线仍在写）
 
 | 归属 | 项数 | 文件 |
 |---|---|---|
@@ -234,7 +420,7 @@
 软测线落下 `src/gateway/rate_limiter.py`（新根因）、`src/gateway/ai_management.py`。
 除本表 3 份文档外，未提交项已到 **36**。**以停写回执为准，不以这张表为准。**
 
-### 10.3 两个交付节点（详见 [DELIVERY-CHECKLIST.md](DELIVERY-CHECKLIST.md) §0.3）
+### 12.3 两个交付节点（详见 [DELIVERY-CHECKLIST.md](DELIVERY-CHECKLIST.md) §0.3）
 
 | 节点 | 门槛 | 明确缺什么 |
 |---|---|---|
@@ -245,7 +431,7 @@
 8 小时数据不存在（`rss8h5` 19:46 被终止，实际只有 22 分钟）。终版门槛里**旧成绩单不算数**，
 新根因修完必须重跑 30 分钟窗口。
 
-### 10.4 `tests/consistency/` 判定条件（记死）
+### 12.4 `tests/consistency/` 判定条件（记死）
 
 **宿主 CPU 连续 2 分钟 <15% 才开跑；连跑 3 次全过才算过；1 次红按真问题查，
 不许写成「环境抖动」后放过。** 未满足前不提交。

@@ -117,10 +117,16 @@ Each condition names the checker implemented in `scripts/verify_readiness.py` (f
 - **Checker:** `check_hc01`
 - **Acceptance:** the audit master chain HC-01 is verified against the immutable Phase-3.6
   evidence under `D:\WorkBuddyFiles\LIUHAO-Phase3.6-Evidence\`.
-- **Status:** **BLOCKED / GO=BLOCKED** — HUMAN DECISION PENDING. This is a frozen
+- **Status:** **BLOCKED / GO=BLOCKED — MACHINE GATE FROZEN BY DESIGN.** HC-01 is a frozen
   human-sovereignty decision and, by Decision Isolation, does **not** block the other 11
-  conditions or engineering work. Until the human decision lands, C11 = `BLOCKED` and the
-  system cannot be declared RELEASE READY on HC-01 grounds alone.
+  conditions or engineering work. The owner's five decisions are **recorded** in
+  `docs/adr/ADR-HC01-baseline-binding.md` (2026-11-06); `check_hc01` nevertheless keeps
+  returning `BLOCKED` because a machine may not self-clear a human-sovereignty gate.
+  **`BLOCKED` here means "the gate is frozen by design", not "the decision is pending".**
+  It is not an engineering blocker and it is not a reason to lower the gate.
+- **Note (2026-11-07):** the *status* did not change when the decision landed — only the
+  reason text did. Returning `PASS` on the strength of a recorded decision would launder a
+  governance gate into a green and is forbidden by ADR-HC01 §4.3.
 
 ### C12 — No unexplained major failures
 - **Checker:** `check_no_major_failures`

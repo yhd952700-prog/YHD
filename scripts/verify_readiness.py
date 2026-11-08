@@ -870,18 +870,37 @@ def check_independent_verification():
     return NOT_VERIFIED, "no standing independent verification harness yet"
 
 
+#: C11's STATUS is fixed at BLOCKED because HC-01 is a frozen human-sovereignty
+#: gate: a machine is not allowed to self-clear a decision that belongs to the
+#: owner. What is allowed to move is the WORDING, because wording is a claim
+#: about the world. On 2026-11-06 the owner recorded all five HC-01 decisions in
+#: ``docs/adr/ADR-HC01-baseline-binding.md``; printing "HUMAN DECISION PENDING"
+#: after that is simply false. So the evidence names the ADR and says outright
+#: that BLOCKED here means "gate frozen by design", not "nobody has decided".
+#: Returning PASS on a recorded decision would launder a governance gate into a
+#: green -- forbidden by ADR-HC01 §4.3. Keep the status; fix only the sentence.
+_HC01_BLOCKED_DETAIL = (
+    "HC-01 gate FROZEN BY DESIGN (status stays BLOCKED; a machine may not "
+    "self-clear a human-sovereignty gate). The owner's 5 decisions are "
+    "RECORDED in docs/adr/ADR-HC01-baseline-binding.md (2026-11-06), so "
+    "BLOCKED here does NOT mean 'decision pending'. Not an engineering blocker."
+)
+
+
 def check_hc01():
-    """C11: HC-01 audit master chain — frozen human-sovereignty decision."""
+    """C11: HC-01 audit master chain — frozen human-sovereignty gate.
+
+    The status is BLOCKED by design (never PASS), but the reason text must not
+    claim the decision is still outstanding once the ADR records it. See
+    ``_HC01_BLOCKED_DETAIL`` and ADR-HC01 §1.2/§1.3.
+    """
     script = SCRIPTS / "verify_p08b_chain_matrix.py"
     if script.exists():
         rc, out = _run([sys.executable, str(script)], timeout=120)
         if "HC-01" in out and ("BLOCKED" in out or "PENDING" in out):
-            return BLOCKED, "HC-01 BLOCKED / GO=BLOCKED (human decision pending, isolated)"
+            return BLOCKED, _HC01_BLOCKED_DETAIL
         # if script ran and HC-01 not explicitly blocked, still frozen by governance
-    return BLOCKED, (
-        "HC-01 BLOCKED / GO=BLOCKED — HUMAN DECISION PENDING (Decision Isolation active; "
-        "not an engineering blocker)"
-    )
+    return BLOCKED, _HC01_BLOCKED_DETAIL
 
 
 def check_no_major_failures(full=False):
@@ -1003,9 +1022,9 @@ CONDITION_META = {
     },
     "C11": {
         "command": "scripts/verify_p08b_chain_matrix.py / HC-01 governance",
-        "known_limitation": "HC-01 is frozen; it cannot be independently VERIFIED by engineering",
-        "blocker": "HUMAN DECISION REQUIRED — HC-01 A/B/C disposition (overwrite/restore/repair/migrate/delete/rebuild all forbidden until then)",
-        "next_action": "await the human-sovereignty decision; never touch the live audit_store.db",
+        "known_limitation": "HC-01 is a frozen human-sovereignty gate: check_hc01 returns BLOCKED by design and never self-clears, even after the owner records a decision (ADR-HC01, 2026-11-06). BLOCKED is the machine's honest state, NOT evidence that the decision is outstanding.",
+        "blocker": "MACHINE GATE FROZEN BY DESIGN — the human decision is RECORDED in docs/adr/ADR-HC01-baseline-binding.md (2026-11-06); only a new ADR that changes HC-01's machine status can move this gate. Do not read it as 'decision pending'.",
+        "next_action": "none on the decision (recorded). Never return PASS on the strength of a recorded decision alone, and never touch the live audit_store.db",
     },
     "C12": {
         "command": "pytest tests/ --co + (--full) reuse of C3's full-suite JUnit verdict",
