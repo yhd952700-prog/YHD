@@ -356,7 +356,17 @@ def main() -> int:
             if inst is not None:
                 inst.stop(cleanup=False)
         if os.environ.get("LIUHAO_KEEP_E2E_DIR") != "1":
-            shutil.rmtree(tmp, ignore_errors=True)
+            # Windows 上网关子进程刚退出时文件句柄可能还没释放，删一次失败
+            # 不代表真的删不掉；重试几次，仍失败就如实提示，不静默留垃圾。
+            removed = False
+            for _ in range(5):
+                shutil.rmtree(tmp, ignore_errors=True)
+                if not tmp.exists():
+                    removed = True
+                    break
+                time.sleep(0.5)
+            if not removed:
+                print(f"[warn] 临时目录未能删除，请手动清理：{tmp}")
         else:
             print(f"保留临时目录：{tmp}")
 
