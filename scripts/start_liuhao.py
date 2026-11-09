@@ -28,7 +28,6 @@ import argparse
 import atexit
 import contextlib
 import ipaddress
-import json
 import os
 import shutil
 import socket
@@ -619,82 +618,6 @@ def _start_https_proxy(args: argparse.Namespace, single_port: bool) -> None:
     print(f"      手机端安装地址： https://<局域网IP>:{https_port}/")
 
 
-def _relay_dir() -> Path:
-    """中继数据目录（与 ``scripts/mobile_access.py``、``scripts/ops/lan_relay.py`` 一致）。"""
-    raw = (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
-    if raw:
-        return Path(raw).expanduser() / "mobile_access"
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
-        return base / "LiuHao" / "data" / "mobile_access"
-    base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
-    return base / "liuhao" / "mobile_access"
-
-
-def _wait_relay_ready(admin_port: int, timeout: float = 8.0) -> dict | None:
-    """等中继管理面可用，并取回配对码。"""
-    deadline = time.monotonic() + timeout
-    opener = _no_proxy_opener()
-    while time.monotonic() < deadline:
-        token_file = _relay_dir() / "admin.token"
-        try:
-            token = token_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            time.sleep(0.3)
-            continue
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{admin_port}/status",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        try:
-            with opener.open(request, timeout=2) as response:
-                payload = json.loads(response.read().decode("utf-8", "replace"))
-            if isinstance(payload, dict):
-                return payload
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        time.sleep(0.3)
-    return None
-
-
-def _start_mobile_relay(args: argparse.Namespace, single_port: bool) -> None:
-    """显式开启「手机访问」：网关仍只绑回环，中继是唯一的局域网入口。"""
-    backend_port = args.api_port if (single_port or args.backend_only) else args.ui_port
-    relay_env = dict(os.environ)
-    relay_env["PYTHONPATH"] = os.pathsep.join(
-        [str(ROOT), relay_env.get("PYTHONPATH", "")]
-    ).strip(os.pathsep)
-    _spawn(
-        [
-            _venv_python(),
-            "-u",
-            str(ROOT / "scripts" / "ops" / "lan_relay.py"),
-            "--lan-host",
-            "0.0.0.0",
-            "--lan-port",
-            str(args.mobile_port),
-            "--admin-port",
-            str(args.mobile_admin_port),
-            "--backend-host",
-            "127.0.0.1",
-            "--backend-port",
-            str(backend_port),
-        ],
-        ROOT,
-        "mobile-relay",
-        relay_env,
-    )
-    status = _wait_relay_ready(args.mobile_admin_port)
-    if not status:
-        print("  [FAIL] 手机访问中继没有就绪；用 scripts/mobile_access.py status 查看原因")
-        return
-    print("  [ok] 手机访问已开启（网关仍只绑回环，仅中继监听局域网）")
-    print(f"       配对码：{status.get('pair_code')}（10 分钟内一次有效）")
-    for url in status.get("pair_urls") or []:
-        print(f"       手机打开：{url}")
-    print("       设备清单 / 踢人：python scripts/mobile_access.py devices")
-
-
 def _shutdown_all() -> None:
     for proc in _children:
         if proc.poll() is None:
@@ -943,7 +866,8 @@ def main() -> int:
         default=DEFAULT_API_HOST,
         help=(
             f"绑定地址（默认 {DEFAULT_API_HOST}，只本机可达）。"
-            "需要手机/其它电脑访问时显式传 0.0.0.0 或指定网卡地址"
+            "手机/其它电脑要访问时用 --host 0.0.0.0 直连（登录自带 5 次/300 秒锁定）；"
+            "本版本不提供 8090 配对中继"
         ),
     )
     parser.add_argument("--api-port", type=int, default=_env_api_port())
@@ -961,12 +885,6 @@ def main() -> int:
         help="叠加本地 HTTPS 反向代理（默认端口 8443），供手机端 PWA 安装。需自签证书。",
     )
     parser.add_argument("--https-port", type=int, default=8443, help="HTTPS 代理监听端口（默认 8443）")
-    # 8090 配对中继不进 0.1.2 发布包：/__relay/pair 没有失败限速，6 位码在
-    # 10 分钟有效期内可被穷举。这里保留参数只为不打断已有脚本，但不再在
-    # --help 里宣传；手机访问请用 --host 0.0.0.0 直连（登录自带 5 次/300 秒锁定）。
-    parser.add_argument("--mobile-access", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--mobile-port", type=int, default=8090, help=argparse.SUPPRESS)
-    parser.add_argument("--mobile-admin-port", type=int, default=8091, help=argparse.SUPPRESS)
     parser.add_argument(
         "--diagnose",
         action="store_true",
@@ -1100,9 +1018,6 @@ def main() -> int:
         )
         _shutdown_all()
         return 1
-
-    if args.mobile_access:
-        _start_mobile_relay(args, single_port)
 
     if args.backend_only:
         print()
