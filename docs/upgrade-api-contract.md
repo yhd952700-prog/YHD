@@ -95,7 +95,7 @@ failed   ──rollback──> rolled_back
 | `checking` | 正在检查（含下载/校验阶段） | 显示进度，禁用按钮 |
 | `available` | 有可用更新，尚未安装 | 显示版本号 + “立即升级” |
 | `applying` | 正在备份/安装/自检/回滚中 | 显示进度，禁用按钮，不要重复提交 |
-| `applied` | 上一次升级成功 | 显示“已是最新”，提供“回滚” |
+| `applied` | 上一次升级已安装，但**尚未重启** | 显示“已安装（重启后生效）”，提供“回滚” |
 | `rolled_back` | 已回滚到升级前版本 | 显示“已回滚”，可重新检查 |
 | `failed` | 上一次升级失败（已自动尝试回滚） | 显示 `error.message`，提供“回滚”与“重试检查” |
 
@@ -249,7 +249,7 @@ failed   ──rollback──> rolled_back
     "to_version": "0.2.0",
     "installed_files": 42,
     "data_checked_files": 3,
-    "message": "升级完成",
+    "message": "升级完成，需重启后生效",
     "self_check_passed": true,
     "self_check_issues": 0
   },

@@ -544,3 +544,60 @@ def test_rollback_without_source_is_local_but_explicitly_labelled(tmp_path: Path
             assert body["status"]["current_version"] == "0.1.0"
     finally:
         offline.close()
+
+
+# ---------------------------------------------------------------------------
+# 编排模式：只写请求文件并返回 202，不再在网关进程里同步应用
+# ---------------------------------------------------------------------------
+def test_apply_orchestrated_returns_202_without_applying(client, monkeypatch):
+    test_client, manager, app_root, _release_dir = client
+    from src.upgrade import orchestrator
+
+    seen: dict = {}
+
+    def fake_request(**kwargs):
+        seen.update(kwargs)
+        return {
+            "request": {"request_id": "rid-1", "version": kwargs["version"]},
+            "supervisor": {"pid": 4242, "log": "agent.log"},
+        }
+
+    monkeypatch.setattr(orchestrator, "request_orchestrated_apply", fake_request)
+
+    response = test_client.post(
+        "/v1/upgrade/apply",
+        json={"confirm": True, "version": "0.2.0", "mode": "orchestrated"},
+        headers=_headers(),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["mode"] == "orchestrated"
+    assert body["request_id"] == "rid-1"
+    assert body["supervisor"]["pid"] == 4242
+    assert body["target_version"] == "0.2.0"
+    assert seen["version"] == "0.2.0"
+    assert seen["port"] == 8080
+    # 网关自己的版本没有变：编排模式不会在进程内写文件
+    assert body["status"]["current_version"] == "0.1.0"
+
+
+def test_apply_orchestrated_rejects_while_another_upgrade_is_running(
+    client, monkeypatch
+):
+    test_client, _manager, _app_root, _release_dir = client
+    from src.upgrade import orchestrator
+
+    def busy(**_kwargs):
+        raise orchestrator.OrchestratorBusy("applying", "已有升级正在进行（阶段：applying）")
+
+    monkeypatch.setattr(orchestrator, "request_orchestrated_apply", busy)
+
+    response = test_client.post(
+        "/v1/upgrade/apply",
+        json={"confirm": True, "version": "0.2.0", "mode": "orchestrated"},
+        headers=_headers(),
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "upgrade_in_progress"
+    assert "已有升级正在进行" in detail["message"]

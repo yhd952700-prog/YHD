@@ -148,7 +148,7 @@ class ApplyResult:
     to_version: str
     installed_files: int
     data_checked_files: int
-    message: str = "升级完成"
+    message: str = "升级完成，需重启后生效"
     self_check_passed: bool = True
     self_check_issues: int = 0
 

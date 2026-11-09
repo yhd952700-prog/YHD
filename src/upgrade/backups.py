@@ -648,6 +648,11 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
 
     Current roots are moved (not deleted) into ``trash_root`` first, so a
     failure during extraction can put them back.
+
+    被占用的文件会让“整体移走”失败；此时退化为原地恢复：从备份 ZIP 覆盖，
+    内容已经一致的成员直接跳过（不去碰被占用的句柄），最后清掉备份清单之外
+    的文件。这样即使升级中断在被占用文件上，回滚仍能补回完整的旧版本，而不是
+    留下“一半新、一半旧”的树。
     """
     manifest_path = backup_dir / "code-backup.json"
     zip_path = backup_dir / "code.zip"
@@ -664,6 +669,7 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
     trash.mkdir(parents=True, exist_ok=False)
     moved: List[tuple[Path, Path]] = []
     existed_before: dict[str, bool] = {}
+    left_in_place: dict[str, Path] = {}
 
     try:
         for root_name in roots:
@@ -672,8 +678,11 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
             if not existed_before[root_name]:
                 continue
             destination = trash / root_name.replace("/", "__")
-            shutil.move(str(current), str(destination))
-            moved.append((destination, current))
+            if _move_aside(current, destination):
+                moved.append((destination, current))
+            else:
+                # 移不走（文件被占用）：原树留在原地，走原地恢复。
+                left_in_place[root_name] = destination
 
         restored = 0
         with zipfile.ZipFile(zip_path, "r") as archive:
@@ -684,10 +693,26 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
                 max_uncompressed_bytes=4 * 1024 * 1024 * 1024,
             )
             for rel, info in members:
+                target = app_root / rel
+                if _zip_member_matches(target, archive, info):
+                    # 已经是旧版本内容（升级还没覆盖到它，或被占用但恰好未变）：
+                    # 跳过写入，绝不为了“写一遍”去撞被占用的句柄。
+                    continue
                 with archive.open(info, "r") as src:
-                    _atomic_stream_copy(src, app_root / rel)
+                    _atomic_stream_copy(src, target)
                 restored += 1
+            prune_failures = _prune_unlisted(
+                app_root, roots, {rel for rel, _info in members}
+            )
+        if prune_failures:
+            raise RollbackError(
+                "代码回滚不完整，需人工介入："
+                + "；".join(prune_failures)
+                + f"。旧版本代码包：{zip_path}。"
+            )
         return restored
+    except RollbackError:
+        raise
     except BaseException as exc:
         # 回滚必须回到“应用之前”的完整树，不能留下解压到一半的新旧混合目录。
         # 顺序：先删掉本次解压出来的半成品（它会让 trash 放不回去），再把
@@ -695,8 +720,10 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
         # 绝不静默吞掉。
         failures: List[str] = []
         blocked: set[Path] = set()
-        moved_names = {str(original.relative_to(app_root).as_posix()) for _d, original in moved}
-        for destination, original in moved:
+        moved_names = {
+            str(original.relative_to(app_root).as_posix()) for _d, original in moved
+        }
+        for _destination, original in moved:
             if not original.exists():
                 continue
             try:
@@ -709,13 +736,14 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
                 # 移动阶段还没轮到它就中断了：这个目录从未被动过，不能删。
                 continue
             if existed_before[root_name]:
-                # 原始目录从未移走（移动本身就失败了）：保留现有内容，人工核对。
                 if root_name in moved_names:
                     continue
                 partial = app_root / root_name
                 if partial.exists():
+                    copy = left_in_place.get(root_name)
+                    detail = f"（回滚前副本：{copy}）" if copy and copy.exists() else ""
                     failures.append(
-                        f"该目录未被移入回收区，可能仍是半应用状态：{partial}"
+                        f"该目录无法整体移走，原地恢复未完成：{partial}{detail}"
                     )
                 continue
             partial = app_root / root_name
@@ -744,6 +772,80 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
                 "请关闭占用文件的进程后，从回收区或代码包手工恢复。"
             ) from exc
         raise RollbackError(f"代码回滚失败：{exc}") from exc
+
+
+def _move_aside(source: Path, destination: Path) -> bool:
+    """把 ``source`` 移入回收区；True 表示已整体移走。
+
+    返回 False 表示只能“复制一份到回收区、原树留在原地”。这里刻意不用
+    ``shutil.move``：它在 rename 失败时会 copytree + rmtree，而 rmtree 一旦
+    撞上被占用的文件就会删掉一半——这正是“350 个新文件 + 221 个缺失”的来源。
+    """
+    try:
+        os.rename(source, destination)
+        return True
+    except OSError:
+        pass
+    try:
+        if source.is_dir() and not source.is_symlink():
+            shutil.copytree(source, destination, symlinks=True)
+        else:
+            shutil.copy2(source, destination)
+    except (OSError, shutil.Error):
+        # 连副本都做不出来：清掉半份副本，仍然走原地恢复。
+        try:
+            if destination.exists():
+                _remove_path(destination)
+        except OSError:
+            pass
+        return False
+    return False
+
+
+def _zip_member_matches(
+    target: Path, archive: zipfile.ZipFile, info: zipfile.ZipInfo
+) -> bool:
+    """``target`` 的内容是否与备份 ZIP 里的该成员逐字节一致。"""
+    try:
+        if not target.is_file() or target.stat().st_size != info.file_size:
+            return False
+        expected = hashlib.sha256()
+        with archive.open(info, "r") as src:
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                expected.update(chunk)
+        actual = hashlib.sha256()
+        with open(target, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                actual.update(chunk)
+    except OSError:
+        return False
+    return actual.digest() == expected.digest()
+
+
+def _prune_unlisted(
+    app_root: Path, roots: Sequence[str], listed: set[str]
+) -> List[str]:
+    """删掉安装根里备份清单之外的文件（升级中断留下的新版本残留）。"""
+    failures: List[str] = []
+    for root_name in roots:
+        target = app_root / root_name
+        if not target.is_dir() or target.is_symlink():
+            continue
+        for path in target.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(app_root).as_posix()
+            if rel in listed:
+                continue
+            parts = rel.split("/")
+            name = parts[-1]
+            if "__pycache__" in parts or name.startswith((".", "unins")):
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                failures.append(f"陈旧文件清理失败：{path}（{exc}）")
+    return failures
 
 
 def _remove_path(path: Path) -> None:

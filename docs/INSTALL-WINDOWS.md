@@ -9,14 +9,14 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| payload 组装（含离线 Python 运行时、托盘依赖 pywin32/tkinter/Tcl） | 🟢 已实跑：文件数与体积**以 `dist/payload/manifest.json` 为准**（当前 10,650 文件 / 147.0 MB，未压缩）；每次构建都变，不在文档里写死 |
+| payload 组装（含离线 Python 运行时、托盘依赖 pywin32/tkinter/Tcl） | 🟢 已实跑：文件数与体积**以 `dist/payload/manifest.json` 为准**（2026-11-09 核对：`version=0.1.1`、10,855 文件 / 150.9 MB，未压缩）；每次构建都变，不在文档里写死 |
 | payload 冒烟（启动→首页→注册→登录→发消息） | 🟢 本轮实跑通过（payload 内，mock 提供商） |
 | Inno Setup 安装器脚本 | 🟢 已交付 `installer/liuhao.iss` |
-| **`.exe` 安装包** | 🟢 当前版本 0.1.1；以下为 0.1.0 历史实测值：34,731,647 字节（约 33.1 MiB）<br>SHA256 `01be18bbe4c07923486fb27ba59c23c23f42a6e86f89c8967b1f86c0dec64da2`<br>0.1.1 最终包以转正后的 `SHA256SUMS.txt` 为准 |
-| 升级发布包 `liuhao-0.1.0.zip` | 🟢 0.1.0 历史包 2,638,893 字节<br>SHA256 `0a04ac6adcc299323b4b92a9bc1040a682f5c1dc3601a5fef94a8c81ffa48512` |
-| 升级发布清单 `LIUHAO_RELEASE.json` | 🟢 已生成，`python -m src.upgrade check --release-dir <目录>` 与 `python -m src.upgrade check --manifest <文件>` 均可读取（下列「已是最新 0.1.0」为历史记录） |
+| **`.exe` 安装包** | 🟢 顶层有 `LiuHao-Setup-0.1.1.exe`（2026-11-08 04:24 构建）。路径、字节数、SHA256 **以同目录 `SHA256SUMS.txt` 为准**，本文不写死（2026-11-09 核对：29,567,136 字节 / `49BC50C8…B4DF`）。<br>源码已是 `0.1.2`（`pyproject.toml:3`），但 **0.1.2 包尚未产出**，`dist/` 下没有任何 0.1.2 产物 |
+| 升级发布包 `liuhao-0.1.1-upgrade.zip` | 🟢 顶层有该包（2026-11-08 04:23 构建）。字节数/SHA256 以 `dist/installer/SHA256SUMS.txt` 为准，本文不写死（2026-11-09 核对：32,178,761 字节 / `9EABA197…3224`）；**升级包不能单独运行**，只用于已安装的机器 |
+| 升级发布清单 `LIUHAO_RELEASE.json` | 🟢 已生成，`python -m src.upgrade check --release-dir <目录>` 与 `python -m src.upgrade check --manifest <文件>` 均可读取；`releases[0].signature=true`（ed25519）。2026-11-09 实跑：`current_version=0.1.2`、`latest_version=0.1.1`、`status=up_to_date`——这是「源码版本高于清单版本」的正常结果，不是失败 |
 | 安装后开机自启（托盘） | 🟢 默认**关闭**，需 `python -m src.desktop autostart enable` 开启；开启后的注册表登记已在真实安装目录验证：注册表值指向安装目录内的 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py`，托盘窗口可创建 |
-| 安装后的整机冒烟（安装 exe→启动→登录→发消息） | 🟢 0.1.0 交付包实跑通过（服务层，真实 Ollama 回复）；渲染后前端表单点击未做 |
+| 安装后的整机冒烟（安装 exe→启动→登录→发消息） | 🟢 0.1.1 安装包已有实跑记录：`dist/installer/README-DELIVERY.txt` 自述 S-01～S-05、S-10～S-14 PASS；S-06/S-07/S-08 原记「未取证」，2026-11-08 04:26–04:40 用真实 DeepSeek Key 转 PASS（`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`）；S-09（托盘/关窗）需人机交互，仍为 NEEDS_HUMAN。渲染后前端表单点击未做 |
 | 卸载器「保留数据 / 删除数据」实机行为 | 🟢 静默卸载已验证：程序与快捷方式移除、数据保留；交互式“删除数据”分支已单独实测 |
 | 代码签名 | 🟡 项目自签名证书已实装并验证（导入信任后 `Get-AuthenticodeSignature` 为 `Valid`）；非公开权威 CA，未导入信任仍提示「未知发布者」，SmartScreen 仍可能因信誉不足提示 |
 
@@ -27,8 +27,8 @@
 
 1. 双击 `LiuHao-Setup-<版本>.exe`。
 2. Windows SmartScreen 提示「Windows 已保护你的电脑 / 未知发布者」：
-   点「更多信息」→「仍要运行」。这是**未签名安装包**的正常提示，不是病毒告警。
-3. 安装前会显示一页中文说明（未签名、不含模型、数据保留策略）。
+   点「更多信息」→「仍要运行」。安装包是**项目自签名**（2026-11-09 实测 `Get-AuthenticodeSignature` = `Status=Valid`，主体 `CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`），不是公开权威 CA；未导入信任脚本的机器仍会提示「未知发布者」，这不是病毒告警。
+3. 安装前会显示一页中文说明（签名状态、不含模型、数据保留策略）。**注意**：该页文案当前仍写「本安装包未做代码签名」（`installer/liuhao.iss:1054`、`:1060`），与产物实际的自签名状态不一致——属安装器文案滞后，已登记 `known-gaps.md` E-24，本轮不手改 `installer/`。
 4. 选择附加任务：
    - ☑ 创建桌面快捷方式（默认勾选）
    - ☑ 安装完成后立即启动鎏灏（默认勾选，可取消）
@@ -183,10 +183,12 @@ $env:LIUHAO_UPGRADE_SIGNING_KEY = "D:\keys\liuhao-release-ed25519.pem"   # 未�
 手动编译：
 
 ```powershell
-iscc /DAppVersion=0.1.1 installer\liuhao.iss
+iscc /DAppVersion=<版本> installer\liuhao.iss
 ```
 
-（`installer\liuhao.iss` 默认从 `..\dist\payload\app` 取内容；如需自定义路径，
+（`<版本>` 必须与 `pyproject.toml` 的 `project.version` 一致：源码当前 `0.1.2`，
+已发布产物 `0.1.1`；写错会导致包内版本与源码不符。`installer\liuhao.iss`
+默认从 `..\dist\payload\app` 取内容；如需自定义路径，
 用构建脚本生成的 `dist\installer\build\liuhao.iss` 副本。）
 
 ## 五、验证与信任安装包签名
@@ -252,19 +254,21 @@ powershell -ExecutionPolicy Bypass -File packaging\sign_installer.ps1
    （约 2GB，自行安装 Ollama 并 `ollama pull`）或填云 API Key。
 3. **首次启动是托盘常驻**：出现状态窗口与托盘图标，窗口只显示启动状态、不需要输入；建账号与选模型在「鎏灏首次设置」窗口里完成。**关掉状态窗口只是隐藏到托盘，网关继续运行**；要退出用托盘菜单“退出”。命令行模式需显式运行 `LiuHao.bat --console`（0.1.1+）。
 4. **默认端口 8080**：**首启向导里可以换端口；日常启动如果端口被占，会告诉你占用原因并给出处理办法**（关掉占用程序再试，或改端口后重新启动），见第二节。
-5. **本轮已做真实安装冒烟（服务层）**：0.1.0 交付包（34,731,647 字节，
-   SHA256 `01BE18BB…64DA2`）已实跑「静默安装到临时目录 → 启动服务 → 取得控制台首页
+5. **已做真实安装冒烟（服务层）**：0.1.0 交付包（34,731,647 字节，
+   SHA256 `01BE18BB…64DA2`）实跑过「静默安装到临时目录 → 启动服务 → 取得控制台首页
    → 注册并登录 → 配置本机 Ollama → 模型连通性探测 → `POST /v1/chat` 拿到真实回复
-   → 静默卸载」。未点击渲染后的前端表单：登录/发消息走的是控制台同一套 HTTP API，
-   前端视觉仍在改动，UI 点击回归留待前端冻结后做。
+   → 静默卸载」。0.1.1 安装包另有真实 DeepSeek Key 复验：不重启后端（PID 16404→16404）
+   保存 Key 后 `POST /v1/chat` 200 / 1.90s，证据
+   `dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`。未点击渲染后的前端表单：
+   登录/发消息走的是控制台同一套 HTTP API，前端视觉仍在改动，UI 点击回归留待前端冻结后做。
 6. **卸载器**：静默卸载已验证——程序目录、桌面/开始菜单快捷方式、卸载注册表项移除，
    数据目录（按 `data-dir.txt` 实际位置，默认 `D:\LiuHaoData`）原样保留；
    交互式「是否删除数据」的“删除”分支已单独实测（静默卸载按安全默认保留）。
 7. **命令行升级器只验证到「检查更新」**：清单可读，`up_to_date` / `update_available` /
    `invalid_manifest` 三种结果均已实测（`--release-dir`、`--manifest` 两种入口都跑过）；
    但「下载→校验→备份→应用→回滚」未在安装版上实跑。
-8. **开发目录路径**：运行文件命中 0（`-StrictReleaseDevPaths` 门禁通过）。
-   `docs/` 里仍有开发机历史链接（如 `D:\LiuHao-AI-OS`、`.venv\Scripts\python.exe`），
+8. **开发目录路径：运行文件命中 2（不是 0）**：`scripts/collect_diagnostics.bat:12`、`src/logging_config.py:189`；证据 `dist/release/dev-path-report.txt`（2026-11-08T12:23:16Z）。`-StrictReleaseDevPaths` 会把这类命中当作构建失败，本次构建**未开**该开关，所以包仍然出得来。
+   `docs/` 里另有 484 处开发机历史链接（如 `D:\LiuHao-AI-OS`、`.venv\Scripts\python.exe`），
    不影响安装与升级，构建报告会列在“文档引用命中”里。
 9. **清单版本号规则已与代码对齐**：`packaging.version.Version` 接受并归一化
    `v0.2.0`、`0.2.0-beta`；`docs/self-upgrade.md` §2.2.4 已改成一致描述，

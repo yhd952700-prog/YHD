@@ -60,6 +60,14 @@ class ApplyRequest(BaseModel):
         default=None,
         description="必须明确指定要安装的版本号；与当前可升级版本不一致时返回 400。",
     )
+    mode: Optional[str] = Field(
+        default=None,
+        description=(
+            "缺省=synchronous（只装不重启，保持原语义）；"
+            "orchestrated=写请求文件并返回 202，由独立 supervisor 停服、安装、"
+            "重启并做健康复核。"
+        ),
+    )
 
 
 class RollbackRequest(BaseModel):
@@ -360,8 +368,19 @@ def _status_payload(manager: UpgradeManager) -> Dict[str, Any]:
         "last_rollback": last_rollback,
         "backup": backup,
         "error": error,
+        "orchestration": _orchestration_view(manager),
         "updated_at": state_file.get("updated_at", ""),
     }
+
+
+def _orchestration_view(manager: UpgradeManager) -> Optional[Dict[str, Any]]:
+    """编排进行时给前端一个可轮询的摘要；没有 journal 时返回 None。"""
+    try:
+        from .orchestrator import orchestration_summary
+
+        return orchestration_summary(manager.config.data_dir)
+    except Exception:
+        return None
 
 
 #: 成员只看结论。任何带绝对路径 / 盘符 / 异常类名 / 纯英文技术原文的字段
@@ -571,6 +590,45 @@ def upgrade_apply(
             check.message or "当前没有可用更新，无法升级。",
             current_version=check.current_version,
             latest_version=check.latest_version,
+        )
+
+    if (body.mode or "").strip().lower() == "orchestrated":
+        # 编排模式：接口只写请求文件并返回 202，停服/应用/重启/健康复核由
+        # 安装根之外的 supervisor 执行，避免网关替自己写文件、更没法重启自己。
+        from fastapi.responses import JSONResponse
+
+        from .orchestrator import (
+            OrchestratorBusy,
+            recorded_gateway_port,
+            request_orchestrated_apply,
+        )
+
+        try:
+            plan = request_orchestrated_apply(
+                data_dir=manager.config.data_dir,
+                app_root=manager.config.app_root,
+                version=check.release.version,
+                port=recorded_gateway_port(manager.config.data_dir),
+            )
+        except OrchestratorBusy as exc:
+            _http_error(409, "upgrade_in_progress", exc.message)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "ok": True,
+                "mode": "orchestrated",
+                "warning": (
+                    "已接受升级请求：后台会停止服务、安装并重新启动，"
+                    "期间接口会短暂不可用；请通过 GET /v1/upgrade/status 查看进度。"
+                ),
+                "request_id": plan["request"]["request_id"],
+                "target_version": check.release.version,
+                "supervisor": {
+                    "pid": plan["supervisor"]["pid"],
+                    "log": plan["supervisor"]["log"],
+                },
+                "status": _status_payload(manager),
+            },
         )
 
     download = None

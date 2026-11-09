@@ -11,16 +11,27 @@
 
 ## 获取与安装（唯一入口）
 
-**当前为内网 / 本地交付：公网发布页尚未建立（TODO：公网发布页待建立）。** 可交付产物只从本仓库构建输出目录取，不要从来源不明的网盘/聊天附件安装：
+**公网发布页已上线（GitHub Pages 独立仓库）：<https://yhd952700-prog.github.io/liuhao-release/>。**
+2026-11-09 实测 HTTP 200；页面标注 0.1.1，公布的安装包 SHA256 与 `dist/installer/SHA256SUMS.txt` 一致（`49BC50C8…B4DF`）。
+页面自身的字节数与哈希随每次发布变化（同日两次实测已不同），本文不写死。
+也可以从本仓库构建输出目录取同一批产物；除这两个来源外，不要从网盘/聊天附件安装：
 
-- 安装包：`dist/installer/LiuHao-Setup-0.1.1.exe`
-- 校验值：`dist/installer/SHA256SUMS.txt`（与安装包同目录；升级包哈希也登记在同一份表）
-- 升级包（只给已安装的机器）：`dist/release/liuhao-0.1.1-upgrade.zip`
+- 安装包：`dist/installer/` 下 `LiuHao-Setup-<版本>.exe`——文件名、体积、SHA256 以同目录 `SHA256SUMS.txt` / `README-DELIVERY.txt` 为准，本文不写死
+- 校验值：`dist/installer/SHA256SUMS.txt`（安装包与升级包两行同表）
+- 升级包（只给已安装的机器）：`dist/release/` 下与安装包同版本的 `liuhao-<版本>-upgrade.zip`
+- 发布清单：`dist/release/LIUHAO_RELEASE.json`（`version`、`releases[].signature`、`files_count` 在这里；`python -m src.upgrade check --manifest <文件>` 可直接读）
 
-> ⚠️ 0.1.1 **尚未转正**。冒烟状态、产物版本与校验值一律以
-> `dist/smoke-report.json`、`dist/release/LIUHAO_RELEASE.json` 和
-> `dist/installer/SHA256SUMS.txt` 为准：当前唯一冒烟记录为登录 `FAIL`，
-> release notes 自述产物未验证。新包冒烟通过前不要对外分发。
+> **版本口径（2026-11-09 核对，不要手改版本号糊平）**
+>
+> * 源码已是 `0.1.2`（`pyproject.toml:3`、`src/version.py` 的 `APP_VERSION`）；
+> * 已构建交付物与发布页仍是 `0.1.1`（`dist/payload/manifest.json`、`dist/installer/SHA256SUMS.txt`、`dist/release/LIUHAO_RELEASE.json`、线上发布页）；`dist/` 下**没有任何 0.1.2 产物**（按文件名搜索实测为 0）；
+> * 0.1.2 包尚未产出：等主线出包并验收通过后，再同步改发布页与本文版本表述；在此之前文档一律按 0.1.1 写。
+>
+> **冒烟状态（旧说法"唯一冒烟记录为登录 FAIL"已作废）**：`dist/smoke-report.json`（2026-11-08 04:22）里 `login=PASS`、`chat=PASS`；`chat_detail` 是 `[演示数据] 还没有配置模型…`，因为干净安装默认没有 provider，PASS 表示网关确实返回了回复（mock 内容），**不是失败**。安装级真实链路在 2026-11-08 04:26–04:40 用用户提供的真实 DeepSeek Key 把 S-06/S-07/S-08 从 SKIP 转 PASS，证据 `dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`；`liuhao-0.1.1-upgrade.zip` 的 `signature=true`（ed25519）也已由 `python -m src.upgrade check --manifest` 实测。
+>
+> **`dist/smoke-report.json` 的处置：保留，不删、不改写。** 它是 0.1.1 构建的 payload 冒烟证据（删了就销毁证据）；`chat_note` 里「FAIL 属预期」是给**未配模型**场景写的说明，不是本次结果——本次 `login`、`chat` 均为 `PASS`。安装级验收不看这份文件，看上面的 `CONCLUSION.md`。
+>
+> **转正**：0.1.1 仍是内测口径（`dist/installer/README-DELIVERY.txt`：可用于内测分发，是否转正由产品线决定）。对外正式发布以产品线转正结论为准。
 > 安装步骤见 [`docs/END-USER-GUIDE.md`](docs/END-USER-GUIDE.md) 第 1～3 步。
 
 ## 当前状态（诚实头 — 状态快照，不是发布就绪声明）

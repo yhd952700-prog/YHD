@@ -3,10 +3,10 @@
 > 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）；
 > 2026-11-07 交付面审计后更新 §0 当前产物与体积口径；2026-11-07 收口补 §5.11 发布候选凭证（`b4406497`）；
 > 2026-11-08 补 §5.12 新 tip 凭证（`416f7109`）与 §7 新一轮冻结前置清单、§7.1 宣布 True 还差什么、§7.2 自定义 Base URL 的 SSRF 口径。
-> **历史快照提示（2026-11-08）**：本清单中的安装包路径、体积与「dist/installer 仍是 0.1.0」
-> 一类描述，是 2026-11-05～11-07 的时点记录；当前实际产物与校验值见
-> [`dist/installer/README-DELIVERY.txt`](../dist/installer/README-DELIVERY.txt) 与
-> `dist/payload/manifest.json`，不要拿本清单的旧数字当现状。
+> **历史快照提示（2026-11-08 起）**：**§0 已于 2026-11-09 更新为 0.1.1 实测**；本清单其余章节里的
+> 安装包路径、体积与「dist/installer 仍是 0.1.0」一类描述，是 2026-11-05～11-07 的时点记录。
+> 当前实际产物与校验值见 [`dist/installer/README-DELIVERY.txt`](../dist/installer/README-DELIVERY.txt)、
+> `dist/installer/SHA256SUMS.txt` 与 `dist/payload/manifest.json`，不要拿旧数字当现状。
 >
 > 判定口径：只有「本轮亲手跑出结果」才写「已完成」；只有代码/文档但没跑过
 > 真实链路的写「部分完成」或「未验证」；完全没做的写「未做」。
@@ -35,29 +35,30 @@
 
 ## 0. 安装包
 
-**当前状态（2026-11-08 实测）：`dist/installer/` 顶层 0 个 exe、0 个 zip。**
-顶层只剩 `README-DELIVERY.txt` 与 `_archive\`；`_archive\20261107-mixed-0.1.0-and-0.1.1\`
-里的 0.1.0 / 0.1.1 已按 `README-DELIVERY.txt` 判定为不合格成品，只作追溯，不得分发。
-**本轮全部修复都还没进包。** 出包是下文 §0.3 的两个独立节点，不是「再打一次」这么简单。
+**当前状态（2026-11-09 实测）：`dist/installer/` 顶层有 1 个 exe、1 个 zip。**
+- `LiuHao-Setup-0.1.1.exe`（2026-11-08 04:24 构建）
+- `liuhao-0.1.1-upgrade.zip`（2026-11-08 04:23 构建）
+- 另有 `SHA256SUMS.txt`、`README-DELIVERY.txt`、`LiuHao-CodeSigning.cer`、`trust-liuhao-signing.ps1`、`信任签名证书.cmd`；`_archive\` 只作追溯，不得分发。
 
+**版本口径**：源码已是 `0.1.2`（`pyproject.toml:3`、`src/version.py` 的 `APP_VERSION`），但 **0.1.2 包尚未产出**——`dist/` 下按文件名搜索 `*0.1.2*` 实测为 0。所以本清单描述的是 **0.1.1 交付物**，不能当作 0.1.2 的凭证。
+
+> ~~2026-11-08 时 `dist/installer/` 顶层为 0 个 exe、0 个 zip~~ —— 那是当天的状态；2026-11-08 04:23–04:24 重建后顶层已有上述 0.1.1 产物。原记录「本轮全部修复都还没进包」随之作废。
 > 上游 `origin/p36` 侧曾记录「`dist/installer/` 内有 0.1.0 的四项正式产物（2026-11-07 11:14 构建，
-> 绑定 `f74fa14e`）」——那是**归档前**的状态。2026-11-07 14:20 收敛时这批产物已整体移入
-> `_archive\`（`README-DELIVERY.txt` 内 SHA256 可对），故本 worktree 实测顶层为空。
-> 两侧说法不矛盾，是同一批产物在两个时间点上的位置不同。
+> 绑定 `f74fa14e`）」——那批已整体移入 `_archive\`（`README-DELIVERY.txt` 内 SHA256 可对），只作追溯。
 
-| 项目 | 值（2026-11-08 实测） |
+| 项目 | 值（2026-11-09 实测） |
 |---|---|
-| 安装包路径 | 无（顶层 0 个 exe，等待重建） |
-| 大小 / SHA256 | 无（尚未构建，不复用历史数值） |
-| 校验文件 | 无（构建时由 `package-frozen.ps1` 生成 `SHA256SUMS.txt` / `DELIVERY.txt`） |
+| 安装包路径 | `dist/installer/LiuHao-Setup-0.1.1.exe`（2026-11-08 04:24 构建） |
+| 大小 / SHA256 | 29,567,136 字节 / `49BC50C8…B4DF`（以 `SHA256SUMS.txt` 为准，本表不写死完整哈希） |
+| 校验文件 | `dist/installer/SHA256SUMS.txt`：两行，exe 与 `liuhao-0.1.1-upgrade.zip`（32,178,761 字节 / `9EABA197…3224`） |
 | 历史归档（只追溯） | `dist/installer/_archive/20261107-mixed-0.1.0-and-0.1.1/`：0.1.0 exe 34,731,647 字节（2026-11-07 11:14 构建，SHA256 `01BE18BB…64DA2`）、0.1.0 升级包 `liuhao-0.1.0.zip` 2,638,893 字节（SHA256 `0A04AC6A…A48512`）、0.1.1 exe 34,830,483 字节（SHA256 `0BF400D6…BBF45`）；**均不得对外分发** |
-| **这版安装包对应的源码提交** | 无；出包时由 `DELIVERY.txt` 写死 HEAD，并回填本表。归档的 0.1.0 绑定 `f74fa14e2c947385e8a3f61052393e733498726c`——**早于** 0.1.1 版本号提交 `f7603a8e` 与四个 ISCC 修复（`d57fa52e`/`6b47829b`/`7c0a252a`/`416f7109`），因此**不能**作为本轮候选 `416f7109` 的产物 |
-| 安装后体积 | 仅 0.1.0 历史实测 10,502 个文件 / 170,666,366 字节（162.8 MiB），新包必须重测 |
-| payload | 归档 0.1.0：148.8 MB / 安装后 10,038 文件（该包 `DELIVERY.txt` 自述） |
-| 构建命令 | `scripts/release/package-frozen.ps1`（唯一允许写 `dist/installer` 的入口）；归档 0.1.0 由 `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`）产出，本轮发布 venv 为 `D:\cache\venvs\liuhao-release-20261108` |
+| **这版安装包对应的源码提交** | **未验证**：顶层没有 `DELIVERY.txt`，`README-DELIVERY.txt` 也未写 HEAD，产物侧无法读出源码提交。不要臆造。（归档的 0.1.0 绑定 `f74fa14e2c947385e8a3f61052393e733498726c`，与 0.1.1 包无关） |
+| 安装后体积 | 未在本轮重测（0.1.0 历史实测 10,502 个文件 / 170,666,366 字节，**不可套用到 0.1.1**） |
+| payload | `dist/payload/manifest.json`：`version=0.1.1`、`file_count=10,855`、`size_mb=150.9` |
+| 构建命令 | `scripts/release/package-frozen.ps1`（唯一允许写 `dist/installer` 的入口）；0.1.1 这版由 `packaging/build_windows_installer.ps1` 产出（编译耗时 47.093 秒，见 `dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`） |
 | 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（含 Key 申请与跳过说明） |
 | 第三方许可证 | 由 `packaging/third_party_notices.py` 在构建时按 payload 实装生成（模板 `packaging/third-party-notices.template.txt`），连同 `packaging/licenses/` 复制到程序根目录 |
-| **结论** | 归档的 0.1.0 四件套自身自洽（exe/zip/SHA256SUMS/DELIVERY 齐、绑定 `f74fa14e`），但**不是 0.1.1、不是冻结 hash 的产物**；按 §7 P-2 重打后才能回填为交付物 |
+| **结论** | 0.1.1 的 exe / 升级包 / `SHA256SUMS.txt` / `README-DELIVERY.txt` 齐；`LIUHAO_RELEASE.json` 的 `releases[0].signature=true`（ed25519）；`README-DELIVERY.txt` 自述「可用于内测分发，是否转正由产品线决定」。**不是 0.1.2，也未绑定源码提交** |
 
 ### 0.1 历史记录更正与 E2E 产物溯源（2026-11-06）
 
@@ -316,20 +317,20 @@
 | # | 项目 | 状态 | 证据 | 部分完成差哪一部分 |
 |---|---|---|---|---|
 | 1 | 四步用户文档 | 已完成 | [END-USER-GUIDE.md](END-USER-GUIDE.md)，commit `a97d5862` | — |
-| 2 | 安装包构建 | 未完成（顶层无产物，等待按 §0.3 节点重建） | 2026-11-08 实测：`dist/installer` 顶层 0 个 exe、0 个 zip；历史产物已移入 `_archive\` 且判定不合格 | 待安装冒烟包 / 终版分别回填路径、字节、SHA256 与对应源码提交 |
+| 2 | 安装包构建 | 部分完成：0.1.1 已构建；0.1.2 未产出 | `dist/installer` 顶层有 `LiuHao-Setup-0.1.1.exe`（29,567,136 字节 / `49BC50C8…B4DF`）与 `liuhao-0.1.1-upgrade.zip`（32,178,761 / `9EABA197…3224`），见 §0 | 0.1.2 包未产出；这版产物未绑定源码提交（顶层无 `DELIVERY.txt`） |
 | 3 | 真实安装（静默） | 部分完成（历史实测，产物不可复现） | 历史日志 `dist/obsolete/installer-20261105-1506/install.log`（该目录已随旧包清理，不在仓库内）：`Original Setup EXE` = `D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条 | 该安装器已不存在、日志无字节/SHA；旧记录的“25.3 秒 / 8,599 个文件”无法复核，已删 |
 | 4 | 安装版首启 E2E | 部分完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13），不能作为「最终包已验证」 |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
 | 6 | 端口占用明确报错（不自动顺延） | 已改定 | 2026-11-08 决定：不自动换端口，避免地址漂移；旧 E2E 日志里的 `18130→18131 自动顺延` 行为已作废 | — |
 | 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
 | 8 | 打包延迟依赖修复 | 已完成 | payload 内已含 `openai/httpx2/httpcore2/truststore/jiter`；修复随 `b789d244` 入库，安装版聊天不再报 `httpcore2` 缺包 | 已解除（E-1）；该目录另有未提交的升级元数据改动，与依赖修复无关 |
-| 9 | 真实厂商 Key 对话 | 未验证 | 网关流的可复现脚本 [verify_first_run_e2e.py](../scripts/verify_first_run_e2e.py)（commit `250456cd`，说明见 [first-run-e2e.md](first-run-e2e.md)）需要真实 Key；本流没有 Key，只用本地 OpenAI 兼容桩验证了真实 HTTP 请求路径 | 本流无真实厂商 Key 的原始输出（E-5）；网关流报称用 DeepSeek 跑过，只能算旁证 |
+| 9 | 真实厂商 Key 对话 | 已完成（安装版，2026-11-08） | `dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`：真实 DeepSeek Key，未重启后端（PID 16404→16404）保存后 `POST /v1/chat` 200 / 1.90s；流式 12 帧、工具调用、Key 脱敏全 PASS；另有 `20261108-034245-real-key/live_summary.txt` 8 项 PASS | 本清单原记「本流无 Key」指的是写这一条时的取证范围，现已被上述安装级证据取代（E-5 同步更新） |
 | 10 | 静默卸载 | 已完成（E-4 已修） | `installer/liuhao.iss` 的 `CurUninstallStepChanged` 在 `UninstallSilent` 时直接退出、按安全默认保留数据；`/VERYSILENT` 实测可正常结束。交互式“删除数据”分支已单独实测（连续两次确认后按 `data-dir.txt` 删） | — |
-| 11 | 代码签名 | 未做 | 安装包未签名，Windows 显示「未知发布者」 | 需证书与签名流水线（E-8） |
+| 11 | 代码签名 | 部分完成（项目自签名） | `Get-AuthenticodeSignature dist\installer\LiuHao-Setup-0.1.1.exe` → `Status=Valid`，主体 `CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`（自签名） | 非公开权威 CA：未导入信任仍提示「未知发布者」，SmartScreen 可能因信誉不足提示；另外安装器首屏文案仍写「未做代码签名」（`installer/liuhao.iss:1054`/`:1060`），见 E-24 |
 | 12 | 前端重建 | 未做 | 安装包内是构建时的 `console/dist`；前端仍在重写 | 前端稳定后必须重建安装包（E-7） |
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
-| 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-21（E-9～E-21 为历次追加；2026-11-07 本轮关闭/仍开放清单另列） | — |
+| 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-24（E-9 起为历次追加；2026-11-07 本轮关闭/仍开放清单另列） | — |
 | 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节；当时的退出码 0；**现行契约**下 NOT_VERIFIED/BLOCKED 会以 3 收尾，见 `scripts/verify_readiness.py:1114-1124`）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 为 False，裁决后理由只剩 C9（桌面分发形态无真实 CD，属形态差异） |
 | 17 | 多账号 8 项硬要求验收（脚本化，含 2 条附加边界） | 已完成 | `scripts/acceptance/account_matrix_acceptance.py` 实跑：8 项全 🟢 + B1/B2 全 🟢，**109 项检查 0 失败、退出码 0**（8 项主体 98 + B1 6 + B2 5）；固定端口 19008、独立数据目录 `D:\_audit\account-matrix-2`；含 `src/` 近期写入的防误跑保护（命中即拒绝、退出码 2，`--force` 显式跳过）；证据 `D:\_audit\account-matrix-2\report.json`、`ui\*.png`；发布前必跑项见 `dist/release-gate/RELEASE-RUNBOOK.md` §5.6 | 本次运行期间另一条线仍在写 `src/`（5 个 `.py`），属强制模式；正式发版前需在「`src/` 连续 2 分钟无写入」时去掉 `--force` 再跑一次，两次结果一致才算最终凭证 |
 | 18 | 产品许可证条款（专有） | **待确认（发布前必须由人/律师定稿）** | 仓库根 `LICENSE` 现为短版声明（940 字节：著作权归属 + 保留一切权利 + 禁止未经书面许可再分发/转售/反向工程 + 第三方组件见 `licenses\` 与 `LGPL-SOURCE-OFFER.txt`）；完整 40 行草稿原样存于 [docs/legal/EULA-DRAFT-pending-review.md](legal/EULA-DRAFT-pending-review.md)，文件开头标注「AI 起草，未经法务确认，不得作为正式条款对外发布」 | 适用法律、违约终止、责任限制额度三类条款**故意未写进正式 LICENSE**，须由人/律师定稿后才能对外发布；在此之前产品界面只写「许可证与合规材料」并提供查看入口，不得声称许可协议已生效 |
@@ -358,7 +359,7 @@
 | 回归工作树放在 temp 下会让删除护栏失效 | E-10（已改用 temp 之外的干净工作树重跑） |
 | 回环网络测试在满负载下抖动 | E-11 |
 | 全量基线落后交付 HEAD 12 个提交 | E-12（已补跑改动测试，未再全量） |
-| 安装包记录曾指向不存在的文件；现在 `dist/installer` 有 0.1.0 四项产物，但最终包仍待转正 | E-13（最终包回填路径/字节/SHA256，并写死对应源码提交后重跑 E2E） |
+| 安装包记录曾指向不存在的文件；现在 `dist/installer` 顶层有 0.1.1 两项产物（exe + 升级包），但源码已到 0.1.2、0.1.2 包未产出，且产物未绑定源码提交 | E-13（0.1.2 包回填路径/字节/SHA256，并写死对应源码提交后重跑 E2E） |
 
 ## 5. 全量回归（独立报告）
 
@@ -647,7 +648,7 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | Guardrails / Step 21 | **未真跑**：上游 `test` 红，被 CRITICAL-5 看门狗显式判红（未静默跳过） |
 | 文档三条门禁 | 本地 PASS：`verify_doc_count_claims`（15,418 / 25,093 / 15,552 / 26,287）、`verify_doc_links`、`verify_docs_index_coverage`；CI 内因 Guardrails 被上游阻断未执行 |
 | Security Scan | **红**：被 CRITICAL-5 看门狗阻断（`security` 依赖 `test`） |
-| 安装包 | **历史快照（2026-11-07 时点）**：当时 `dist/installer` 仍是 0.1.0（构建 11-06 17:29，早于 `9e537633`），不能作为本提交产物；2026-11-08 现状以 `dist/installer/README-DELIVERY.txt` 为准（已有 0.1.1 exe，但该构建冒烟未通过、未转正） |
+| 安装包 | **历史快照（2026-11-07 时点）**：当时 `dist/installer` 仍是 0.1.0（构建 11-06 17:29，早于 `9e537633`），不能作为本提交产物；2026-11-09 现状见 §0：已有 0.1.1 exe + 升级包，payload 冒烟全 PASS（`dist/smoke-report.json` 的 `login`/`chat` 均为 `PASS`），真实 Key 的 S-06/S-07/S-08 也已转 PASS；是否转正仍由产品线决定 |
 | `--full` | **未在 `b4406497` 重跑**；§5.10 的 `PASS=10` 只对 `72fd9b17` 成立 |
 | 2h soak | **未在修复后重跑**（known-gaps G-8） |
 
@@ -804,8 +805,8 @@ git diff --name-only <上一冻结hash>..HEAD -- src/ apps/ contracts/ installer
 
 **必须（交付口径：机器 verdict 不变，但决定敢不敢对外发布）**
 
-1. P-1 版本号 0.1.1 全链一致（目前 ④⑤ 未满足）。
-2. P-2 安装包重打并绑定冻结 hash（目前包是 0.1.0 / `f74fa14e`）。
+1. P-1 版本号全链一致：**未满足**——源码 `pyproject.toml:3` / `src/version.py` 为 `0.1.2`，而 `dist/payload/manifest.json`、`dist/installer/SHA256SUMS.txt`、`dist/release/LIUHAO_RELEASE.json` 与线上发布页为 `0.1.1`；`dist/` 下没有 0.1.2 产物。
+2. P-2 安装包重打并绑定冻结 hash：**未满足**——现有 `LiuHao-Setup-0.1.1.exe`（2026-11-08 构建）顶层无 `DELIVERY.txt`，源码提交未写入产物；0.1.2 包未产出。
 3. P-3 真 Key 对话验收（含 401 中性文案）。
 4. P-4 任意模型接入（自定义 Base URL + 非预置 model id，运行中生效）。
 5. P-5 管家页可用化（真实一句话 E2E）。
@@ -823,7 +824,7 @@ git diff --name-only <上一冻结hash>..HEAD -- src/ apps/ contracts/ installer
 | 无真实远端升级源 | 升级源只有本机安装树；远端拉取/回滚无证据 | `known-gaps.md` 真实远端升级源行 |
 | 手机未验证 | 服务侧 LAN 200 已验证，手机侧无设备 | `known-gaps.md` E-14 |
 | 24h 浸泡进行中 | 长跑 harness 在跑，尚未收口；2h soak 已验 | `known-gaps.md` E-21 / G-8 |
-| 安装包未签名 | 只有「未知发布者」提示，不影响功能；签名属明确延后 | `known-gaps.md` E-8 |
+| 安装包仅项目自签名（非公开权威 CA） | 未导入信任只有「未知发布者」提示，不影响功能；公开 CA 签名属明确延后 | `known-gaps.md` E-8 / E-24 |
 | 8/16GB 低配未实测 | 本机 32GB；已给实测数字并明确不外推 | `known-gaps.md` E-21 |
 
 ## 7.2 自定义 Base URL 的 SSRF 风险（结论：**待评估**，不写成已通过）

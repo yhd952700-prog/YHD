@@ -1400,11 +1400,50 @@ class UpgradeManager:
     # ------------------------------------------------------------------
     # 3. Apply
     # ------------------------------------------------------------------
-    def apply(self, artifact_path: str | Path, release: ReleaseInfo) -> ApplyResult:
+    def apply(
+        self,
+        artifact_path: str | Path,
+        release: ReleaseInfo,
+        *,
+        reuse_backup_id: Optional[str] = None,
+    ) -> ApplyResult:
         with self._exclusive("升级操作", ApplyError):
-            return self._apply(Path(artifact_path), release)
+            return self._apply(
+                Path(artifact_path), release, reuse_backup_id=reuse_backup_id
+            )
 
-    def _apply(self, artifact: Path, release: ReleaseInfo) -> ApplyResult:
+    def prepare_backup(self, release: ReleaseInfo) -> str:
+        """应用**之前**先落地一份可回滚的升级前备份。
+
+        编排器需要在动手改文件之前就把 ``backup_id`` 写进 journal（否则它
+        被杀后恢复时不知道该回到哪一份备份）。这里复用 apply 内部的同一套
+        预检 + 备份逻辑；随后把 id 传回给 :meth:`apply` 即可复用，不会重复备份。
+        """
+        with self._exclusive("升级前备份", ApplyError):
+            try:
+                current_version, _ = self.current_version()
+            except VersionReadError as exc:
+                raise ApplyError(f"无法确定当前版本：{exc}") from exc
+            preflight = verify_data_paths(self._data_guard_paths())
+            if not preflight.ok:
+                details = "; ".join(
+                    f"{issue.path}: {issue.detail}" for issue in preflight.issues
+                )
+                raise PreflightError(f"升级前数据校验未通过：{details}")
+            key_tables = capture_table_inventory(self._data_guard_paths())
+            backup_id = self._create_backup(
+                current_version, release, preflight.to_dict(), key_tables=key_tables
+            )
+            self._read_backup(backup_id)
+            return backup_id
+
+    def _apply(
+        self,
+        artifact: Path,
+        release: ReleaseInfo,
+        *,
+        reuse_backup_id: Optional[str] = None,
+    ) -> ApplyResult:
         try:
             self._assert_not_replayed_release(release, phase="应用")
         except UpgradeError as exc:
@@ -1571,23 +1610,39 @@ class UpgradeManager:
                     f"发布包版本 {staged_version} 与清单版本 {release.version} 不一致"
                 )
 
-            self._set_status(
-                Phase.BACKING_UP,
-                "备份中：正在分别备份代码与数据",
-                target_version=release.version,
-                backup_id="",
-            )
-            try:
-                backup_id = self._create_backup(
-                    current_version, release, preflight.to_dict(), key_tables=key_tables
+            if reuse_backup_id:
+                # 编排器在停服之前就用 prepare_backup() 落好盘并把 id 写进
+                # journal；这里只校验它真的可读，绝不重复备份。
+                self._set_status(
+                    Phase.BACKING_UP,
+                    "备份中：复用已落盘的升级前备份",
+                    target_version=release.version,
+                    backup_id=reuse_backup_id,
                 )
-            except OSError as exc:
-                if getattr(exc, "errno", None) == errno.ENOSPC:
-                    raise self._disk_error(exc, "写入升级备份时") from exc
-                raise
-            # Re-read the metadata immediately: a backup we cannot parse is not
-            # a backup we can roll back to, and this must fail before mutation.
-            self._read_backup(backup_id)
+                backup_id = reuse_backup_id
+                self._read_backup(backup_id)
+            else:
+                self._set_status(
+                    Phase.BACKING_UP,
+                    "备份中：正在分别备份代码与数据",
+                    target_version=release.version,
+                    backup_id="",
+                )
+                try:
+                    backup_id = self._create_backup(
+                        current_version,
+                        release,
+                        preflight.to_dict(),
+                        key_tables=key_tables,
+                    )
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == errno.ENOSPC:
+                        raise self._disk_error(exc, "写入升级备份时") from exc
+                    raise
+                # Re-read the metadata immediately: a backup we cannot parse is
+                # not a backup we can roll back to, and this must fail before
+                # mutation.
+                self._read_backup(backup_id)
 
             # Durable "we are about to touch real files" marker. If this
             # process dies (or is killed) now, the next start sees it and
@@ -1708,7 +1763,7 @@ class UpgradeManager:
             ) or marker
             self._set_status(
                 Phase.COMPLETED,
-                f"完成：已升级 {current_version} → {release.version}",
+                f"完成：已安装 {current_version} → {release.version}，需重启后生效",
                 target_version=release.version,
                 backup_id=backup_id,
                 record_id=record.get("id"),
