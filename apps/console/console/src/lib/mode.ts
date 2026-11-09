@@ -55,7 +55,7 @@ export const MODE_HINTS: Record<DeviceMode, string> = {
  * 浏览器在宽屏下也走 ``data-mode=desktop`` 的栅格，但它的身份是「网页版」。
  * 设置页里描述"当前生效的是什么"时必须用这一组词，不能拿 ``MODE_LABELS``
  * 说成「桌面端（PC 客户端）」——那会让网页端自称桌面端。身份只由
- * ``CLIENT_LABEL[detectClient()]`` 表达。
+ * ``CLIENT_LABELS[detectClient()]`` 表达。
  */
 export const LAYOUT_LABELS: Record<DeviceMode, string> = {
   desktop: '宽屏布局',
@@ -115,6 +115,19 @@ export function detectClient(width?: number, ua?: string): ClientKind {
   if (isDesktopShell(ua)) return 'desktop'
   const w = width ?? (typeof window === 'undefined' ? WEB_MAX_WIDTH : window.innerWidth)
   return w < MOBILE_MAX_WIDTH ? 'mobile' : 'web'
+}
+
+/**
+ * 客户端身份的称呼：与 `MODE_LABELS`（布局）分开。
+ *
+ * 设置页「登录来源端」、登录页底部芯片这类描述"谁在登录"的地方必须用这组词，
+ * 键只能来自 `detectClient()` 或会话里记录的 `client`，不能来自窗口宽度决定的
+ * 布局 `mode` —— 否则宽屏浏览器会自称「桌面端（PC 客户端）」。
+ */
+export const CLIENT_LABELS: Record<ClientKind, string> = {
+  desktop: '桌面端',
+  web: '网页版',
+  mobile: '手机端',
 }
 
 /** 用户手动覆盖的形态；未覆盖返回 null。 */

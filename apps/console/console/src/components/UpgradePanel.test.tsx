@@ -215,6 +215,33 @@ describe('软件更新面板', () => {
     expect(info.textContent).toContain('共 2 份')
   })
 
+  test('手机端不显示本机绝对路径与盘符，窄屏下也不会被长路径撑成竖排', async () => {
+    const originalWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: 360,
+    })
+    mockedStatus.mockResolvedValue(makeStatus())
+
+    try {
+      render(<UpgradePanel />)
+
+      const info = await screen.findByTestId('upgrade-backup-info')
+      expect(info.textContent).not.toContain('E:\\LiuHaoBackups')
+      expect(info.textContent).not.toContain('D:\\LiuHaoData')
+      expect(info.textContent).not.toContain('（数据在 D:')
+      expect(info.textContent).toContain('手机端不显示本机路径')
+      expect(info.getAttribute('style') ?? '').toContain('overflow-wrap')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        writable: true,
+        value: originalWidth,
+      })
+    }
+  })
+
   test('同盘且还没有备份时，明确警告会一起丢，并说明首次升级会自动生成', async () => {
     mockedStatus.mockResolvedValue(
       makeStatus({

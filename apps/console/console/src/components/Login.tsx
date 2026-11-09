@@ -37,7 +37,7 @@ import {
   sessionFromToken,
 } from '../lib/auth'
 import { apiFetch } from '../lib/api'
-import { detectClient, isDesktopShell } from '../lib/mode'
+import { CLIENT_LABELS, detectClient, isDesktopShell } from '../lib/mode'
 import {
   clearLocalProof,
   localProofHeader,
@@ -57,7 +57,12 @@ import {
 import { DesktopDownloadLink } from './DesktopDownloadLink'
 
 export interface LoginProps {
-  /** 当前端的形态，登录时随请求上报（令牌里会记下来源端）。 */
+  /**
+   * 当前端的**布局**形态，只影响排版。
+   *
+   * 登录请求里的 `client` 必须来自 `detectClient()`（桌面壳标记 / UA），
+   * 不能拿它冒充客户端身份 —— 否则宽屏浏览器会以「桌面端」登录。
+   */
   mode: ClientMode
   /** 为什么回到登录页：过期或被登出都要明说，不静默跳转。 */
   notice?: 'expired' | 'logged-out' | null
@@ -78,12 +83,6 @@ const CLIENT_ICON = {
   mobile: IconMobile,
 } as const
 
-const CLIENT_LABEL: Record<ClientMode, string> = {
-  desktop: '桌面端',
-  web: '网页版',
-  mobile: '手机端',
-}
-
 /**
  * 网关还没就绪时登录页的自动重试节奏。
  *
@@ -103,6 +102,13 @@ const CONFIG_RETRY_LIMIT = 30
  */
 const DEVICE_REVOKED_MESSAGE =
   '这台设备已被移除，请重新配对。请在电脑上重新生成配对码，然后在手机上完成配对。'
+
+/**
+ * 首次初始化只能在本机完成。手机浏览器提交必然被网关拒绝，文案必须指到
+ * 这台电脑上的桌面端，而不是让用户"打开控制台/命令行"——手机上做不到。
+ */
+const BOOTSTRAP_LOCAL_ONLY_MESSAGE =
+  '首次初始化需要在这台电脑上的鎏灏桌面端完成。请打开这台电脑上的鎏灏桌面端，在登录页完成初始化后再回到当前设备登录。'
 
 /** 首次进入的页面：没有初始账号、或初始化停在半路，都直接进设置表单。 */
 function initialStage(config: AuthConfig): Stage {
@@ -194,10 +200,10 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
 
   const finish = useCallback(
     async (token: string) => {
-      const session = await sessionFromToken(token, { remember, client: mode })
+      const session = await sessionFromToken(token, { remember, client: detectClient() })
       onSuccess(session)
     },
-    [mode, onSuccess, remember],
+    [onSuccess, remember],
   )
 
   const submitLogin = useCallback(
@@ -207,7 +213,10 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
       setBusy(true)
       setError('')
       try {
-        const session = await login(principal.trim(), secret, { remember, client: mode })
+        const session = await login(principal.trim(), secret, {
+          remember,
+          client: detectClient(),
+        })
         onSuccess(session)
       } catch (err) {
         setError(loginErrorText(err instanceof AuthError ? err.message : '登录失败'))
@@ -219,7 +228,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         setBusy(false)
       }
     },
-    [busy, mode, onSuccess, principal, remember, secret],
+    [busy, onSuccess, principal, remember, secret],
   )
 
   const notConfigured = config !== null && !config.secret_store.configured
@@ -231,7 +240,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
     (config.registration_open === true || config.root_account_exists === false)
 
   return (
-    <div className="os-login">
+    <div className="os-login" data-mode={mode}>
       {/* 桌面端左栏：只放真实信息（凭据状态、可登录人数、当前形态），
           不放"安全运行 99.9%"这类编造的 HUD 数字。手机/网页端整列隐藏。 */}
       <aside className="os-login-aside">
@@ -266,7 +275,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
           <div className="os-login-status-row">
             <span>当前形态</span>
-            <span data-testid="client-kind">{CLIENT_LABEL[detectClient()]}</span>
+            <span data-testid="client-kind">{CLIENT_LABELS[detectClient()]}</span>
           </div>
           <div className="os-login-status-row">
             <span>运行载体</span>
@@ -527,7 +536,9 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         {stage === 'bootstrap' && (
           <BootstrapForm
             busy={busy}
-            mode={mode}
+            initializationLocal={
+              detectClient() !== 'mobile' && config?.recovery?.local !== false
+            }
             initialPrincipal={config?.initialization?.principal ?? ''}
             initializationIncomplete={config?.initialization?.state === 'incomplete'}
             onBusy={setBusy}
@@ -555,7 +566,6 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             <SelfRegisterForm
               busy={busy}
               remember={remember}
-              mode={mode}
               onBusy={setBusy}
               onError={setError}
               onCancel={() => setStage('login')}
@@ -616,10 +626,10 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
               <div
                 className="os-client-chip"
                 data-active="true"
-                title={`当前以${CLIENT_LABEL[client]}形态打开`}
+                title={`当前以${CLIENT_LABELS[client]}形态打开`}
               >
                 <Icon size={15} />
-                <span>{CLIENT_LABEL[client]}</span>
+                <span>{CLIENT_LABELS[client]}</span>
               </div>
             )
           })()}
@@ -670,7 +680,7 @@ type ModelPreset = keyof typeof MODEL_PRESETS
 
 function BootstrapForm({
   busy,
-  mode,
+  initializationLocal,
   initialPrincipal,
   initializationIncomplete,
   onBusy,
@@ -681,7 +691,8 @@ function BootstrapForm({
   canCancel,
 }: {
   busy: boolean
-  mode: ClientMode
+  /** 首次初始化只能在本机完成；非本机（如手机浏览器）只给指路，不渲染必失败的表单。 */
+  initializationLocal: boolean
   initialPrincipal: string
   initializationIncomplete: boolean
   onBusy: (value: boolean) => void
@@ -703,6 +714,30 @@ function BootstrapForm({
   const [conflict, setConflict] = useState(false)
 
   const strength = passwordStrength(password)
+
+  // 非本机（手机浏览器等）不渲染一个必定 403 的表单，直接指路到桌面端。
+  if (!initializationLocal) {
+    return (
+      <div data-testid="bootstrap-remote-guide">
+        <p className="os-login-sub" style={{ marginBottom: 14 }}>
+          首次使用 · 在这台电脑上完成初始化
+        </p>
+        <div className="os-note" role="status">
+          <span>{BOOTSTRAP_LOCAL_ONLY_MESSAGE}</span>
+        </div>
+        <div className="os-login-links">
+          <button type="button" className="os-link" onClick={onAlreadyInitialized}>
+            我已在桌面端完成，重新检查
+          </button>
+          {canCancel && (
+            <button type="button" className="os-link" onClick={onCancel}>
+              返回登录
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -739,7 +774,10 @@ function BootstrapForm({
       clearLocalProof('handoff')
 
       // 提交即登录：不让用户再回头抄地址或手动登录一次。
-      const session = await login(name, password, { remember: true, client: mode })
+      const session = await login(name, password, {
+        remember: true,
+        client: detectClient(),
+      })
 
       // 模型 Key 是可选项：失败只记一条提示，绝不把已经完成的初始化卡住。
       let warning: string | null = null
@@ -772,8 +810,15 @@ function BootstrapForm({
       savePendingRecovery({ account: result.account.principal, code: result.recovery_code, warning })
       onSuccess(session)
     } catch (err) {
-      if (err instanceof AuthError && err.status === 409) setConflict(true)
-      onError(err instanceof Error ? err.message : '初始化失败')
+      if (err instanceof AuthError && err.status === 409) {
+        setConflict(true)
+        onError(err.message)
+      } else if (err instanceof AuthError && err.status === 403) {
+        // 网关拒绝非本机的初始化请求；原来的"控制台/命令行"在手机上不可达。
+        onError(BOOTSTRAP_LOCAL_ONLY_MESSAGE)
+      } else {
+        onError(err instanceof Error ? err.message : '初始化失败')
+      }
     } finally {
       onBusy(false)
     }
@@ -936,7 +981,6 @@ function BootstrapForm({
 function SelfRegisterForm({
   busy,
   remember,
-  mode,
   onBusy,
   onError,
   onCancel,
@@ -944,7 +988,6 @@ function SelfRegisterForm({
 }: {
   busy: boolean
   remember: boolean
-  mode: ClientMode
   onBusy: (value: boolean) => void
   onError: (message: string) => void
   onCancel: () => void
@@ -968,7 +1011,10 @@ function SelfRegisterForm({
     onBusy(true)
     onError('')
     try {
-      const session = await registerSelf(principal.trim(), password, { remember, client: mode })
+      const session = await registerSelf(principal.trim(), password, {
+        remember,
+        client: detectClient(),
+      })
       onSuccess(session)
     } catch (err) {
       onError(err instanceof AuthError ? err.message : '创建失败，请稍后再试')
@@ -1057,9 +1103,10 @@ function RecoveryForm({
   const [issueFailed, setIssueFailed] = useState<string | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'fail'>('idle')
   const [handoffBusy, setHandoffBusy] = useState(false)
-  // 本机（含已配对手机中继）才能直接生成恢复码；直连手机端要给出真实路径。
+  // 本机才能直接生成恢复码；非本机只有服务端显式允许远程重置时才能在本页重置。
   const canSelfServiceHere = recovery?.local ?? true
   const remoteAllowed = recovery?.remote_allowed === true
+  const canResetHere = canSelfServiceHere || remoteAllowed
 
   /**
    * 本机自救：没有任何恢复码的账号，由本机生成一个新码并在页面直接显示。
@@ -1140,20 +1187,39 @@ function RecoveryForm({
     }
   }
 
+  // 非本机且服务端没有开放远程重置：这里填什么都不会成功，只给能走通的路。
+  if (!canResetHere) {
+    return (
+      <div>
+        <p className="os-login-sub" style={{ marginBottom: 14 }}>
+          重置密码
+        </p>
+        <div className="os-note" role="status" data-testid="recovery-path">
+          <span>
+            重置密码需要在这台电脑上完成。请打开这台电脑上的鎏灏桌面端，在登录页选择「忘记密码」，
+            用初始化时保存的恢复码设置新密码；完成后回到当前设备登录。
+          </span>
+        </div>
+        <div className="os-login-links">
+          <button type="button" className="os-link" onClick={onCancel}>
+            返回登录
+          </button>
+          <button type="button" className="os-link" onClick={onLost}>
+            恢复码也丢失了
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <form onSubmit={submit}>
       <p className="os-login-sub" style={{ marginBottom: 14 }}>
         用初始化时保存的恢复码重置密码。恢复码使用一次后即失效。
       </p>
       {!canSelfServiceHere && (
-        <div className="os-note" role="status" data-testid="recovery-path">
-          <span>
-            这台设备不是本机：重置请在本机打开控制台，或先在电脑上开启「手机访问」
-            并完成配对后从手机端操作。
-            {remoteAllowed
-              ? '本机已开启远程恢复，也可以直接在这里重试。'
-              : '若需要跨设备重置，请在电脑上开启远程恢复（环境变量 LIUHAO_ALLOW_REMOTE_RECOVERY）。'}
-          </span>
+        <div className="os-note" role="status">
+          <span>恢复码需要在电脑上的鎏灏桌面端生成后在这里输入。</span>
         </div>
       )}
       <div className="os-field">
@@ -1214,7 +1280,7 @@ function RecoveryForm({
           </div>
           {copyState === 'fail' && <div>复制失败，请手动选中上面的码复制。</div>}
           <span>
-            这个码可用于本机或已配对的手机端，用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
+            这个码用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
           </span>
         </div>
       )}
@@ -1241,7 +1307,7 @@ function RecoveryForm({
           </button>
         ) : (
           <span className="os-hint">
-            没有恢复码？请在本机控制台生成，或通过已配对的「手机访问」操作。
+            没有恢复码？请在这台电脑的鎏灏桌面端生成后再输入。
           </span>
         )}
         <button type="button" className="os-link" onClick={onLost}>

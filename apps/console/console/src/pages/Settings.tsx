@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { DeviceMode, DeviceModeState, Theme } from '../lib/mode'
-import { DEVICE_MODES, LAYOUT_LABELS, MODE_HINTS, MODE_LABELS, isDesktopShell } from '../lib/mode'
+import { CLIENT_LABELS, DEVICE_MODES, LAYOUT_LABELS, MODE_HINTS, isDesktopShell } from '../lib/mode'
 import type { Session } from '../lib/auth'
 import { apiFetch, useApi } from '../lib/api'
 import { humanDuration, permissionLabel, toneVar, useNow } from '../lib/format'
@@ -525,7 +525,7 @@ export function Settings({
           <dt>身份范围</dt>
           <dd>{session.scope ? '全部权限' : '—'}</dd>
           <dt>登录来源端</dt>
-          <dd>{MODE_LABELS[session.client] ?? session.client}</dd>
+          <dd>{CLIENT_LABELS[session.client] ?? session.client}</dd>
           <dt>会话剩余</dt>
           <dd>{session.expiresAt ? humanDuration(remaining) : '由服务端裁决'}</dd>
           <dt>过期时刻</dt>

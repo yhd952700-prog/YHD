@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from '../lib/api'
+import { detectClient } from '../lib/mode'
 import type { BackupView, UpgradeStatus } from '../lib/upgrade'
 import {
   applyUpgrade,
@@ -49,11 +50,15 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : '操作没有完成，请稍后重试。'
 }
 
-/** 备份与数据是否同盘：同盘必须直说"会一起丢"，不能让用户误以为已经安全。 */
-function backupVolumeText(backup: BackupView): string {
+/** 备份与数据是否同盘：同盘必须直说"会一起丢"，不能让用户误以为已经安全。
+ *  手机端不展示本机的盘符与绝对路径，只保留结论。 */
+function backupVolumeText(backup: BackupView, hideMachinePaths = false): string {
   if (backup.same_volume) {
-    const drive = backup.backup_drive || backup.data_drive
+    const drive = hideMachinePaths ? '' : backup.backup_drive || backup.data_drive
     return `与数据目录在同一块盘${drive ? `（${drive}）` : ''}：这块盘坏了，数据和备份会一起丢。`
+  }
+  if (hideMachinePaths) {
+    return '与数据目录不在同一块盘：单块盘损坏不会同时丢掉数据和备份。'
   }
   const drives = [
     backup.data_drive ? `数据在 ${backup.data_drive}` : '',
@@ -184,14 +189,16 @@ export function UpgradePanel() {
     status.last_operation?.status === 'completed'
   const stateLabel = STATE_LABEL[status.state] ?? status.state
   const backup = status.backup ?? null
+  // 手机端不该看到主机的盘符与绝对路径；也不能因为长路径把卡片撑成逐字竖排。
+  const hideMachinePaths = detectClient() === 'mobile'
 
   return (
-    <div className="os-list">
+    <div className="os-list" style={{ minWidth: 0 }}>
       <div className="os-row">
         <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
-        <div className="os-row-main">
+        <div className="os-row-main" style={{ minWidth: 0 }}>
           <div className="os-row-title">当前版本 {status.current_version ?? '未知'}</div>
-          <div className="os-row-sub">
+          <div className="os-row-sub" style={{ overflowWrap: 'anywhere' }}>
             更新源：{sourceReady ? status.source || '已配置' : '未配置'} · 最近检查：
             {formatTime(status.last_check?.checked_at)}
           </div>
@@ -206,17 +213,22 @@ export function UpgradePanel() {
           className={backup.same_volume ? 'os-alert' : 'os-note'}
           role={backup.same_volume ? 'alert' : undefined}
           data-testid="upgrade-backup-info"
-          style={{ marginTop: 12 }}
+          style={{ marginTop: 12, minWidth: 0, overflowWrap: 'anywhere' }}
         >
           <div>
-            <strong>备份位置</strong>：{backup.root}
+            <strong>备份位置</strong>：
+            {hideMachinePaths ? '本机磁盘上的备份目录（手机端不显示本机路径）' : backup.root}
           </div>
-          <div style={{ marginTop: 6 }}>{backupVolumeText(backup)}</div>
+          <div style={{ marginTop: 6 }}>{backupVolumeText(backup, hideMachinePaths)}</div>
           <div style={{ marginTop: 6 }}>
             为什么放在数据目录外：数据目录被删、或它所在的盘坏了，放在里面的备份会一起消失——那正是最需要备份的时候。
           </div>
           <div style={{ marginTop: 6 }}>
-            换机时带走：把 {backup.root} 整个目录复制走（只带数据目录会丢掉升级前的回滚备份）。
+            换机时带走：
+            {hideMachinePaths
+              ? '在电脑上把整个备份目录复制走'
+              : `把 ${backup.root} 整个目录复制走`}
+            （只带数据目录会丢掉升级前的回滚备份）。
           </div>
           <div style={{ marginTop: 6 }}>
             最近一次备份：
@@ -226,7 +238,9 @@ export function UpgradePanel() {
           </div>
           {backup.migration && backup.migration.moved > 0 && (
             <div style={{ marginTop: 6 }}>
-              旧位置 {backup.migration.from} 的 {backup.migration.moved} 份备份已自动搬到新位置。
+              {hideMachinePaths
+                ? `旧位置的 ${backup.migration.moved} 份备份已自动搬到新位置。`
+                : `旧位置 ${backup.migration.from} 的 ${backup.migration.moved} 份备份已自动搬到新位置。`}
             </div>
           )}
         </div>

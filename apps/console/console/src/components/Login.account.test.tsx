@@ -137,7 +137,7 @@ describe('登录页状态机', () => {
     expectNoInviteWords()
   })
 
-  test('手机直连（非本机）：写明真实可用的自助恢复路径，不展示无效的本机生成入口', async () => {
+  test('手机直连（非本机）：只指路到桌面端，不渲染重置表单、不暴露内部开关名', async () => {
     mockRoutes(
       config({
         recovery: {
@@ -152,13 +152,18 @@ describe('登录页状态机', () => {
     render(<Login mode="mobile" onSuccess={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: '忘记密码' }))
     const note = await screen.findByTestId('recovery-path')
-    expect(note.textContent).toContain('「手机访问」')
-    expect(note.textContent).toContain('LIUHAO_ALLOW_REMOTE_RECOVERY')
+    expect(note.textContent).toContain('鎏灏桌面端')
+    expect(note.textContent).not.toContain('手机访问')
+    expect(note.textContent).not.toContain('LIUHAO_ALLOW_REMOTE_RECOVERY')
+    // 真能走通的只有桌面端：恢复码表单与重置按钮都不该出现。
+    expect(screen.queryByLabelText('恢复码')).toBeNull()
+    expect(screen.queryByLabelText('新密码')).toBeNull()
+    expect(screen.queryByRole('button', { name: '重置并进入' })).toBeNull()
     expect(screen.queryByRole('button', { name: '没有恢复码？在本机生成' })).toBeNull()
     expectNoBannedText()
   })
 
-  test('本机（含已配对手机中继）：可直接在本机生成恢复码', async () => {
+  test('本机：可直接在本机生成恢复码', async () => {
     mockRoutes(
       config({
         recovery: {
@@ -184,6 +189,70 @@ describe('登录页状态机', () => {
     expect(document.body.textContent).toContain('创建的第一个账号拥有本机全部管理范围')
     expectNoBannedText()
     expectNoInviteWords()
+  })
+
+  test('宽屏浏览器仍以网页版身份登录：布局 mode 不再冒充客户端', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 })
+    const token = tokenFor('person')
+    let loginBody: Record<string, unknown> = {}
+    mockRoutes(config(), {
+      '/v1/auth/login': (init) => {
+        loginBody = JSON.parse(String(init?.body ?? '{}'))
+        return json(200, {
+          access_token: token,
+          principal: 'person',
+          display_name: null,
+          scope: 'L3',
+          permissions: [],
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          client: 'web',
+        })
+      },
+    })
+    try {
+      render(<Login mode="desktop" onSuccess={vi.fn()} />)
+      fireEvent.change(await screen.findByLabelText('账号'), { target: { value: 'person' } })
+      fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'password123' } })
+      fireEvent.click(screen.getByRole('button', { name: '登录' }))
+      await waitFor(() => expect(loginBody.client).toBe('web'))
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 })
+    }
+  })
+
+  test('手机端首次初始化：不渲染必失败的表单，指路到这台电脑的桌面端', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 })
+    mockRoutes(config({ root_account_exists: false, registration_open: true }))
+    try {
+      render(<Login mode="mobile" onSuccess={vi.fn()} />)
+      const guide = await screen.findByTestId('bootstrap-remote-guide')
+      expect(guide.textContent).toContain('鎏灏桌面端')
+      expect(screen.queryByLabelText('账号')).toBeNull()
+      expect(screen.queryByRole('button', { name: '创建并进入系统' })).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 })
+    }
+  })
+
+  test('初始化被网关拒绝（403）：文案指到桌面端，不再要求手机打开控制台/命令行', async () => {
+    mockRoutes(config({ root_account_exists: false, registration_open: true }), {
+      '/v1/accounts/register': () =>
+        json(403, { detail: '首次初始化只允许在本机控制台或命令行执行' }),
+    })
+    render(<Login mode="web" onSuccess={vi.fn()} />)
+    // 等状态机真正切到初始化表单，避免把内容填进登录表单。
+    expect(await screen.findByText('首次使用 · 初始化本机')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'owner' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'password123' } })
+    fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'password123' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建并进入系统' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/v1/accounts/register', expect.anything()),
+    )
+    await waitFor(() =>
+      expect(document.body.textContent).toContain('首次初始化需要在这台电脑上的鎏灏桌面端完成'),
+    )
+    expect(document.body.textContent).not.toContain('命令行')
   })
 
   test('创建成功后直接进入系统，且以成员身份裁剪导航入口', async () => {
@@ -255,7 +324,7 @@ describe('登录页状态机', () => {
     expect(panel.textContent).toContain('HAND-OFF-2026')
     expect(panel.textContent).toContain('只显示这一次')
     expect(panel.textContent).toContain('抄下来')
-    expect(panel.textContent).toContain('可用于本机或已配对的手机端')
+    expect(panel.textContent).not.toContain('已配对的手机端')
     expect(panel.textContent).toContain('用一次就会失效')
     expect(panel.textContent).toContain('重新生成')
     expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
