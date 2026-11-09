@@ -266,14 +266,12 @@ Type: files; Name: "{app}\run\instance.json"
 Type: files; Name: "{app}\bootstrap.log"
 Type: files; Name: "{app}\安装位置说明.txt"
 Type: files; Name: "{app}\.liuhao-startup-probe-*"
-Type: files; Name: "{code:GetDataDir}\run\instance.json"
-Type: files; Name: "{code:GetDataDir}\config\current_url.txt"
-Type: files; Name: "{code:GetDataDir}\.liuhao-startup-probe-*"
-; 旧数据目录（0.1.0 及更早的默认位置）里的同类探针：机器上可能同时存在新旧两个
-; 数据目录，只按 {code:GetDataDir} 删会漏掉旧目录里的占位文件（本机实测 42 个）。
-Type: files; Name: "{#LegacyDataDir}\.liuhao-startup-probe-*"
-Type: files; Name: "{localappdata}\LiuHao\logs\bootstrap.log"
-Type: files; Name: "{localappdata}\LiuHao\desktop.json"
+; 数据目录里的运行痕迹改由 [Code] 按「实例归属」清理，这里不再写死路径：
+;   * {code:GetDataDir} 在卸载阶段拿不到安装期解析结果（ResolvedDataDir 为空），
+;     写成常量实际是空路径，一条也删不到；
+;   * 写死 {#LegacyDataDir} 与 {localappdata}\LiuHao\... 会越界：实测卸载 D 盘
+;     测试副本时，把 C 盘另一份实例数据目录里的 13 个文件删掉了。
+; 归属判定与清理见 InitializeUninstall / CurUninstallStepChanged。
 
 [UninstallRun]
 ; 顺序必须是：先停进程 → 再关自启 → 最后清缓存/删文件。托盘或网关还在跑时，
@@ -323,6 +321,8 @@ var
   ProgramFallback: Boolean;
   DataFallback: Boolean;
   UninstallDataDir: String;
+  { 数据目录是否确属当前卸载的这份副本；False 时任何数据目录清理都不做。 }
+  UninstallDataDirOwned: Boolean;
   { 数据目录选择页：默认值来自 ResolvedDataDir；D 盘不可用或原目录不可写时
     为空，用户必须自己选一个可写目录才能继续（不静默回退 C 盘）。 }
   DataDirPage: TInputDirWizardPage;
@@ -1192,11 +1192,43 @@ begin
   ResolvedDataDir := Dir;
 end;
 
+{ 同一 AppId 全机只有一条卸载键（HKCU\...\Uninstall\AppId_is1）：
+    * Inno 的 AppId 是编译期常量，无法在运行时按安装路径生成哈希后缀，
+      「每实例独立 AppId」只能在构建期固定，解决不了同机多副本；
+    * 同一键被第二份安装覆盖后，InstallLocation / DataDir 都指向新副本，
+      卸载任意一份都会把整条键删掉，另一份就成了「程序还在、卸载入口没了」
+      的孤儿（实测：两份副本装完只剩一条键）。
+
+  因此安装前显式检测：键里登记的安装位置存在、且与本目标目录不同 → 直接拒绝。
+  同目录覆盖升级（Dir = 已登记位置）放行。 }
+function ConflictingInstallDir(const Target: String): String;
+var
+  Dir: String;
+begin
+  Result := '';
+  Dir := '';
+  if RegQueryStringValue(HKCU, UninstallKeyPath, 'InstallLocation', Dir) and
+     (Dir <> '') and
+     DirExists(Dir) and
+     (not SameDir(Dir, Target)) then
+  begin
+    Result := Dir;
+    Exit;
+  end;
+  Dir := '';
+  if RegQueryStringValue(HKLM, UninstallKeyPath, 'InstallLocation', Dir) and
+     (Dir <> '') and
+     DirExists(Dir) and
+     (not SameDir(Dir, Target)) then
+    Result := Dir;
+end;
+
 { 安装开始前的最后一道关：目录不可写 / 空间不足都给中文、可行动的提示，
   避免装到一半才弹出 “CreateFile failed; code 5（拒绝访问）”。 }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Dir: String;
+  Conflict: String;
   FreeMB: Int64;
   Deepest: Integer;
   Issue: String;
@@ -1206,6 +1238,23 @@ begin
   Dir := WizardForm.DirEdit.Text;
   if Dir = '' then
     Exit;
+
+  { P1：同机第二份安装会与现有副本共用同一条卸载键，卸载任一份都会把键删掉，
+    另一份变孤儿。这里在写盘前阻断；同目录覆盖升级放行。
+    PrepareToInstall 在交互与静默（/SILENT、/VERYSILENT）安装下都会调用，
+    所以这是唯一需要设防的入口。 }
+  Conflict := ConflictingInstallDir(Dir);
+  if Conflict <> '' then
+  begin
+    Result := '这台机器上已经安装了鎏灏：' + #13#10 + Conflict + #13#10#13#10 +
+      '同一个安装标识在同一台机器上只能有一份副本。' +
+      '再装到别的目录会覆盖卸载登记：以后卸载任意一份，另一份就会失去卸载入口' +
+      '（程序文件还在，但「应用和功能」里找不到）。' + #13#10#13#10 +
+      '请二选一：' + #13#10 +
+      '  1) 升级 / 修复：把程序目录改回上面的路径，再点「下一步」；' + #13#10 +
+      '  2) 换位置：先卸载现有副本，再安装到 ' + Dir + '。';
+    Exit;
+  end;
 
   { 备份根不能默认落在系统盘：D 盘不可用、数据目录回退到 C 盘时，默认推导会
     得到 C:\LiuHaoBackups，等于把「不占 C 盘」的要求落空。此时明确拒绝并给出
@@ -1418,22 +1467,68 @@ begin
   end;
 end;
 
-{ 卸载一开始就把实际数据目录读出来：等到 usPostUninstall 时
-  程序目录下的 data-dir.txt 已被 [UninstallDelete] 删掉，读不到就只剩 C 盘默认路径。 }
+{ 卸载一开始就把「本实例自己的」数据目录读出来：等到 usPostUninstall 时
+  程序目录下的 data-dir.txt 已被 [UninstallDelete] 删掉，读不到就只剩 C 盘默认路径。
+
+  归属判定（P1）：同一 AppId 全机只有一条卸载键，多副本时键里的 InstallLocation /
+  DataDir 会被后装的那份改写。所以只有两种证据能认定数据目录属于本副本：
+    1) 本实例安装目录下的 data-dir.txt —— 安装时写进安装目录，天然按副本隔离；
+    2) 键里的 InstallLocation 与本实例安装目录相同（同目录升级）时登记的 DataDir。
+  两条都不成立就视为「不是我的」：所有数据目录与旧默认位置的清理一律跳过。
+  宁可留下残留，也不能删到别的实例。 }
 function InitializeUninstall: Boolean;
 var
   Marker: String;
+  RegDir: String;
+  RegInstall: String;
 begin
   Result := True;
-  { 与安装时同一套解析顺序：注册表 DataDir（Unicode 原生）优先，
-    旧版安装没有该值才回落到 ANSI marker。 }
-  Marker := RegisteredDataDir;
+  Marker := ReadDataDirMarker(ExpandConstant('{app}') + '\data-dir.txt');
   if Marker = '' then
-    Marker := ReadDataDirMarker(ExpandConstant('{app}') + '\data-dir.txt');
-  if Marker <> '' then
+  begin
+    RegInstall := '';
+    if not RegQueryStringValue(HKCU, UninstallKeyPath, 'InstallLocation', RegInstall) then
+      RegQueryStringValue(HKLM, UninstallKeyPath, 'InstallLocation', RegInstall);
+    RegDir := RegisteredDataDir;
+    if (RegInstall <> '') and
+       SameDir(RegInstall, ExpandConstant('{app}')) and
+       (RegDir <> '') then
+      Marker := RegDir;
+  end;
+  UninstallDataDirOwned := (Marker <> '') and DirExists(Marker);
+  if UninstallDataDirOwned then
     UninstallDataDir := Marker
   else
-    UninstallDataDir := ExpandConstant('{localappdata}\LiuHao\data');
+  begin
+    UninstallDataDir := '';
+    Log('卸载：无法确认数据目录属于当前安装副本（无 data-dir.txt，且卸载键 ' +
+        'InstallLocation 不指向 ' + ExpandConstant('{app}') + '）；' +
+        '跳过所有数据目录与旧默认位置的清理。');
+  end;
+end;
+
+{ 删除某个目录下的启动探针临时文件（.liuhao-startup-probe-*）。
+  只在调用方已确认归属的目录里调用；Dir 为空或不存在时直接返回 0。 }
+function DeleteStartupProbes(const Dir: String): Integer;
+var
+  FindRec: TFindRec;
+  Pattern: String;
+begin
+  Result := 0;
+  if (Dir = '') or (not DirExists(Dir)) then
+    Exit;
+  Pattern := Dir + '\.liuhao-startup-probe-*';
+  if not FindFirst(Pattern, FindRec) then
+    Exit;
+  repeat
+    { 16 = FILE_ATTRIBUTE_DIRECTORY；同名目录不动。 }
+    if (FindRec.Attributes and 16) = 0 then
+    begin
+      if DeleteFile(Dir + '\' + FindRec.Name) then
+        Result := Result + 1;
+    end;
+  until not FindNext(FindRec);
+  FindClose(FindRec);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -1472,6 +1567,23 @@ begin
              '卸载不会删除 licenses\、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE。' + #13#10 +
              '这些是你可以保留的合规记录；不需要时卸载完成后手动删除安装目录即可。',
              mbInformation, MB_OK);
+
+    { 运行痕迹只在本实例自己的数据目录里清（放在停进程之后、文件删除之前）：
+      run\instance.json 含 pid 与地址，config\current_url.txt 记录控制台地址，
+      .liuhao-startup-probe-* 是启动探针临时文件。归属未确认就一个都不碰。 }
+    if UninstallDataDirOwned and DirExists(UninstallDataDir) then
+    begin
+      DeleteFile(UninstallDataDir + '\run\instance.json');
+      DeleteFile(UninstallDataDir + '\config\current_url.txt');
+      DeleteStartupProbes(UninstallDataDir);
+      { bootstrap.log 与 desktop.json 在旧默认数据目录的上一级（%LOCALAPPDATA%\LiuHao）。
+        只有本实例的数据目录**就是**旧默认位置时才清，否则属于别的副本。 }
+      if SameDir(UninstallDataDir, ExpandConstant('{#LegacyDataDir}')) then
+      begin
+        DeleteFile(ExpandConstant('{localappdata}\LiuHao\logs\bootstrap.log'));
+        DeleteFile(ExpandConstant('{localappdata}\LiuHao\desktop.json'));
+      end;
+    end;
   end;
 
   if CurUninstallStep = usPostUninstall then
@@ -1480,14 +1592,27 @@ begin
     if UninstallSilent then
       Exit;
 
-    { 数据可能不止一个：主数据目录（marker/注册表）之外，本机还可能有
-      上一次安装留下的骨架目录（D:\LiuHaoData）与桌面壳目录（%LOCALAPPDATA%\LiuHao，
-      含 desktop.json、logs、diagnostics）。只问主目录会让其余目录里的
-      JWT 签名密钥与账号材料静默留存。 }
+    { 归属未确认时，连「要不要删数据」都不问：问了就等于把别的实例的数据目录
+      摆到删除按钮前面。 }
+    if not UninstallDataDirOwned then
+    begin
+      Log('卸载：数据目录归属未确认，跳过数据目录删除询问。');
+      Exit;
+    end;
+
+    { 可删的只有本实例自己的数据目录。另两个候选（D:\LiuHaoData、桌面壳根
+      %LOCALAPPDATA%\LiuHao）只在确实就是/包含本实例数据目录时才加入，
+      跨实例一律不碰。 }
     SetArrayLength(Candidates, 3);
     Candidates[0] := UninstallDataDir;
-    Candidates[1] := 'D:\LiuHaoData';
-    Candidates[2] := ExpandConstant('{localappdata}\LiuHao');
+    if SameDir(UninstallDataDir, 'D:\LiuHaoData') then
+      Candidates[1] := 'D:\LiuHaoData'
+    else
+      Candidates[1] := '';
+    if IsSameOrChildDir(UninstallDataDir, ExpandConstant('{localappdata}\LiuHao')) then
+      Candidates[2] := ExpandConstant('{localappdata}\LiuHao')
+    else
+      Candidates[2] := '';
 
     Listing := '';
     ExistingCount := 0;
