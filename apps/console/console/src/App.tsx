@@ -80,6 +80,7 @@ import { Members } from './pages/Members'
 import { AccountSecurity } from './pages/AccountSecurity'
 import { Memory } from './pages/Memory'
 import { MyData } from './pages/MyData'
+import { Me } from './pages/Me'
 import { MyEmployees } from './pages/MyEmployees'
 import { MyKeys } from './pages/MyKeys'
 import { PermissionMatrix } from './pages/PermissionMatrix'
@@ -146,6 +147,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
     sub: '真实配置预检结果 —— 只读，不含任何配置值',
   },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
+  me: { title: '我的', sub: '账号、数据与隐私入口；手机上也能直接走到' },
   about: { title: '关于与隐私', sub: '版本 / 数据目录 / 加密边界 / 联网说明 / 许可证' },
   // ── 账号面（§9.8）──────────────────────────────────────────────────
   members: { title: '成员与权限管理', sub: '成员、状态与 Key 授权；写操作都由服务端记录审计' },
@@ -995,6 +997,7 @@ function App() {
       {shown === 'status' && <SystemStatus provider={provider} />}
       {shown === 'preflight' && <Preflight />}
       {shown === 'about' && <About />}
+      {shown === 'me' && <Me caps={caps} onNavigate={navigate} />}
       {shown === 'settings' && (
         <Settings
           device={device}

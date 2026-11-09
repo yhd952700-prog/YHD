@@ -123,6 +123,9 @@ export const GOVERNANCE_NAV: NavItem[] = [
 ]
 
 export const FOOTER_NAV: NavItem[] = [
+  // 「我的」：手机端账号、数据与隐私入口的收敛页。桌面端侧栏也有同一入口，
+  // 这样三端对"账号面在哪里"只有一个答案，不再靠深链或猜路径。
+  { key: 'me', label: '我的', icon: IconShield, hint: '账号、数据与隐私入口' },
   // 关于与隐私：所有人可见。首次披露不能只藏在安装前的 txt 里。
   {
     key: 'about',
@@ -180,7 +183,8 @@ export function visibleNavKeys(caps: AccountCaps): Set<string> {
  * 六项在 360px 宽下仍是一行（os.css 在 ≤420px 收紧字号与内边距），
  * 不换行、不横向溢出；每项仍是原生 <button>，可 Tab 聚焦。
  *
- * 第 6 项按身份切换：设置入口只对根出现；其他人用"我的 Key"作为账户面入口。
+ * 第 6 项固定为「我的」：账号安全、我的数据、恢复码、关于与隐私都在这一页分组，
+ * 不再按身份切换成设置或我的 Key —— 两种身份在手机上都要能走到账号面。
  */
 export const MOBILE_NAV_KEYS = [
   'overview',
@@ -188,12 +192,11 @@ export const MOBILE_NAV_KEYS = [
   'butler',
   'goals',
   'approval',
-  'settings',
+  'me',
 ]
 
 export function mobileNavKeysFor(caps: AccountCaps): string[] {
-  const last = caps.canSettings ? 'settings' : 'my-keys'
   // 没有签发范围时底栏不留「审批中心」的死入口，换成同样可读的「工作区文件」。
   const fourth = visibleNavKeys(caps).has('approval') ? 'approval' : 'files'
-  return ['overview', 'my-employees', 'butler', 'goals', fourth, last]
+  return ['overview', 'my-employees', 'butler', 'goals', fourth, 'me']
 }

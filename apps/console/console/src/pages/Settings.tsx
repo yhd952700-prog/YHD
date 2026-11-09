@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { DeviceMode, DeviceModeState, Theme } from '../lib/mode'
-import { CLIENT_LABELS, DEVICE_MODES, LAYOUT_LABELS, MODE_HINTS, isDesktopShell } from '../lib/mode'
+import { CLIENT_LABELS, LAYOUT_LABELS, MODE_HINTS, isDesktopShell, layoutChoicesFor } from '../lib/mode'
 import type { Session } from '../lib/auth'
 import { apiFetch, useApi } from '../lib/api'
 import { humanDuration, permissionLabel, toneVar, useNow } from '../lib/format'
@@ -157,6 +157,8 @@ export function Settings({
   focusModelId,
 }: SettingsProps) {
   const { mode, detected, override, theme, setOverride, setTheme } = device
+  // 手机端不渲染宽屏 / 紧凑选项：360px 下切过去会横向溢出且底栏消失。
+  const layoutChoices = layoutChoicesFor(detected)
 
   // 安装提示：桌面端会触发 beforeinstallprompt，手机端（iOS Safari）不会 —— 后者
   // 只能手动"添加到主屏幕"。拿不到事件时如实提示手动方式，而不是放一个按了没反应的按钮。
@@ -317,7 +319,7 @@ export function Settings({
             </span>
           </button>
 
-          {DEVICE_MODES.map((candidate) => {
+          {layoutChoices.map((candidate) => {
             const Icon = MODE_ICON[candidate]
             return (
               <button
@@ -339,6 +341,7 @@ export function Settings({
             当前生效布局：<strong>{LAYOUT_LABELS[mode]}</strong>
             {override ? '（已手动覆盖）' : '（跟随窗口）'}。
             三端共用同一批端点与同一套鉴权 —— 断点里没有、也不该有权限边界。
+            {detected === 'mobile' && ' 手机端固定使用窄屏布局，不提供宽屏选项。'}
           </span>
         </div>
       </Card>

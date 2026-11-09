@@ -136,6 +136,25 @@ export function getModeOverride(): DeviceMode | null {
   return DEVICE_MODES.includes(stored as DeviceMode) ? (stored as DeviceMode) : null
 }
 
+/**
+ * 实际生效的布局。
+ *
+ * 手机浏览器一旦落到窄屏布局，任何历史覆盖值（例如之前在宽屏上选的「宽屏布局」）
+ * 都不能把它拉回桌面栅格：360px 下切过去会得到 725px 的横向溢出、侧栏占掉大半
+ * 屏幕、底栏消失，用户在手机上无法自己退回来。桌面壳与宽屏浏览器仍按覆盖值。
+ */
+export function resolveMode(detected: DeviceMode, override: DeviceMode | null): DeviceMode {
+  if (detected === 'mobile') return 'mobile'
+  return override ?? detected
+}
+
+/**
+ * 设置页可选的布局项。手机端只保留「窄屏布局」，不渲染会导致横向溢出的宽屏选项。
+ */
+export function layoutChoicesFor(detected: DeviceMode): DeviceMode[] {
+  return detected === 'mobile' ? ['mobile'] : [...DEVICE_MODES]
+}
+
 export function setModeOverride(mode: DeviceMode | null): void {
   writeStored(MODE_KEY, mode)
 }
@@ -200,7 +219,7 @@ export function useDeviceMode(): DeviceModeState {
     }
   }, [])
 
-  const mode = override ?? detected
+  const mode = resolveMode(detected, override)
   // 未手动指定主题时，主题跟随形态（桌面/手机深色，网页浅色）。
   const effectiveTheme = themeOverride ?? DEFAULT_THEME[mode]
 

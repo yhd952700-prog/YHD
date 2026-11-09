@@ -25,7 +25,13 @@ describe('手机端底部导航', () => {
 
   test('保留 default 页与"我的"入口', () => {
     expect(MOBILE_NAV_KEYS[0]).toBe('overview')
-    expect(MOBILE_NAV_KEYS.at(-1)).toBe('settings')
+    const me = ALL_NAV.find((item) => item.key === MOBILE_NAV_KEYS.at(-1))
+    expect(me?.label).toBe('我的')
+    // 账号安全、我的数据、恢复码、关于与隐私从「我的」二次进入，不再依赖深链。
+    expect(ALL_NAV.some((item) => item.key === 'account')).toBe(true)
+    expect(ALL_NAV.some((item) => item.key === 'my-data')).toBe(true)
+    expect(ALL_NAV.some((item) => item.key === 'recovery')).toBe(true)
+    expect(ALL_NAV.some((item) => item.key === 'about')).toBe(true)
   })
 })
 

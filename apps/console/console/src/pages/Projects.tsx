@@ -291,7 +291,7 @@ export function Projects({ query }: { query: string }) {
                 </select>
               </label>
             )}
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+            <label className="os-check-hit" style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
               <input
                 type="checkbox"
                 checked={showArchived}

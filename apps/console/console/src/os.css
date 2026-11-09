@@ -1335,6 +1335,7 @@ main#os-main:focus-visible {
   background: var(--os-panel-2);
   border: 1px solid var(--os-border);
   color: var(--os-text);
+  min-width: 0;
 }
 
 .os-input:focus-within {
@@ -1355,6 +1356,21 @@ main#os-main:focus-visible {
 
 .os-input input::placeholder {
   color: var(--os-text-faint);
+}
+
+/* 下拉框的固有宽由最长选项决定，手机上会撑出容器（报告实测 444px 对 352px）。
+   放进 flex 后必须允许收缩，并限制在容器宽度内。 */
+.os-input select {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--os-text);
+  font: inherit;
+  outline: none;
+  text-overflow: ellipsis;
 }
 
 .os-input button {
@@ -1549,6 +1565,44 @@ main#os-main:focus-visible {
   accent-color: var(--os-accent);
   width: 15px;
   height: 15px;
+}
+
+/* 可整行点击的复选框行。手机上复选框本身只有 13–15px，整行命中区补到 44px，
+   避免「看起来能点、实际点不中」。 */
+.os-check-hit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.os-check-hit input {
+  accent-color: var(--os-accent);
+  flex: none;
+}
+
+[data-mode='mobile'] .os-check-hit {
+  min-height: 44px;
+  padding: 0 8px;
+  margin-left: -8px;
+}
+
+[data-mode='mobile'] .os-check-hit input {
+  width: 22px;
+  height: 22px;
+}
+
+/* 「我的」页的入口行：整行可点，至少 44px，按钮外观与普通列表行一致。 */
+.os-me-entry {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .os-alert {

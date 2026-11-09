@@ -517,7 +517,7 @@ export function MyEmployees({
             ) : (
               <div className="os-emp-actions" style={{ marginTop: 6 }}>
                 {catalog.map((item) => (
-                  <label key={item.id} className="os-emp-meta" style={{ display: 'inline-flex', gap: 6 }}>
+                  <label key={item.id} className="os-emp-meta os-check-hit" style={{ display: 'inline-flex', gap: 6 }}>
                     <input
                       type="checkbox"
                       checked={draft.capabilities.includes(item.id)}

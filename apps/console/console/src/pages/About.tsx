@@ -7,6 +7,7 @@
 
 import { useState } from 'react'
 import { useApi } from '../lib/api'
+import { detectClient } from '../lib/mode'
 import { Card, Guard } from '../components/ui'
 
 interface AboutPayload {
@@ -94,6 +95,8 @@ export function About() {
   const about = useApi<AboutPayload>('/v1/about')
   const egress = useApi<EgressPayload>('/v1/network/egress', 0)
   const [copied, setCopied] = useState(false)
+  // 手机端不展示主机的盘符与绝对路径：既用不上，也会把设备目录结构露出来。
+  const mobile = detectClient() === 'mobile'
 
   const copyDataDir = async (path: string) => {
     try {
@@ -129,11 +132,15 @@ export function About() {
                   {data.commit ? `（提交 ${data.commit.slice(0, 12)}）` : ''}
                   {data.build_time ? `，构建于 ${data.build_time}` : ''}
                 </dd>
-                <dt>程序目录</dt>
-                <dd>{data.app_dir}</dd>
+                {!mobile && (
+                  <>
+                    <dt>程序目录</dt>
+                    <dd>{data.app_dir}</dd>
+                  </>
+                )}
                 <dt>数据目录</dt>
-                <dd>{data.data_dir}</dd>
-                {data.log_dir && (
+                <dd>{mobile ? '本机数据目录（桌面端可见）' : data.data_dir}</dd>
+                {!mobile && data.log_dir && (
                   <>
                     <dt>日志目录</dt>
                     <dd>{data.log_dir}</dd>
@@ -141,13 +148,15 @@ export function About() {
                 )}
               </dl>
 
-              <button
-                className="os-btn os-btn-ghost"
-                style={{ width: 'auto' }}
-                onClick={() => void copyDataDir(data.data_dir)}
-              >
-                {copied ? '已复制数据目录路径' : '复制数据目录路径'}
-              </button>
+              {!mobile && (
+                <button
+                  className="os-btn os-btn-ghost"
+                  style={{ width: 'auto' }}
+                  onClick={() => void copyDataDir(data.data_dir)}
+                >
+                  {copied ? '已复制数据目录路径' : '复制数据目录路径'}
+                </button>
+              )}
 
               <section>
                 <h3 className="os-card-title" style={{ fontSize: 15 }}>
@@ -280,9 +289,11 @@ export function About() {
                 <p style={{ color: 'var(--os-text-dim)', lineHeight: 1.8 }}>
                   以下为随包材料的查看入口，供核对使用：
                   {data.product_license.exists ? (
-                    <span style={{ wordBreak: 'break-all' }}>
-                      {data.product_license.path}
-                    </span>
+                    mobile ? (
+                      <span>产品许可证全文随包提供（本机路径在桌面端可见）。</span>
+                    ) : (
+                      <span style={{ wordBreak: 'break-all' }}>{data.product_license.path}</span>
+                    )
                   ) : (
                     '本机未找到 LICENSE 文件，以随包许可证或交付授权为准。'
                   )}
@@ -304,12 +315,17 @@ export function About() {
                         wordBreak: 'break-all',
                       }}
                     >
-                      第三方组件声明：{data.third_party.notices_path}
+                      第三方组件声明：
+                      {mobile
+                        ? '随包提供（本机路径在桌面端可见）'
+                        : data.third_party.notices_path}
                     </p>
                     {data.third_party.license_entries.length > 0 && (
                       <>
                         <p style={{ color: 'var(--os-text-dim)', lineHeight: 1.8 }}>
-                          许可证全文目录：{data.third_party.licenses_dir}
+                          {mobile
+                            ? '许可证全文随包提供（本机路径在桌面端可见）。'
+                            : `许可证全文目录：${data.third_party.licenses_dir}`}
                           <br />
                           共 {data.third_party.license_entries.length} 份，逐份点击展开，
                           内容读自本机文件，断网可用：
@@ -359,7 +375,9 @@ export function About() {
                       <dt>规范版本</dt>
                       <dd>CycloneDX {data.sbom.spec_version ?? '未知'}</dd>
                       <dt>文件</dt>
-                      <dd style={{ wordBreak: 'break-all' }}>{data.sbom.path}</dd>
+                      <dd style={{ wordBreak: 'break-all' }}>
+                        {mobile ? '随包 SBOM 文件（本机路径在桌面端可见）' : data.sbom.path}
+                      </dd>
                     </dl>
                     {data.sbom.parse_error && (
                       <p style={{ color: 'var(--os-text-dim)', lineHeight: 1.8 }}>
