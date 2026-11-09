@@ -75,6 +75,15 @@ _PROTECTED_BASENAME_PREFIXES = (
     # 对的，不该由备份覆盖。临时副本（``master.key.<pid>.tmp``）同样挡住。
     "master.key",
     "admin.token",
+    # relay 的设备表：每台已配对手机一条 ``secret``（32 B urlsafe）与最近
+    # 10 个会话令牌，持有者可以冒充该手机连上本机 relay。同机恢复时磁盘上
+    # 那份才是有效的，跨机恢复带过去也没有意义。
+    "devices.json",
+    # relay 的进程状态（admin/lan 端口、backend 地址、pid、lan_urls）：不含
+    # 令牌，但整体属于运行期状态，恢复过来就是错的（端口/pid 是另一台机器
+    # 的）。与 admin.token 同目录，一起挡掉，让 ``mobile_access/`` 整个目录
+    # 不再成为备份的一部分。
+    "relay.json",
 )
 _PROTECTED_BACKUP_NAMES = frozenset(
     {
@@ -92,10 +101,12 @@ _PROTECTED_BACKUP_NAMES = frozenset(
         "app.env",
         # 兼容 0.1.x 曾用的错误文件名：新代码不会再生成，但旧安装里可能残留。
         "model_config_key.bin",
-        # 0.1.3 起不进备份的两个明文机密。精确名放这里，临时/改名副本由上面的
-        # 前缀表挡住（与 model_config.key 的处理方式一致）。
+        # 0.1.3 起不进备份的明文机密与 relay 状态。精确名放这里，临时/改名副本
+        # 由上面的前缀表挡住（与 model_config.key 的处理方式一致）。
         "master.key",
         "admin.token",
+        "devices.json",
+        "relay.json",
     }
 )
 
@@ -123,9 +134,14 @@ def is_protected_state_file(relpath: str) -> bool:
     return name in _PROTECTED_BACKUP_NAMES
 
 
-#: 旧备份「容忍」判断只针对本补丁新增的两个明文机密：此前的备份按当时的
+#: 旧备份「容忍」判断只针对本补丁新增的这几个名字：此前的备份按当时的
 #: 排除集打包，必然含它们。旧备份里的模型密钥/凭据仍然一律拒绝（既有行为）。
-_SECRET_BASENAME_PREFIXES = ("master.key", "admin.token")
+_SECRET_BASENAME_PREFIXES = (
+    "master.key",
+    "admin.token",
+    "devices.json",
+    "relay.json",
+)
 
 
 def _is_secret_state_path(relpath: str) -> bool:
