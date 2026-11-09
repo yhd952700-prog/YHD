@@ -140,18 +140,62 @@ _ACTING_PRINCIPAL: ContextVar[Optional[Dict[str, str]]] = ContextVar(
 
 
 @contextmanager
-def bind_acting_principal(principal: str, *, kind: str = "agent") -> Iterator[None]:
+def bind_acting_principal(
+    principal: str, *, kind: str = "agent", source: str = "bound"
+) -> Iterator[None]:
     """Attribute kernel actions performed inside this block to ``principal``.
 
     Nesting restores the previous binding on exit, so a caller can tighten
     attribution for a sub-operation without having to reason about what was
     bound outside.
+
+    ``source`` is written verbatim to the audit record's ``actor_source`` and
+    ``initiator_source``. It defaults to ``"bound"`` so existing callers keep
+    their historical record shape exactly.
     """
-    token = _ACTING_PRINCIPAL.set({"kind": kind, "principal": principal})
+    token = _ACTING_PRINCIPAL.set(
+        {"kind": kind, "principal": principal, "source": source}
+    )
     try:
         yield
     finally:
         _ACTING_PRINCIPAL.reset(token)
+
+
+SYSTEM_PRINCIPAL = "system"
+
+
+@contextmanager
+def bind_system_principal(*, source: str = "background") -> Iterator[None]:
+    """Attribute a deletion/privileged action to the **system**, explicitly.
+
+    Background jobs and scheduled cleanup have no request-side human. They must
+    not fall through to the internal *service* principal: that made them look
+    like a service call that might have been triggered by a human, which is the
+    exact ambiguity this work removes. ``kind="system"`` is written verbatim to
+    the audit record so the absence of a human is a stated fact, not a default.
+    """
+    with bind_acting_principal(SYSTEM_PRINCIPAL, kind="system", source=source):
+        yield
+
+
+@contextmanager
+def bind_request_principal(
+    principal: str, *, kind: str = "human", source: str = "http-request"
+) -> Iterator[None]:
+    """Attribute kernel actions to the **human principal that made the request**.
+
+    This is *attribution*, not authority. It changes only who the audit event
+    names as the initiator; the policy engine still adjudicates as the internal
+    service (or as the sovereign human when a real approval window is open), so
+    no caller gains a permission it did not already have.
+
+    Used by the memory-deletion service layer: without it, "a user deleted their
+    own memory" and "a service batch-deleted someone else's memory" were written
+    with the same service subject and could not be told apart after the fact.
+    """
+    with bind_acting_principal(principal, kind=kind, source=source):
+        yield
 
 
 def acting_principal() -> Optional[Dict[str, str]]:
@@ -384,7 +428,9 @@ _AUDIT_IMPORT = ("src.kernels.audit", "log_event", "AuditEventType", "AuditScope
 _POLICY_IMPORT = ("src.kernels.policy", "evaluate_policy_simple")
 
 
-def _resolve_audit_actor(policy_actor: Dict[str, str]) -> Dict[str, str]:
+def _resolve_audit_actor(
+    policy_actor: Dict[str, str], *, system_actor: bool = False
+) -> Dict[str, str]:
     """The subject written to the audit event, and why it is that subject.
 
     Order of precedence (PHASE 3.6 / A2):
@@ -397,6 +443,13 @@ def _resolve_audit_actor(policy_actor: Dict[str, str]) -> Dict[str, str]:
        know, and here is the default we fell back to".
     """
     bound = _ACTING_PRINCIPAL.get()
+    if bound is None and system_actor:
+        # No request-side human and the action is not agent-driven: name the
+        # system explicitly. This is a *fallback only* -- an enclosing agent or
+        # human binding still wins below, so a chat-triggered delete keeps its
+        # real actor.
+        bound = {"kind": "system", "principal": SYSTEM_PRINCIPAL,
+                 "source": "scheduled"}
     if bound is not None:
         # F33/D-3: an explicit binding still outranks any inference (order
         # unchanged), but it must not *discard* the refusal reason the
@@ -407,7 +460,7 @@ def _resolve_audit_actor(policy_actor: Dict[str, str]) -> Dict[str, str]:
         out = {
             "kind": bound["kind"],
             "principal": bound["principal"],
-            "source": "bound",
+            "source": bound.get("source", "bound"),
         }
         if policy_actor.get("sovereignty_claim"):
             out["sovereignty_claim"] = policy_actor["sovereignty_claim"]
@@ -442,7 +495,8 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 risk_level: Optional[str] = None, enforced: bool = False,
                 grant_id: Optional[str] = None,
                 denial_reason: Optional[str] = None,
-                reraise: bool = False) -> None:
+                reraise: bool = False,
+                initiator: Optional[Dict[str, str]] = None) -> None:
     # Audit linkage (D19-D21): when an executor fence context is bound on the
     # call stack, stamp the executor identity / fence token / lease epoch into the
     # audit record. Because ``details`` feeds the hash chain's prev_hash, this
@@ -503,6 +557,16 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 "actor_source": actor.get("source", "unknown"),
                 "actor_identity_id": identity["identity_id"],
                 "actor_fingerprint": identity["fingerprint"],
+                # Request-side initiator (who *asked for* the deletion or
+                # privilege change), kept separate from actor_* (who was
+                # *authorised* to perform it). ``initiated_by`` is the raw
+                # request principal; actor_* keeps the canonical identity id.
+                # Additive only: historical rows have no such keys and remain
+                # parseable; API readers see ``None`` for them, so no old row
+                # becomes unreadable and no schema migration is needed.
+                "initiated_by": (initiator or {}).get("principal"),
+                "initiator_kind": (initiator or {}).get("kind"),
+                "initiator_source": (initiator or {}).get("source"),
                 # F33: when the recorded actor is *not* the human the window
                 # claimed, say why. Without it a denied HIGH/CRITICAL action
                 # under a revoked grant is indistinguishable from one that never
@@ -667,6 +731,12 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
                         "sovereignty_claim": claim,
                     }
 
+        # Request-side human attribution is deliberately NOT an input here.
+        # "alice asked for this" is an attribution fact, not an authorization
+        # claim: feeding it as ``actor`` would let the caller's identity change
+        # the verdict (P10 / human_sovereignty reads actor.type). The initiator
+        # is attached only when the audit event is written (_call_audit), so
+        # every permission decision stays byte-for-byte unchanged.
         decision = evaluate_policy_simple(
             actor={"type": actor["type"], "principal": actor["principal"]},
             action={"name": action, "risk_level": risk_level},
@@ -783,6 +853,7 @@ def kernel_action(
     audit: bool = True,
     policy: bool = True,
     observable: bool = True,
+    system_actor: bool = False,
 ) -> Callable:
     """Decorate a kernel action method with cross-cutting DoD concerns.
 
@@ -809,6 +880,10 @@ def kernel_action(
         policy: adjudicate via the policy engine and record the decision
             (default True).
         observable: emit a structured log line (default True).
+        system_actor: for actions with no request-side human and no enclosing
+            agent binding (scheduled cleanup, background retention), record the
+            audit subject as ``kind="system"`` instead of falling through to the
+            internal service. Attribution only -- it never changes the verdict.
     """
     # D8: resolve the real tier once at decoration time unless the caller
     # pinned it. For the internal-service actor path this input is inert
@@ -828,6 +903,14 @@ def kernel_action(
             decision: Optional[str] = None
             rule_id: Optional[str] = None
             grant_id: Optional[str] = None
+            # Who asked for this action. A request route binds the verified
+            # human; an enclosing agent keeps its own binding; a background /
+            # scheduled action with neither is named "system" explicitly --
+            # never the internal service default.
+            initiator = _ACTING_PRINCIPAL.get()
+            if initiator is None and system_actor:
+                initiator = {"kind": "system", "principal": SYSTEM_PRINCIPAL,
+                             "source": "scheduled"}
 
             # A2: the fallback actor, used both when adjudication is disabled and
             # when it failed. ``_adjudicate`` returns the actor it actually used,
@@ -854,7 +937,9 @@ def kernel_action(
             # The subject written to the audit event: an explicitly bound acting
             # principal outranks the adjudicated actor; neither of them is the
             # constant "kernel" that used to be written here.
-            audit_actor = _resolve_audit_actor(policy_actor)
+            audit_actor = _resolve_audit_actor(
+                policy_actor, system_actor=system_actor
+            )
 
             # --- Agent-Safety Execution Fence (P0 / D19-D21) ----------------- #
             # Default-DENY autonomous execution gate. When armed for this action
@@ -921,11 +1006,22 @@ def kernel_action(
             #     ``scripts/verify_armed_actions_are_inert.py`` keeps CI red if a
             #     change makes an armed action reachable.
             should_enforce = enforce or is_enforced(action, effective_risk)
+            try:
+                tier = RiskTier(effective_risk)
+            except ValueError:
+                tier = RiskTier.LOW
+            # Value surfaced on every policy INFO line as ``policy_enforced``.
+            # It answers "is the cut-line armed for THIS action/tier right now?",
+            # which is exactly the record-only-vs-real-block distinction an
+            # operator needs mid-incident. (The audit field of the same name has
+            # the narrower meaning "was this call actually blocked"; see
+            # _call_audit.) LOW/MEDIUM can never be armed -- is_enforced() already
+            # narrows on the tier, and the explicit check keeps that contract even
+            # when a caller passes enforce=True on a LOW action.
+            enforcement_armed = bool(
+                policy and should_enforce and tier in ENFORCED_TIERS
+            )
             if should_enforce and policy:
-                try:
-                    tier = RiskTier(effective_risk)
-                except ValueError:
-                    tier = RiskTier.LOW
                 if tier in ENFORCED_TIERS and (decision is None or decision != "allow"):
                     block_ms = (time.time() - started) * 1000.0
                     if audit:
@@ -934,13 +1030,14 @@ def kernel_action(
                             corr_id, block_ms, rule_id, effective_risk,
                             enforced=True,
                             grant_id=_grant_for_audit(decision or "error", "blocked"),
+                            initiator=initiator,
                         )
                     if observable:
                         logger.warning(
                             "POLICY ENFORCED kernel_action=%s verdict=%s risk=%s "
-                            "rule=%s correlation_id=%s",
+                            "rule=%s correlation_id=%s policy_enforced=%s",
                             action, decision or "error", effective_risk,
-                            rule_id or "?", corr_id,
+                            rule_id or "?", corr_id, True,
                         )
                         # D24 (false-positive alert): a STRUCTURED alert so a
                         # legitimately-blocked action is visible and reviewable
@@ -1009,6 +1106,7 @@ def kernel_action(
                             decision or "unadjudicated", "intent"
                         ),
                         reraise=True,
+                        initiator=initiator,
                     )
                 except PolicyDeniedError:
                     raise
@@ -1090,12 +1188,15 @@ def kernel_action(
                                 grant_id=_grant_for_audit(
                                     decision or "unadjudicated", outcome
                                 ),
-                                denial_reason=denial_reason)
+                                denial_reason=denial_reason,
+                                initiator=initiator)
                 if observable:
                     logger.info(
-                        "kernel_action=%s outcome=%s policy=%s risk=%s duration_ms=%.3f correlation_id=%s",
+                        "kernel_action=%s outcome=%s policy=%s risk=%s "
+                        "duration_ms=%.3f correlation_id=%s policy_enforced=%s",
                         action, outcome, decision or "unadjudicated",
                         effective_risk, duration_ms, corr_id,
+                        enforcement_armed,
                     )
 
             return result

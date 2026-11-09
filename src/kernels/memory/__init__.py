@@ -547,7 +547,7 @@ class MemoryKernel:
                 value=value,
             )
 
-    @kernel_action("memory.delete_by_key_prefix")
+    @kernel_action("memory.delete_by_key_prefix", system_actor=True)
     def delete_by_key_prefix(self, prefix: str) -> int:
         """按 key 前缀删除条目（内存 + 持久化同事务语义），返回删除条数。
 
@@ -579,7 +579,7 @@ class MemoryKernel:
                 raise
             return len(removed)
 
-    @kernel_action("memory.delete_by_key")
+    @kernel_action("memory.delete_by_key", system_actor=True)
     def delete_by_key(self, key: str) -> int:
         """精确删除单个 key（内存 + 持久化同事务语义），返回 0/1。
 
@@ -610,7 +610,7 @@ class MemoryKernel:
                 raise
             return 1
 
-    @kernel_action("memory.auto_cleanup")
+    @kernel_action("memory.auto_cleanup", system_actor=True)
     def auto_cleanup(self) -> Dict[str, int]:
         """Evict expired entries from every tier (memory and persistence).
 

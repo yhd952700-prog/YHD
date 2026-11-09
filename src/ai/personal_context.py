@@ -33,11 +33,36 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..common.data_paths import resolve_store_path
 from .observability import observe
+
+
+def _request_attribution(requested_by: Optional[str]):
+    """Attribute the kernel deletion, explicitly, to whoever initiated it.
+
+    * a verified request-side human -> ``kind="human"`` (the HTTP caller);
+    * an enclosing agent/sovereign binding -> keep it (do not overwrite);
+    * neither -> ``kind="system"``. Background retention and scheduled cleanup
+      have no human; recording them as the internal service made them look like
+      a service call that *might* have been human-triggered, which is exactly
+      the ambiguity this attribution work removes.
+    """
+    from src.kernels._crosscutting import (
+        acting_principal,
+        bind_request_principal,
+        bind_system_principal,
+    )
+
+    if requested_by:
+        return bind_request_principal(str(requested_by))
+    if acting_principal() is not None:
+        return nullcontext()
+    return bind_system_principal(source="background")
+
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +356,9 @@ class PersonalContextManager:
             ).fetchone()
         return json.loads(row[0]) if row is not None else None
 
-    def delete_fact(self, principal_id: str, key: str) -> bool:
+    def delete_fact(
+        self, principal_id: str, key: str, *, requested_by: Optional[str] = None
+    ) -> bool:
         """删除单条事实，并删穿 memory kernel 里的 PERSISTENT 副本。
 
         顺序：本地先 DELETE 但**不提交** → 再删穿内核 → 两边都成功才 ``commit``。
@@ -355,14 +382,18 @@ class PersonalContextManager:
                 self._conn.rollback()
                 return False
             try:
-                self._delete_kernel_key(f"profile:{principal_id}:fact:{key}")
+                self._delete_kernel_key(
+                    f"profile:{principal_id}:fact:{key}", requested_by=requested_by
+                )
             except Exception:
                 self._conn.rollback()
                 raise
             self._conn.commit()
             return True
 
-    def delete_preference(self, principal_id: str, key: str) -> bool:
+    def delete_preference(
+        self, principal_id: str, key: str, *, requested_by: Optional[str] = None
+    ) -> bool:
         """删除单条偏好，并删穿 memory kernel 里的 PERSISTENT 副本。
 
         与 :meth:`delete_fact` 相同的两侧一致策略：两边都成功才提交。
@@ -376,40 +407,54 @@ class PersonalContextManager:
                 self._conn.rollback()
                 return False
             try:
-                self._delete_kernel_key(f"profile:{principal_id}:preference:{key}")
+                self._delete_kernel_key(
+                    f"profile:{principal_id}:preference:{key}",
+                    requested_by=requested_by,
+                )
             except Exception:
                 self._conn.rollback()
                 raise
             self._conn.commit()
             return True
 
-    def _delete_kernel_key(self, key: str) -> int:
+    def _delete_kernel_key(
+        self, key: str, *, requested_by: Optional[str] = None
+    ) -> int:
         """精确删穿内核单条 key（删除单条事实/偏好必须用它）。
 
         前缀删会把同前缀的兄弟 key 一起删掉（``...:fact:city`` 命中
         ``...:fact:city_code``），对用户是静默丢数据，所以单条删除走精确匹配。
+
+        ``requested_by`` 会绑定到内核动作上，使审计记下「谁发起的删除」；
+        策略判定本身不受影响（只加归因，不赋权）。
         """
         from src.kernels._crosscutting import PolicyDeniedError
 
         try:
-            return int(self._memory().delete_by_key(key))
+            with _request_attribution(requested_by):
+                return int(self._memory().delete_by_key(key))
         except PolicyDeniedError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"内核记忆删除失败：{exc}") from exc
 
-    def _delete_kernel_prefix(self, prefix: str) -> int:
+    def _delete_kernel_prefix(
+        self, prefix: str, *, requested_by: Optional[str] = None
+    ) -> int:
         """删穿内核；失败抛错（调用方必须把删除失败如实告诉用户）。
 
         与 :meth:`_delete_kernel_key` 同一口径：策略类异常原样上抛，让网关按类型
         映射成 409（需人工审批）或 403（被拒绝），而不是被包成 ``RuntimeError``
         落进 500。:meth:`clear` 已保证「内核成功才提交 SQLite」，因此这两类拒绝
         到达用户时两侧数据都保持原样。
+
+        ``requested_by`` 只影响审计归因（human / system），不参与策略判定。
         """
         from src.kernels._crosscutting import PolicyDeniedError
 
         try:
-            return int(self._memory().delete_by_key_prefix(prefix))
+            with _request_attribution(requested_by):
+                return int(self._memory().delete_by_key_prefix(prefix))
         except PolicyDeniedError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -676,7 +721,7 @@ class PersonalContextManager:
     # ------------------------------------------------------------------ #
     # 维护
     # ------------------------------------------------------------------ #
-    def clear(self, principal_id: str) -> int:
+    def clear(self, principal_id: str, *, requested_by: Optional[str] = None) -> int:
         """清空该主体的画像，并同步删穿 memory kernel，返回内核删除条数。
 
         MEM-002：只清 SQLite 会让 PERSISTENT 副本继续被 ``search_memory``
@@ -705,7 +750,9 @@ class PersonalContextManager:
                     "DELETE FROM profile_pending_facts WHERE principal_id = ?",
                     (principal_id,),
                 )
-                kernel_deleted = self._delete_kernel_prefix(f"profile:{principal_id}:")
+                kernel_deleted = self._delete_kernel_prefix(
+                    f"profile:{principal_id}:", requested_by=requested_by
+                )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()

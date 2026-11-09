@@ -1198,18 +1198,20 @@ async def lifespan(app: FastAPI):
     if _enf["config_error"]:
         logger.error(
             "KERNEL POLICY ENFORCEMENT CONFIG ERROR -- %s=%r :: %s "
-            "(HIGH/CRITICAL kernel actions will be REJECTED)",
-            _enf["env_var"], _enf["spec"], _enf["config_error"],
+            "(HIGH/CRITICAL kernel actions will be REJECTED) policy_enforced=%s",
+            _enf["env_var"], _enf["spec"], _enf["config_error"], True,
         )
     elif _enf["enabled"]:
         logger.warning(
-            "Kernel policy enforcement ARMED: %s=%r -> %s",
+            "Kernel policy enforcement ARMED: %s=%r -> %s policy_enforced=%s",
             _enf["env_var"], _enf["spec"], ", ".join(_enf["enforced_actions"]),
+            True,
         )
     else:
         logger.info(
-            "Kernel policy enforcement off (%s unset) -- record-only / L1",
-            _enf["env_var"],
+            "Kernel policy enforcement off (%s unset) -- record-only / L1 "
+            "policy_enforced=%s",
+            _enf["env_var"], False,
         )
 
     # Log at WARNING when nobody can approve, not INFO: uvicorn's default

@@ -144,7 +144,9 @@ def clear_profile(principal: str = Depends(require_human_principal)) -> Dict[str
     """
     pid = _resolve(principal)
     pcm = get_personal_context()
-    kernel_deleted = pcm.clear(pid)
+    # The token principal is the verified human who initiated this deletion.
+    # It is threaded into the kernel audit subject; it grants no new authority.
+    kernel_deleted = pcm.clear(pid, requested_by=principal)
     return {
         "principal": pid,
         "cleared": True,
@@ -160,7 +162,7 @@ def delete_profile_fact(
     """删除单条事实（纠正错误记忆），同时删穿内核副本。"""
     pid = _resolve(principal)
     pcm = get_personal_context()
-    deleted = pcm.delete_fact(pid, key)
+    deleted = pcm.delete_fact(pid, key, requested_by=principal)
     return {"principal": pid, "key": key, "deleted": deleted}
 
 
@@ -171,7 +173,7 @@ def delete_profile_preference(
     """删除单条偏好（纠正错误记忆），同时删穿内核副本。"""
     pid = _resolve(principal)
     pcm = get_personal_context()
-    deleted = pcm.delete_preference(pid, key)
+    deleted = pcm.delete_preference(pid, key, requested_by=principal)
     return {"principal": pid, "key": key, "deleted": deleted}
 
 

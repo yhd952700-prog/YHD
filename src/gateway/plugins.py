@@ -18,6 +18,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException
 
 from .policy import require_admin_principal, require_human_principal
+from src.kernels._crosscutting import bind_request_principal
 from src.kernels.plugin import PluginStatus, get_plugin_registry
 
 router = APIRouter(prefix="/v1/plugins", tags=["plugins"])
@@ -88,7 +89,11 @@ def activate_plugin(
             status_code=409,
             detail="该条目没有可加载的模块入口，属于历史登记占位，无需激活。",
         )
-    result = registry.activate_plugin(plugin_id)
+    # Privilege/lifecycle change initiated by a verified admin: attribute the
+    # kernel audit to that human. Authority is still adjudicated exactly as
+    # before (binding is attribution only).
+    with bind_request_principal(principal, kind="human", source="http-request"):
+        result = registry.activate_plugin(plugin_id)
     return _serialize(result)
 
 
@@ -119,7 +124,10 @@ async def execute_plugin(
 
     instance = registry.get_loaded_plugin(plugin_id)
     if instance is None:
-        result = registry.activate_plugin(plugin_id)
+        # Same attribution rule as the explicit activate route: the human asked
+        # for the (lazy) activation, so the lifecycle audit names them.
+        with bind_request_principal(principal, kind="human", source="http-request"):
+            result = registry.activate_plugin(plugin_id)
         if result is None or result.status != PluginStatus.ACTIVE:
             raise HTTPException(
                 status_code=409,
