@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 import src.upgrade.archive as archive_module
+import src.upgrade.backups as backups_module
 import src.upgrade.manager as manager_module
 from src.upgrade import (
     ApplyError,
@@ -40,6 +41,7 @@ from src.upgrade import (
     UpgradeManager,
     read_current_version,
 )
+from src.upgrade.backups import backup_code, restore_code
 from src.upgrade.dataversion import DATA_SCHEMA_VERSION
 from src.upgrade.filemanifest import build_file_manifest_for_zip
 
@@ -444,3 +446,131 @@ def test_cli_accepts_downgrade_recovery_flag(tmp_path: Path) -> None:
         ]
     )
     assert args.allow_same_or_downgrade is True
+
+
+# ---------------------------------------------------------------------------
+# 5. code restore fails midway: no half-unpacked tree is ever left behind
+# ---------------------------------------------------------------------------
+def _code_tree(app_root: Path) -> dict[str, bytes]:
+    tree = {
+        path.relative_to(app_root).as_posix(): path.read_bytes()
+        for path in sorted((app_root / "src").rglob("*"))
+        if path.is_file()
+    }
+    tree["pyproject.toml"] = (app_root / "pyproject.toml").read_bytes()
+    return tree
+
+
+def _fail_on_second_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """第二次写文件时模拟“目标文件被占用”（真实占句柄的 PermissionError）。"""
+    real_copy = backups_module._atomic_stream_copy
+    calls = {"n": 0}
+
+    def failing_copy(source, target):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "拒绝访问：目标文件正被占用", str(target))
+        return real_copy(source, target)
+
+    monkeypatch.setattr(backups_module, "_atomic_stream_copy", failing_copy)
+
+
+def test_restore_code_failure_restores_the_complete_pre_rollback_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """解压到被占用文件中止：先清半成品，再把 trash 放回，不留残缺树。"""
+    app_root = _setup_app(tmp_path / "app")
+    backup_dir = tmp_path / "code-backup"
+    backup_code(app_root, ("src", "pyproject.toml"), backup_dir)
+
+    # 模拟“已经升到 0.2.0 的当前树”：内容改了、多了文件、少了文件。
+    (app_root / "pyproject.toml").write_text(
+        '[project]\nname = "liuhao-ai-os"\nversion = "0.2.0"\n', encoding="utf-8"
+    )
+    (app_root / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (app_root / "src" / "only_in_new.py").write_text("NEW = 1\n", encoding="utf-8")
+    new_tree = _code_tree(app_root)
+
+    _fail_on_second_member(monkeypatch)
+    with pytest.raises(RollbackError) as excinfo:
+        restore_code(app_root, backup_dir, trash_root=backup_dir / "rollback-trash")
+
+    assert "需人工介入" not in str(excinfo.value)
+    # 回滚失败 = 回到“回滚前”的完整树，而不是解压了一半的新旧混合树。
+    assert _code_tree(app_root) == new_tree
+    assert (app_root / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    # 回收区已整体放回，没有残留（只留下空目录）。
+    leftovers = [
+        item
+        for bucket in (backup_dir / "rollback-trash").iterdir()
+        for item in bucket.iterdir()
+    ]
+    assert leftovers == []
+
+
+def test_restore_code_reports_manual_intervention_with_residue_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """半成品清不掉、旧版本放不回时：必须显式报需人工介入并给出具体路径。"""
+    app_root = _setup_app(tmp_path / "app")
+    backup_dir = tmp_path / "code-backup"
+    backup_code(app_root, ("src", "pyproject.toml"), backup_dir)
+    (app_root / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (app_root / "src" / "only_in_new.py").write_text("NEW = 1\n", encoding="utf-8")
+
+    _fail_on_second_member(monkeypatch)
+
+    def refuse_delete(path):
+        raise PermissionError(13, "文件被占用，无法删除", str(path))
+
+    monkeypatch.setattr(backups_module, "_remove_path", refuse_delete)
+    with pytest.raises(RollbackError) as excinfo:
+        restore_code(app_root, backup_dir, trash_root=backup_dir / "rollback-trash")
+
+    message = str(excinfo.value)
+    assert "需人工介入" in message
+    assert "半成品目录清理失败" in message
+    # 残留位置必须具体到路径：半成品目录、回收区、旧版本代码包。
+    assert str(app_root / "src") in message
+    trash_dirs = list((backup_dir / "rollback-trash").iterdir())
+    assert len(trash_dirs) == 1
+    assert str(trash_dirs[0]) in message
+    assert str(backup_dir / "code.zip") in message
+    # 回收区里是“回滚前”的完整树，可按报错路径手工放回；
+    # 旧版本本身仍完整保存在 code.zip 里。
+    assert (trash_dirs[0] / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_restore_code_falls_back_to_in_place_when_roots_cannot_be_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """移不走（文件被占用）时原地恢复：补回缺失文件、清掉新版本残留。"""
+    app_root = _setup_app(tmp_path / "app")
+    backup_dir = tmp_path / "code-backup"
+    backup_code(app_root, ("src", "pyproject.toml"), backup_dir)
+    old_tree = _code_tree(app_root)
+
+    # 升级中断后的真实状态：内容被改、旧文件被删、新文件已写入。
+    (app_root / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (app_root / "src" / "gateway" / "main.py").unlink()
+    (app_root / "src" / "only_in_new.py").write_text("NEW = 1\n", encoding="utf-8")
+
+    def refuse_rename(source, destination):
+        raise PermissionError(13, "另一个程序正在使用此文件", str(source))
+
+    written: list[str] = []
+    real_copy = backups_module._atomic_stream_copy
+
+    def record_copy(source, target):
+        written.append(Path(target).name)
+        return real_copy(source, target)
+
+    monkeypatch.setattr(backups_module.os, "rename", refuse_rename)
+    monkeypatch.setattr(backups_module, "_atomic_stream_copy", record_copy)
+    restored = restore_code(app_root, backup_dir, trash_root=backup_dir / "rollback-trash")
+
+    assert restored == 2
+    assert _code_tree(app_root) == old_tree
+    # 内容已经一致的成员一律不写：被占用的句柄不能被“为了写一遍”撞上。
+    assert "pyproject.toml" not in written
+    assert {"app.py", "main.py"} <= set(written)

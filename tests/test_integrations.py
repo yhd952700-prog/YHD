@@ -602,6 +602,27 @@ class TestSalesforceAdapter(unittest.TestCase):
         self.assertFalse(adapter.is_connected())
         self.assertEqual(adapter._api_version, "59.0")
 
+    def test_search_users_escapes_soql_literals(self):
+        """用户输入里的引号/反斜杠/通配符不能改变 SOQL 语义。"""
+        config = IntegrationConfig(
+            name="salesforce-test",
+            base_url="https://na1.salesforce.com/",
+            auth_type=AuthType.BEARER_TOKEN,
+            access_token="00D...",
+        )
+        adapter = SalesforceAdapter(config)
+        captured = {}
+        adapter.query_users = lambda qfilter, fields=None: (
+            captured.setdefault("qfilter", qfilter) or []
+        )
+
+        adapter.search_users("a'b\\c%d_e")
+
+        qfilter = captured["qfilter"]
+        # 反斜杠自身先翻倍，再转义引号与 LIKE 通配符。
+        self.assertIn("a\\'b\\\\c\\%d\\_e", qfilter)
+        self.assertNotIn("a'b", qfilter)
+
 
 # =====================================================================
 # Shopify Adapter Tests

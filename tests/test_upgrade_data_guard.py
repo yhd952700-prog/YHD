@@ -166,3 +166,55 @@ def test_sqlite_is_detected_by_header_not_extension(tmp_path: Path) -> None:
     assert report.ok is True
     assert report.sqlite_checked == 1
     assert report.files_checked == 1
+
+
+def test_backup_skips_runtime_locks_but_keeps_the_live_database(tmp_path: Path) -> None:
+    """服务运行中也能备份：运行期锁/标记不读，用户文件与数据库照常快照。
+
+    ``<data>/run/instance.lock`` 被运行中的进程独占打开，读它会
+    ``PermissionError(13)``；旧实现因此让“服务在跑时的 apply”必失败（409）。
+    运行期状态既不是用户数据，也不应被还原，跳过它们是唯一正确的做法；
+    但**不能**顺手跳过别的运行态文件：数据库主文件仍要 ``VACUUM INTO``
+    快照（服务开着也能做），普通文件仍要逐字节复制。
+    """
+    root = _make_app(tmp_path)
+    data = root / "data"
+    (data / "settings.json").write_text('{"v": 1}', encoding="utf-8")
+    db = data / "live.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE t(v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('committed')")
+    conn.commit()
+    # 保持连接打开：模拟“服务正在运行、库正在被写”的真实状态。
+    try:
+        run_dir = data / "run"
+        run_dir.mkdir()
+        (run_dir / "instance.lock").write_text("pid=1", encoding="utf-8")
+        (run_dir / "heartbeat.json").write_text("{}", encoding="utf-8")
+        (data / "model_cache.lock").write_text("locked", encoding="utf-8")
+        extra_lock = root / "service.lock"
+        extra_lock.write_text("locked", encoding="utf-8")
+
+        backup = backup_data(root, data, [extra_lock], tmp_path / "backup")
+    finally:
+        conn.close()
+
+    manifest = json.loads(backup.manifest_path.read_text(encoding="utf-8"))
+    assert {entry["relpath"] for entry in manifest["entries"]} == {
+        "settings.json",
+        "live.db",
+    }
+    assert manifest["excluded_runtime"] == 4
+    assert backup.sqlite_count == 1
+    # 运行期目录整棵都不进备份；锁文件在任何层级都不进。
+    assert not (tmp_path / "backup" / "data" / "run").exists()
+    assert not (tmp_path / "backup" / "data" / "model_cache.lock").exists()
+    assert not (tmp_path / "backup" / "extra" / "service.lock").exists()
+    # 正在被服务打开的库仍是有效的快照，内容完整。
+    snapshot = tmp_path / "backup" / "data" / "live.db"
+    conn = sqlite3.connect(snapshot)
+    try:
+        rows = [row[0] for row in conn.execute("SELECT v FROM t").fetchall()]
+    finally:
+        conn.close()
+    assert rows == ["committed"]

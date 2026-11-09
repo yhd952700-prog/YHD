@@ -12,7 +12,10 @@ import hashlib
 import json
 import socket
 import sqlite3
+import threading
 import zipfile
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -23,6 +26,7 @@ from src.upgrade.dataversion import DATA_SCHEMA_VERSION
 from src.upgrade.filemanifest import build_file_manifest_for_zip
 from src.upgrade.selfcheck import SelfCheckConfig, run_self_check
 from src.upgrade.startup_probe import (
+    _probe_health,
     _rewrite_app_root_paths,
     DEPENDENCY_IMPORT,
     LIFESPAN_FAILED,
@@ -166,6 +170,117 @@ from fastapi import FastAPI
 
 app = FastAPI()
 """
+
+# 控制台 SPA 的兜底路由：任何未注册路径都返回 index.html 的 200。旧探针把
+# 这种 200 当健康，于是正在运行旧服务时的自检报“通过”，升级后却拿不到真实
+# /v1/health。这里必须只有 /v1/health 的 JSON 才算健康。
+SPA_CATCHALL_WITH_REAL_HEALTH_SERVICE = """
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+
+app = FastAPI()
+
+
+@app.get("/v1/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/{full_path:path}")
+def spa(full_path: str):
+    return HTMLResponse("<!doctype html><html><body>console</body></html>")
+"""
+
+_SPA_HTML = b"<!doctype html><html><body>console</body></html>"
+
+
+class _RouteHandler(BaseHTTPRequestHandler):
+    routes: dict[str, tuple[int, bytes, str]] = {}
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server naming
+        status, body, content_type = self.routes.get(
+            self.path, (404, b"", "text/plain")
+        )
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@contextmanager
+def _http_routes(routes: dict[str, tuple[int, bytes, str]]):
+    handler = type("_Handler", (_RouteHandler,), {"routes": routes})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_probe_rejects_spa_html_and_only_accepts_real_json_health() -> None:
+    """2xx 不等于健康：SPA 的 index.html 200 与空 JSON 都不能算。"""
+    paths = ("/health", "/healthz", "/v1/health")
+    with _http_routes(
+        {
+            "/health": (200, _SPA_HTML, "text/html"),
+            "/healthz": (200, b"{}", "application/json"),
+            "/v1/health": (200, b'{"status": "ok"}', "application/json"),
+        }
+    ) as port:
+        path, status, body, all_missing = _probe_health(
+            "127.0.0.1", port, paths, 2.0
+        )
+
+    assert path == "/v1/health"
+    assert status == 200
+    assert body == {"status": "ok"}
+    assert all_missing is False
+
+
+def test_probe_treats_spa_200_html_as_absent_so_openapi_fallback_still_works() -> None:
+    """所有首选路径都被 SPA 兜底成 200 时，仍允许 /openapi.json 兜底。"""
+    preferred = ("/v1/health", "/health", "/healthz")
+    with _http_routes(
+        {
+            "/v1/health": (200, _SPA_HTML, "text/html"),
+            "/health": (200, _SPA_HTML, "text/html"),
+            "/healthz": (200, b"{}", "application/json"),
+            "/openapi.json": (200, b'{"openapi": "3.1.0"}', "application/json"),
+        }
+    ) as port:
+        path, status, body, all_missing = _probe_health(
+            "127.0.0.1", port, preferred, 2.0
+        )
+        assert (path, status, body, all_missing) == ("", 0, {}, True)
+        fallback = _probe_health("127.0.0.1", port, ("/openapi.json",), 2.0)
+
+    assert fallback[0] == "/openapi.json"
+    assert fallback[2] == {"openapi": "3.1.0"}
+
+
+def test_self_check_ignores_spa_catchall_and_reports_the_real_health_path(
+    tmp_path: Path,
+) -> None:
+    app_root = _make_app(
+        tmp_path / "app", service=SPA_CATCHALL_WITH_REAL_HEALTH_SERVICE
+    )
+
+    report = run_self_check(app_root, [app_root / "data"])
+
+    startup = report.startup
+    assert startup is not None
+    assert report.ok, report.to_dict()
+    assert startup.health_path == "/v1/health"
+    assert startup.health_body == {"status": "ok"}
+    assert startup.health_path_is_fallback is False
 
 
 def _write_service(root: Path, body: str) -> None:
