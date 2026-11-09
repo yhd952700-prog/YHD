@@ -181,13 +181,23 @@ class PluginInfo:
 
     @property
     def activatable(self) -> bool:
-        """Return True when this entry has a real module entry point.
+        """是否声明了模块入口（必要条件，不代表一定能加载成功）。
 
+        内置能力（builtin）由代码在进程内注册，不需要外部模块入口，视为可用。
         兼容历史登记：部分条目把 ``module_path`` 只写在 metadata 里。
         没有入口的条目（历史占位）永远无法激活，启用列表不应把它们
         渲染成可点击的按钮。
         """
-        return bool(self.module_path or (self.metadata or {}).get("module_path"))
+        return bool(
+            self.is_builtin
+            or self.module_path
+            or (self.metadata or {}).get("module_path")
+        )
+
+    @property
+    def usable_without_module(self) -> bool:
+        """内置能力由代码在进程内注册，不需要外部模块入口。"""
+        return self.kernel_type == "builtin"
 
     @property
     def is_builtin(self) -> bool:
@@ -256,9 +266,10 @@ class PluginRegistry:
                     info.error = None
                 # 没有入口的历史占位行永远不会激活成功：不再载入内存，
                 # 并从 registry_index.json 中剔除（归档到 retired 文件以便回滚）。
+                # 内置能力（builtin）不需要外部模块入口，绝不能当成占位行剔除。
                 # 回滚模式（LIUHAO_PLUGIN_PRUNE_PLACEHOLDERS=0）下保留它们，
                 # 便于排查，列表仍然只显示可加载项。
-                if not info.module_path:
+                if not info.module_path and not info.is_builtin:
                     if prune_placeholders:
                         retired_rows.append(pdata)
                         continue

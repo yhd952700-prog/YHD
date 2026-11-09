@@ -53,10 +53,21 @@ def list_plugins(
     instead of being rendered as permanently failing buttons.
     """
     registry = get_plugin_registry()
-    plugins = [_serialize(info) for info in registry.list_plugins()]
-    plugins = [p for p in plugins if p["activatable"] or p["active"]]
+    all_plugins = [_serialize(info) for info in registry.list_plugins()]
+    # 内置能力（builtin）没有外部模块入口，但随包提供、已生效，必须出现在列表里；
+    # 历史占位行（无入口且非内置）不可激活。直接隐藏会让前端与后端登记数对不上，
+    # 因此一并返回被略过的条数，由前端用灰字如实说明。
+    plugins = [
+        p for p in all_plugins if p["activatable"] or p["active"] or p["builtin"]
+    ]
+    hidden = len(all_plugins) - len(plugins)
     active = [p for p in plugins if p["active"]]
-    return {"total": len(plugins), "active": len(active), "plugins": plugins}
+    return {
+        "total": len(plugins),
+        "active": len(active),
+        "plugins": plugins,
+        "hidden": hidden,
+    }
 
 
 @router.post("/{plugin_id}/activate")

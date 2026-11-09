@@ -121,6 +121,7 @@ export function Apps({
       <Card title="说明" sub="这个视图能证明什么" span={12}>
         <ul className="os-list">
           <li>这里是插件与工具：已注册且有真实模块入口的插件由系统列出，激活动作由你触发（真实加载，非占位）。</li>
+          <li>本版本暂不提供第三方插件市场：随包提供的只有内置能力与已登记的可加载插件，不承诺安装外部插件。</li>
           <li>列表如实显示每个插件的真实状态（未启用 / 已启用 / 异常）；激活后状态会变为已启用。</li>
           <li>没有入口模块的历史占位条目不会出现在启用列表；加载失败的条目只显示中文原因，不再保留永远失败的激活按钮。</li>
           <li>没有插件是真没有，显示「暂无需要激活的插件」；激活失败会带真实原因，不假装成功。</li>
@@ -238,6 +239,11 @@ export function Apps({
         {shown.length !== (apps.data?.plugins.length ?? 0) && (
           <p className="os-hint">
             搜索「{query}」过滤后显示 {shown.length} / {apps.data?.plugins.length ?? 0} 项。
+          </p>
+        )}
+        {typeof apps.data?.hidden === 'number' && apps.data.hidden > 0 && (
+          <p className="os-hint" data-testid="apps-hidden-note">
+            另有 {apps.data.hidden} 个历史登记条目未列出（没有可加载的模块入口，无法激活）。
           </p>
         )}
       </Card>

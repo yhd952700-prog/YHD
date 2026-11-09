@@ -691,6 +691,8 @@ export interface AppsResponse {
   plugins: AppSummary[]
   total: number
   active: number
+  /** 历史登记但无模块入口、不可激活而被略过的条数（后端如实返回）。 */
+  hidden?: number
 }
 
 /** 列表：每 30 秒轮询一次（激活态会变化）。 */
