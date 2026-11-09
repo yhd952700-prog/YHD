@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -36,6 +37,8 @@ _DATA_BACKUP_SCHEMA = "liuhao.data-backup/1"
 _CODE_BACKUP_SCHEMA = "liuhao.code-backup/1"
 _SNAPSHOT_EXPORT_SCHEMA = "liuhao.snapshot-export/1"
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
+logger = logging.getLogger("liuhao.upgrade.backups")
 
 #: 数据目录下的运行期目录。里面的文件（实例锁、端口/心跳标记）由正在运行的
 #: 进程独占打开，备份时读取会直接 Permission denied；它们也不是用户数据，
@@ -67,6 +70,11 @@ _PROTECTED_BASENAME_PREFIXES = (
     "human_identities.json",
     # 审计链 HMAC 密钥：不外传。
     "audit_chain.key",
+    # 主密钥（44 B 明文）与移动端管理令牌（43 B 明文）：持有者能解密本机密文
+    # 或接管本机 relay 管理面，且都没有跨机价值——同机恢复时磁盘上那份才是
+    # 对的，不该由备份覆盖。临时副本（``master.key.<pid>.tmp``）同样挡住。
+    "master.key",
+    "admin.token",
 )
 _PROTECTED_BACKUP_NAMES = frozenset(
     {
@@ -84,6 +92,10 @@ _PROTECTED_BACKUP_NAMES = frozenset(
         "app.env",
         # 兼容 0.1.x 曾用的错误文件名：新代码不会再生成，但旧安装里可能残留。
         "model_config_key.bin",
+        # 0.1.3 起不进备份的两个明文机密。精确名放这里，临时/改名副本由上面的
+        # 前缀表挡住（与 model_config.key 的处理方式一致）。
+        "master.key",
+        "admin.token",
     }
 )
 
@@ -109,6 +121,32 @@ def is_protected_state_file(relpath: str) -> bool:
     if name.startswith(_PROTECTED_BASENAME_PREFIXES):
         return True
     return name in _PROTECTED_BACKUP_NAMES
+
+
+#: 旧备份「容忍」判断只针对本补丁新增的两个明文机密：此前的备份按当时的
+#: 排除集打包，必然含它们。旧备份里的模型密钥/凭据仍然一律拒绝（既有行为）。
+_SECRET_BASENAME_PREFIXES = ("master.key", "admin.token")
+
+
+def _is_secret_state_path(relpath: str) -> bool:
+    name = str(relpath or "").replace("\\", "/").rsplit("/", 1)[-1].lower().lstrip(".")
+    return bool(name) and name.startswith(_SECRET_BASENAME_PREFIXES)
+
+
+def _declares_secrets_excluded(backup_dir: Path) -> bool:
+    """备份清单是否声明「按不含密钥口径生成」。读不到按未声明处理。"""
+    try:
+        payload = json.loads(
+            (Path(backup_dir) / "data-backup.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("secrets_excluded") is True
+
+
+def _allow_new_master_key() -> bool:
+    value = os.environ.get("LIUHAO_RESTORE_ALLOW_NEW_KEY", "")
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _protected_files_in(directory: Path) -> List[str]:
@@ -179,9 +217,21 @@ def verify_backup(backup_dir: Path) -> None:
     # 拒绝写入，这里再对既有目录做一次物理复查。
     leaked = _protected_files_in(backup_dir)
     if leaked:
-        raise BackupCorrupt(
-            "备份包含受保护文件（凭据/身份库/模型主密钥），拒绝使用："
-            + ", ".join(leaked)
+        # 旧备份（本补丁之前生成）按当时的排除集打包，必然含 master.key /
+        # admin.token。一律拒绝会让所有历史回滚点失效，所以只对「声明了不含
+        # 密钥」的备份强制；旧备份放行并告警，恢复路径会跳过这两个文件。
+        tolerated = [] if _declares_secrets_excluded(backup_dir) else [
+            rel for rel in leaked if _is_secret_state_path(rel)
+        ]
+        hard = [rel for rel in leaked if rel not in tolerated]
+        if hard:
+            raise BackupCorrupt(
+                "备份包含受保护文件（凭据/身份库/模型主密钥），拒绝使用："
+                + ", ".join(hard)
+            )
+        logger.warning(
+            "备份包含旧口径的明文密钥文件（历史备份，恢复时跳过、不写回磁盘）：%s",
+            ", ".join(tolerated),
         )
     code_zip = backup_dir / "code.zip"
     code_manifest_path = backup_dir / "code-backup.json"
@@ -350,6 +400,11 @@ def backup_data(
         "total_bytes": total,
         "excluded_protected": excluded_protected,
         "excluded_runtime": excluded_runtime,
+        # 备份口径：master.key / admin.token 已进排除集，不作为文件进包。
+        # master_key_present 记录源目录当时是否有主密钥，供恢复端区分
+        # 「同机恢复（文件本来就在）」与「跨机恢复（缺密钥必须明确失败）」。
+        "secrets_excluded": True,
+        "master_key_present": (Path(data_dir) / "master.key").is_file(),
         "entries": entries,
     }
     manifest_path = dest_dir / "data-backup.json"
@@ -505,6 +560,45 @@ def _restore_locked_sqlite(source: Path, target: Path, busy_timeout_ms: int = 50
         ) from exc
 
 
+def assert_restore_preconditions(data_dir: Path, backup_dir: Path) -> None:
+    """恢复前的跨机判定：会不会把旧密文配上一把新密钥。
+
+    备份按「不含密钥」口径生成（``secrets_excluded=true``），而源机当时确实
+    有 ``master.key``（``master_key_present=true``），当前数据目录却没有——这就
+    是「从另一台机器恢复」。此时若继续，``EncryptionManager`` 会静默生成一把
+    新密钥，旧密文只会在使用时刻才解密失败，启动时不会报错；必须在**动任何
+    文件之前**明确失败。
+
+    ``manager._restore_backup`` 在替换代码之前调用它；``restore_data`` 自己
+    也会再调一次，保证直接调用者同样受保护。清单缺失/不可读时不在这里报错，
+    由 ``verify_backup`` / ``restore_data`` 的既有检查负责。
+    """
+    try:
+        manifest = json.loads(
+            (Path(backup_dir) / "data-backup.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not isinstance(manifest, dict):
+        return
+    if manifest.get("secrets_excluded") is not True:
+        return
+    if manifest.get("master_key_present") is not True:
+        return
+    master_key_path = Path(data_dir) / "master.key"
+    if master_key_path.is_file() or _allow_new_master_key():
+        return
+    raise RollbackError(
+        "跨机恢复缺少主密钥：这份备份按「不含密钥」策略生成"
+        f"（data-backup.json 里 secrets_excluded=true），而当前数据目录没有 {master_key_path}。\n"
+        "继续恢复会为旧密文生成一把新密钥：那些数据只会在使用时刻解密失败，"
+        "启动时不会报错。\n"
+        f"下一步：从原机复制 <原数据目录>\\master.key 到 {master_key_path} 后重试；\n"
+        "若确认要把这份备份当作全新实例（放弃旧密文），设置 "
+        "LIUHAO_RESTORE_ALLOW_NEW_KEY=1 后重试。"
+    )
+
+
 def restore_data(app_root: Path, data_dir: Path, backup_dir: Path) -> int:
     """Restore the files captured by :func:`backup_data`.
 
@@ -519,11 +613,19 @@ def restore_data(app_root: Path, data_dir: Path, backup_dir: Path) -> int:
         raise RollbackError(f"数据备份清单无法读取：{exc}") from exc
     if manifest.get("schema") != _DATA_BACKUP_SCHEMA:
         raise RollbackError("数据备份清单 schema 不匹配")
+    # 跨机恢复预检：复制任何文件之前先判定，避免「旧密文 + 新密钥」。
+    assert_restore_preconditions(data_dir, backup_dir)
     restored = 0
+    skipped_protected = 0
     sqlite_targets: List[Path] = []
     for entry in manifest.get("entries", []):
         kind = entry.get("kind")
         rel = safe_relpath(str(entry.get("relpath", "")))
+        if is_protected_state_file(rel):
+            # 本机机密（master.key / admin.token / 凭据 / 模型密钥）永不从备份
+            # 写回：同机恢复时磁盘上那份才是对的；旧备份里带着的副本也一并跳过。
+            skipped_protected += 1
+            continue
         sqlite = bool(entry.get("sqlite"))
         if kind == "data":
             source = backup_dir / "data" / rel
@@ -571,6 +673,10 @@ def restore_data(app_root: Path, data_dir: Path, backup_dir: Path) -> int:
         errors = check_sqlite(target)
         if errors:
             raise RollbackError(f"恢复后的 SQLite 校验失败：{target}：{'; '.join(errors)}")
+    if skipped_protected:
+        logger.info(
+            "恢复时跳过受保护文件 %d 个（本机机密不从备份写回）", skipped_protected
+        )
     return restored
 
 

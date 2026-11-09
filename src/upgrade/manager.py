@@ -45,6 +45,7 @@ from .archive import (
     validate_release_zip,
 )
 from .backups import (
+    assert_restore_preconditions,
     backup_code,
     backup_data,
     export_data_snapshot,
@@ -2230,6 +2231,9 @@ class UpgradeManager:
         # Verify every backup artefact *before* moving any real file: a
         # corrupted backup must be refused, not "restored" halfway.
         verify_backup(backup_dir)
+        # 跨机恢复预检放在替换代码之前：否则会先换掉旧代码、再在数据阶段
+        # 失败，留下「旧代码 + 新数据/缺主密钥」的半完成状态。
+        assert_restore_preconditions(self.config.data_dir, backup_dir)
         expected_sha = str(meta.get("code_zip_sha256", "")).lower()
         zip_path = backup_dir / "code.zip"
         if expected_sha and _sha256_file(zip_path) != expected_sha:
