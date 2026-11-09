@@ -63,6 +63,26 @@ const provider: ActiveProviderStatus = {
 }
 
 describe('第一公里提示', () => {
+  /**
+   * 把 navigator.userAgent 临时改成桌面壳（追加 `LiuHaoDesktopShell/<版本>`）。
+   *
+   * 「关闭窗口退托盘」只对原生窗口成立；在浏览器里渲染这句话就是网页端自称
+   * 桌面端。所以这类断言必须跑在桌面壳身份下，浏览器身份另有反向用例。
+   */
+  function asDesktopShell(): () => void {
+    const original = window.navigator.userAgent
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: `${original} LiuHaoDesktopShell/0.1.2`,
+      configurable: true,
+    })
+    return () => {
+      Object.defineProperty(window.navigator, 'userAgent', {
+        value: original,
+        configurable: true,
+      })
+    }
+  }
+
   test('工作台有显眼的「开始对话」入口，点击不会抛错', () => {
     render(<Workbench provider={provider} onConfigureModel={() => {}} onNavigate={() => {}} />)
     const button = screen.getByRole('button', { name: '开始对话' })
@@ -70,7 +90,26 @@ describe('第一公里提示', () => {
     fireEvent.click(button)
   })
 
-  test('设置页说明关窗会退到托盘、可从托盘重开', () => {
+  test('桌面壳设置页说明关窗会退到托盘、可从托盘重开', () => {
+    const restore = asDesktopShell()
+    try {
+      render(
+        <Settings
+          device={device}
+          session={session}
+          notifications={[]}
+          onLogout={() => {}}
+        />,
+      )
+      expect(screen.getByText(/关闭窗口不会退出/)).toBeTruthy()
+      expect(screen.getByText(/退到系统托盘/)).toBeTruthy()
+      expect(screen.getByText(/从托盘重新打开/)).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
+
+  test('网页版不出现「关闭窗口退到托盘」的桌面端专属文案', () => {
     render(
       <Settings
         device={device}
@@ -79,9 +118,9 @@ describe('第一公里提示', () => {
         onLogout={() => {}}
       />,
     )
-    expect(screen.getByText(/关闭窗口不会退出/)).toBeTruthy()
-    expect(screen.getByText(/退到系统托盘/)).toBeTruthy()
-    expect(screen.getByText(/从托盘重新打开/)).toBeTruthy()
+    expect(screen.queryByText(/关闭窗口不会退出/)).toBeNull()
+    expect(screen.queryByText(/退到系统托盘/)).toBeNull()
+    expect(screen.queryByText(/从托盘重新打开/)).toBeNull()
   })
 
   test('设置页说明没配模型可以先跳过、之后补 Key', () => {
@@ -97,28 +136,33 @@ describe('第一公里提示', () => {
     expect(screen.getByText(/补上 Key/)).toBeTruthy()
   })
 
-  test('设置页首个可视区有「首次使用提示」，两个跳转按钮可点击', () => {
+  test('桌面壳设置页首个可视区有「首次使用提示」，两个跳转按钮可点击', () => {
     // jsdom 没有实现 scrollIntoView；桩掉它，顺带确认点击真的触发了定位。
     const scrollIntoView = vi.fn()
     Element.prototype.scrollIntoView = scrollIntoView
 
-    render(
-      <Settings
-        device={device}
-        session={session}
-        notifications={[]}
-        onLogout={() => {}}
-      />,
-    )
+    const restore = asDesktopShell()
+    try {
+      render(
+        <Settings
+          device={device}
+          session={session}
+          notifications={[]}
+          onLogout={() => {}}
+        />,
+      )
 
-    const notice = screen.getByRole('status', { name: '首次使用提示' })
-    expect(notice.textContent).toMatch(/先跳过|最后再配/)
-    expect(notice.textContent).toMatch(/补上 Key/)
-    expect(notice.textContent).toMatch(/退到系统托盘/)
-    expect(notice.textContent).toMatch(/从托盘重新打开/)
-    expect(notice.textContent).not.toMatch(/黑色命令窗口|保持打开/)
+      const notice = screen.getByRole('status', { name: '首次使用提示' })
+      expect(notice.textContent).toMatch(/先跳过|最后再配/)
+      expect(notice.textContent).toMatch(/补上 Key/)
+      expect(notice.textContent).toMatch(/退到系统托盘/)
+      expect(notice.textContent).toMatch(/从托盘重新打开/)
+      expect(notice.textContent).not.toMatch(/黑色命令窗口|保持打开/)
 
-    fireEvent.click(screen.getByRole('button', { name: '去配置模型' }))
-    expect(scrollIntoView).toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: '去配置模型' }))
+      expect(scrollIntoView).toHaveBeenCalled()
+    } finally {
+      restore()
+    }
   })
 })
