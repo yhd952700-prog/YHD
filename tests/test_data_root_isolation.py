@@ -95,6 +95,7 @@ def test_stores_follow_the_data_root(monkeypatch, tmp_path):
     for var in (
         "LIUHAO_WORKSPACE_ROOT",
         "AUDIT_DB_PATH",
+        "DUAL_SIGNATURE_DB_PATH",
         "AUDIT_KERNEL_HWM_PATH",
         "AUDIT_HWM_PATH",
         "LIUHAO_MASTER_KEY_FILE",

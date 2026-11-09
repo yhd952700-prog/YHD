@@ -150,7 +150,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "means the gate NEVER executes even though boot logs the fence as "
             "installed, so every fenced action runs un-gated"
         ),
-        "refs": ("src/kernels/_crosscutting.py:754", "src/kernels/execution/fence.py:1279"),
+        "refs": ("src/kernels/_crosscutting.py:824", "src/kernels/execution/fence.py:1279"),
     },
     {
         "var": "LIUHAO_REQUIRE_EXECUTOR_FENCE",
@@ -309,7 +309,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "shipped system"
         ),
         "refs": (
-            "src/ai/providers.py:3297",
+            "src/ai/providers.py:3472",
             "src/kernels/execution/__init__.py:499",
         ),
     },

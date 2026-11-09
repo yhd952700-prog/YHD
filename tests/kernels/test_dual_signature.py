@@ -6,7 +6,6 @@ where `cryptography` is a declared dependency.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -28,9 +27,16 @@ from src.kernels.audit.dual_signature import (  # noqa: E402
 
 
 @pytest.fixture()
-def db_path(tmp_path):
+def db_path(tmp_path, monkeypatch):
+    """每个用例独占一个双签证据库，用例结束由 monkeypatch 还原环境变量。
+
+    直接写 ``os.environ`` 不会在用例结束时恢复：残留值会被后续用例的无参
+    ``DualSignatureStore()`` 读到（``src/kernels/audit/dual_signature.py`` 的
+    ``resolve_sqlite_store(..., env_var="DUAL_SIGNATURE_DB_PATH")``），表现为
+    「数据根没生效」的跨用例假失败。
+    """
     p = str(tmp_path / "ds.db")
-    os.environ["DUAL_SIGNATURE_DB_PATH"] = p
+    monkeypatch.setenv("DUAL_SIGNATURE_DB_PATH", p)
     return p
 
 

@@ -370,7 +370,11 @@ class TestProductionArmingDecision:
             % (sorted(expected - armed), sorted(armed - expected))
         )
         assert len(CRITICAL_ACTIONS) == 2
-        assert len(HIGH_ACTIONS) == 15
+        # HIGH 档在 739d0cd4 有意新增两条（memory.delete_by_key /
+        # memory.delete_by_key_prefix）：两者都是 HIGH + destructive，且被排除在
+        # 内部服务预批准之外（src/kernels/policy/__init__.py 的人工裁决列表）。
+        # 该计数与 tests/kernels/test_enforcement_policy.py 的 17 一致。
+        assert len(HIGH_ACTIONS) == 17
         # D24: the armed surface is now the CRITICAL tier only (2 actions).
         assert len(expected) == 2
 

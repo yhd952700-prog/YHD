@@ -59,22 +59,8 @@ def _free_letter() -> str:
     raise RuntimeError("no free drive letter")
 
 
-def _declare_scratch_root(root: Path) -> None:
-    """把测试自己挂载的 VHD 卷登记为 conftest 删除护栏的临时根。
-
-    护栏默认拒绝仓库/temp 根之外的删除；VHD 卷是本用例创建并负责清理的
-    真实卷，登记后原子写入的 ``tmp.unlink`` 清理路径才能按产品逻辑执行。
-    """
-    try:
-        from conftest import _register_scratch_root  # type: ignore
-
-        _register_scratch_root(root)
-    except Exception:
-        pass
-
-
 @pytest.fixture()
-def full_volume(tmp_path: Path):
+def full_volume(tmp_path: Path, declare_scratch_root):
     if os.name != "nt" or not _is_admin():
         pytest.skip("requires Windows + administrator for VHD mount")
 
@@ -96,7 +82,7 @@ def full_volume(tmp_path: Path):
         while not root.exists() and time.monotonic() < deadline:
             time.sleep(0.2)
         assert root.exists(), "VHD 挂载后卷未就绪"
-        _declare_scratch_root(root)
+        declare_scratch_root(root)
         yield root
     finally:
         try:

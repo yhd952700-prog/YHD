@@ -934,6 +934,33 @@ def _register_scratch_root(path) -> None:
     _DECLARED_SCRATCH_ROOTS.add(root)
 
 
+@pytest.fixture(scope="session")
+def declare_scratch_root():
+    """把测试自己创建、跑完即删的真实卷登记进删除护栏。
+
+    用例不要自己 ``from conftest import _register_scratch_root``：conftest 的
+    模块名取决于 rootdir 与 ``__init__.py`` 布局（可能被导入成 ``conftest``，
+    也可能是 ``tests.conftest``），取到另一个模块实例就读到另一份
+    ``_DECLARED_SCRATCH_ROOTS``——登记静默失效，删除护栏随后拒绝清理 VHD 上的
+    临时文件，失败信息离真正原因隔了几百行。由 conftest 自己提供 fixture，
+    登记和校验用的必然是同一个模块实例。
+
+    登记被拒绝（例如误登记仓库本身或其祖先）时立即报错：静默放行会让用例
+    在后面某次 ``unlink`` 处才炸，且看起来像产品缺陷。
+    """
+
+    def _declare(root) -> None:
+        _register_scratch_root(root)
+        resolved = _GuardPath(str(root)).resolve()
+        if not any(_is_under(resolved, base) for base in _DECLARED_SCRATCH_ROOTS):
+            raise RuntimeError(
+                "declared scratch root %r was rejected by the deletion guard "
+                "(仓库本身及其祖先目录不允许登记)" % str(root)
+            )
+
+    return _declare
+
+
 @pytest.fixture
 def allow_repo_deletion():
     """显式豁免"本次测试自己创建、跑完即删"的仓库内路径。
