@@ -57,6 +57,11 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "verify_dependency_declaration_surface.py"
 
+# 本文件里有两个用例要真实扫描/探测整个 src/ 树，单次 200s 上下；
+# 用 slow marker 让它只在发版门禁显式开启（见 pyproject addopts 与
+# docs/best-practices/test-subset-mapping.md）。
+pytestmark = pytest.mark.slow
+
 
 def _load_gate():
     """Import the gate as a module (it is a script, not a package)."""
@@ -105,18 +110,39 @@ def test_from_import_of_an_attribute_is_not_reported_unimportable():
 
 # ───────────────────────── the two "too weak" cases ─────────────────────────
 
+def _scan_alert_sink():
+    """Scan just ``sinks.py`` so the assertion does not depend on whether
+    ``requests`` happens to be a top-level import elsewhere in the tree."""
+    stdlib = set(sys.stdlib_module_names)
+    first_party = gate.first_party_modules()
+    top: dict[str, set[str]] = {}
+    inside: dict[str, set[str]] = {}
+    full: dict[str, set[str]] = {}
+    gate._collect_one_file(
+        REPO / "src" / "observability" / "alerts" / "sinks.py",
+        REPO / "src",
+        "src",
+        top,
+        inside,
+        full,
+        stdlib,
+        first_party,
+    )
+    return top, inside
+
+
 def test_lazy_imports_are_collected_as_dependencies():
     """A function-body import is a hard dependency of the path that runs."""
-    top, lazy_only, _ = gate.collect_imports()
-    # requests is imported inside functions in src/ai/providers.py and
-    # src/observability/alerts/sinks.py, never at module top level.
-    assert "requests" not in top, "requests is a lazy import; if this changes, update the test"
-    assert "requests" in lazy_only, "lazy imports must be surfaced, not ignored"
+    top, inside = _scan_alert_sink()
+    # ``import requests`` sits inside ``WebhookSink.send``, never at module
+    # top level. (仓库别处已改成顶层导入 requests，所以只能按文件断言。)
+    assert "requests" not in top
+    assert "requests" in inside, "lazy imports must be surfaced, not ignored"
 
 
 def test_lazy_import_site_is_reported_with_its_file():
-    _, lazy_only, _ = gate.collect_imports()
-    sites = lazy_only.get("requests", set())
+    _, inside = _scan_alert_sink()
+    sites = inside.get("requests", set())
     assert any("sinks.py" in s for s in sites), (
         f"the alert webhook delivery sink must be named as a requests user; got {sorted(sites)}"
     )
@@ -145,13 +171,25 @@ def test_any_install_command_may_satisfy_the_test_surface():
 
 def test_scope_without_gated_tests_is_not_asserted():
     """``tests/integration`` has no fakeredis/lupa test, so do not demand it."""
-    needs, why = gate.pytest_scope_needs_extra(["python -m pytest tests/integration/ -v"])
+    needs, verified, why = gate.pytest_scope_needs_extra(["python -m pytest tests/integration/ -v"])
     assert needs is False
+    assert verified is True
     assert "no test under" in why
 
-    needs, why = gate.pytest_scope_needs_extra(["python -m pytest tests/ -v"])
+    needs, verified, why = gate.pytest_scope_needs_extra(["python -m pytest tests/ -v"])
     assert needs is True
+    assert verified is True
     assert "gated test file" in why
+
+
+def test_unresolvable_pytest_target_is_not_verified():
+    """A target the gate cannot resolve was NOT measured: never report a pass."""
+    needs, verified, why = gate.pytest_scope_needs_extra(
+        ["python -m pytest tests/no_such_dir/ -v"]
+    )
+    assert verified is False, "unresolvable scope must not be treated as verified"
+    assert needs is True
+    assert "NOT VERIFIED" in why
 
 
 def test_workflow_parser_finds_install_and_pytest_per_job():
@@ -188,4 +226,33 @@ def test_gate_reports_no_undeclared_dependency_in_src():
 def test_gate_main_runs_and_reports_a_verdict():
     """The gate must produce a verdict, not a traceback."""
     code = gate.main()
-    assert code in (0, 1, 2), f"gate must exit 0/1/2, got {code}"
+    assert code in (0, 1, 3), f"gate must exit 0 (pass) / 1 (fail) / 3 (not verified), got {code}"
+
+
+def test_bom_source_file_makes_the_gate_fail(tmp_path, monkeypatch, capsys):
+    """护栏：无法 ``ast.parse`` 的文件必须让门禁变红，不能静默跳过。
+
+    历史缺陷：``src/desktop/repair.py`` 的 UTF-8 BOM 让 ``ast.parse`` 抛
+    ``U+FEFF``，门禁只打印 ``[BLOCKED]`` 就继续，最后仍报 PASS —— 整个文件的
+    import 面从没被检查过。这里用一个真实带 BOM 的临时文件复现并锁死行为。
+    """
+    bom = tmp_path / "bom_source.py"
+    bom.write_bytes(b"\xef\xbb\xbfimport requests\n")
+
+    gate.PARSE_FAILURES.clear()
+    top, inside, full = {}, {}, {}
+    gate._collect_one_file(
+        bom, tmp_path, "src", top, inside, full,
+        set(sys.stdlib_module_names), gate.first_party_modules(),
+    )
+
+    failures = gate.parse_failures()
+    assert any("bom_source.py" in f for f in failures), failures
+    assert "cannot parse" in capsys.readouterr().out
+    assert "requests" not in top and "requests" not in inside, "解析失败的文件不能产出假阴性"
+
+    # check A 必须把解析失败算成 problem（即门禁 verdict 为红）。
+    monkeypatch.setattr(gate, "collect_imports", lambda: ({}, {}, {}))
+    gate.PARSE_FAILURES[:] = failures
+    problems = gate.check_a()
+    assert any("cannot parse" in p for p in problems), problems

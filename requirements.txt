@@ -78,6 +78,11 @@ botocore==1.43.89
     # via
     #   boto3
     #   s3transfer
+# pywebview 的本地 HTTP 服务端（桌面壳开窗必需，已进 payload）。
+bottle==0.13.4
+    # via
+    #   liuhao-ai-os (pyproject.toml)
+    #   pywebview
 cachetools==7.1.8
     # via
     #   arize-phoenix
@@ -96,6 +101,11 @@ charset-normalizer==3.5.1
     # via requests
 click==8.5.0
     # via uvicorn
+# .NET CLR 定位/加载（pywebview WinForms 后端；仅 Windows）。
+clr_loader==0.3.1 ; sys_platform == 'win32'
+    # via
+    #   liuhao-ai-os (pyproject.toml)
+    #   pythonnet
 cloudpickle==3.1.2
     # via joblib
 colorama==0.4.6
@@ -372,7 +382,7 @@ openinference-semantic-conventions==0.1.35
     #   arize-phoenix-otel
     #   openinference-instrumentation
     #   openinference-instrumentation-openai
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.1
     # via
     #   liuhao-ai-os (pyproject.toml)
     #   arize-phoenix-evals
@@ -389,39 +399,39 @@ opentelemetry-api==1.44.0
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
     #   pydantic-ai-slim
-opentelemetry-exporter-otlp==1.44.0
+opentelemetry-exporter-otlp==1.45.1
     # via
     #   liuhao-ai-os (pyproject.toml)
     #   arize-phoenix
     #   arize-phoenix-client
     #   arize-phoenix-otel
-opentelemetry-exporter-otlp-proto-common==1.44.0
+opentelemetry-exporter-otlp-proto-common==1.45.1
     # via
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.45.1
     # via opentelemetry-exporter-otlp
-opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.45.1
     # via
     #   langfuse
     #   opentelemetry-exporter-otlp
-opentelemetry-instrumentation==0.65b0
+opentelemetry-instrumentation==0.66b1
     # via
     #   openinference-instrumentation-openai
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-fastapi
-opentelemetry-instrumentation-asgi==0.65b0
+opentelemetry-instrumentation-asgi==0.66b1
     # via opentelemetry-instrumentation-fastapi
-opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-instrumentation-fastapi==0.66b1
     # via liuhao-ai-os (pyproject.toml)
-opentelemetry-proto==1.44.0
+opentelemetry-proto==1.45.1
     # via
     #   arize-phoenix
     #   arize-phoenix-otel
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-sdk==1.44.0
+opentelemetry-sdk==1.45.1
     # via
     #   liuhao-ai-os (pyproject.toml)
     #   arize-phoenix
@@ -431,7 +441,7 @@ opentelemetry-sdk==1.44.0
     #   openinference-instrumentation
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-semantic-conventions==0.65b0
+opentelemetry-semantic-conventions==0.66b1
     # via
     #   arize-phoenix-otel
     #   openinference-instrumentation-openai
@@ -439,7 +449,7 @@ opentelemetry-semantic-conventions==0.65b0
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-fastapi
     #   opentelemetry-sdk
-opentelemetry-util-http==0.65b0
+opentelemetry-util-http==0.66b1
     # via
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-fastapi
@@ -487,6 +497,11 @@ protobuf==6.33.6
     #   mem0ai
     #   opentelemetry-proto
     #   qdrant-client
+# pywebview 的 JS 桥代理实现；PyPI 只有 sdist，构建环境需能现场构建。
+proxy_tools==0.1.0
+    # via
+    #   liuhao-ai-os (pyproject.toml)
+    #   pywebview
 psutil==7.2.2
     # via arize-phoenix
 py-key-value-aio==0.4.5
@@ -581,12 +596,20 @@ python-multipart==0.0.32
     #   arize-phoenix
     #   fastmcp-slim
     #   mcp
+# .NET 绑定（pywebview WinForms 后端；仅 Windows）。
+pythonnet==3.2.1 ; sys_platform == 'win32'
+    # via
+    #   liuhao-ai-os (pyproject.toml)
+    #   pywebview
 pytz==2026.3.post1
     # via mem0ai
     # via
     #   mcp
     #   portalocker
     # via keyring
+# 桌面壳原生窗口后端（模块名 webview）。6.2.1 与本次安装包实测一致。
+pywebview==6.2.1
+    # via liuhao-ai-os (pyproject.toml)
 pywin32==311 ; sys_platform == 'win32'
     # via liuhao-ai-os (pyproject.toml)
 pyyaml==6.0.3

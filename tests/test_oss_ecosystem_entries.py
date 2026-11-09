@@ -95,7 +95,9 @@ def test_validator_script_is_where_schema_says_it_is():
 def test_validator_passes_on_real_corpus():
     code, out = run_validator()
     assert code == 0, f"字段契约校验未通过：\n{out}"
-    assert "[GREEN]" in out
+    # 用独有成功串，而不是裸 "[GREEN]"：脚本别处（提示/示例）也可能出现该词，
+    # 只断言 "[GREEN]" 会让"没跑到结论"的输入也通过。
+    assert "[GREEN] capabilities/ 全部记录满足 schema 字段契约" in out
 
 
 def test_real_corpus_entries_are_loadable_and_non_trivial():

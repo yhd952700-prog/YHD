@@ -445,3 +445,526 @@ components:
     action: >
       保持；不得替换为 LGPL 的 pystray。新增桌面能力时复用本包，不另起
       Win32 绑定依赖。
+
+  # ---------------- 随包传递依赖（2026-11-08 按 payload 实测补齐）----------------
+  # 来源：dist/payload/app/runtime/Lib/site-packages 的 93 个 dist-info，
+  # 名称/版本/许可证由 scripts/verify_oss_licenses.py 同一套解析逻辑实测。
+  # 目的：让「随包有、登记表无」的门禁不再有盲区；drift 项见脚本输出。
+  - name: aiohappyeyeballs
+    import_name: aiohappyeyeballs
+    license: "Python Software Foundation License"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.7.1）；src/ 无直接 import。"
+  - name: aiohttp
+    import_name: aiohttp
+    license: "Apache-2.0 AND MIT"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 3.14.4）；src/ 无直接 import。"
+  - name: aiosignal
+    import_name: aiosignal
+    license: "Apache Software License"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 1.4.0）；src/ 无直接 import。"
+  - name: aiosqlite
+    import_name: aiosqlite
+    license: "MIT License"
+    category: database
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.22.1）；src/ 无直接 import。"
+  - name: annotated-doc
+    import_name: annotated_doc
+    license: "MIT"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.0.5）；src/ 无直接 import。"
+  - name: annotated-types
+    import_name: annotated_types
+    license: "MIT"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.8.0）；src/ 无直接 import。"
+  - name: anyio
+    import_name: anyio
+    license: "MIT"
+    category: http
+    used: "yes"
+    risk: low
+    action: "src/ 直接 import（anyio）；随包实测 4.15.0。"
+  - name: attrs
+    import_name: attrs
+    license: "MIT"
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 26.1.0）；src/ 无直接 import。"
+  - name: bcrypt
+    import_name: bcrypt
+    license: "Apache Software License"
+    category: security
+    used: "yes"
+    risk: low
+    action: "src/ 直接 import（bcrypt）；随包实测 5.0.0。"
+  - name: certifi
+    import_name: certifi
+    license: "Mozilla Public License 2.0 (MPL 2.0)"
+    category: security
+    used: "no"
+    risk: low
+    action: "纯 MPL-2.0（文件级 copyleft），只做根证书包、不修改源文件，不触发公开义务；此前未登记，本次补齐。"
+  - name: cffi
+    import_name: _cffi_backend
+    license: "MIT-0"
+    category: security
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.1.1）；src/ 无直接 import。"
+  - name: charset-normalizer
+    import_name: charset_normalizer
+    license: "MIT"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 3.5.1）；src/ 无直接 import。"
+  - name: click
+    import_name: click
+    license: "BSD-3-Clause"
+    category: tooling
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 8.4.2）；src/ 无直接 import。"
+  - name: docstring_parser
+    import_name: docstring_parser
+    license: "MIT License"
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.18.0）；src/ 无直接 import。"
+  - name: email-validator
+    import_name: email_validator
+    license: "The Unlicense (Unlicense)"
+    category: security
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.3.0）；src/ 无直接 import。"
+  - name: frozenlist
+    import_name: frozenlist
+    license: "Apache-2.0"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 1.8.0）；src/ 无直接 import。"
+  - name: google-ai-generativelanguage
+    import_name: google.ai.generativelanguage
+    license: "Apache Software License"
+    category: google
+    used: "partial"
+    risk: low
+    action: "旧 google-generativeai 的传递依赖（7.01 MB 死重）；src/ 不 import，随包仅因残留。待重建 payload 后消失。"
+  - name: google-api-core
+    import_name: google.api_core
+    license: "Apache Software License"
+    category: google
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（google.api_core）；随包实测 2.33.0。"
+  - name: google-auth
+    import_name: google.auth
+    license: "Apache Software License"
+    category: google
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（google.auth）；随包实测 2.58.0。"
+  - name: google-genai
+    import_name: google.genai
+    license: "Apache-2.0"
+    category: google
+    used: "partial"
+    risk: low
+    action: "新 Google SDK，src/ai/providers.py 用 `from google.genai import types`；替代已弃用的 google-generativeai。"
+  - name: google-generativeai
+    import_name: google.generativeai
+    license: "Apache Software License"
+    category: google
+    used: "partial"
+    risk: low
+    action: "已弃用的旧 Google SDK（2025-12 最后发布）；业务侧在 src/ai/providers.py 显式拒绝它；包内无任何 import 引用。随包 7 MB 属历史 venv 残留，待打包线重建 payload 后应消失。"
+  - name: googleapis-common-protos
+    import_name: google
+    license: "Apache Software License"
+    category: serialization
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（google）；随包实测 1.75.0。"
+  - name: greenlet
+    import_name: greenlet
+    license: "MIT AND PSF-2.0"
+    category: database
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 3.5.5）；src/ 无直接 import。"
+  - name: h11
+    import_name: h11
+    license: "MIT License"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.16.0）；src/ 无直接 import。"
+  - name: h2
+    import_name: h2
+    license: "MIT"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 4.4.1）；src/ 无直接 import。"
+  - name: hpack
+    import_name: hpack
+    license: "MIT"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 4.2.0）；src/ 无直接 import。"
+  - name: httpcore
+    import_name: httpcore
+    license: "BSD-3-Clause"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 1.0.9）；src/ 无直接 import。"
+  - name: httpcore2
+    import_name: httpcore2
+    license: "BSD-3-Clause"
+    category: http
+    used: "no"
+    risk: low
+    action: "httpx2 的底层传输层，与 httpcore 并存同上；由 mcp 2.2 链路引入。"
+  - name: httpx2
+    import_name: httpx2
+    license: "BSD-3-Clause"
+    category: http
+    used: "no"
+    risk: low
+    action: "MCP 2.x 的新一代 HTTP 客户端（pydantic 组织维护），与 httpx 0.28.1 并存是两代客户端并行，不是重复引入；升级 MCP 时随 mcp 版本对齐。"
+  - name: hyperframe
+    import_name: hyperframe
+    license: "MIT License"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 6.1.0）；src/ 无直接 import。"
+  - name: idna
+    import_name: idna
+    license: "BSD-3-Clause"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 3.19）；src/ 无直接 import。"
+  - name: jiter
+    import_name: jiter
+    license: "MIT"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.16.0）；src/ 无直接 import。"
+  - name: mcp-types
+    import_name: mcp.types
+    license: "MIT License"
+    category: tooling
+    used: "yes"
+    risk: low
+    action: "MCP 2.2 拆分出的协议类型包，src/ 通过 `from mcp.types import ...` 直接使用。"
+  - name: multidict
+    import_name: multidict
+    license: "Apache License 2.0"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 6.9.1）；src/ 无直接 import。"
+  - name: opentelemetry-exporter-otlp
+    import_name: opentelemetry_exporter_otlp
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_exporter_otlp）；随包实测 1.44.0。"
+  - name: opentelemetry-exporter-otlp-proto-common
+    import_name: opentelemetry_exporter_otlp_proto_common
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_exporter_otlp_proto_common）；随包实测 1.44.0。"
+  - name: opentelemetry-exporter-otlp-proto-grpc
+    import_name: opentelemetry_exporter_otlp_proto_grpc
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_exporter_otlp_proto_grpc）；随包实测 1.44.0。"
+  - name: opentelemetry-exporter-otlp-proto-http
+    import_name: opentelemetry_exporter_otlp_proto_http
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_exporter_otlp_proto_http）；随包实测 1.44.0。"
+  - name: opentelemetry-instrumentation
+    import_name: opentelemetry_instrumentation
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_instrumentation）；随包实测 0.65b0。"
+  - name: opentelemetry-instrumentation-asgi
+    import_name: opentelemetry_instrumentation_asgi
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_instrumentation_asgi）；随包实测 0.65b0。"
+  - name: opentelemetry-instrumentation-requests
+    import_name: opentelemetry_instrumentation_requests
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_instrumentation_requests）；随包实测 0.65b0。"
+  - name: opentelemetry-instrumentation-threading
+    import_name: opentelemetry_instrumentation_threading
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_instrumentation_threading）；随包实测 0.65b0。"
+  - name: opentelemetry-proto
+    import_name: opentelemetry_proto
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_proto）；随包实测 1.44.0。"
+  - name: opentelemetry-semantic-conventions
+    import_name: opentelemetry_semantic_conventions
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_semantic_conventions）；随包实测 0.65b0。"
+  - name: opentelemetry-util-http
+    import_name: opentelemetry_util_http
+    license: "Apache-2.0"
+    category: observability
+    used: "partial"
+    risk: low
+    action: "src/ 间接使用（opentelemetry_util_http）；随包实测 0.65b0。"
+  - name: platformdirs
+    import_name: platformdirs
+    license: "MIT"
+    category: tooling
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 4.11.8）；src/ 无直接 import。"
+  - name: propcache
+    import_name: propcache
+    license: "Apache Software License"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.5.2）；src/ 无直接 import。"
+  - name: protobuf
+    import_name: google.protobuf
+    license: "3-Clause BSD License"
+    category: serialization
+    used: "partial"
+    risk: low
+    action: "随包 5.29.6 与 requirements 锁定 6.33.6 不一致（DEP-02），待打包线按锁重建；本条目许可证不受版本影响。"
+  - name: pydantic_core
+    import_name: pydantic_core
+    license: "MIT"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.46.5）；src/ 无直接 import。"
+  - name: pydantic-settings
+    import_name: pydantic_settings
+    license: "MIT"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.15.0）；src/ 无直接 import。"
+  - name: Pygments
+    import_name: pygments
+    license: "BSD-2-Clause"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.21.0）；src/ 无直接 import。"
+  - name: PyJWT
+    import_name: jwt
+    license: "MIT"
+    category: security
+    used: "yes"
+    risk: low
+    action: "src/ 直接 import（jwt）；随包实测 2.15.1。"
+  - name: python-dotenv
+    import_name: dotenv
+    license: "BSD-3-Clause"
+    category: runtime-transitive
+    used: "yes"
+    risk: low
+    action: "src/ 直接 import（dotenv）；随包实测 1.2.3。"
+  - name: python-multipart
+    import_name: python_multipart
+    license: "Apache-2.0"
+    category: api
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.0.32）；src/ 无直接 import。"
+  - name: requests
+    import_name: requests
+    license: "Apache Software License"
+    category: http
+    used: "yes"
+    risk: low
+    action: "src/ 直接 import（requests）；随包实测 2.34.2。"
+  - name: rich
+    import_name: rich
+    license: "MIT License"
+    category: tooling
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 15.0.0）；src/ 无直接 import。"
+  - name: sniffio
+    import_name: sniffio
+    license: "Apache Software License"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 1.3.1）；src/ 无直接 import。"
+  - name: sse-starlette
+    import_name: sse_starlette
+    license: "BSD-3-Clause"
+    category: api
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 3.4.11）；src/ 无直接 import。"
+  - name: taskiq-dependencies
+    import_name: taskiq_dependencies
+    license: "MIT"
+    category: task-queue
+    used: "no"
+    risk: low
+    action: "元数据无 License 字段；按包内 LICENSE 文本实测为 MIT（门禁以文本判定），taskiq 的传递依赖。"
+  - name: tenacity
+    import_name: tenacity
+    license: "Apache Software License"
+    category: util
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 9.1.4）；src/ 无直接 import。"
+  - name: truststore
+    import_name: truststore
+    license: "MIT"
+    category: security
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.10.4）；src/ 无直接 import。"
+  - name: typing_extensions
+    import_name: typing_extensions
+    license: "PSF-2.0"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 4.16.0）；src/ 无直接 import。"
+  - name: typing-inspection
+    import_name: typing_inspection
+    license: "MIT"
+    category: serialization
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.4.4）；src/ 无直接 import。"
+  - name: urllib3
+    import_name: urllib3
+    license: "MIT"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 2.8.0）；src/ 无直接 import。"
+  - name: watchfiles
+    import_name: watchfiles
+    license: "MIT License"
+    category: tooling
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 1.2.0）；src/ 无直接 import。"
+  - name: websockets
+    import_name: websockets
+    license: "BSD-3-Clause"
+    category: network
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 16.1.1）；src/ 无直接 import。"
+  - name: yarl
+    import_name: yarl
+    license: "Apache-2.0"
+    category: http
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 1.25.1）；src/ 无直接 import。"
+  - name: zstandard
+    import_name: zstandard
+    license: "BSD-3-Clause"
+    category: network
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.25.0）；src/ 无直接 import。"
+  - name: bottle
+    import_name: bottle
+    license: "MIT License"
+    category: desktop
+    used: "no"
+    risk: low
+    action: "pywebview 内置的轻量 HTTP 后端（本地回环提供前端资源），不是额外 Web 框架选型。"
+  - name: clr_loader
+    import_name: clr_loader
+    license: "MIT"
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.3.1）；src/ 无直接 import。"
+  - name: proxy_tools
+    import_name: proxy_tools
+    license: "MIT License"
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: "随包传递依赖（实测 0.1.0）；src/ 无直接 import。"
+  - name: pycparser
+    import_name: pycparser
+    license: "BSD-3-Clause"
+    category: security
+    used: "no"
+    risk: low
+    action: "cffi 的 C 声明解析器，随 cffi 传递引入；不直接 import。"
+  - name: pythonnet
+    import_name: clr
+    license: "MIT"
+    category: desktop
+    used: "no"
+    risk: low
+    action: "pywebview 的 EdgeChromium/WinForms 后端依赖（.NET CLR 桥）；仅 win32 安装。"
+  - name: pywebview
+    import_name: webview
+    license: "BSD License"
+    category: desktop
+    used: "yes"
+    risk: low
+    action: "桌面壳默认后端（另一条打包线已随包补齐，DEP-03 的修复物）；BSD-3-Clause。"

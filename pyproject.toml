@@ -5,7 +5,13 @@ description = "LiuHao AI OS · 鎏灏智能中枢 - Y1 Implementation"
 readme = "README.md"
 # 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
 license = { text = "Proprietary" }
-requires-python = ">=3.11"
+# 上界 <3.13 是**有意**的：numpy 1.26.4 / scipy 1.13.1（arize-phoenix 链路锁定）
+# 没有 cp313 轮子，3.13 下只能走 sdist，实测因无 C 编译器直接
+# metadata-generation-failed。CI 矩阵本来就是 3.11/3.12；发布 venv 固定 3.12
+# （见仓库根 .python-version）。要支持 3.13 需先升级 numpy/scipy 并重解整条
+# phoenix 依赖链，风险/成本远高于收窄解释器版本。详见
+# docs/audit/findings-deps-license.md（DEP-01）。
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.25.0",
@@ -19,10 +25,13 @@ dependencies = [
     # requirements.txt 早已锁进该包，这里补齐声明，避免"能 import 却未声明"。
     "python-dotenv>=1.0.0",
     "prometheus-client>=0.19.0",
-    "opentelemetry-api>=1.22.0",
-    "opentelemetry-sdk>=1.22.0",
-    "opentelemetry-exporter-otlp>=1.22.0",
-    "opentelemetry-instrumentation-fastapi>=0.43b0",
+    # 1.45.1 是安全基线：opentelemetry-api <1.45.1 命中 CVE-2026-114603
+    # （TraceState.from_header ReDoS）。三个包必须同档：sdk 1.45.1 硬依赖
+    # api==1.45.1 与 semantic-conventions==0.66b1，instrumentation 同步 0.66b1。
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp>=1.45.1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
     # Windows 桌面集成（系统托盘）使用 pywin32 直接调用 Win32；
@@ -134,6 +143,36 @@ dependencies = [
     # 三者均已登记 oss-registry.yaml；requirements.txt 已锁定实测版本。
     "pypdf>=5.0.0",
     "python-docx>=1.1.0",
+    # ---- 2026-11-08 依赖门禁实测漏网的两个直接 import（先报后批后补声明）----
+    #
+    # anyio：src/gateway/main.py:1432 在启动预热里直接 ``import anyio``
+    #   （函数体 lazy import，初版扫描没看到）。它是 starlette/fastapi 的传递依赖，
+    #   但本仓直接调用 ``anyio.to_thread.run_sync``，必须显式声明。
+    "anyio>=4.0.0",
+    # pywebview（模块名 webview）：src/desktop/native_window.py:243 的原生窗口后端
+    #   （函数体 lazy import）。桌面端是产品的默认使用形态，缺它会直接 ImportError，
+    #   因此放运行期依赖而不是 extras。
+    # 版本钉死 6.2.1 与本次安装包实测一致：5.x 的 WinForms 后端在缺 WebView2 时
+    # 会静默回退到 IE，6.2 的 API（create_window/start/evaluate_js）才是桌面壳
+    # 实际调用的那一套。
+    "pywebview==6.2.1",
+    # ---- pywebview 6.2.1 在 Windows 上真正拉起窗口所需的运行栈（必须进 payload）----
+    # pythonnet / clr_loader：pywebview 的 WinForms 后端经 pythonnet 调 .NET，
+    #   clr_loader 负责定位并加载 CLR。二者仅 Windows 需要，用 marker 限定，
+    #   避免 Linux CI（只装 requirements.txt）去解析 .NET 绑定。
+    "pythonnet==3.2.1; sys_platform == 'win32'",
+    "clr_loader==0.3.1; sys_platform == 'win32'",
+    # bottle：pywebview 的本地 HTTP 服务端（窗口内容与 pywebview.api 桥）。
+    # proxy_tools：上述 bridge 的 JS 侧代理实现。
+    #   两者都是 pywebview 的传递依赖，但安装包必须带上它们才能开窗，
+    #   故显式声明并锁版本，避免上游改依赖树时随包内容漂移。
+    #   proxy_tools 在 PyPI 只发 sdist（无 wheel），构建环境需能现场构建；
+    #   本机 .venv 已实测装出 0.1.0。
+    "bottle==0.13.4",
+    "proxy_tools==0.1.0",
+    # typing_extensions：桌面壳/桥接代码在运行期用到 4.16 的类型特性，
+    #   锁死版本保证离线运行时与构建环境一致。
+    "typing_extensions==4.16.0",
 ]
 
 # 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮
@@ -249,6 +288,8 @@ markers = [
     "integration: integration tests (require external services)",
     "e2e: end-to-end tests",
     "security: security-focused tests",
+    "slow: 单次 10 分钟级以上的贵用例，默认由 tests/conftest.py 的 --run-slow 跳过，只在发版门禁加 --run-slow 跑",
+    "gate_contract: 门禁契约用例——本地允许 skip 并写明原因，CI 单独跑 -m gate_contract 且断言 skipped == 0",
 ]
 
 [tool.ruff]
