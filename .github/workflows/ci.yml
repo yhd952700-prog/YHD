@@ -283,8 +283,8 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 78 (2026-11-06).
-  # GATE-COUNT-MARKER: 78 -- tests/test_guardrail_scripts.py parses this marker
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 79 (2026-11-10).
+  # GATE-COUNT-MARKER: 79 -- tests/test_guardrail_scripts.py parses this marker
   # and fails when it disagrees with the real file count, so this number cannot
   # silently rot the way "36" did.
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
@@ -807,7 +807,7 @@ jobs:
   # already carries 41 verify_* gates against a 15-minute budget; adding 28 more
   # would turn a timeout into a false red.
   #
-  # GUARDRAILS-GATE-COUNT: 41 / GUARDRAILS-EXTENDED-GATE-COUNT: 28 -- both are
+  # GUARDRAILS-GATE-COUNT: 41 / GUARDRAILS-EXTENDED-GATE-COUNT: 29 -- both are
   # parsed by tests/test_guardrail_scripts.py and compared against counts
   # DERIVED FROM THE PARSED YAML (not from a line range). The first version of
   # this comment said 39, because it was measured with
@@ -1127,6 +1127,45 @@ jobs:
       # ledger entry -- see the count/comment block above this job.
       - name: Verify deployment gate variables are set by some artifact
         run: python scripts/verify_deployment_gate_vars.py
+
+      # 发布页数值住在另一个静态 HTML 仓库里，按推送跑的 job 没有真页面可判。
+      # 这里能钉住的是核对器自己的通过/失败契约：合成页面与记录一致必须退出 0，
+      # 同一页面换成旧版本号必须退出 1。没有后者，这一步只证明「它总能返回 0」。
+      # 真页面仍在打包时由 scripts/release/package-frozen.ps1 -ReleasePageFile
+      # 核对，不一致时它拒绝打印成功横幅。
+      - name: Verify the release-page number checker rejects stale values (self-test)
+        run: |
+          set +e
+          tmp="$(mktemp -d)"
+          sha="a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718"
+          cat > "$tmp/FREEZE-RECORD.json" <<JSON
+          {"installer": {"version": "0.1.2", "filename": "LiuHao-Setup-0.1.2.exe", "sha256": "$sha", "size": 29567136}}
+          JSON
+          cat > "$tmp/good.html" <<HTML
+          <!doctype html><html><body>
+          <a href="LiuHao-Setup-0.1.2.exe">下载 0.1.2</a>
+          <span data-copy="LiuHao-Setup-0.1.2.exe">0.1.2</span>
+          <span data-copy="$sha">sha256</span>
+          <span>29,567,136 字节</span><span>29567136</span>
+          </body></html>
+          HTML
+          cat > "$tmp/stale.html" <<HTML
+          <!doctype html><html><body>
+          <a href="LiuHao-Setup-0.1.1.exe">下载 0.1.1</a>
+          <span data-copy="LiuHao-Setup-0.1.1.exe">0.1.1</span>
+          <span data-copy="$sha">sha256</span>
+          <span>29,567,136 字节</span><span>29567136</span>
+          </body></html>
+          HTML
+          fail=0
+          for pair in "good:0" "stale:1"; do
+            name="${pair%%:*}"; want="${pair##*:}"
+            python scripts/verify_release_page_values.py --page "$tmp/$name.html" --record "$tmp/FREEZE-RECORD.json"
+            got=$?
+            echo "$name page -> exit $got (expected $want)"
+            [ "$got" -eq "$want" ] || { echo "::error ::release-page value checker self-test failed on the $name page"; fail=1; }
+          done
+          exit "$fail"
 
   # Linting job
   lint:

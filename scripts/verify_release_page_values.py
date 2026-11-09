@@ -21,6 +21,10 @@ import re
 import sys
 from pathlib import Path
 
+# 仓库根加入 sys.path：与其余 scripts/verify_*.py 同一约定，
+# 由 tests/test_guardrail_scripts.py 对所有 verify_*.py 强制检查。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # 页面里的版本号（0.1.1 / 0.1.2）。不接数字、不接 `.数字`，避免把 127.0.0.1 当成版本；
 # 允许 `v0.1.1`（前面是字母）和 `0.1.1.exe`（后面是 .exe）。
 VERSION_RE = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?!\d)(?!\.\d)")

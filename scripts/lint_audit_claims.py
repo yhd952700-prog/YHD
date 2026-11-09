@@ -540,6 +540,11 @@ OUTWARD_SURFACE_FILES = (
     # pull_request blocks) — tests/scripts/test_lint_audit_claims_surface.py
     # fails if either list misses it.
     "TUTORIAL.md",
+    # RELEASE-RUNBOOK.md is the top-level release closure checklist and the
+    # packaging "single source of truth"; a claim written there is read exactly
+    # like one in TUTORIAL.md. It scans clean today (0 findings), so listing it
+    # closes the root-*.md blind spot without widening the claim semantics.
+    "RELEASE-RUNBOOK.md",
 )
 
 # Directory trees that are never walked (third-party / generated / VCS).

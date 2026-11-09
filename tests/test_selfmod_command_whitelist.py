@@ -1,4 +1,4 @@
-﻿"""The test command that judges a proposal comes from an allowlist.
+"""The test command that judges a proposal comes from an allowlist.
 
 Before this gate, ``propose`` accepted any ``--test-command``, so a patch author
 could hand themselves a green verdict with ``python -c "raise SystemExit(0)"``.

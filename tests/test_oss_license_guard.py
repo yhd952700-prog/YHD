@@ -35,6 +35,12 @@ def guard_module():
     spec = importlib.util.spec_from_file_location("verify_oss_licenses", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    # dataclasses resolves a class's __module__ through sys.modules while the
+    # decorator runs; executing the script without registering the module makes
+    # @dataclass raise AttributeError: 'NoneType' object has no attribute
+    # '__dict__'. Register first, exactly as the sibling
+    # tests/scripts/test_lint_audit_claims_surface.py loader already does.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
