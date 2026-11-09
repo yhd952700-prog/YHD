@@ -220,15 +220,3 @@
 3. 选“否”：账号、Key、聊天记录都还在，以后重装可直接用。
 4. 选“是”：还会再确认一次，**两次都确认**才删除 `data-dir.txt` 记录的数据目录
    （默认 `D:\LiuHaoData`），删除后无法恢复。
-
----
-
-## 维护者依据（发布时可删除）
-
-本页说法来自以下仓库内容，未在代码或文档中找到依据的，已标 **待确认**：
-
-- 安装、端口、杀软、数据目录、卸载保留数据：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
-- 模型配置、测试连接、错误码、Mock 回退：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[USER-GUIDE.md](USER-GUIDE.md)、[capability-map.md](capability-map.md)、`src/ai/llm_support.py`
-- 升级与回滚、断电恢复、回滚会丢升级后数据：[self-upgrade.md](self-upgrade.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
-- 忘记密码与恢复码：[USER-GUIDE.md](USER-GUIDE.md)、[account-hierarchy.md](account-hierarchy.md)、`src/gateway/accounts.py`（恢复码/本机交接）、`scripts/register_human_identity.py`、`scripts/first_run_wizard.py`
-- 安装版完整更新链路、知识库嵌入真实 E2E 未验证：[known-gaps.md](known-gaps.md)

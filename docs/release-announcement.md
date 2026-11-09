@@ -84,7 +84,7 @@ Get-FileHash .\LiuHao-Setup-<版本号>.exe -Algorithm SHA256
 3. **启动后常驻托盘。** 双击快捷方式会出现状态窗口和托盘图标；关掉状态窗口只是隐藏到托盘、网关继续运行，退出请用托盘菜单“退出”（“停止服务”只停网关、不关托盘）。需要命令行模式时显式运行 `LiuHao.bat --console`。
 4. **默认端口是 `8080`。** **首启向导里可以换端口；日常启动如果端口被占，会告诉你占用原因并给出处理办法**：窗口会写出占用者，可以关掉占用程序再试，或改端口后重新启动，不用改快捷方式参数。
 5. **多账号体系只到“成员与角色”这一层。** 控制台左侧有「成员与权限管理」「权限矩阵」「角色模板」入口，可以创建成员并分配角色；主账号 / 子账号之外更细的分层与外部同步未验证，**待确认**。
-6. **“管家一句话调度”本版本不作为已支持功能。** 该能力仍在完善中，真实一句话链路还没有验证；是否作为下个版本的发布内容，**待确认**。
+6. **“管家一句话调度”本版本不作为已支持功能。** 该能力仍在完善中；真实一句话链路已在 2026-11-08 网关级真模型验收中跑通（[acceptance/butler-gateway-acceptance-2026-11-08.json](acceptance/butler-gateway-acceptance-2026-11-08.json) `verdict=PASS`：一句话派活/单独指派/并发/失败如实/结果格式 5 场景全 PASS，goal 带 `goal_id` 与事件序列，见 `docs/ACCEPTANCE-BUTLER-REAL-MODEL.md`）；是否作为下个版本的发布内容，**待确认**。
 7. **浏览器 / 桌面键鼠的真实自动化后端本版本不包含。** 当前只有受控的接口与占位实现，不要对外承诺“自动操作电脑”。
 8. **升级入口在「系统设置 → 软件更新」卡片。** 未配置更新源时「检查更新」按钮为禁用并写明原因，不会假装“已是最新”；配置了更新源后，可按「检查 → 下载 → 校验 → 应用 → 重启生效 → 回滚」完成。没有配置更新源时，仍可退出程序后运行新版本安装包覆盖安装（数据目录不受影响），装完必须重启程序才生效。升级前建议先备份数据目录。
 9. **知识库检索依赖可用的嵌入模型。** 功能仍在完善，真实端到端尚未验证；没有配置时不可用，不要写成“开箱即用”。**待确认**。
@@ -107,6 +107,6 @@ Get-FileHash .\LiuHao-Setup-<版本号>.exe -Algorithm SHA256
 - 产品名、安装路径、数据保留策略：`installer/liuhao.iss`
 - 安装步骤、SmartScreen、杀软、数据与卸载：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
 - 安装包与程序体积、不含模型、未签名：[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
-- 现有 0.1.0 正式产物在 `dist\installer`；本次最终包待转正后回填：[known-gaps.md](known-gaps.md) E-13
+- 现有 0.1.1 内测产物在 `dist\installer`（`LiuHao-Setup-0.1.1.exe` 29,567,136 字节 + `liuhao-0.1.1-upgrade.zip` 32,178,761 字节，2026-11-08 构建；0.1.0 四件套已移入 `_archive\`）；0.1.2 包尚未产出，待冻结重打（r6）出包后回填：[known-gaps.md](known-gaps.md) E-13
 - 多账号仅设计、管家 / 自动化 / 知识库 / 升级链状态：[account-hierarchy.md](account-hierarchy.md)、[known-gaps.md](known-gaps.md) D-2 / D-4 / D-7 / D-9、[self-upgrade.md](self-upgrade.md)
 - 系统定位：`Human-Sovereign Agent Operating System`：[ARCHITECTURE.md](ARCHITECTURE.md)

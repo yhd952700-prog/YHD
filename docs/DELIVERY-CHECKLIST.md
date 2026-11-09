@@ -322,7 +322,7 @@
 | 4 | 安装版首启 E2E | 部分完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13），不能作为「最终包已验证」 |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
 | 6 | 端口占用明确报错（不自动顺延） | 已改定 | 2026-11-08 决定：不自动换端口，避免地址漂移；旧 E2E 日志里的 `18130→18131 自动顺延` 行为已作废 | — |
-| 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
+| 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | `invalid_key` 的「测试连接」分类**已于 2026-11-09 在本机用桩复现**（[failure-invalidkey-2026-11-09.md](evidence/failure-invalidkey-2026-11-09.md)：回环白名单端口 401 上游桩，`reason=invalid_key`、中文提示与产品预设逐字一致、数据目录 21 文件 Key 明文 0 命中，三断言全过）。`technical_detail` 保留脱敏 `sk-***` 上游原文摘录属**产品显式设计**（主文案中性，上游原文脱敏后只进可展开的「技术详情」）；若验收口径要求任何可见字段均不回显上游原文，属**口径裁决项**，需产品侧裁决。仍未覆盖：其他 provider 的 `invalid_key` 归类、`key_revoked`（401+revoked）分支 |
 | 8 | 打包延迟依赖修复 | 已完成 | payload 内已含 `openai/httpx2/httpcore2/truststore/jiter`；修复随 `b789d244` 入库，安装版聊天不再报 `httpcore2` 缺包 | 已解除（E-1）；该目录另有未提交的升级元数据改动，与依赖修复无关 |
 | 9 | 真实厂商 Key 对话 | 已完成（安装版，2026-11-08） | `dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`：真实 DeepSeek Key，未重启后端（PID 16404→16404）保存后 `POST /v1/chat` 200 / 1.90s；流式 12 帧、工具调用、Key 脱敏全 PASS；另有 `20261108-034245-real-key/live_summary.txt` 8 项 PASS | 本清单原记「本流无 Key」指的是写这一条时的取证范围，现已被上述安装级证据取代（E-5 同步更新） |
 | 10 | 静默卸载 | 已完成（E-4 已修） | `installer/liuhao.iss` 的 `CurUninstallStepChanged` 在 `UninstallSilent` 时直接退出、按安全默认保留数据；`/VERYSILENT` 实测可正常结束。交互式“删除数据”分支已单独实测（连续两次确认后按 `data-dir.txt` 删） | — |
@@ -337,9 +337,10 @@
 
 ## 3. 「部分完成」的确切差额（汇总）
 
-- **第 7 项 失败分支**：已实测 401 / 404 / 503 / 端口拒绝；**没有**在本机复现
-  “测试连接 → `invalid_key` / `key_revoked` / `quota_exhausted`”三类，因为本机
-  桩是回环地址，测试连接被 SSRF 防护拦下，而聊天不受影响。差额部分由
+- **第 7 项 失败分支**：已实测 401 / 404 / 503 / 端口拒绝；`invalid_key` 的
+  “测试连接”分类已在 2026-11-09 用回环白名单端口的 401 桩本机复现
+  （[evidence/failure-invalidkey-2026-11-09.md](evidence/failure-invalidkey-2026-11-09.md)）。
+  仍**没有**在本机复现 `key_revoked` / `quota_exhausted` 两类，差额部分由
   `tests/test_gateway_models_api.py` 的归类单测与真实云 Key 场景覆盖。
 - **第 8 项 打包修复**：已解除。产物包含全部缺失依赖，源码修复随 `b789d244`
   入库，用仓库脚本重建也不会再退回缺包。
@@ -818,7 +819,7 @@ git diff --name-only <上一冻结hash>..HEAD -- src/ apps/ contracts/ installer
 | 缺口 | 为什么可以带 | 登记位置 |
 |---|---|---|
 | Gemini 真实成功调用未验证 | 失败路径诚实（`400 API_KEY_INVALID` 真实到达），解析有假客户端回归；缺的是「有 Key 成功一次」 | `known-gaps.md` §2 |
-| 自定义 Base URL 的 SSRF 风险**结论待评估** | 已有保存/探测面防护（`src/gateway/models.py:807` 公网校验、`:712` 拒跨域重定向），缺的是书面评估结论（允许清单、DNS 重绑定、本机 Ollama 例外边界） | 本文 §7.2 |
+| 自定义 Base URL 的 SSRF 风险（DNS 重绑定仅代码级验证） | 书面结论与本机实测已出（私网/链路本地拦截、回环白名单放行、带 Key 必须 https 均真实 HTTP 实测；**DNS 重绑定只有线程钉住解析的代码级证据，真实 DNS 层未测**） | 本文 §7.2、[evidence/g10-ssrf-2026-11-09.md](evidence/g10-ssrf-2026-11-09.md) |
 | 仅 Windows x64 | 交付形态就是 Windows 桌面安装树；无 macOS/Linux/arm64 产物 | `known-gaps.md` E-20 / 仅 Windows x64 行 |
 | 无真实 CD | 桌面分发形态差异；安装树真实升级/回滚已验，但**不等于**真实 CD 已验 | §5.10 C9、`known-gaps.md` 真实远端升级源行 |
 | 无真实远端升级源 | 升级源只有本机安装树；远端拉取/回滚无证据 | `known-gaps.md` 真实远端升级源行 |
@@ -827,13 +828,15 @@ git diff --name-only <上一冻结hash>..HEAD -- src/ apps/ contracts/ installer
 | 安装包仅项目自签名（非公开权威 CA） | 未导入信任只有「未知发布者」提示，不影响功能；公开 CA 签名属明确延后 | `known-gaps.md` E-8 / E-24 |
 | 8/16GB 低配未实测 | 本机 32GB；已给实测数字并明确不外推 | `known-gaps.md` E-21 |
 
-## 7.2 自定义 Base URL 的 SSRF 风险（结论：**待评估**，不写成已通过）
+## 7.2 自定义 Base URL 的 SSRF 风险（2026-11-09 已出书面结论 + 本机实测；DNS 重绑定仅代码级验证）
 
 | 项 | 事实 |
 |---|---|
-| 已有的防护 | ① 新填地址必须 `http/https`，解析后任一地址落在私网/回环/链路本地/保留/多播段 → 400（`src/gateway/models.py:807-855`）；② 探测时拒绝跨域重定向（`src/gateway/models.py:712`）；③ 已保存配置放行私网，用于本机 Ollama（`allow_private=True`）。 |
-| 未回答的问题 | ① **DNS 重绑定**：保存时解析为公网、调用时解析为内网，是否会被拦截；② 「已保存即放行」的边界是否覆盖所有调用路径（聊天、目标拆解、embedding）；③ 允许清单/拒绝清单要不要写死到配置；④ 本机 Ollama 例外是否应限定为 `127.0.0.1`/`localhost` 字面量。 |
-| 为什么现在不给结论 | 给结论需要一次专门的威胁建模 + 调用路径枚举，本轮只做文档/证据，不动业务代码。**把「有防护」写成「风险已消除」不诚实。** |
-| 什么算完成 | 出一份书面结论（允许/拒绝清单 + 上述四个问题的逐条答案 + 落地位置），并在「任意模型接入」（P-4）验收里带上一条私网地址被拒、一条 DNS 重绑定被拒的实测。 |
+| 书面结论与实测 | [evidence/g10-ssrf-2026-11-09.md](evidence/g10-ssrf-2026-11-09.md)（原始请求/响应见同名 `json`；隔离数据目录 + 独立端口 19077，`APP_ENV=production`，用完即杀）：保存/测试/更新/运行时四条路径落地同一套目标校验。 |
+| 实测拦截（真实 HTTP，非 Ollama 回环白名单面） | RFC1918 私网 `http://10.0.0.1:8000/v1` → **400**（「SSRF 防护：10.0.0.1 -> 10.0.0.1」）；链路本地 `http://169.254.1.1/v1` → **400**；`localhost:9999`（非白名单端口）→ **400**（`localhost -> ::1`）；带 Key 的 http 私网地址 → **400**（带 Key 必须 https）。 |
+| 实测放行（回环白名单内，有意设计，不是绕过） | `127.0.0.1:11434`、`localhost:11434`、`[::1]:8000` → **200**（回环 + 白名单推理端口 11434/1234/8000/8080 或命中本机 Ollama 地址集）；provider=ollama 时回环任意端口 → **200**（实测 `127.0.0.1:19099`）。残余风险：把配置类型改成 ollama 即可指向回环上任意端口；缓解因素是仅回环（到不了内网）+ 需模型管理员身份，已如实登记。 |
+| 四问答案 | ① **DNS 重绑定**：**真实 DNS 层未测**（硬约束不允许改系统 DNS，无可控权威解析器）——现有证据是**代码级**：每次真实请求前重新解析校验、校验通过后按线程钉住解析结果消 TOCTOU（`src/ai/net_guard.py` `_pinned_getaddrinfo`），探测面二次比对解析结果、漂移即 400「疑似 DNS rebinding，已拒绝」（实测锚点 `src/gateway/models.py:1054`）。登记口径照写「真实 DNS 层未测」，**不得写成「已验证防住」**。② 「已保存放行」覆盖所有调用路径：运行时守卫在每类 provider 每次真实请求前调用（聊天/目标拆解/embedding 均经 provider 层），且放宽再收窄为「仅命中已知本机 Ollama 地址集」；已保存配置重验与首次保存同口径（C1/C2 实测无状态差异）。③ 白名单是代码级常量（本地推理端口集 `net_guard.py:48`、本机 Ollama 地址集 `models.py:285-312`），不落配置文件，唯一可配置入口 `OLLAMA_BASE_URL` 且仅对 ollama 生效。④ 不应只限定字面量：判定按解析后地址做（`localhost:9999` 实测 400 佐证）。 |
+| 残余风险（诚实披露） | ① DNS 重绑定无真实 DNS 层实测，且探测面自认「不钉 SDK 自己的 socket」的局限；② ollama 类型的回环例外不限端口；③ 白名单为代码常量，扩端口需改代码发版。 |
+| 什么算完成 | 书面结论（允许/拒绝清单 + 四问逐条答案 + 落地位置）已出；「任意模型接入」（P-4）验收要求的「一条私网地址被拒」实测已带（`10.0.0.1` → 400）；「一条 DNS 重绑定被拒」的**真实 DNS 层实测仍缺**，等有可控解析器/DNS 环境时补测。 |
 
 

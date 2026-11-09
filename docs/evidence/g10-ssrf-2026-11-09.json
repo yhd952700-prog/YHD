@@ -1,0 +1,220 @@
+{
+  "meta": {
+    "task": "G-10 SSRF 四问实测补证（自定义 Base URL）",
+    "started_at": "2026-11-09T04:47:44-08:00",
+    "finished_at": "2026-11-09T04:47:58-08:00",
+    "gateway_port": 19077,
+    "stub_port": 19099,
+    "base_url": "http://127.0.0.1:19077",
+    "liuhao_data_dir": "D:\\cache\\temp\\g10-ssrf-20261109",
+    "python": "D:\\LiuHao-AI-OS\\.venv\\Scripts\\python.exe",
+    "repo": "D:\\LiuHao-AI-OS",
+    "read_only": true,
+    "note": "网关以隔离数据目录+独立端口启动（APP_ENV=production，进程树用完即杀）；仓库内未修改任何文件；临时桩为本驱动进程内的 127.0.0.1:19099 http.server"
+  },
+  "precheck": {
+    "port_19077_busy_before_start": false
+  },
+  "steps": [
+    {
+      "id": "S0-register",
+      "purpose": "全新实例首个账户（root，具备模型管理权限）",
+      "ts": "2026-11-09T04:47:53-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/accounts/register",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json" },
+        "body": { "principal": "g10-root-4f0d78", "password": "***" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"account\":{\"principal\":\"g10-root-4f0d78\",\"permissions\":[],\"status\":\"active\",\"created_at\":\"2026-11-09T12:47:52.832309\",\"allow_superior_key_use\":true,\"key_auth_source\":\"root\"},\"recovery_code\":\"***redacted***\",\"notice\":\"恢复码只显示这一次，请离线保存；它没有有效期，但一经使用即失效。\"}"
+      },
+      "elapsed_ms": 1422
+    },
+    {
+      "id": "S1-login",
+      "purpose": "登录拿会话令牌",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/auth/login",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json" },
+        "body": { "principal": "g10-root-4f0d78", "secret": "***" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"access_token\":\"***redacted***\",\"token_type\":\"bearer\",\"expires_in\":43200,\"principal\":\"g10-root-4f0d78\",\"scope\":\"L0\",\"is_root\":true}"
+      },
+      "elapsed_ms": 1000
+    },
+    {
+      "id": "A1",
+      "purpose": "回环 + Ollama 已知端口 11434，现填地址，provider=openai，无 Key",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-a1", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://127.0.0.1:11434/v1" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"id\":\"71a822090145\",\"name\":\"g10-a1\",\"provider\":\"openai\",\"model\":\"qwen2.5:3b\",\"base_url\":\"http://127.0.0.1:11434/v1\",\"vendor\":\"local\",\"api_key_set\":false,\"verified\":false,\"is_default\":true}"
+      },
+      "elapsed_ms": 140
+    },
+    {
+      "id": "A2",
+      "purpose": "RFC1918 私网 10.0.0.1，现填地址，无 Key",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-a2", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://10.0.0.1:8000/v1" }
+      },
+      "response": {
+        "status": 400,
+        "body": "{\"detail\":\"base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：10.0.0.1 -> 10.0.0.1\"}"
+      },
+      "elapsed_ms": 16
+    },
+    {
+      "id": "A2k",
+      "purpose": "同一私网地址但携带 API Key（验证 http+Key 明文规则）",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-a2k", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://10.0.0.1:8000/v1", "api_key": "***" }
+      },
+      "response": {
+        "status": 400,
+        "body": "{\"detail\":\"带 Key 的服务地址必须使用 https；http 明文只允许本机 Ollama/本地推理端口（11434/1234/8000/8080）。\"}"
+      },
+      "elapsed_ms": 0
+    },
+    {
+      "id": "A3",
+      "purpose": "链路本地 169.254.0.0/16（元数据服务段），无 Key",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-a3", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://169.254.1.1/v1" }
+      },
+      "response": {
+        "status": 400,
+        "body": "{\"detail\":\"base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：169.254.1.1 -> 169.254.1.1\"}"
+      },
+      "elapsed_ms": 16
+    },
+    {
+      "id": "A4",
+      "purpose": "IPv6 回环 ::1 + 白名单推理端口 8000，provider=openai，无 Key",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-a4", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://[::1]:8000/v1" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"id\":\"3be5541eb8bb\",\"name\":\"g10-a4\",\"provider\":\"openai\",\"model\":\"qwen2.5:3b\",\"base_url\":\"http://[::1]:8000/v1\",\"vendor\":\"local\",\"api_key_set\":false,\"verified\":false,\"is_default\":false}"
+      },
+      "elapsed_ms": 62
+    },
+    {
+      "id": "B1",
+      "purpose": "localhost 字面量 + Ollama 已知地址，无 Key",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-b1", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://localhost:11434/v1" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"id\":\"c7577098a3d3\",\"name\":\"g10-b1\",\"provider\":\"openai\",\"model\":\"qwen2.5:3b\",\"base_url\":\"http://localhost:11434/v1\",\"vendor\":\"local\",\"api_key_set\":false,\"verified\":false,\"is_default\":false}"
+      },
+      "elapsed_ms": 110
+    },
+    {
+      "id": "B2",
+      "purpose": "localhost 字面量 + 非白名单端口 9999，provider=openai，无 Key（对照组）",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-b2", "provider": "openai", "model": "qwen2.5:3b", "base_url": "http://localhost:9999/v1" }
+      },
+      "response": {
+        "status": 400,
+        "body": "{\"detail\":\"base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：localhost -> ::1\"}"
+      },
+      "elapsed_ms": 15
+    },
+    {
+      "id": "C1",
+      "purpose": "首次保存合法地址（指向本机真实存在的临时 http 桩 127.0.0.1:19099），provider=ollama",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:19077/v1/models",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "name": "g10-c1", "provider": "ollama", "model": "qwen2.5:3b", "base_url": "http://127.0.0.1:19099/v1" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"id\":\"6ad3cac61c41\",\"name\":\"g10-c1\",\"provider\":\"ollama\",\"model\":\"qwen2.5:3b\",\"base_url\":\"http://127.0.0.1:19099/v1\",\"vendor\":\"ollama\",\"api_key_set\":false,\"verified\":false,\"is_default\":false}"
+      },
+      "elapsed_ms": 47
+    },
+    {
+      "id": "C2",
+      "purpose": "再次保存同一已保存地址（PUT 更新同一配置，验证「已保存放行」是否造成行为差异）",
+      "ts": "2026-11-09T04:47:54-08:00",
+      "request": {
+        "method": "PUT",
+        "url": "http://127.0.0.1:19077/v1/models/6ad3cac61c41",
+        "headers": { "Accept": "application/json", "Origin": "http://127.0.0.1:19077", "Content-Type": "application/json", "Authorization": "Bearer ***redacted***" },
+        "body": { "provider": "ollama", "base_url": "http://127.0.0.1:19099/v1" }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"id\":\"6ad3cac61c41\",\"name\":\"g10-c1\",\"provider\":\"ollama\",\"model\":\"qwen2.5:3b\",\"base_url\":\"http://127.0.0.1:19099/v1\",\"vendor\":\"ollama\",\"api_key_set\":false,\"verified\":false,\"is_default\":false}"
+      },
+      "elapsed_ms": 78
+    }
+  ],
+  "summary": {
+    "S0-register": 200,
+    "S1-login": 200,
+    "A1_loopback_11434_openai": 200,
+    "A2_private_10.0.0.1": 400,
+    "A2k_private_10.0.0.1_with_key": 400,
+    "A3_linklocal_169.254.1.1": 400,
+    "A4_ipv6_loopback_port8000": 200,
+    "B1_localhost_11434": 200,
+    "B2_localhost_9999": 400,
+    "C1_first_save_ollama_stub": 200,
+    "C2_second_save_same_address": 200
+  },
+  "notes": [
+    "实测通过真实 HTTP（urllib，带同源 Origin 头）打到隔离网关；全部响应体为中文可读错误文案。",
+    "任务预期「四类地址全部 400」与实际不符的部分：A1（127.0.0.1:11434，命中已知本地推理端口/Ollama 白名单）与 A4（[::1]:8000，回环 + 白名单端口 8000）被放行——这是代码有意设计的回环白名单（models.py:362、net_guard.py:48），不是绕过；本记录如实呈现。",
+    "DNS 重绑定：真实 DNS 层实验未做（硬约束不允许改系统 DNS，也未配置可控解析器）；现有证据为代码级——net_guard 校验后按线程钉住解析结果消除 TOCTOU（src/ai/net_guard.py:131-180），探测面对「校验期间解析变化」二次拒绝（src/gateway/models.py:1004-1009）。",
+    "「已保存放行」在保存层无状态差异：_validate_base_url 的 stored_url 参数未被函数体使用（models.py:319 定义、359-363 调用处未见引用），两次保存同一地址结果一致（C1/C2 均 200）；私网放行实际口径是 provider=ollama 且地址命中已知本机 Ollama 集（models.py:361），运行时则是 net_guard.py:238 的 skip_private = allow_private_service and is_local_ollama。",
+    "收尾：网关进程 taskkill /F /T，桩随驱动进程退出；19077/19099 杀后均不再监听。"
+  ],
+  "postcheck": {
+    "port_19077_busy_after_kill": false,
+    "port_19099_busy_after_kill": false
+  }
+}

@@ -299,20 +299,19 @@
 
 ## 11. 新一轮冻结前置清单（2026-11-08）
 
-> **代码 tip（本轮就绪判定的对象）= `416f7109`**。它只解决「安装器能编译」和「版本号 0.1.1」，
-> 不解决 F-01～F-05 的回归红，也没有产出 0.1.1 安装包。**它现在不是交付冻结 hash。**
+> **代码 tip（本轮就绪判定的对象）= `8450009b`**（2026-11-09 05:26 `fix(cli): 启动脚本移除 8090 配对中继`；本表 2026-11-08 快照写 `416f7109`，此后 HEAD 已被其他线推进多轮，以 `git log -1` 实测为准）。**当前 tip 仍不是交付冻结 hash**——冻结 hash 由 0.1.2 冻结重打（r6）时确定。`416f7109` 时期「没有产出安装包」的注记也已过时：`dist/installer` 顶层现有 0.1.1 两件套（2026-11-08 构建），0.1.2 包待 r6。
 > 验收细则（每条含 ① ② ③ 编号条件）在
 > [DELIVERY-CHECKLIST §7](DELIVERY-CHECKLIST.md#7-新一轮冻结前置清单2026-11-07-起算)；
 > 本表是一句话版，冲突时以细则为准。
 
-| 编号 | 前置项 | 什么算完成（一句话） | 状态（2026-11-08） |
+| 编号 | 前置项 | 什么算完成（一句话） | 状态（2026-11-09 更新） |
 |---|---|---|---|
-| P-1 | 版本号 0.1.1 全链一致 | 源码/pyproject/frontend/iss 全是 0.1.1，版本一致性用例绿，**包名与 `/v1/health` 自报也是 0.1.1** | 前三条已满足；包名与 health 未满足（包是 0.1.0） |
-| P-2 | 安装包重打并绑定源码提交 | `LiuHao-Setup-0.1.1.exe` 四件套齐、SHA256 实测一致、`DELIVERY.txt` 的源码提交 = 冻结 hash、装一次首启 ready | 未完成 |
-| P-3 | 真 Key 对话验收 | 真实厂商 Key 首条消息成功 + 错误 Key 复现 401 且文案中性，原始输出入库 | 未完成 |
-| P-4 | 任意模型接入 | 自定义 `base_url` + 任意 `model` 保存即生效、能对话；非法地址报错可读 | 在跑（工作区未提交） |
-| P-5 | 管家页可用化 | 真实一句话 → 派工 → 汇总，失败分支中性可重试，有 goal id + 事件序列证据 | 在跑（工作区未提交） |
-| P-6 | 两腿回归 + 全部 CI 门禁在冻结 hash 上绿 | 两条工作流同 hash 全 success，两腿数字一致，Guardrails 契约探针真跑、Security Scan 未被上游阻断 | 未完成（`b4406497` 的 CI `42386438527` 为 failure） |
+| P-1 | 版本号 0.1.1 全链一致 | 源码/pyproject/frontend/iss 全是 0.1.1，版本一致性用例绿，**包名与 `/v1/health` 自报也是 0.1.1** | 「包是 0.1.0」已过时（2026-11-09 实测）：`dist/installer` 顶层现有 `LiuHao-Setup-0.1.1.exe`（29,567,136 字节）+ `liuhao-0.1.1-upgrade.zip`（2026-11-08 构建）。目标口径本身已推进：源码三处（`pyproject.toml:3`、`src/version.py:8`、`installer/liuhao.iss:25`）均已是 0.1.2，当前真实矛盾是「源码 0.1.2 vs 产物/清单 0.1.1」（`SHA256SUMS.txt`/`LIUHAO_RELEASE.json` 仍 0.1.1），0.1.2 包待 r6 出包 |
+| P-2 | 安装包重打并绑定源码提交 | `LiuHao-Setup-0.1.2.exe` 四件套齐、SHA256 实测一致、`DELIVERY.txt` 的源码提交 = 冻结 hash、装一次首启 ready | 未完成（2026-11-09 复核）：`dist/` 下无任何 `*0.1.2*` 产物；installer 顶层无 `DELIVERY.txt`、未绑定源码提交；上一轮 r5 重打在发布包步骤失败（`freeze-0.1.2-r5\build.log`：`--strict-dev-paths` 命中 `scripts/issue_console_token.py:3-4` 两处字面量，exit 1），根因修复在工作区待提交，r6 前须先入库 |
+| P-3 | 真 Key 对话验收 | 真实厂商 Key 首条消息成功 + 错误 Key 复现 401 且文案中性，原始输出入库 | 已完成（2026-11-08 安装版实测，2026-11-09 复核）：真实 DeepSeek Key 不重启即用，`POST /v1/chat` 200/1.90s，回环三写 `SECURITY_REJECTED=0`，10,018 文件 Key 明文扫描 0 命中（`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md` S-06/S-07/S-08 全 PASS）；错误 Key 复现 401 且文案中性（`docs/evidence/failure-modes-2026-11-06.json`），2026-11-09 又补上「测试连接」`invalid_key` 分类本机桩复现（`docs/evidence/failure-invalidkey-2026-11-09.md`：归类/中性主文案/数据目录 Key 明文 0 命中三断言全过），原始输出均已入库 |
+| P-4 | 任意模型接入 | 自定义 `base_url` + 任意 `model` 保存即生效、能对话；非法地址报错可读 | 部分完成（2026-11-09 更新）：「在跑（工作区未提交）」前提已不成立（工作区未提交项实测 7 个）；保存即生效有安装级实证（real-key CONCLUSION §二，同 PID 不重启）；网关级自定义 ollama 配置 `qwen2.5:3b` 走真实 HTTP PASS（`docs/acceptance/butler-gateway-acceptance-2026-11-08.json`）；G-10 SSRF 书面结论已出（`docs/evidence/g10-ssrf-2026-11-09.md`：私网/链路本地实测 400、带 Key 必须 https、回环白名单放行、跨域重定向拒绝），但「DNS 重绑定被拒」只有代码级证据（线程钉住解析），真实 DNS 层实测仍缺 |
+| P-5 | 管家页可用化 | 真实一句话 → 派工 → 汇总，失败分支中性可重试，有 goal id + 事件序列证据 | 已完成（网关级真模型，2026-11-08）：`docs/acceptance/butler-gateway-acceptance-2026-11-08.json` `verdict=PASS`，5 场景全 PASS——一句话派活（goal `c4c63683`，2 任务 completed，723 字结论带 4 条真实来源）、单独指派（192 落到指定员工）、并发峰值 2、失败如实（路径越界报错中性、artifacts 空）、结果格式；复跑文档 `docs/ACCEPTANCE-BUTLER-REAL-MODEL.md` |
+| P-6 | 两腿回归 + 全部 CI 门禁在冻结 hash 上绿 | 两条工作流同 hash 全 success，两腿数字一致，Guardrails 契约探针真跑、Security Scan 未被上游阻断 | 未完成（判定对象已陈旧，需随新冻结 hash 更新）：所引 `b4406497` 的 CI `42386438527` 属旧 hash 的运行，磁盘无新 CI 凭证可推翻或确认；HEAD 现为 `8450009b`（2026-11-09 实测），判定对象须等 0.1.2 冻结 hash 落定后在该 hash 上重跑 |
 | P-7 | `--full` 在冻结 hash 的 clean worktree 上重跑 | 跑前 `git status` 干净，逐关数字与日志/JUnit 落盘，C7 若红单独 `--only C7` 定性 | 本轮在跑（对象 `416f7109`） |
 | P-8 | 前端 dist 与源码同源 | 冻结 hash 上重建 `console/dist`，包内引用 hash 一致，登录首屏在 1280×720/1366×768 可见 | 部分 |
 
