@@ -871,7 +871,10 @@ _PROBE_HINTS = {
     "quota_exhausted": "账户额度已耗尽：请到提供方控制台充值或提升额度",
     "rate_limited": "请求被上游限流：请稍后重试",
     "model_not_found": "模型名不存在：请核对提供方支持的模型 ID",
-    "endpoint_not_found": "接口路径不存在：请核对接口地址，常见需要以 /v1 结尾",
+    # 不能笼统说"以 /v1 结尾"：Anthropic 官方地址照做会变成 /v1/v1/messages
+    # （与 ENDPOINT_NOT_FOUND_MESSAGE 同一口径，b6cf7c73 漏改了这张表）。
+    "endpoint_not_found": "接口路径不存在：请核对接口地址是否完整、路径是否正确；"
+    "OpenAI 兼容端点通常以 /v1 结尾，Anthropic 官方地址不带 /v1",
     "server_error": "模型服务端出错（HTTP 5xx）：请稍后重试；持续出现请联系提供方",
     "bad_request": "请求不合法（HTTP 400）：请检查模型名与参数设置",
     "proxy_auth": "代理要求认证（HTTP 407）：请检查代理设置，或暂时关闭代理",

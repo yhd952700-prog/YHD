@@ -212,6 +212,58 @@ def test_ollama_quota_body_is_classified_too(monkeypatch):
     assert providers_mod  # 仅用于断言模块可导入
 
 
+def _ollama_404(monkeypatch, body: str):
+    import requests
+
+    from src.ai.providers import OllamaProvider, ProviderHTTPError
+
+    class _Response:
+        status_code = 404
+        text = body
+
+        def json(self):
+            import json as _json
+
+            return _json.loads(body)
+
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: _Response())
+    provider = OllamaProvider(
+        name="o", model="llama3.1:8b", base_url="http://127.0.0.1:11434", timeout=5
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        provider.generate("ping")
+    return exc_info.value
+
+
+def test_ollama_model_not_found_404_is_not_endpoint_error(monkeypatch):
+    """Ollama 404 "model 'x' not found" 是模型名问题，不能报成端点问题。
+
+    2026-11-10 无 Key 探测实测：预设默认模型未拉取时，Ollama 返回
+    404 + "model 'llama3.1:8b' not found"。旧 token 表匹配不上这段话
+    （模型名夹在引号里），被归成 endpoint_not_found 并提示「常见需要
+    以 /v1 结尾」——而 /api/chat 这个地址本来就是对的。
+    """
+    error = _ollama_404(
+        monkeypatch, '{"error":"model \'llama3.1:8b\' not found"}'
+    )
+    assert error.upstream_kind == "model_not_found"
+
+
+def test_ollama_newer_not_found_wording_is_model_error_too(monkeypatch):
+    """新版 Ollama：model "x" not found, try pulling it first —— 同样是模型名。"""
+    error = _ollama_404(
+        monkeypatch,
+        '{"error":"model \\"llama3.1:8b\\" not found, try pulling it first"}',
+    )
+    assert error.upstream_kind == "model_not_found"
+
+
+def test_plain_endpoint_404_is_still_endpoint_error(monkeypatch):
+    """泛化的端点 404 仍应报 endpoint_not_found：token 收紧不能误伤老分类。"""
+    error = _ollama_404(monkeypatch, '{"error":"404 page not found"}')
+    assert error.upstream_kind == "endpoint_not_found"
+
+
 class _FakeHttpResponse:
     """DeepSeekProvider 用 requests，这里造一个同形状的响应。"""
 

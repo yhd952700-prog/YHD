@@ -344,6 +344,21 @@ class TestPresets:
         assert "minimax" not in presets
 
 
+def test_probe_hint_for_endpoint_not_found_is_vendor_aware():
+    """「测试连接」的 404 提示不能笼统说「以 /v1 结尾」。
+
+    Anthropic 官方地址是 SDK 自己拼 /v1/messages，照旧提示补 /v1 会变成
+    /v1/v1/messages；Ollama（/api）、方舟（/api/v3）同样不适用。提示口径
+    必须与聊天路径的 ``ENDPOINT_NOT_FOUND_MESSAGE``（b6cf7c73）一致。
+    """
+    from src.gateway.models import _PROBE_HINTS
+
+    hint = _PROBE_HINTS["endpoint_not_found"]
+    assert "常见需要以 /v1 结尾" not in hint
+    assert "Anthropic" in hint
+    assert "不带 /v1" in hint
+
+
 class TestConnectionProbe:
     def test_mock_provider_probe_succeeds(self, client, admin_headers):
         result = client.post(

@@ -88,6 +88,14 @@ _UPSTREAM_MODEL_MISSING_TOKENS = (
     "unknown model",
     "no such model",
     "not_found_error",
+    # Ollama 的 404 原话是 "model 'llama3.1:8b' not found"（新版还会追加
+    # "try pulling it first"）：模型名夹在引号里，老 token "model not found"
+    # 匹配不上，404 会掉进 endpoint_not_found，把用户引去改本来正确的
+    # /api/chat 地址（2026-11-10 无 Key 探测实测踩中）。引号 + "not found"
+    # 的组合足够特异，泛化的端点 404 文案不会长这样。
+    "' not found",
+    '" not found',
+    "not found, try pulling",
     # DeepSeek 的 400 原话：列出支持的模型名 + "but you passed ..."。
     # 这是**模型名写错**，不是泛化的"请求不合法"。
     "supported api model names",
@@ -2111,7 +2119,9 @@ _CHAIN_REASON_TEXT = {
     "invalid_key": "API Key 无效或已失效，请更新密钥",
     "rate_limited": "被上游限流，请稍后重试",
     "model_not_found": "模型名不存在或未开通，请核对模型名称",
-    "endpoint_not_found": "接口路径不存在，常见需要以 /v1 结尾，请核对接口地址",
+    # 不能笼统说"以 /v1 结尾"：Anthropic 官方地址照做会变成 /v1/v1/messages
+    # （与 ENDPOINT_NOT_FOUND_MESSAGE 同一口径，b6cf7c73 漏改了这张表）。
+    "endpoint_not_found": "接口路径不存在，请核对接口地址：OpenAI 兼容端点通常以 /v1 结尾；Anthropic 官方地址不带 /v1",
     "server_error": "模型服务端出错（HTTP 5xx）",
     "bad_request": "请求被上游判为不合法（HTTP 400）",
     "proxy_auth": "代理要求认证（HTTP 407），请检查代理设置",

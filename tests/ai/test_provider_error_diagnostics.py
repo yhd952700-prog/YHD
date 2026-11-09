@@ -324,6 +324,19 @@ def test_l2_google_does_not_claim_streaming():
     assert provider.capabilities.supports_streaming is False
 
 
+def test_chain_404_reason_text_is_vendor_aware():
+    """链式回落文案不能笼统说「以 /v1 结尾」。
+
+    b6cf7c73 已把聊天路径的 ``ENDPOINT_NOT_FOUND_MESSAGE`` 改成分厂商说明，
+    但 ``_CHAIN_REASON_TEXT`` 漏改了：Anthropic 用户照旧文案补 /v1 会拼出
+    ``/v1/v1/messages``，从 404 变成另一个 404。
+    """
+    text = providers_mod._CHAIN_REASON_TEXT["endpoint_not_found"]
+    assert "常见需要以 /v1 结尾" not in text
+    assert "Anthropic" in text
+    assert "不带 /v1" in text
+
+
 def test_h2_chat_does_not_send_default_max_tokens(monkeypatch):
     """chat 路径不再默认写死 ``max_tokens=1000``：不配就不传，交给模型。"""
     seen: dict = {}
