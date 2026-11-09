@@ -124,6 +124,30 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         default_state="未配置即关闭",
         disclosed_in=_MODEL_DISCLOSURE,
     ),
+    "dashscope.aliyuncs.com": EgressEntry(
+        feature="云端模型（阿里云百炼 / DashScope 兼容模式）",
+        trigger="用户选择通义千问预设或自定义该地址并发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
+    "open.bigmodel.cn": EgressEntry(
+        feature="云端模型（智谱 GLM）",
+        trigger="用户选择智谱 GLM 预设或自定义该地址并发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
+    "ark.cn-beijing.volces.com": EgressEntry(
+        feature="云端模型（豆包 / 火山方舟）",
+        trigger="用户选择火山方舟预设并填入推理接入点 ID 后发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
     # ── 联网检索（默认关闭，开启需在设置页显式授权） ──────────────────────
     "hn.algolia.com": EgressEntry(
         feature="联网检索（Hacker News）",

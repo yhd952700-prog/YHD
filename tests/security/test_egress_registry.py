@@ -163,7 +163,7 @@ def test_grouped_egress_covers_every_real_host_exactly_once() -> None:
     }
 
     assert listing["total"] == len(EGRESS_REGISTRY)
-    assert listing["egress_count"] == len(expected) == 33
+    assert listing["egress_count"] == len(expected) == 36
     assert listing["placeholder_count"] == listing["total"] - listing["egress_count"]
     assert len(flat) == len(set(flat)), "同一主机不能在多个功能组里重复出现"
     assert set(flat) == expected, "分组后漏掉了真实出站主机"
