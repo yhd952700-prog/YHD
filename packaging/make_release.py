@@ -74,7 +74,8 @@ APP_TREE_ROOT_FILES = (
     "oss-registry.yaml",
     "LiuHao.bat",
     "START-HERE.txt",
-    # 合规材料随升级包一起更新，避免用户升级后许可证文本停留在旧版本。
+    # 合规材料：安装树里位于包根，出升级包时由 _relocate_for_upgrade 挪到
+    # docs/compliance/ —— 0.1.1 的升级校验只认它自己的 INSTALL_ROOTS。
     "THIRD-PARTY-NOTICES.txt",
     "sbom-cyclonedx.json",
 )
@@ -98,6 +99,10 @@ DOC_ALLOWLIST = (
     "docs/USER-GUIDE.md",
     "docs/faq.md",
 )
+
+#: 升级包内合规材料的落点。必须是 ``INSTALL_ROOTS`` 允许的 ``docs`` 之下，
+#: 否则升级器会因路径不在白名单而拒绝整包。
+UPGRADE_COMPLIANCE_DIR = "docs/compliance"
 #: 第三方许可证全文（安装树 ``licenses/`` 下）：同样逐文件列出。
 #: 新增依赖带来新的许可证文件时必须显式加入；缺失同样让构建失败。
 APP_TREE_LICENSE_FILES = (
@@ -279,6 +284,8 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
         elif candidate.suffix.lower() in SKIP_SUFFIXES:
             continue
         rel = candidate.relative_to(root).as_posix()
+        if app_tree:
+            rel = _relocate_for_upgrade(rel)
         if rel in seen:
             raise BuildError(f"重复路径：{rel}")
         seen.add(rel)
@@ -292,6 +299,18 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
     if total > MAX_UNCOMPRESSED:
         raise BuildError(f"解压后体积超过上限（{total} 字节 > {MAX_UNCOMPRESSED}）")
     return items
+
+
+def _relocate_for_upgrade(rel: str) -> str:
+    """把合规材料从包根移到 ``docs/compliance/``（仅升级包布局）。
+
+    升级器只写 ``INSTALL_ROOTS`` 白名单内的顶层目录；根目录出现 ``licenses/``
+    或 ``THIRD-PARTY-NOTICES.txt`` 会被整包拒绝。安装包本体仍保留根目录副本
+    （安装器直接铺到 ``{app}``），这里只改升级 zip 内的相对路径。
+    """
+    if rel in ("THIRD-PARTY-NOTICES.txt", "sbom-cyclonedx.json") or rel.startswith("licenses/"):
+        return f"{UPGRADE_COMPLIANCE_DIR}/{rel}"
+    return rel
 
 
 def _collect_docs(root: Path) -> List[Tuple[str, Path]]:
