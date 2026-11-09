@@ -180,6 +180,46 @@ class TestLexicalRescue:
         )
         assert verdict["status"] == STATUS_OK
 
+    def test_relative_gap_compares_documents_not_sibling_chunks(self):
+        # 实测（ollama nomic-embed-text, 8 docs / 81 chunks）：研发问题 top
+        # 0.7116 与同文档兄弟块 0.6671 打出 0.0445 的块级间距，被误判为
+        # “不可区分”；按文档取每篇最高分后，与第二篇文档 0.6570 的真实间距
+        # 是 0.0546，第二判据应当放行。
+        config = AbstentionConfig(
+            min_top_similarity=0.08, min_top_gap=0.05, strong_match_similarity=0.85
+        )
+        verdict = assess_confidence(
+            {
+                "kb--pdf-c9dcfa5138cf3ba5#1": 0.0820,
+                "kb--pdf-c9dcfa5138cf3ba5#3": 0.0500,
+                "kb--md-a7144f9ec41d10b2#47": 0.0300,
+            },
+            3,
+            config=config,
+        )
+        # 块级间距 0.0320 < 0.05，文档级间距 0.0520 >= 0.05。
+        assert verdict["checks"]["doc_gap"] == 0.052
+        assert verdict["checks"]["relative"] is True
+        assert verdict["status"] == STATUS_OK
+
+    def test_rare_token_flag_cannot_override_the_ambiguous_band(self):
+        # 实测（同上语料）：罕见词标记（df <= 2）在 81 块的小库里 20 问 19 问
+        # 置位（“补贴”“上限”“支持”“工程”都是 df=2），3 个无答案问题全靠它
+        # 放行。窄带第二判据恢复权威：标记只进 checks，不再单独改判。
+        config = AbstentionConfig(
+            min_top_similarity=0.65, min_top_gap=0.05, strong_match_similarity=0.85
+        )
+        verdict = assess_confidence(
+            {"kb-032#0": 0.6632, "kb-033#0": 0.6547},
+            40,
+            config=config,
+            lexical_rare_match=True,
+        )
+        assert verdict["checks"]["lexical_rare"] is True
+        assert verdict["checks"]["relative"] is False
+        assert verdict["status"] == NO_RELEVANT
+        assert verdict["reason"] == REASON_AMBIGUOUS
+
 
 class TestHybridSearchContract:
     def _store(self, tmp_path) -> PersistentVectorStore:

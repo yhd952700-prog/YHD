@@ -25,10 +25,13 @@ Decision rule (all comparisons use ``>=``: a value exactly on the threshold
 passes, and this is covered by tests):
 
 1. absolute floor: ``top_score >= min_top_score``;
-2. relative gap: ``top_score - runner_up_score >= min_score_gap``, or
-   ``top_score >= strong_match_similarity`` (a near-perfect match may have
-   equally good neighbours);
-3. lexical corroboration: the FTS5/BM25 path produced at least one candidate.
+2. relative gap between *documents*: the best chunk of each document counts
+   once, and ``top_score - runner_up_document_score >= min_score_gap`` must
+   hold, or ``top_score >= strong_match_similarity`` (a near-perfect match may
+   have equally good neighbours);
+3. lexical corroboration: the FTS5/BM25 path produced at least one candidate,
+   and the top score clears the calibrated ``floor * (1 + min_top_gap)``
+   margin.
 
 ``confident = absolute and (relative or strong_match or lexical)``. When nothing
 is confident the reason is ``below_threshold`` if the absolute floor failed,
@@ -56,6 +59,17 @@ cannot separate the two populations. Keyword-heavy queries score low on that
 embedder but are found by FTS5; requiring either a clear gap or lexical
 corroboration restores them without letting the no-answer query through
 (it produced zero lexical candidates).
+
+What lexical corroboration is NOT (measured 2026-11-10, ollama
+``nomic-embed-text``, 8 docs / 81 chunks): a "rare token" flag alone must not
+overturn the gap band. The absolute ``document frequency <= 2`` definition of
+a rare token is corpus-size-fragile -- on that corpus it fired for **19 of
+20** probe queries (补贴/上限/支持/工程/2025 all have df <= 2 there), and the
+three unanswerable queries it rescued were indistinguishable by score from
+answerable ones (e.g. 氢燃料 question top ``0.6580`` vs 纯电动 question top
+``0.6577``). Letting the flag decide turned the narrow band into "always
+answer". The flag therefore stays computed and reported (``checks.lexical_rare``)
+for the future evidence-check, but only the calibrated margin may rescue.
 
 Measured sweep (2026-11-06, hashing embedder, 34 docs / 30 queries: 29
 answerable + 1 unanswerable). ``strong_match_similarity`` was fixed at 0.85.
@@ -137,13 +151,17 @@ The three numeric defaults only apply to the hashing profile (and to a
 declared calibration that completes all three); they are **not** reused for an
 unknown provider.
 
-Known limits (stated, not hidden): the gap is computed over chunk-level scores,
-so two chunks of the same document can tie and look like a weak lead; a real
-semantic model with high absolute scores bypasses the gap via
-``strong_match_similarity``; and an unanswerable query that happens to share a
-keyword with some document will pass on lexical corroboration. The gate is
-deliberately conservative: a false abstention is reported separately in the
-evaluation so it can never be hidden behind a good recall number.
+Known limits (stated, not hidden): the relative gap is computed over
+*documents* (each document counts once, at its best chunk score) because two
+chunks of the same document can tie at chunk level and look like a weak lead;
+a real semantic model with high absolute scores still bypasses the gap via
+``strong_match_similarity``; and an unanswerable query whose *asked fact*
+lives outside the corpus (same-domain near-miss, e.g. a salary question
+against a revenue report) still passes when its scores clear the floor and
+the document gap -- score intervals of answerable and unanswerable questions
+overlap there, so only a downstream evidence-check can close that class. The
+gate is deliberately conservative: a false abstention is reported separately
+in the evaluation so it can never be hidden behind a good recall number.
 """
 
 from __future__ import annotations
@@ -331,11 +349,13 @@ def assess_confidence(
     exists. ``zero_score_allowed`` marks a caller that explicitly accepted
     zero scores (``threshold <= 0``), so all-zero candidates are not re-gated.
     ``lexical_rare_match`` says the best BM25 chunk contains a *rare* query
-    token (document frequency <= 2). A rare exact keyword is stronger evidence
-    than the tuned ``top_score >= floor * (1 + gap)`` margin: the margin missed
-    a genuine answer when an unrelated document edged the cosine top by 0.002
-    (0.6807 < 0.6825). Common words never set this flag, so the near-tie
-    "知识库" false-answer case stays abstained.
+    token (document frequency <= 2). The flag is reported in
+    ``checks.lexical_rare`` for observability and for a future evidence-check,
+    but it no longer rescues the gap band: measured on an 81-chunk corpus the
+    flag fired for 19 of 20 queries, including three unanswerable ones whose
+    scores were indistinguishable from answerable ones, so letting it decide
+    turned the narrow band into "always answer". Lexical corroboration may
+    rescue only through the calibrated ``floor * (1 + gap)`` margin.
     The verdict carries the thresholds and the observed distribution so a
     caller can explain *why* it abstained.
     """
@@ -379,9 +399,29 @@ def assess_confidence(
         if runner_up_score is not None
         else top_score
     )
+    # The narrow band compares *documents*, not chunks: two chunks of the same
+    # document routinely tie (same wording, sibling sections) and a chunk-level
+    # gap then looks like a weak lead even though only one document is in
+    # contention. Each document counts once, at its best chunk score. When the
+    # candidates collapse to a single document there is no cross-document
+    # ambiguity to resolve, so the chunk-level gap stays authoritative (a pile
+    # of identical sibling chunks must remain "ambiguous").
+    document_best: Dict[str, float] = {}
+    for chunk_id, score in ordered:
+        document = str(chunk_id).rsplit("#", 1)[0]
+        if score > document_best.get(document, float("-inf")):
+            document_best[document] = score
+    document_scores = sorted(document_best.values(), reverse=True)
+    if len(document_scores) > 1:
+        doc_runner_up = document_scores[1]
+        doc_gap: Optional[float] = top_score - doc_runner_up
+    else:
+        doc_runner_up = None
+        doc_gap = None
+    band_gap = doc_gap if doc_gap is not None else gap
 
     absolute = top_score >= config.min_top_similarity
-    relative = gap >= config.min_top_gap
+    relative = band_gap >= config.min_top_gap
     strong_match = top_score >= config.strong_match_similarity
     lexical = lexical_candidates > 0
     # A lexical hit may rescue a low absolute vector score (exact part numbers,
@@ -391,8 +431,12 @@ def assess_confidence(
     # The margin is relative to the provider's own floor, because score units
     # are not comparable across embedders: hashing clears 0.08 by 0.019 while
     # nomic clears 0.65 by 0.013, and only the latter is the ambiguous case.
+    # ``lexical_rare_match`` (df <= 2) deliberately does NOT rescue the band:
+    # measured on an 81-chunk corpus it fired for 19/20 queries -- 上限/支持/工程
+    # all have df <= 2 there -- so the flag cannot tell "pins one entity" from
+    # "small corpus". It stays reported in ``checks.lexical_rare``.
     floor_margin = config.min_top_similarity * (1.0 + config.min_top_gap)
-    lexical_rescue = lexical and (top_score >= floor_margin or lexical_rare_match)
+    lexical_rescue = lexical and top_score >= floor_margin
     degenerate_vectors = all(score == 0.0 for _, score in ordered)
     if degenerate_vectors:
         confident = zero_score_allowed or lexical
@@ -428,6 +472,10 @@ def assess_confidence(
             "strong_match": strong_match,
             "lexical": lexical,
             "lexical_rare": lexical_rare_match,
+            "doc_gap": round(doc_gap, 4) if doc_gap is not None else None,
+            "doc_runner_up_score": (
+                round(doc_runner_up, 4) if doc_runner_up is not None else None
+            ),
         },
     }
 
