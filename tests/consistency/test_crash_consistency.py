@@ -97,12 +97,33 @@ def _run_and_hard_kill(mode: str, target: Path, *, minimum: int = 20) -> int:
 
 
 def _integrity_ok(db: Path) -> bool:
-    conn = sqlite3.connect(str(db))
-    try:
-        rows = conn.execute("PRAGMA integrity_check(1)").fetchall()
-        return rows == [("ok",)]
-    finally:
-        conn.close()
+    """对强杀后的库跑 ``PRAGMA integrity_check(1)``，返回是否 ``ok``。
+
+    Windows 特有时序：``TerminateProcess`` 返回后，被杀子进程对 ``*-shm`` 的
+    内核引用（句柄/映射 section）仍在异步清理——实测此刻该文件连删除都会
+    被拒绝（WinError 5，约几十毫秒后恢复）。首个新连接按 win32 VFS 的 DMS
+    协议必须把 ``*-shm`` 截断重建（``SetEndOfFile``），恰与残留 section 撞车，
+    得到瞬时 ``SQLITE_IOERR_TRUNCATE``（1546，即 audit kernel 注释里记录过的
+    同一现象）。库文件与 WAL 的字节始终完好，重开即正常恢复。
+
+    因此只对 I/O 错误家族做有界重试；不放宽断言：integrity_check 仍必须返回
+    ``ok``，真实页损坏仍会以错误行形式失败，持续 I/O 故障在超时后原样上抛。
+    """
+    deadline = time.monotonic() + 5.0
+    while True:
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = conn.execute("PRAGMA integrity_check(1)").fetchall()
+            return rows == [("ok",)]
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, "sqlite_errorcode", 0) or 0
+            # 10 = SQLITE_IOERR 主码；扩展码（如 1546 TRUNCATE）低位掩码后同族。
+            transient = (code & 0xFF) == 10 and time.monotonic() < deadline
+            if not transient:
+                raise
+        finally:
+            conn.close()
+        time.sleep(0.02)
 
 
 def _count(db: Path, table: str) -> int:
