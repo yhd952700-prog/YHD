@@ -15,6 +15,7 @@ from src.selfmod import (
     SelfModError,
     SelfModService,
 )
+from src.selfmod.gates import CommandResult, GateReport, GateResult
 
 ORIGINAL = "def add(a, b):\n    return a + b\n"
 
@@ -143,6 +144,85 @@ def test_timeout_kills_test_and_rejects(workspace: Path, tmp_path: Path) -> None
         assert (workspace / "app.py").read_text(encoding="utf-8") == ORIGINAL
     finally:
         service.close()
+
+
+def test_finalize_refuses_pending_gate(workspace: Path, tmp_path: Path) -> None:
+    """G2 未跑完时状态是 pending_gate，finalize 必须拒绝，绝不能当成通过。"""
+    service = _service(workspace, tmp_path, allow_promote=True)
+    try:
+        proposal = service.propose(
+            title="pending",
+            rationale="gate still running",
+            edits=[FileEdit("app.py", _proposal_content())],
+            test_command=_passing_command(),
+        )
+        service.ledger.update(proposal["id"], status="pending_gate")
+        with pytest.raises(ConfirmationRequired) as excinfo:
+            service.finalize(proposal["id"], "irrelevant-token")
+        assert "pending_gate" in str(excinfo.value)
+        assert (workspace / "app.py").read_text(encoding="utf-8") == ORIGINAL
+    finally:
+        service.close()
+
+
+def test_run_on_copy_enters_pending_gate_before_gates_run(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """仓库模式跑门禁前，状态必须先落成 pending_gate，被中断也停在这里。"""
+    (workspace / "docs" / "spec").mkdir(parents=True)
+    (workspace / "docs" / "spec" / "SELF-EVOLUTION.md").write_text(
+        "# self-evolution spec\n", encoding="utf-8"
+    )
+    service = _service(
+        workspace,
+        tmp_path,
+        allowed_test_commands=[[sys.executable, "-m", "pytest"]],
+    )
+    try:
+        proposal = service.propose(
+            title="repo gate",
+            rationale="observe pending state",
+            edits=[FileEdit("app.py", _proposal_content())],
+            test_command=[sys.executable, "-m", "pytest"],
+        )
+        token = service.confirm(proposal["id"], approver="owner")
+        seen: dict[str, str] = {}
+
+        def fake_run_gates(root: Path, **kwargs: object) -> GateReport:
+            seen["status"] = service.get(proposal["id"])["status"]
+            command = CommandResult(
+                command=[sys.executable, "-m", "pytest"],
+                exit_code=0,
+                status="pass",
+                reason="门禁命令退出 0",
+                duration_ms=1.0,
+                output_tail="1 passed in 0.01s",
+                output_tail_sha256="deadbeef",
+            )
+            g2 = GateResult(
+                id="G2",
+                name="全量测试与采集",
+                status="pass",
+                reason="门禁 G2 全部命令退出 0",
+                duration_ms=1.0,
+                commands=[command],
+            )
+            return GateReport(
+                stage="copy",
+                gates=[g2],
+                started_at="2026-01-01T00:00:00+00:00",
+                duration_ms=1.0,
+                gate_mode="repo",
+                result="PASS",
+            )
+
+        monkeypatch.setattr("src.selfmod.service.run_gates", fake_run_gates)
+        result = service.run_on_copy(proposal["id"], token)
+        assert seen["status"] == "pending_gate"
+        assert result["status"] == "passed"
+    finally:
+        service.close()
+
 
 
 def test_cpu_limit_is_enforced(workspace: Path, tmp_path: Path) -> None:

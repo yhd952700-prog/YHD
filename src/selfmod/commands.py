@@ -17,6 +17,7 @@ limited) process isolation these commands run under.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -26,6 +27,9 @@ from .errors import TestCommandNotAllowed
 _PYTHON_BASENAMES = frozenset(
     {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}
 )
+#: npm 在 Windows 上是 ``npm.cmd``；subprocess 直接传 ``"npm"`` 会找不到，
+#: 因此与 python 一样在归一化时钉成 ``shutil.which`` 解析出的绝对路径。
+_NPM_BASENAMES = frozenset({"npm", "npm.cmd", "npm.exe", "npm.bat"})
 
 #: Commands that exist in this repository today. ``python`` is normalised to
 #: ``sys.executable`` so a caller may spell it either way.
@@ -58,6 +62,9 @@ DEFAULT_GATE_COMMANDS: Tuple[Tuple[str, ...], ...] = (
     (sys.executable, "scripts/verify_doc_count_claims.py"),
     (sys.executable, "scripts/lint_audit_claims.py", "--all"),
     (sys.executable, "scripts/lint_control_claims.py", "--all"),
+    # G6 最小口子：只放行「控制台构建」这一条命令。产物同源校验由 gates.G6 负责，
+    # 不放行 npm 的任意子命令（test/lint/dev 仍需另行登记）。
+    ("npm", "--prefix", "apps/console/console", "run", "build"),
 )
 
 
@@ -69,6 +76,10 @@ def normalise_command(command: Sequence[str]) -> List[str]:
     head = Path(tokens[0]).name.lower()
     if head in _PYTHON_BASENAMES:
         tokens[0] = sys.executable
+    elif head in _NPM_BASENAMES:
+        resolved = shutil.which(tokens[0]) or shutil.which("npm")
+        if resolved:
+            tokens[0] = resolved
     return tokens
 
 

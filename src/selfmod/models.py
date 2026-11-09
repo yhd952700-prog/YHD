@@ -11,6 +11,9 @@ class ProposalStatus(str, Enum):
     PENDING = "pending"          # waiting for a human to confirm
     CONFIRMED = "confirmed"      # human confirmed; may be tested on a copy
     TESTING = "testing"
+    #: 门禁（尤其 G2 整套 pytest）仍在执行 / 未完成。此状态禁止 finalize：
+    #: 「还没跑完」不等于「通过」，中途被中断的提案必须停在这里等待重跑。
+    PENDING_GATE = "pending_gate"
     PASSED = "passed"            # copy + tests passed; real workspace untouched
     REJECTED = "rejected"        # tests failed / timed out / resource limit
     APPLIED = "applied"          # explicitly promoted to the real workspace

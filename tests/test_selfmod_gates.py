@@ -13,12 +13,19 @@ spec §3「工具缺失 = FAIL」记失败，这正是生产语义，不在这�
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 
 from src.selfmod import FileEdit, PathPolicy, ResourceLimits, run_gates
+from src.selfmod.gates import (
+    _execute,
+    console_build_gate,
+    packaging_dry_run_gate,
+    verify_console_provenance,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIMITS = ResourceLimits(timeout_seconds=120)
@@ -138,3 +145,105 @@ def test_drill_workspace_without_spec_marks_all_gates_skip(tmp_path: Path) -> No
     assert report.result == "PASS"
     assert {g.status for g in report.gates} == {"skip"}
     assert len(report.gates) == 15
+
+
+# ----------------------------------------------------------------------
+# G6：只放行控制台构建 + 产物同源校验；G7：打包面继续关闭
+# ----------------------------------------------------------------------
+def _console_repo(tmp_path: Path, build_body: str) -> Path:
+    """造一个带最小控制台与真实 provenance 模块的临时仓库。"""
+    root = _repo(tmp_path)
+    console = root / "apps" / "console" / "console"
+    console.mkdir(parents=True)
+    (console / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-console",
+                "version": "1.2.3",
+                "scripts": {"build": "node build.js"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (console / "build.js").write_text(build_body, encoding="utf-8")
+    packaging = root / "packaging"
+    packaging.mkdir()
+    shutil.copy2(
+        REPO_ROOT / "packaging" / "console_provenance.py",
+        packaging / "console_provenance.py",
+    )
+    return root
+
+
+def _cmd_runner(root: Path):
+    return lambda gate_id, command: _execute(
+        command, cwd=root, limits=LIMITS, timeout_seconds=120
+    )
+
+
+_BUILD_OK = (
+    "const fs=require('fs');"
+    "fs.mkdirSync('dist',{recursive:true});"
+    "fs.writeFileSync('dist/index.html','<html>ok</html>');"
+    "fs.writeFileSync('dist/app.js','console.log(1)');"
+)
+_BUILD_EMPTY = "console.log('no dist produced');"
+
+
+def test_g6_passes_console_build_when_provenance_matches(tmp_path: Path) -> None:
+    root = _console_repo(tmp_path, _BUILD_OK)
+
+    gate = console_build_gate(
+        ["apps/console/console/src/App.tsx"], root, _cmd_runner(root)
+    )
+
+    assert gate.status == "pass", gate.reason
+    meta = json.loads(
+        (root / "apps" / "console" / "console" / "dist" / "console-build.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert meta["schema"] == "liuhao.console-build/1"
+    assert meta["source_sha256"]
+    assert meta["files_sha256"]
+    assert meta["command"] == "npm --prefix apps/console/console run build"
+    ok, reason = verify_console_provenance(root)
+    assert ok, reason
+
+
+def test_g6_fails_when_build_produces_no_dist(tmp_path: Path) -> None:
+    root = _console_repo(tmp_path, _BUILD_EMPTY)
+
+    gate = console_build_gate(
+        ["apps/console/console/src/App.tsx"], root, _cmd_runner(root)
+    )
+
+    assert gate.status == "fail"
+    assert "dist/index.html" in gate.reason
+
+
+def test_g6_skips_when_no_frontend_change(tmp_path: Path) -> None:
+    root = _console_repo(tmp_path, _BUILD_OK)
+
+    gate = console_build_gate(["docs/guide.md"], root, _cmd_runner(root))
+
+    assert gate.status == "skip"
+
+
+def test_g7_rejects_packaging_and_installer_changes() -> None:
+    for path in ("packaging/version.json", "installer/setup.iss"):
+        gate = packaging_dry_run_gate([path])
+        assert gate.status == "fail", path
+        assert "未开放" in gate.reason
+        assert "打包白名单" in gate.reason
+
+
+def test_g7_rejects_frontend_until_packaging_whitelist_exists() -> None:
+    gate = packaging_dry_run_gate(["apps/console/console/src/App.tsx"])
+    assert gate.status == "fail"
+    assert "未开放" in gate.reason
+
+
+def test_g7_skips_unrelated_changes() -> None:
+    assert packaging_dry_run_gate(["docs/guide.md"]).status == "skip"
+

@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field, replace
@@ -404,6 +406,100 @@ def _skip(gate_id: str, reason: str) -> GateResult:
     return GateResult(id=gate_id, name=GATE_NAMES[gate_id], status="skip", reason=reason)
 
 
+def _console_version(console_dir: Path) -> str:
+    try:
+        data = json.loads((console_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "0.0.0"
+    return str(data.get("version") or "0.0.0")
+
+
+def verify_console_provenance(root: Path) -> Tuple[bool, str]:
+    """构建产物同源校验，与 ``packaging/console_provenance.py`` 同一套指纹口径。
+
+    要求 ``dist/index.html`` 存在；把「源码指纹 + 产物指纹」写进
+    ``dist/console-build.json``，再立刻从磁盘复算一遍。任何一环对不上都判 FAIL，
+    不提供"跳过校验"的开关。
+    """
+    console = root / "apps" / "console" / "console"
+    dist = console / "dist"
+    if not (dist / "index.html").is_file():
+        return False, "控制台构建未产出 dist/index.html，无法校验产物"
+    provenance = root / "packaging" / "console_provenance.py"
+    if not provenance.is_file():
+        return False, "缺少 packaging/console_provenance.py，无法做产物同源校验"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_selfmod_console_provenance", provenance
+        )
+        if spec is None or spec.loader is None:
+            return False, "无法加载 packaging/console_provenance.py"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        source_fp = module.frontend_source_fingerprint(console)
+        files = module.collect_console_files(dist)
+        files_fp = module.console_files_fingerprint(files)
+        module.write_build_metadata(
+            dist,
+            source_dir=console,
+            version=_console_version(console),
+            command="npm --prefix apps/console/console run build",
+        )
+        # 落盘后重新从磁盘读，避免"只在内存里自说自话"。
+        reread = json.loads((dist / "console-build.json").read_text(encoding="utf-8"))
+        if reread.get("source_sha256") != source_fp:
+            return False, "构建记录中的源码指纹与当前源码不一致"
+        if reread.get("files_sha256") != files_fp:
+            return False, "构建记录中的产物指纹与实际产物不一致"
+        if module.frontend_source_fingerprint(console) != source_fp:
+            return False, "构建后源码指纹发生变化，产物与源码不同源"
+    except Exception as exc:  # noqa: BLE001 - 校验失败一律保守拒绝
+        return False, f"产物同源校验异常：{exc}"
+    return True, f"控制台构建通过，产物与源码同源（指纹 {source_fp[:12]}）"
+
+
+def console_build_gate(changed: Sequence[str], root: Path, run_cmd: Any) -> GateResult:
+    frontend = [p for p in changed if _norm(p).startswith(FRONTEND_PREFIX)]
+    if not frontend:
+        return _skip("G6", "本提案未改动 apps/console/console/，无需构建")
+    result = run_cmd("G6", _DEFAULT_G6_A[0])
+    if result.status != "pass":
+        return GateResult(
+            "G6",
+            GATE_NAMES["G6"],
+            "fail",
+            f"控制台构建失败：{result.reason}",
+            duration_ms=result.duration_ms,
+            commands=[result],
+        )
+    ok, reason = verify_console_provenance(root)
+    return GateResult(
+        "G6",
+        GATE_NAMES["G6"],
+        "pass" if ok else "fail",
+        reason,
+        duration_ms=result.duration_ms,
+        commands=[result],
+    )
+
+
+def packaging_dry_run_gate(changed: Sequence[str]) -> GateResult:
+    packaging = [
+        p
+        for p in changed
+        if _norm(p).startswith((FRONTEND_PREFIX, "packaging/", "installer/"))
+    ]
+    if not packaging:
+        return _skip("G7", "本提案未改动前端/打包面，无需 dry-run")
+    return GateResult(
+        "G7",
+        GATE_NAMES["G7"],
+        "fail",
+        "打包面未开放：需先补打包白名单与产物校验；G6 只证明控制台可构建且产物同源，"
+        "不等于可出包。packaging/、installer/ 与前端改动在本门一律拒绝。",
+    )
+
+
 # ----------------------------------------------------------------------
 # 主入口
 # ----------------------------------------------------------------------
@@ -567,31 +663,10 @@ def _run_copy_stage(
         return _gate_from_commands("G5", cmds)
 
     if gate_id == "G6":
-        frontend = [p for p in changed if _norm(p).startswith(FRONTEND_PREFIX)]
-        if not frontend:
-            return _skip("G6", "本提案未改动 apps/console/console/，无需构建")
-        return GateResult(
-            "G6",
-            GATE_NAMES["G6"],
-            "fail",
-            "改动了前端但 `npm` 类命令尚未纳入 GateCommandPolicy 白名单，G6 无法执行；"
-            "在补齐白名单与构建产物同源校验前，前端改动一律不可自动合入",
-        )
+        return console_build_gate(changed, root, run_cmd)
 
     if gate_id == "G7":
-        packaging = [
-            p
-            for p in changed
-            if _norm(p).startswith(FRONTEND_PREFIX) or _norm(p).startswith(("packaging/", "installer/"))
-        ]
-        if not packaging:
-            return _skip("G7", "本提案未改动前端/打包面，无需 dry-run")
-        return GateResult(
-            "G7",
-            GATE_NAMES["G7"],
-            "fail",
-            "改动了前端/打包面，但 PowerShell dry-run 尚未纳入 GateCommandPolicy 白名单，G7 无法执行",
-        )
+        return packaging_dry_run_gate(changed)
 
     if gate_id == "G8":
         reasons: List[str] = []
@@ -715,6 +790,11 @@ _DEFAULT_G5_A = (
     (sys.executable, "scripts/verify_openapi_contract.py"),
     (sys.executable, "scripts/verify_app_instantiation_hygiene.py"),
 )
+_DEFAULT_G6_A = (
+    # 执行时直接传 Popen，Windows 上必须用 which 解析出的 npm.cmd 绝对路径；
+    # 白名单校验侧由 commands.normalise_command 做同样的钉定。
+    (shutil.which("npm") or "npm", "--prefix", "apps/console/console", "run", "build"),
+)
 _DEFAULT_G12_A = (
     (sys.executable, "-m", "pytest", "tests/test_import_integrity.py", "-q"),
     (sys.executable, "-m", "compileall", "-q", "src"),
@@ -723,6 +803,12 @@ _DEFAULT_G12_A = (
 # 导入期硬断言：门禁实际执行的每一条命令都必须在 GateCommandPolicy 白名单里。
 # 任何新增门禁命令若忘记登记，模块导入即失败——不允许"先跑起来再说"。
 for _command in (
-    _DEFAULT_G1_A + _DEFAULT_G2_A + _DEFAULT_G3_A + _DEFAULT_G4_A + _DEFAULT_G5_A + _DEFAULT_G12_A
+    _DEFAULT_G1_A
+    + _DEFAULT_G2_A
+    + _DEFAULT_G3_A
+    + _DEFAULT_G4_A
+    + _DEFAULT_G5_A
+    + _DEFAULT_G6_A
+    + _DEFAULT_G12_A
 ):
     GateCommandPolicy().validate(_command)

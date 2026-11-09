@@ -353,13 +353,24 @@ class SelfModService:
             raise
 
         try:
-            self.ledger.update(proposal_id, status=ProposalStatus.TESTING.value)
+            # 仓库模式下，门禁（尤其 G2 整套 pytest）会跑很久。先把状态钉成
+            # pending_gate：进程若在中途被中断，提案就停在这里，finalize 会拒绝，
+            # 不会出现"没跑完却被当成通过"。
+            repo_mode = is_repo_workspace(copy_root)
+            self.ledger.update(
+                proposal_id,
+                status=(
+                    ProposalStatus.PENDING_GATE.value
+                    if repo_mode
+                    else ProposalStatus.TESTING.value
+                ),
+            )
             edits = [FileEdit(path=edit["path"], content=edit["content"]) for edit in proposal["edits"]]
             try:
                 apply_edits(copy_root, edits, self.policy)
                 # G2 的命令就是整套 pytest；仅在仓库模式下门禁真的会执行它时才复用，
                 # 演练工作区（SE-Gate 不适用）仍然单独跑一次提案测试命令。
-                if command == [sys.executable, "-m", "pytest"] and is_repo_workspace(copy_root):
+                if command == [sys.executable, "-m", "pytest"] and repo_mode:
                     gate_report = run_gates(
                         copy_root,
                         edits=edits,
