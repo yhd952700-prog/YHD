@@ -74,6 +74,7 @@
    只有你主动连接后才会访问对应域名。
    加密边界：只有 API Key 加密；对话、知识库、审计等是本地明文 SQLite 文件，
    依靠 Windows 账号权限保护。多人共用或设备可能丢失时，建议开启 BitLocker。
+   多个 Windows 账户共用同一台电脑时，数据与密钥不按用户隔离。
 
 5. 安装包里没有任何密钥
    构建过程剔除了 config/auth_secrets.json、human_identities.json、
