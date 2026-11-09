@@ -174,7 +174,13 @@ DOC_CONTENT_CHECKS = [
     (ROOT / "docs" / "mobile-access.md", "127.0.0.1:8080", "手机访问文档必须写默认 8080"),
     (ROOT / "docs" / "knowledge_base" / "getting-started" / "installation.md", '"version": "0.1.1"', "安装指南健康检查示例必须是 0.1.1"),
     (ROOT / "docs" / "END-USER-GUIDE.md", "仅根账号可见", "必须标注系统设置仅根账号可见"),
-    (ROOT / "docs" / "END-USER-GUIDE.md", "手机端点底部 **管家**", "手机端聊天入口必须是管家"),
+]
+
+# 0.1.2 起不提供手机访问（开关与配对流留到 0.1.3 之后）。面向安装用户的文档
+# 不得再教用户从手机端操作，否则用户会照着做一个本版不存在的流程。
+DOC_ABSENCE_CHECKS = [
+    (ROOT / "docs" / "END-USER-GUIDE.md", "手机端", "0.1.2 不提供手机端访问，不得教学"),
+    (ROOT / "docs" / "END-USER-GUIDE.md", "手机访问", "0.1.2 不提供手机访问，不得教学"),
 ]
 
 QUOTED_RE = re.compile(r"「([^」\n]{2,24})」")
@@ -298,6 +304,11 @@ def main() -> int:
         text = read_text(doc)
         if needle not in text:
             failures.append(f"{doc.relative_to(ROOT)} 缺少断言：{why}（应包含 `{needle}`）")
+
+    for doc, needle, why in DOC_ABSENCE_CHECKS:
+        text = read_text(doc)
+        if needle in text:
+            failures.append(f"{doc.relative_to(ROOT)} 出现不该有的内容「{needle}」：{why}")
 
     diag_vocab = diag_source_vocab()
     if not diag_vocab:
