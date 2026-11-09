@@ -133,10 +133,15 @@ class ModelRegistry:
                 back to ``$LIUHAO_MODEL_PRICING_FILE``, then to
                 ``config/model_pricing.json``.
         """
+        from src.common.data_paths import resolve_store_path
+
         self.storage_path = Path(
             storage_path
-            or os.environ.get(MODEL_REGISTRY_FILE_ENV)
-            or DEFAULT_MODEL_REGISTRY_FILE
+            or resolve_store_path(
+                "model_registry.json",
+                DEFAULT_MODEL_REGISTRY_FILE,
+                env_var=MODEL_REGISTRY_FILE_ENV,
+            )
         )
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.pricing_path = Path(

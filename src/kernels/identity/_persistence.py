@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from src._time import utc_now
 from src.common.atomic_write import atomic_write_text, exclusive_file_lock
+from src.common.data_paths import default_data_file
 
 logger = logging.getLogger("liuhao.kernel.identity")
 
@@ -218,6 +219,16 @@ def default_sqlite_path() -> Path:
     ``LIUHAO_HUMAN_IDENTITIES_DB`` still overrides this entirely.
     """
     return default_data_dir() / "config" / "human_identities.sqlite3"
+
+
+def default_file_path() -> str:
+    """``file`` 后端身份/账号树的默认 JSON 文件。
+
+    只有显式设置了 ``LIUHAO_DATA_DIR`` 才返回路径（``<data>/config/human_identities.json``）；
+    没有数据根时返回 ``""``，保持既有语义：**未配置即不落盘（fail-closed）**，
+    绝不把身份数据偷偷写进 ``%LOCALAPPDATA%`` 或仓库根。
+    """
+    return default_data_file("config/human_identities.json") or ""
 
 
 #: Kept for importers that read the constant; the store itself resolves at call
@@ -1425,7 +1436,9 @@ def resolve_human_identity_store() -> JsonFileStore | SqliteHumanIdentityStore:
             HUMAN_IDENTITIES_BACKEND_ENV, backend, BACKEND_FILE,
         )
 
-    return JsonFileStore((os.environ.get(HUMAN_IDENTITIES_FILE_ENV) or "").strip())
+    return JsonFileStore(
+        (os.environ.get(HUMAN_IDENTITIES_FILE_ENV) or "").strip() or default_file_path()
+    )
 
 
 def describe_human_identity_store(

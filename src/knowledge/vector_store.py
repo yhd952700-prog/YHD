@@ -65,6 +65,8 @@ from .abstention import (
     AbstentionConfig,
     assess_confidence,
 )
+from ..common.data_paths import resolve_store_path
+from ..common.input_guard import ensure_json_serializable
 
 logger = logging.getLogger("liuhao.knowledge.vector_store")
 
@@ -104,13 +106,40 @@ def _tokens_for_metadata(metadata: Dict[str, Any]) -> str:
 
 
 def cosine_similarity(left: List[float], right: List[float]) -> float:
-    """Cosine similarity in [-1, 1]; 0.0 when either vector is all zeros."""
+    """Cosine similarity in [-1, 1]; 0.0 when either vector is all zeros.
+
+    维度不一致（换过 embedding 模型/维度）返回 0.0 而不是 ``zip`` 静默截断：
+    截断后的点积仍然"看起来正常"，会把错配向量混进检索结果。调用方通过
+    ``dimension_mismatch_count`` / 状态接口暴露该情况，要求重建索引。
+    """
+    if len(left) != len(right):
+        _record_dimension_mismatch(len(left), len(right))
+        return 0.0
     dot = sum(a * b for a, b in zip(left, right))
     norm_left = sum(a * a for a in left) ** 0.5
     norm_right = sum(b * b for b in right) ** 0.5
     if norm_left <= 0 or norm_right <= 0:
         return 0.0
     return dot / (norm_left * norm_right)
+
+
+_DIM_MISMATCH_LOCK = threading.Lock()
+_DIM_MISMATCH_PAIRS: set = set()
+
+
+def _record_dimension_mismatch(left_dim: int, right_dim: int) -> None:
+    """同一个维度组合只告警一次，避免每次检索刷屏。"""
+    pair = (int(left_dim), int(right_dim))
+    with _DIM_MISMATCH_LOCK:
+        if pair in _DIM_MISMATCH_PAIRS:
+            return
+        _DIM_MISMATCH_PAIRS.add(pair)
+    logger.error(
+        "knowledge vector dimension mismatch: query=%d stored=%d; "
+        "该向量已跳过（不做 zip 静默截断），请执行重建索引",
+        left_dim,
+        right_dim,
+    )
 
 
 def _document_id_of(chunk_id: str, metadata: Dict[str, Any]) -> str:
@@ -328,6 +357,85 @@ class VectorStore:
                 return True
             return False
 
+    # -- index metadata / maintenance（基类内存实现，持久化子类覆盖） --------
+    def get_index_meta(self) -> Dict[str, str]:
+        return {}
+
+    def set_index_meta(self, **values: Any) -> None:
+        return None
+
+    def dimension_distribution(self) -> Dict[int, int]:
+        with self._lock:
+            counts: Dict[int, int] = {}
+            for embedding, _ in self._store.values():
+                dimension = len(embedding)
+                counts[dimension] = counts.get(dimension, 0) + 1
+            return counts
+
+    def raw_documents(
+        self,
+        *,
+        owners: Optional[Iterable[str]] = None,
+        include_unowned: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """按文档聚合的原始记录（迁移/重建索引用，含 owner 与展示名）。"""
+        with self._lock:
+            snapshot = list(self._store.items())
+        documents: Dict[str, Dict[str, Any]] = {}
+        for chunk_id, (_, metadata) in snapshot:
+            if not _owner_visible(metadata, owners, include_unowned):
+                continue
+            document_id = _document_id_of(chunk_id, metadata)
+            entry = documents.get(document_id)
+            if entry is None:
+                entry = {
+                    "document_id": document_id,
+                    "owner": _metadata_owner(metadata),
+                    "filename": metadata.get("filename")
+                    or metadata.get("source")
+                    or metadata.get("title"),
+                    "chunks": 0,
+                }
+                documents[document_id] = entry
+            entry["chunks"] += 1
+        return list(documents.values())
+
+    def get_chunk_records(self, document_id: str) -> List[Tuple[str, List[float], Dict[str, Any]]]:
+        """完整 chunk 记录（含向量与全部元数据），供重建索引复用。"""
+        prefix = f"{document_id}#"
+        with self._lock:
+            rows = [
+                (chunk_id, list(embedding), dict(metadata))
+                for chunk_id, (embedding, metadata) in self._store.items()
+                if chunk_id.startswith(prefix)
+            ]
+        rows.sort(key=lambda item: _chunk_index_of(item[0], item[2]))
+        return rows
+
+    def rename_document(self, old_id: str, new_id: str) -> Dict[str, Any]:
+        """单文档改名（原子）；基类内存实现只改读路径。"""
+        if not old_id or not new_id or old_id == new_id:
+            return {"renamed": False, "reason": "same_id", "chunks": 0}
+        prefix_old = f"{old_id}#"
+        with self._lock:
+            rows = [
+                (chunk_id, value)
+                for chunk_id, value in self._store.items()
+                if chunk_id.startswith(prefix_old)
+            ]
+            if not rows:
+                return {"renamed": False, "reason": "not_found", "chunks": 0}
+            for key, _ in rows:
+                self._store.pop(key, None)
+            for old_chunk, (embedding, metadata) in rows:
+                index = _chunk_index_of(old_chunk, metadata)
+                new_chunk = f"{new_id}#{index}"
+                new_meta = dict(metadata)
+                new_meta["document_id"] = new_id
+                new_meta["chunk_index"] = index
+                self._store[new_chunk] = (embedding, new_meta)
+            return {"renamed": True, "reason": None, "chunks": len(rows)}
+
     def replace_prefix(
         self,
         prefix: str,
@@ -490,11 +598,18 @@ class VectorStore:
 
 
 def default_db_path() -> Path:
-    """SQLite file for knowledge vectors (persisted under ``data/`` by default)."""
-    configured = (os.environ.get(KNOWLEDGE_DB_ENV) or "").strip()
-    if configured:
-        return Path(configured)
-    return Path(__file__).resolve().parents[2] / "data" / "knowledge_vectors.sqlite3"
+    """SQLite file for knowledge vectors.
+
+    ``LIUHAO_KNOWLEDGE_DB`` > ``LIUHAO_DATA_DIR/knowledge_vectors.sqlite3`` >
+    ``<repo>/data/knowledge_vectors.sqlite3`` (see ``src.common.data_paths``).
+    """
+    return Path(
+        resolve_store_path(
+            "knowledge_vectors.sqlite3",
+            Path(__file__).resolve().parents[2] / "data" / "knowledge_vectors.sqlite3",
+            env_var=KNOWLEDGE_DB_ENV,
+        )
+    )
 
 
 class PersistentVectorStore(VectorStore):
@@ -528,6 +643,15 @@ class PersistentVectorStore(VectorStore):
                 content_hash TEXT PRIMARY KEY,
                 document_id TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_index_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
@@ -601,7 +725,13 @@ class PersistentVectorStore(VectorStore):
                 metadata = json.loads(row["metadata"] or "{}")
                 if not isinstance(embedding, list):
                     raise ValueError("embedding is not a list")
-            except (TypeError, ValueError):
+                if not isinstance(metadata, dict):
+                    raise ValueError("metadata is not an object")
+                # 旧版本可能超过网关的嵌套上限后仍被落库：这类行在检索结果
+                # 序列化时会抛 ``RecursionError``（对外表现为 400），
+                # 让整个 search/query 长期失败。加载阶段就跳过它。
+                ensure_json_serializable(metadata, "metadata")
+            except (TypeError, ValueError, RecursionError):
                 logger.error(
                     "knowledge vector %r is corrupt; skipped on load", row["doc_id"]
                 )
@@ -765,6 +895,106 @@ class PersistentVectorStore(VectorStore):
                     )
                 self._conn.commit()
             return removed
+
+    # -- index metadata ------------------------------------------------------
+    def get_index_meta(self) -> Dict[str, str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM knowledge_index_meta"
+            ).fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
+    def set_index_meta(self, **values: Any) -> None:
+        if not values:
+            return
+        with self._lock:
+            for key, value in values.items():
+                self._conn.execute(
+                    "INSERT INTO knowledge_index_meta (key, value, updated_at) "
+                    "VALUES (?, ?, datetime('now')) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                    "updated_at = datetime('now')",
+                    (str(key), str(value)),
+                )
+            self._conn.commit()
+
+    def rename_document(self, old_id: str, new_id: str) -> Dict[str, Any]:
+        """单文档改名：chunks / FTS / hash 行同一事务，失败整体回滚。
+
+        迁移必须可重入：改名成功后旧 id 不再存在，重复执行是 no-op；若目标
+        id 已存在则拒绝（不覆盖另一个文档），由调用方记入 conflict 日志。
+        """
+        if not old_id or not new_id or old_id == new_id:
+            return {"renamed": False, "reason": "same_id", "chunks": 0}
+        prefix_old = f"{old_id}#"
+        prefix_new = f"{new_id}#"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT doc_id, embedding, metadata FROM knowledge_vectors "
+                "WHERE substr(doc_id, 1, ?) = ?",
+                (len(prefix_old), prefix_old),
+            ).fetchall()
+            if not rows:
+                return {"renamed": False, "reason": "not_found", "chunks": 0}
+            conflict = self._conn.execute(
+                "SELECT 1 FROM knowledge_vectors "
+                "WHERE substr(doc_id, 1, ?) = ? LIMIT 1",
+                (len(prefix_new), prefix_new),
+            ).fetchone()
+            if conflict is not None:
+                return {"renamed": False, "reason": "target_exists", "chunks": 0}
+            payload: List[Tuple[str, List[float], Dict[str, Any]]] = []
+            for row in rows:
+                metadata = json.loads(row["metadata"] or "{}")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                index = _chunk_index_of(row["doc_id"], metadata)
+                new_meta = dict(metadata)
+                new_meta["document_id"] = new_id
+                new_meta["chunk_index"] = index
+                payload.append(
+                    (
+                        f"{prefix_new}{index}",
+                        json.loads(row["embedding"]),
+                        new_meta,
+                    )
+                )
+            try:
+                self._conn.execute(
+                    "DELETE FROM knowledge_vectors WHERE substr(doc_id, 1, ?) = ?",
+                    (len(prefix_old), prefix_old),
+                )
+                self._fts_delete_prefix(prefix_old)
+                self._conn.execute(
+                    "UPDATE knowledge_document_hashes SET document_id = ? "
+                    "WHERE document_id = ?",
+                    (new_id, old_id),
+                )
+                for chunk_id, embedding, metadata in payload:
+                    self._conn.execute(
+                        "INSERT INTO knowledge_vectors "
+                        "(doc_id, embedding, metadata, updated_at) "
+                        "VALUES (?, ?, ?, datetime('now')) "
+                        "ON CONFLICT(doc_id) DO UPDATE SET "
+                        "embedding = excluded.embedding, "
+                        "metadata = excluded.metadata, "
+                        "updated_at = datetime('now')",
+                        (
+                            chunk_id,
+                            json.dumps(list(embedding)),
+                            json.dumps(metadata, ensure_ascii=False, default=str),
+                        ),
+                    )
+                    self._fts_upsert(chunk_id, metadata)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._swap_memory_locked(prefix_old, [])
+            for chunk_id, embedding, metadata in payload:
+                self._store[chunk_id] = (embedding, metadata)
+            return {"renamed": True, "reason": None, "chunks": len(payload)}
+
 
     def list_documents(
         self,

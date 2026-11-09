@@ -25,6 +25,21 @@ from .base_adapter import (
 )
 
 
+def _escape_soql_literal(value: Any) -> str:
+    """把用户输入变成可安全放进 SOQL 单引号字面量里的文本。
+
+    SOQL 用反斜杠转义；先处理反斜杠自身，再处理引号与 LIKE 通配符，
+    顺序不能颠倒（否则 ``\\'`` 会被二次解码）。
+    """
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
 class SObjectType(str, Enum):
     """Common Salesforce object types."""
     ACCOUNT = "Account"
@@ -701,9 +716,10 @@ class SalesforceAdapter(BaseIntegrationAdapter):
     def search_users(self, search_term: str,
                      fields: Optional[List[str]] = None) -> List[SalesforceUser]:
         """Search users by name or email."""
-        qfilter = (f"Name LIKE '%{search_term}%' "
-                   f"OR Username LIKE '%{search_term}%' "
-                   f"OR Email LIKE '%{search_term}%'")
+        needle = _escape_soql_literal(search_term)
+        qfilter = (f"Name LIKE '%{needle}%' "
+                   f"OR Username LIKE '%{needle}%' "
+                   f"OR Email LIKE '%{needle}%'")
         return self.query_users(qfilter, fields)
 
     # ------------------------------------------------------------------

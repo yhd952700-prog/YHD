@@ -11,6 +11,7 @@ import hashlib
 import logging
 import re
 import threading
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -40,22 +41,81 @@ class IngestCancelled(Exception):
         self.total = total
 
 
+_HASH_LEN = 16
+_MAX_ID_LEN = 128
+#: 旧版命名空间前缀（CJK 被正则剥空后留下的 ``account---`` / ``auditroot---``）。
+#: 迁移只认这两个可证实的旧 token，绝不猜别的账号前缀。
+_LEGACY_OWNER_TOKENS = ("account", "auditroot")
+
+
+def _normalize_identifier(raw: Any) -> str:
+    """NFKC + 去首尾空白：全角/半角、组合字符与不同编码先归一，再进哈希。"""
+    return unicodedata.normalize("NFKC", str(raw or "")).strip()
+
+
+def _readable_token(raw: str, limit: int = 24) -> str:
+    """保留可读 ASCII 前缀（便于排查），CJK 不再被当作边界字符吞掉。"""
+    token = _ID_SAFE.sub("-", raw).strip("-._:")
+    return token[:limit].strip("-._:")
+
+
+def _stable_digest(raw: str) -> str:
+    """稳定摘要：同一账号/文件名在任何进程、任何重启后都得到同一 token。"""
+    return hashlib.sha256(_normalize_identifier(raw).encode("utf-8")).hexdigest()[
+        :_HASH_LEN
+    ]
+
+
+def _fit_id(candidate: str, limit: int = _MAX_ID_LEN) -> str:
+    """超长 id 用摘要收尾，绝不截掉末尾的 hash（截断会让不同文件重新撞车）。"""
+    if len(candidate) <= limit:
+        return candidate
+    return f"{candidate[: limit - _HASH_LEN - 1]}-{_stable_digest(candidate)}"
+
+
 def _safe_document_id(raw: Optional[str]) -> str:
-    if not raw or not raw.strip():
+    """文件名 -> 文档 id。
+
+    纯 ASCII 安全名保持可读原样；含中文等字符时追加稳定 hash，保证
+    ``文档.txt`` 与 ``报告.txt`` 不会再坍缩成同一个 ``---.txt``。
+    """
+    if not raw or not str(raw).strip():
         return uuid.uuid4().hex
-    return _ID_SAFE.sub("-", raw.strip())[:128]
+    normalized = _normalize_identifier(raw)
+    if _ID_SAFE.search(normalized) is None:
+        return _fit_id(normalized)
+    readable = _readable_token(normalized)
+    digest = _stable_digest(normalized)
+    base = f"{readable}-{digest}" if readable else f"doc-{digest}"
+    return _fit_id(base)
 
 
 def content_hash(text: str) -> str:
-    """Whitespace-insensitive content hash (same text, different line endings)."""
-    normalized = re.sub(r"\s+", " ", text or "").strip()
+    """Unicode + whitespace-insensitive content hash.
+
+    先做 NFKC 再折叠空白：全角 ``ＡＢＣ`` 与半角 ``ABC``、带/不带 BOM 的同文
+    都会得到同一摘要，避免同一份材料从不同来源导入时被当成两篇文档（MEM-018）。
+    """
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _owner_token(owner: str) -> str:
-    """账号名 -> 可安全进入 chunk/doc id 的短 token（稳定、无路径分隔符）。"""
-    token = _ID_SAFE.sub("-", str(owner or "").strip()).strip("-")[:64]
-    return token or "account"
+    """账号名 -> 稳定、无路径分隔符的命名空间 token。
+
+    纯 ASCII 安全名保持原样（与既有部署/测试兼容）；中文账号（``测试甲`` /
+    ``测试乙``）不再共用 ``account``：token 由「可读 ASCII 前缀 + 归一化账号名
+    的 sha256 前 16 位」组成，跨进程稳定。
+    """
+    normalized = _normalize_identifier(owner)
+    if not normalized:
+        return "account"
+    if _ID_SAFE.search(normalized) is None:
+        return _fit_id(normalized)
+    readable = _readable_token(normalized, limit=20)
+    digest = _stable_digest(normalized)
+    return f"{readable}-{digest}" if readable else f"acct-{digest}"
 
 
 def scoped_document_id(owner: Optional[str], raw: Optional[str]) -> str:
@@ -70,7 +130,7 @@ def scoped_document_id(owner: Optional[str], raw: Optional[str]) -> str:
     prefix = f"{_owner_token(owner)}--"
     if base.startswith(prefix):
         return base
-    return _safe_document_id(prefix + base)
+    return _fit_id(prefix + base)
 
 
 def scoped_content_hash(text: str, owner: Optional[str]) -> str:
@@ -78,7 +138,8 @@ def scoped_content_hash(text: str, owner: Optional[str]) -> str:
     owner = str(owner or "").strip()
     if not owner:
         return content_hash(text)
-    normalized = re.sub(r"\s+", " ", text or "").strip()
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     return hashlib.sha256(f"{owner}\x00{normalized}".encode("utf-8")).hexdigest()
 
 
@@ -277,6 +338,52 @@ class KnowledgeDocumentService:
         self._vector_store = get_vector_store()
         return self._vector_store
 
+    def _ensure_embedding_compatible(self, store, embedder, dimension: int) -> None:
+        """写入前校验库级模型/维度；不一致直接拒绝并给中文原因（不混写）。
+
+        老库可能没有台账（此前没有记录模型），此时只要求"库内维度唯一且与
+        本次向量一致"；一旦有台账，模型或维度任一不符都必须先重建索引。
+        """
+        meta = store.get_index_meta() or {}
+        recorded_model = str(meta.get("embedding_model") or "").strip()
+        recorded_dim = str(meta.get("embedding_dim") or "").strip()
+        model = str(getattr(embedder, "model", "") or "")
+        dims = store.dimension_distribution() or {}
+        if len(dims) > 1:
+            raise EmbeddingUnavailableError(
+                "向量库维度不一致（"
+                + "、".join(f"{dim} 维 {count} 条" for dim, count in sorted(dims.items()))
+                + "），请先执行重建索引"
+            )
+        if recorded_model and model and recorded_model != model:
+            raise EmbeddingUnavailableError(
+                f"索引使用嵌入模型 {recorded_model}，当前配置为 {model}；请先执行重建索引"
+            )
+        if recorded_dim and recorded_dim.isdigit() and dimension and int(recorded_dim) != dimension:
+            raise EmbeddingUnavailableError(
+                f"索引记录维度 {recorded_dim}，当前模型输出 {dimension} 维；请先执行重建索引"
+            )
+        if dims and dimension:
+            actual = next(iter(dims))
+            if actual != dimension:
+                raise EmbeddingUnavailableError(
+                    f"库内向量为 {actual} 维，当前模型输出 {dimension} 维；请先执行重建索引"
+                )
+
+    def _record_index_meta(self, store, embedder, dimension: int) -> None:
+        if not dimension:
+            return
+        try:
+            store.set_index_meta(
+                embedding_provider=str(
+                    getattr(embedder, "name", type(embedder).__name__)
+                ),
+                embedding_model=str(getattr(embedder, "model", "") or ""),
+                embedding_dim=int(dimension),
+            )
+        except Exception as exc:  # pragma: no cover - 台账失败不否决已成功写入
+            logger.warning("knowledge: cannot record index metadata (%s)", exc)
+
     # -- read-only status --------------------------------------------------
     def status(self) -> Dict[str, Any]:
         """Human-readable availability; never raises."""
@@ -292,11 +399,44 @@ class KnowledgeDocumentService:
             reason = None
 
         vectors = 0
+        dims: Dict[int, int] = {}
+        index_meta: Dict[str, str] = {}
         try:
-            vectors = self._store().count()
+            store = self._store()
+            vectors = store.count()
+            index_meta = store.get_index_meta() or {}
+            dims = store.dimension_distribution() or {}
         except Exception as exc:  # pragma: no cover - 存储首次打开失败
             logger.error("knowledge status: vector store unavailable (%s)", exc)
             reason = reason or f"向量库不可用：{type(exc).__name__}"
+
+        # MEM-008：库级记录模型与维度；不一致时直接禁用并给中文原因，不让
+        # 错配向量进入检索（历史台账在 knowledge_index_meta 表）。
+        if reason is None and dims:
+            if len(dims) > 1:
+                detail = "、".join(f"{dim} 维 {count} 条" for dim, count in sorted(dims.items()))
+                reason = f"向量库维度不一致（{detail}），请执行重建索引"
+            else:
+                actual_dim = next(iter(dims))
+                recorded_dim = str(index_meta.get("embedding_dim") or "").strip()
+                if recorded_dim and recorded_dim.isdigit() and int(recorded_dim) != actual_dim:
+                    reason = (
+                        f"索引记录维度 {recorded_dim}，库内实际 {actual_dim} 维；"
+                        "请执行重建索引"
+                    )
+                elif not recorded_dim:
+                    # 只记录一次“已观测维度”，不冒充当时的模型（老库可能换过模型）。
+                    try:
+                        store.set_index_meta(embedding_dim=actual_dim)
+                        index_meta["embedding_dim"] = str(actual_dim)
+                    except Exception as exc:  # pragma: no cover - 台账写失败不拖垮状态
+                        logger.warning("knowledge status: cannot record dimension (%s)", exc)
+        recorded_model = str(index_meta.get("embedding_model") or "").strip()
+        if reason is None and recorded_model and model and recorded_model != str(model):
+            reason = (
+                f"索引使用嵌入模型 {recorded_model}，当前配置为 {model}；"
+                "请执行重建索引"
+            )
 
         if reason is None:
             message = "知识库已启用"
@@ -311,6 +451,13 @@ class KnowledgeDocumentService:
             "provider": provider,
             "model": model,
             "vectors": vectors,
+            "index_model": recorded_model or None,
+            "index_dimension": (
+                int(index_meta["embedding_dim"])
+                if str(index_meta.get("embedding_dim") or "").isdigit()
+                else None
+            ),
+            "dimensions": {str(dim): count for dim, count in sorted(dims.items())},
             "reason": reason,
             "message": message,
         }
@@ -379,6 +526,8 @@ class KnowledgeDocumentService:
         # in one call also drops tail chunks from a longer prior version -- the
         # old implementation only overwrote ``doc#0..n`` and stale tail chunks
         # kept leaking into retrieval.
+        dimension = len(vectors[0]) if vectors else 0
+        self._ensure_embedding_compatible(store, embedder, dimension)
         items = [
             (
                 f"{document_id}#{index}",
@@ -435,13 +584,313 @@ class KnowledgeDocumentService:
             len(chunks),
             getattr(embedder, "name", "unknown"),
         )
+        self._record_index_meta(store, embedder, dimension)
+        # ``removed`` 是本次替换掉的旧分块数：>0 说明同名文档的上一版本被
+        # 本次上传整体替换。把它显式回给调用方，用户至少能知道"旧版本不在了"
+        #（MEM-015：不再静默覆盖）。
+        previous_chunks = int(outcome.get("removed") or 0)
         return {
             "document_id": document_id,
             "chunks": len(chunks),
             "vectors": store.count(),
             "deduplicated": False,
             "matched_document_id": None,
+            "overwritten": previous_chunks > 0,
+            "previous_chunks": previous_chunks,
         }
+
+    # -- maintenance --------------------------------------------------------
+    def reindex(
+        self,
+        scope: Optional["KnowledgeScope"] = None,
+        *,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
+        """用当前 embedding 模型重建可见文档的向量（逐文档原子替换）。
+
+        错配模型/维度时这是唯一恢复路径：先按当前模型重算全部 chunk，再更新
+        库级台账。单个文档失败不会污染其他文档（每个文档一次事务）。
+        """
+        embedder = self._embedding()
+        store = self._store()
+        owners = scope.owners if scope is not None else None
+        include_unowned = scope.include_unowned if scope is not None else True
+        documents = store.raw_documents(
+            owners=owners, include_unowned=include_unowned
+        )
+        total = len(documents)
+        rebuilt_docs = 0
+        rebuilt_chunks = 0
+        skipped = 0
+        failures: List[Dict[str, Any]] = []
+        dimension = 0
+        for ordinal, document in enumerate(documents, start=1):
+            document_id = document["document_id"]
+            records = store.get_chunk_records(document_id)
+            if not records:
+                skipped += 1
+                if on_progress is not None:
+                    on_progress(ordinal, total)
+                continue
+            texts = []
+            for _chunk_id, _vector, metadata in records:
+                body = str(metadata.get("text", ""))
+                header = str(metadata.get("context_header") or "").strip()
+                texts.append(f"{header}\n{body}" if header else body)
+            try:
+                vectors = embedder.embed(texts)
+                if len(vectors) != len(records):
+                    raise RuntimeError(
+                        f"重建索引时向量数不匹配（{len(vectors)}/{len(records)}）"
+                    )
+                dimension = len(vectors[0]) if vectors else dimension
+                payload = []
+                for (chunk_id, _old_vector, metadata), vector in zip(records, vectors):
+                    index = int(metadata.get("chunk_index") or 0)
+                    payload.append(
+                        (
+                            f"{document_id}#{index}",
+                            vector,
+                            {**metadata, "document_id": document_id, "chunk_index": index},
+                        )
+                    )
+                removed = store.replace_prefix(f"{document_id}#", payload)
+                rebuilt_docs += 1
+                rebuilt_chunks += len(payload)
+                logger.info(
+                    "knowledge reindex: document=%s chunks=%d replaced=%d",
+                    document_id,
+                    len(payload),
+                    removed,
+                )
+            except Exception as exc:  # noqa: BLE001 - 单文档失败不影响其他文档
+                logger.error("knowledge reindex failed for %s: %s", document_id, exc)
+                failures.append({"document_id": document_id, "error": str(exc)})
+            if on_progress is not None:
+                on_progress(ordinal, total)
+        if rebuilt_docs:
+            self._record_index_meta(store, embedder, dimension)
+        return {
+            "documents": rebuilt_docs,
+            "chunks": rebuilt_chunks,
+            "skipped": skipped,
+            "failed": len(failures),
+            "failures": failures,
+            "dimension": dimension,
+            "provider": str(getattr(embedder, "name", type(embedder).__name__)),
+            "model": str(getattr(embedder, "model", "") or ""),
+            "vectors": store.count(),
+        }
+
+    def migrate_legacy_document_ids(
+        self,
+        scope: Optional["KnowledgeScope"] = None,
+        *,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """把旧版 CJK 坍缩 id（``account---*`` / ``auditroot---*``）迁到新命名空间。
+
+        可重入：改名成功后旧 id 消失，第二次执行只剩 ``unchanged``。
+        可回滚：每个文档一次独立事务（``rename_document``），失败只记录不删除；
+        ``dry_run=True`` 时只产出计划，不写库。
+        """
+        store = self._store()
+        owners = scope.owners if scope is not None else None
+        include_unowned = scope.include_unowned if scope is not None else True
+        documents = store.raw_documents(
+            owners=owners, include_unowned=include_unowned
+        )
+        before = len(documents)
+        # 无归属的历史文档（账号体系上线前的单机数据）：迁移不改它们的归属，
+        # 但必须在报告里可查，避免"看起来迁完了、其实有一批没归属"。
+        unassigned_documents = []
+        for document in documents:
+            if str(document.get("owner") or ""):
+                continue
+            document_id = str(document["document_id"])
+            display = (
+                str(document.get("filename") or "").strip() or document_id
+            )
+            unassigned_documents.append(
+                {
+                    "document_id": document_id,
+                    "chunks": int(document.get("chunks") or 0),
+                    "display_name": display,
+                    "filename": str(document.get("filename") or ""),
+                    "reason": "missing_owner_metadata",
+                    "detail": (
+                        "缺少 owner_account_id，旧 id 也无法反推原始账号；"
+                        "不会自动归给任何账号。根账号可在 "
+                        "GET /v1/knowledge/maintenance/unassigned 查看原文并删除。"
+                    ),
+                }
+            )
+        planned: List[Dict[str, Any]] = []
+        expected_ids: Dict[str, int] = {}
+        for document in documents:
+            old_id = str(document["document_id"])
+            owner = str(document.get("owner") or "")
+            if not owner:
+                continue
+            legacy_token = _ID_SAFE.sub("-", owner.strip()).strip("-")[:64] or "account"
+            new_token = _owner_token(owner)
+            new_prefix = f"{new_token}--"
+            if not old_id.startswith(f"{legacy_token}--"):
+                continue
+            base = old_id[len(legacy_token) + 2 :]
+            display = (
+                str(document.get("filename") or "").strip()
+                or str(document.get("source") or "").strip()
+                or str(document.get("title") or "").strip()
+                or base
+            )
+            if new_token == legacy_token:
+                # 纯 ASCII 账号命名空间没有变化：只有「旧版把 CJK 剥成 '-'」
+                # 的文档需要迁移，新命名空间的文档必须原样跳过，避免把
+                # 可读 id 反复改名。
+                if base != _ID_SAFE.sub("-", display):
+                    continue
+            if new_token != legacy_token and old_id.startswith(new_prefix):
+                # 只对「命名空间已经变化」的账号做幂等跳过；纯 ASCII 账号的
+                # 前后前缀相同，不能拿它当"已迁移"的证据。
+                continue
+            new_id = scoped_document_id(owner, display)
+            if new_id == old_id:
+                # 旧版已把文件名信息丢在 id 里（如 ``---.txt``），无法还原原名；
+                # 用旧 id 的稳定摘要生成 ``legacy-<hash>``，既完成迁移又不删除、
+                # 不与新上传的同名文件再相撞。
+                new_id = scoped_document_id(owner, f"legacy-{_stable_digest(old_id)}")
+            if not new_id or new_id == old_id:
+                continue
+            planned.append(
+                {
+                    "old_id": old_id,
+                    "new_id": new_id,
+                    "owner": owner,
+                    "chunks": int(document.get("chunks") or 0),
+                    "display_name": display,
+                }
+            )
+            expected_ids[new_id] = expected_ids.get(new_id, 0) + 1
+
+        migrated = 0
+        conflicts = 0
+        failures: List[Dict[str, Any]] = []
+        details: List[Dict[str, Any]] = []
+        for item in planned:
+            if expected_ids.get(item["new_id"], 0) > 1:
+                conflicts += 1
+                logger.error(
+                    "knowledge migrate: conflict %s -> %s (multiple legacy docs "
+                    "collapse to the same new id; left untouched)",
+                    item["old_id"],
+                    item["new_id"],
+                )
+                details.append({**item, "status": "conflict"})
+                continue
+            if dry_run:
+                details.append({**item, "status": "planned"})
+                continue
+            try:
+                result = store.rename_document(item["old_id"], item["new_id"])
+                if not result.get("renamed"):
+                    conflicts += 1
+                    logger.warning(
+                        "knowledge migrate: skip %s -> %s (%s)",
+                        item["old_id"],
+                        item["new_id"],
+                        result.get("reason"),
+                    )
+                    details.append(
+                        {**item, "status": "conflict", "reason": result.get("reason")}
+                    )
+                    continue
+                migrated += 1
+                logger.info(
+                    "knowledge migrate: %s -> %s owner=%s chunks=%s",
+                    item["old_id"],
+                    item["new_id"],
+                    item["owner"],
+                    result.get("chunks"),
+                )
+                details.append(
+                    {**item, "status": "migrated", "renamed_chunks": result.get("chunks")}
+                )
+            except Exception as exc:  # noqa: BLE001 - 单文档失败保持原样
+                failures.append({"old_id": item["old_id"], "error": str(exc)})
+                logger.error(
+                    "knowledge migrate failed for %s: %s", item["old_id"], exc
+                )
+                details.append({**item, "status": "failed", "error": str(exc)})
+        after = before
+        if not dry_run:
+            after = len(
+                store.raw_documents(owners=owners, include_unowned=include_unowned)
+            )
+        # 逐篇去向账：每篇源文档都必须落进且只落进一个桶。
+        # 知识库迁移只改 id、不删内容；``lost`` 必须为 0，count 守恒只作为
+        # 第二道校验，不能单独拿来说"没丢"。
+        unchanged = before - len(unassigned_documents) - len(planned)
+        pending = len(planned) if dry_run else 0
+        accounted = (
+            unchanged
+            + len(unassigned_documents)
+            + migrated
+            + conflicts
+            + len(failures)
+            + pending
+        )
+        lost = before - accounted
+        kept_unresolved = len(unassigned_documents) + conflicts + len(failures)
+        report = {
+            "dry_run": bool(dry_run),
+            "documents_before": before,
+            "documents_after": after,
+            "count_conserved": after == before,
+            "lost_documents": lost,
+            "rows_accounted": lost == 0,
+            # 与记忆迁移同名口径：imported = 已在新库可寻址；merged 知识库没有
+            # 同 id 合并语义，恒为 0；quarantined = 仍在库里但没有自动解决；
+            # pending 只在 dry-run 出现（计划中，尚未执行）。
+            "destinations": {
+                "imported": migrated + unchanged,
+                "merged": 0,
+                "quarantined": kept_unresolved,
+                "pending": pending,
+                "lost": lost,
+            },
+            "unchanged": unchanged,
+            "candidates": len(planned),
+            "migrated": migrated,
+            "conflicts": conflicts,
+            "failed": len(failures),
+            "failures": failures,
+            "skip_reasons": {
+                "missing_owner_metadata": len(unassigned_documents),
+                "legacy_id_target_conflict": conflicts,
+                "rename_failed": len(failures),
+            },
+            "kept_unresolved": kept_unresolved,
+            # 归属无法判定的历史文档原样保留（单机老数据由根账号继续可见）。
+            "unassigned_documents": len(unassigned_documents),
+            "unassigned": unassigned_documents,
+            "details": details,
+        }
+        logger.info(
+            "knowledge migrate summary: dry_run=%s before=%s after=%s "
+            "candidates=%s migrated=%s conflicts=%s failed=%s unassigned=%s "
+            "lost=%s",
+            dry_run,
+            before,
+            after,
+            len(planned),
+            migrated,
+            conflicts,
+            len(failures),
+            len(unassigned_documents),
+            lost,
+        )
+        return report
 
     # -- read ---------------------------------------------------------------
     def search(
@@ -470,6 +919,37 @@ class KnowledgeDocumentService:
         ``retrieval.abstention_calibration`` says ``thresholds_from=
         "uncalibrated"`` so the caller can surface that honestly.
         """
+        # MEM-020：向量模型在、但索引不可用（维度/模型错配、向量库故障）时，
+        # 过去的实现照样去检索，余弦算不出分就静默返回 no_relevant，用户看到
+        # 「全绿但不可用」。这里先看 status，把降级状态原样放进响应；模型本身
+        # 没配置（provider 为空）仍交给 _embedding() 抛 503，保持既有契约。
+        status = self.status()
+        if not status.get("enabled") and status.get("provider") is not None:
+            reason = str(status.get("reason") or "知识库不可用")
+            message = str(status.get("message") or f"知识库不可用：{reason}")
+            logger.info("knowledge search skipped: %s", reason)
+            return {
+                "query": query,
+                "top_k": top_k,
+                "hits": [],
+                "count": 0,
+                "enabled": False,
+                "reason": reason,
+                "message": message,
+                "retrieval": {
+                    "mode": "unavailable",
+                    "fts_available": False,
+                    "status": "unavailable",
+                    "reason": reason,
+                    "message": message,
+                    "enabled": False,
+                    "top_score": None,
+                    "runner_up_score": None,
+                    "thresholds": {},
+                    "abstained": False,
+                    "hits": [],
+                },
+            }
         embedder = self._embedding()
         store = self._store()
         pinned = abstention_config
@@ -555,6 +1035,72 @@ class KnowledgeDocumentService:
             "total": total,
             "limit": limit,
             "offset": offset,
+        }
+
+    def unassigned_documents(
+        self, *, limit: int = 50, offset: int = 0, preview_chars: int = 240
+    ) -> Dict[str, Any]:
+        """无归属历史文档的只读视图（路由层只允许主账号/老部署访问）。
+
+        这些文档没有 ``owner_account_id``，旧 id 也无法反推账号，因此任何
+        成员的 self 列表都看不到；但它们仍在同一向量库里、可以被检索与删除。
+        这里给出可核对的身份、原因、首块原文预览与删除入口，避免"只有一个计数、
+        用户永远不知道是哪一篇"。
+        """
+        store = self._store()
+        # owners=() 只取无归属文档：不读取任何账号的私有文档，隔离语义不变。
+        documents = [
+            document
+            for document in store.raw_documents(owners=(), include_unowned=True)
+            if not str(document.get("owner") or "")
+        ]
+        total = len(documents)
+        page = documents[offset : offset + limit + 1]
+        has_more = len(page) > limit
+        items: List[Dict[str, Any]] = []
+        for document in page[:limit]:
+            document_id = str(document["document_id"])
+            display = (
+                str(document.get("filename") or "").strip() or document_id
+            )
+            chunks = store.get_document_chunks(document_id)
+            preview = ""
+            if chunks:
+                first = chunks[0]
+                body = redact_for_output(first.get("text"))
+                header = redact_for_output(first.get("context_header"))
+                preview = f"[{header}]\n{body}" if header else body
+            preview_truncated = len(preview) > preview_chars
+            items.append(
+                {
+                    "document_id": document_id,
+                    "owner": "",
+                    "display_name": display,
+                    "chunks": int(document.get("chunks") or 0),
+                    "reason": "missing_owner_metadata",
+                    "detail": (
+                        "缺少 owner_account_id，旧 id 也无法反推原始账号；"
+                        "不会自动归给任何账号，需要主账号人工确认后删除或重新入库。"
+                    ),
+                    "preview": preview[:preview_chars],
+                    "preview_truncated": preview_truncated,
+                    "reference": f"knowledge://documents/{document_id}#0",
+                    "can_delete": True,
+                }
+            )
+        return {
+            "documents": items,
+            "count": len(items),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": has_more,
+            "lost": 0,
+            "note": (
+                "这些是无归属的历史文档：不会出现在任何成员的列表中，"
+                "主账号可在此查看首块原文与引用，并用 "
+                "DELETE /v1/knowledge/documents/{document_id} 处置。"
+            ),
         }
 
     def document_owner(self, document_id: str) -> Optional[str]:

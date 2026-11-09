@@ -448,6 +448,10 @@ class IdentityManager:
         #: store claimed more humans than the kernel admitted -- surfaced by
         #: :meth:`describe_identity_namespaces` so it cannot be a silent fact.
         self._registry_refusals: List[str] = []
+        #: 启动/迁移阶段账号页必须显式看到的告警（例如根账号重建后恢复码
+        #: 无法校验）。与 registry_refusals 分开，避免把"数据降级"和
+        #: "安全拒收"混成同一类事实。
+        self._account_warnings: List[str] = []
         #: 账号树（principal -> AccountNode）。单机单根；由 store 派生 + 运行时
         #: 写入。空 dict 表示"尚未 bootstrap"，不是"没有账号"。
         self._accounts: Dict[str, _accounts.AccountNode] = {}
@@ -667,6 +671,7 @@ class IdentityManager:
                 "human_id_prefix": HUMAN_ID_PREFIX,
                 "identities_by_namespace": by_namespace,
                 "registry_refusals": list(self._registry_refusals),
+                "account_warnings": list(self._account_warnings),
                 "store": self.describe_store(),
                 "registry_integrity": _persistence.describe_registry_integrity(
                     self._store
@@ -1129,11 +1134,17 @@ class IdentityManager:
             logger.error("could not persist account %r: %s", node.principal, exc)
             return False
 
-    def _store_account(self, node: _accounts.AccountNode, *, persist: bool = True) -> None:
+    def _store_account(self, node: _accounts.AccountNode, *, persist: bool = True) -> bool:
+        """登记账号节点；``persist=True`` 时返回是否真的落盘成功。
+
+        返回值必须被注册路径检查：内存里登记成功但磁盘写失败，若仍向用户
+        返回"注册成功 + 恢复码"，重启后这个账号就是半个账号。
+        """
         with self._lock:
             self._accounts[node.principal] = node
         if persist:
-            self._persist_account(node)
+            return self._persist_account(node)
+        return True
 
     def _account_audit(
         self,
@@ -1144,7 +1155,7 @@ class IdentityManager:
         outcome: str,
         details: Optional[Dict[str, Any]] = None,
         correlation_id: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """账号树事件写入**哈希链审计**（不是内存日志）。
 
         ``log_event`` 失败时必须显式报错到日志，但不能反向让业务操作失败：
@@ -1190,8 +1201,10 @@ class IdentityManager:
                 details=payload,
                 correlation_id=correlation_id,
             )
+            return True
         except Exception:  # noqa: BLE001
             logger.exception("account audit event lost (action=%s)", action)
+            return False
 
     def _audit_denial(
         self, *, action: str, actor: str, target: str, code: str, **extra: Any
@@ -1213,9 +1226,13 @@ class IdentityManager:
         outcome: str = "allowed",
         details: Optional[Dict[str, Any]] = None,
         correlation_id: Optional[str] = None,
-    ) -> None:
-        """网关层账号/Key 事件的公共入口（写入同一哈希链，不另起审计流）。"""
-        self._account_audit(
+    ) -> bool:
+        """网关层账号/Key 事件的公共入口（写入同一哈希链，不另起审计流）。
+
+        返回是否真正写入审计：调用方可据此在响应里显式告知“审计未写入”，
+        同时不改变“审计不可用不阻断业务”的既有语义。
+        """
+        return self._account_audit(
             action=action,
             actor=actor,
             target=target,
@@ -1240,11 +1257,15 @@ class IdentityManager:
         with self._lock:
             humans = {identity.principal for identity in self._human_identities()}
             loaded: Dict[str, _accounts.AccountNode] = {}
+            # 保留所有可解析的账号记录（即使因缺父/成环被拒收），重建节点时
+            # 尽量沿用它们已有的 recovery_hash，避免重启即静默丢掉恢复能力。
+            known_records: Dict[str, _accounts.AccountNode] = {}
             for record in self._store.load_accounts():
                 try:
                     node = _accounts.AccountNode.from_record(record)
                 except Exception:  # noqa: BLE001
                     continue
+                known_records[node.principal] = node
                 if node.principal not in humans:
                     self._registry_refusals.append(
                         f"account node {node.principal!r} has no human identity"
@@ -1302,6 +1323,8 @@ class IdentityManager:
                 if principal in nodes:
                     continue
                 if elected is None:
+                    recovered = known_records.get(principal)
+                    recovery_hash = recovered.recovery_hash if recovered else ""
                     node = _accounts.AccountNode(
                         principal=principal,
                         parent_id=None,
@@ -1310,11 +1333,20 @@ class IdentityManager:
                         permissions=frozenset(
                             self._identity_permissions(principal)
                         ),
+                        recovery_hash=recovery_hash,
                         created_at=self._identity_registered_at(principal),
                         updated_at=utc_now().isoformat(),
                         source="migration",
                     )
                     elected = node
+                    if not recovery_hash:
+                        warning = (
+                            f"根账号 {principal!r} 的账号树记录缺失，已从身份库重建；"
+                            "该账号的恢复码无法校验（旧恢复码已失效）。"
+                            "请登录后在账号页重新生成恢复码。"
+                        )
+                        if warning not in self._account_warnings:
+                            self._account_warnings.append(warning)
                 else:
                     node = _accounts.AccountNode(
                         principal=principal,
@@ -1329,7 +1361,18 @@ class IdentityManager:
                         source="migration",
                     )
                 nodes[principal] = node
-                self._persist_account(node)
+                # 根账号没有可用 recovery_hash 时**不落盘**：否则下一次启动
+                # 会读回一条"看起来完整"的根记录，账号页告警随即消失，等于
+                # 静默降级。跳过持久化可让告警每次启动都可见，直到用户重新
+                # 生成恢复码；其余节点照常持久化，避免丢失父子关系。
+                if node.is_root and not node.recovery_hash:
+                    logger.warning(
+                        "root account %r rebuilt without recovery hash; "
+                        "not persisting so the account warning stays visible",
+                        principal,
+                    )
+                else:
+                    self._persist_account(node)
 
             # 重算根/深度（只对发生了收敛的树生效；正常树不变）。
             if elected is not None:
@@ -1470,7 +1513,39 @@ class IdentityManager:
                 updated_at=utc_now().isoformat(),
                 source="bootstrap",
             )
-            self._store_account(node)
+            if not self._store_account(node):
+                # 账号树没落盘：绝不能返回成功与恢复码。回滚内存身份与持久化
+                # 身份（登录凭证由 gateway 在异常路径一并回滚），把失败明确
+                # 返回给接口；用户看到的是可重试的中文错误。
+                self._accounts.pop(principal, None)
+                self._identities.pop(created.id, None)
+                self._principal_index.pop(created.principal, None)
+                try:
+                    self._store.remove(principal)
+                except Exception as rollback_exc:  # noqa: BLE001
+                    logger.error(
+                        "could not roll back identity %r after account persist "
+                        "failure: %s",
+                        principal,
+                        rollback_exc,
+                    )
+                self._account_audit(
+                    action="account.root.registered",
+                    actor=principal,
+                    target=principal,
+                    outcome="failure",
+                    details={"reason": "account_tree_persist_failed"},
+                )
+                location = getattr(self._store, "location", "") or (
+                    os.environ.get("LIUHAO_DATA_DIR") or "<LIUHAO_DATA_DIR 未配置>"
+                )
+                raise _accounts.AccountError(
+                    503,
+                    "ACCOUNT_PERSIST_FAILED",
+                    f"账号创建失败：账号数据无法写入 {location}。"
+                    "请确认该目录存在、当前用户有写权限（或把 LIUHAO_DATA_DIR 指向"
+                    "一个可写目录）后重试。本次注册已回滚，未发放恢复码。",
+                )
             self._account_audit(
                 action="account.root.registered",
                 actor=principal,

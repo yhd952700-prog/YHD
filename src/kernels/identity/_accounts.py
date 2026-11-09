@@ -78,16 +78,21 @@ SELF_SERVICE_SCOPES: Tuple[str, ...] = (
 )
 
 #: 可被授予的作用域（``account:key_borrow`` 故意不在其中）。
-GRANTABLE_SCOPES: Tuple[str, ...] = DEFAULT_MEMBER_SCOPES + (
-    SCOPE_GRANT,
-    SCOPE_MODEL_MANAGE,
+#:
+#: ``SCOPE_MODEL_MANAGE`` 已在 ``DEFAULT_MEMBER_SCOPES`` 里；再次追加会让
+#: ``/v1/accounts/roles`` 返回重复项，前端权限矩阵因此出现两列同名"配置模型"。
+#: 统一用 ``dict.fromkeys`` 保序去重，避免任何一个预设产生重复作用域。
+GRANTABLE_SCOPES: Tuple[str, ...] = tuple(
+    dict.fromkeys(DEFAULT_MEMBER_SCOPES + (SCOPE_GRANT, SCOPE_MODEL_MANAGE))
 )
 
 #: 角色预设（2-3 个即可覆盖常见装机场景）。
 ROLE_PRESETS: Dict[str, Tuple[str, ...]] = {
     "viewer": (SCOPE_READ, SCOPE_AUDIT_READ, SCOPE_USAGE_READ, SCOPE_MODEL_USE),
     "operator": DEFAULT_MEMBER_SCOPES,
-    "manager": DEFAULT_MEMBER_SCOPES + (SCOPE_GRANT, SCOPE_MODEL_MANAGE),
+    "manager": tuple(
+        dict.fromkeys(DEFAULT_MEMBER_SCOPES + (SCOPE_GRANT, SCOPE_MODEL_MANAGE))
+    ),
 }
 
 #: 根账号隐式持有的全部可授予作用域。

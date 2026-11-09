@@ -45,13 +45,17 @@ Library choices (licenses verified from installed package metadata)
 from __future__ import annotations
 
 import io
+import multiprocessing
 import re
 import threading
+import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from queue import Empty as _QueueEmpty
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 _TEXT_SUFFIXES = frozenset({".txt", ".md"})
 _PDF_SUFFIXES = frozenset({".pdf"})
@@ -79,6 +83,14 @@ class ExtractionLimits:
     max_file_bytes: int = 20 * 1024 * 1024
     max_pdf_pages: int = 300
     max_uncompressed_bytes: int = 150 * 1024 * 1024
+    #: PDF 单条 Flate 流解压上限（pypdf 每个流各自解压，没有总量概念）。
+    max_pdf_stream_uncompressed_bytes: int = 32 * 1024 * 1024
+    #: PDF 全部 Flate 流累计解压上限：20MB 的输入可以塞很多条小炸弹流。
+    max_pdf_total_uncompressed_bytes: int = 150 * 1024 * 1024
+    #: 单页解析时间预算（秒）。PDF 的每一页在独立子进程里解析：超过预算仍在
+    #: 等待回传就强杀进程并抛 ``PdfPageTimeout``；窗口内返回但耗时超预算同样
+    #: 判定超时（兼容慢页刚好卡在边界的场景）。
+    pdf_page_timeout_seconds: float = 10.0
     max_extracted_chars: int = 2_000_000
     #: Garbled-text gate. A handful of replacement glyphs in a short note is
     #: noise; 20+ glyphs at a 15% ratio means the text layer is unusable.
@@ -129,6 +141,13 @@ class EncryptedPdfError(ExtractionError):
 class CorruptedDocument(ExtractionError):
     code = "corrupted_document"
     http_status = 422
+
+
+class PdfPageTimeout(ExtractionError):
+    """某页解析超过 ``pdf_page_timeout_seconds``；停止后续页面。"""
+
+    code = "pdf_page_timeout"
+    http_status = 504
 
 
 class ExtractionCancelled(ExtractionError):
@@ -246,8 +265,34 @@ class ExtractedDocument:
         }
 
 
+#: 提取输入：内存字节，或磁盘上的临时文件路径。上传接口先把文件分块落盘，
+#: 再把路径交给解析器，这样解析期间进程里不会多留一份完整文件副本
+#: （``pypdf`` / ``python-docx`` / ``zipfile`` 都支持按需读盘）。
+ExtractionSource = Union[bytes, bytearray, Path, str]
+
+
 def _suffix_of(filename: str) -> str:
     return Path(filename).suffix.lower()
+
+
+def _source_size(source: ExtractionSource) -> int:
+    if isinstance(source, (bytes, bytearray)):
+        return len(source)
+    return Path(source).stat().st_size
+
+
+def _read_source_bytes(source: ExtractionSource) -> bytes:
+    """只有文本类格式需要整份字节（解码后就是要入库的正文）。"""
+    if isinstance(source, (bytes, bytearray)):
+        return bytes(source)
+    return Path(source).read_bytes()
+
+
+def _parser_source(source: ExtractionSource):
+    """给 pypdf / python-docx / zipfile 的输入：路径或二进制流。"""
+    if isinstance(source, (bytes, bytearray)):
+        return io.BytesIO(source)
+    return str(Path(source))
 
 
 def _check_size(size: int, limits: ExtractionLimits) -> None:
@@ -269,7 +314,7 @@ def _check_chars(text: str, limits: ExtractionLimits) -> None:
 
 
 def extract_document(
-    data: bytes,
+    source: ExtractionSource,
     filename: str,
     *,
     limits: Optional[ExtractionLimits] = None,
@@ -277,14 +322,16 @@ def extract_document(
     on_page: Optional[Callable[[int, int], None]] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> ExtractedDocument:
-    """Extract ``data`` according to the filename suffix.
+    """Extract ``source`` according to the filename suffix.
 
-    ``allow_low_quality=False`` (default) refuses a text layer full of
-    replacement/block glyphs with a readable 422; passing ``True`` is the user
-    explicitly saying "I know it is bad, store it anyway". ``on_page`` and
-    ``cancel_event`` exist for async jobs: progress is reported per extracted
-    page and cancellation is checked at the same boundary, before anything is
-    written.
+    ``source`` is either raw ``bytes`` or a filesystem path to a temporary
+    upload; a path is preferred by the HTTP layer so the whole file is never
+    copied into the process heap. ``allow_low_quality=False`` (default) refuses
+    a text layer full of replacement/block glyphs with a readable 422; passing
+    ``True`` is the user explicitly saying "I know it is bad, store it anyway".
+    ``on_page`` and ``cancel_event`` exist for async jobs: progress is reported
+    per extracted page and cancellation is checked at the same boundary, before
+    anything is written.
 
     Raises :class:`ExtractionError` subclasses with a readable message; the
     caller maps ``http_status`` directly onto its response. Never returns an
@@ -292,22 +339,22 @@ def extract_document(
     """
     caps = limits or DEFAULT_LIMITS
     suffix = _suffix_of(filename)
-    _check_size(len(data), caps)
+    _check_size(_source_size(source), caps)
 
     if suffix in _TEXT_SUFFIXES:
-        return _extract_plain_text(data, suffix, caps, allow_low_quality)
+        return _extract_plain_text(source, suffix, caps, allow_low_quality)
     if suffix in _PDF_SUFFIXES:
         return _extract_pdf(
-            data,
+            source,
             caps,
             allow_low_quality=allow_low_quality,
             on_page=on_page,
             cancel_event=cancel_event,
         )
     if suffix in _DOCX_SUFFIXES:
-        return _extract_docx(data, caps, allow_low_quality)
+        return _extract_docx(source, caps, allow_low_quality)
     if suffix in _HTML_SUFFIXES:
-        return _extract_html(data, caps, allow_low_quality)
+        return _extract_html(source, caps, allow_low_quality)
 
     raise UnsupportedFileType(
         f"不支持的文件类型：{suffix or '未知后缀'}；"
@@ -321,13 +368,13 @@ def extract_document(
 
 
 def _extract_plain_text(
-    data: bytes,
+    source: ExtractionSource,
     suffix: str,
     limits: ExtractionLimits,
     allow_low_quality: bool,
 ) -> ExtractedDocument:
     try:
-        text = data.decode("utf-8-sig")
+        text = _read_source_bytes(source).decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise EmptyDocument(
             f"文件不是 UTF-8 编码：{exc}；请另存为 UTF-8 后重新上传"
@@ -349,14 +396,96 @@ def _extract_plain_text(
 # ---------------------------------------------------------------------------
 
 
-def _extract_pdf(
-    data: bytes,
+_PDF_STREAM_START_RE = re.compile(rb"stream\r?\n")
+
+
+def _guard_pdf_decompression(
+    source: ExtractionSource, limits: ExtractionLimits
+) -> None:
+    """在 pypdf 解析前，对每条 ``/FlateDecode`` 流做有界解压。
+
+    pypdf 单个流有自己的输出上限，但没有“全文件累计”上限；一个 20MB 的
+    PDF 可以塞上千条小流，每条膨胀几十 MB，最终把内存打爆。这里按
+    ``max_pdf_stream_uncompressed_bytes`` / ``max_pdf_total_uncompressed_bytes``
+    逐条有界解压并累计，超限即 ``FileTooLarge``，且不会把完整解压结果留在内存。
+
+    只处理 Flate（PDF 解压炸弹的主流编码）；LZW/ASCII85 等仍由 pypdf 自身上限
+    约束。这里只做边界检查，不修改源文件。
+    """
+    raw = _read_source_bytes(source)
+    per_stream = limits.max_pdf_stream_uncompressed_bytes
+    total_limit = limits.max_pdf_total_uncompressed_bytes
+    total = 0
+    for match in _PDF_STREAM_START_RE.finditer(raw):
+        start = match.end()
+        end = raw.find(b"endstream", start)
+        if end <= start:
+            continue
+        header = raw[max(0, match.start() - 512) : match.start()]
+        if b"/FlateDecode" not in header:
+            continue
+        data = raw[start:end]
+        decompressor = zlib.decompressobj()
+        emitted = 0
+        chunk = data
+        try:
+            while chunk:
+                # 多留 1 字节，能拿到就说明已超过本流上限。
+                piece = decompressor.decompress(chunk, per_stream - emitted + 1)
+                emitted += len(piece)
+                total += len(piece)
+                if emitted > per_stream:
+                    raise FileTooLarge(
+                        f"PDF 单条流解压后超过上限 {per_stream // (1024 * 1024)}MB，"
+                        "疑似解压炸弹，已拒绝解析"
+                    )
+                if total > total_limit:
+                    raise FileTooLarge(
+                        f"PDF 解压后累计体积超过上限 "
+                        f"{total_limit // (1024 * 1024)}MB，疑似解压炸弹，已拒绝解析"
+                    )
+                if decompressor.unconsumed_tail:
+                    chunk = decompressor.unconsumed_tail
+                else:
+                    break
+        except zlib.error:
+            # 不是有效 Flate 流：交给 pypdf 报它自己的损坏错误。
+            continue
+
+
+#: 子进程启动方式。Windows / macOS 只有 ``spawn`` 可用；``fork`` 会复制父进程的
+#: 线程与锁状态，对 FastAPI 工作线程不安全。
+_PDF_WORKER_START_METHOD = "spawn"
+
+#: 子进程只回传错误类名与文案，父进程按名字重建异常，避免跨进程 pickle 自定义
+#: 异常对象时的兼容问题。这里列出子进程可能抛出的全部提取错误。
+_PDF_WORKER_ERRORS = {
+    cls.__name__: cls
+    for cls in (
+        UnsupportedFileType,
+        FileTooLarge,
+        TooManyPages,
+        EmptyDocument,
+        ScannedPdfError,
+        EncryptedPdfError,
+        CorruptedDocument,
+        PdfPageTimeout,
+    )
+}
+
+
+def _collect_pdf_pages(
+    source: ExtractionSource,
     limits: ExtractionLimits,
     *,
-    allow_low_quality: bool = False,
-    on_page: Optional[Callable[[int, int], None]] = None,
-    cancel_event: Optional[threading.Event] = None,
-) -> ExtractedDocument:
+    on_meta: Callable[[int], None],
+    on_page: Callable[[int, int, str], None],
+) -> None:
+    """真正解析 PDF 的部分；只在子进程里跑（父进程才能强杀它）。
+
+    ``on_meta`` 先报总页数，``on_page`` 每解析完一页回传一页正文。异常原样抛出，
+    由子进程入口序列化回父进程——父进程不做任何解析，只计时与收页。
+    """
     # Imported lazily so the knowledge module still imports (and reports a
     # clear error) in an environment where the optional parser is missing.
     try:
@@ -364,12 +493,15 @@ def _extract_pdf(
     except ImportError as exc:  # pragma: no cover - declaration is mandatory
         raise CorruptedDocument(
             f"PDF 解析器未安装（pypdf）：{exc}；请执行 pip install pypdf"
-        )
+        ) from exc
+
+    # 必须在 PdfReader 读取 xref/内容流之前拦截，否则炸弹已经膨胀完了。
+    _guard_pdf_decompression(source, limits)
 
     try:
-        reader = PdfReader(io.BytesIO(data), strict=False)
+        reader = PdfReader(_parser_source(source), strict=False)
     except Exception as exc:
-        raise CorruptedDocument(f"PDF 文件损坏或格式不合法，无法解析：{exc}")
+        raise CorruptedDocument(f"PDF 文件损坏或格式不合法，无法解析：{exc}") from exc
 
     if reader.is_encrypted:
         # Owner-password-only PDFs (very common) open with the empty password;
@@ -386,7 +518,7 @@ def _extract_pdf(
     try:
         page_count = len(reader.pages)
     except Exception as exc:
-        raise CorruptedDocument(f"PDF 页目录损坏，无法读取：{exc}")
+        raise CorruptedDocument(f"PDF 页目录损坏，无法读取：{exc}") from exc
 
     if page_count == 0:
         raise EmptyDocument("PDF 没有任何页面")
@@ -396,23 +528,92 @@ def _extract_pdf(
             "请拆分后再上传"
         )
 
-    pages: List[Tuple[int, str]] = []
+    # 先把总页数交给父进程：取消请求与进度条都要在解析第一页之前拿到分母。
+    on_meta(page_count)
     for index in range(page_count):
-        # Cancellation during extraction is a full rollback too: nothing has
-        # been written yet, so the job simply reports how many pages it read.
-        if cancel_event is not None and cancel_event.is_set():
-            raise ExtractionCancelled(index, page_count)
         try:
             page_text = reader.pages[index].extract_text() or ""
         except Exception as exc:
             raise CorruptedDocument(
                 f"PDF 第 {index + 1} 页解析失败：{exc}"
-            )
-        pages.append((index + 1, page_text))
-        if on_page is not None:
-            # Progress is counted in real pages, blank ones included: they were
-            # genuinely parsed and skipping them would fake the percentage.
-            on_page(index + 1, page_count)
+            ) from exc
+        on_page(index + 1, page_count, page_text)
+
+
+def _pdf_worker(
+    source: ExtractionSource, limits: ExtractionLimits, sink: Any
+) -> None:
+    """子进程入口：只解析、只回传，不做超时判断。
+
+    ``pypdf`` 是纯 Python，卡在某页的 ``extract_text()`` 里没有任何协作式中断点；
+    Windows 上唯一能真正停下它的手段是 ``Process.kill()``（``TerminateProcess``）。
+    因此超时判定必须留在父进程。
+    """
+    try:
+        _collect_pdf_pages(
+            source,
+            limits,
+            on_meta=lambda total: sink.put(("meta", total)),
+            on_page=lambda index, total, text: sink.put(
+                ("page", index, total, text)
+            ),
+        )
+    except ExtractionError as exc:
+        sink.put(("error", type(exc).__name__, str(exc)))
+    except BaseException as exc:  # noqa: BLE001 - 子进程必须把失败交回父进程
+        sink.put(("crash", f"{type(exc).__name__}: {exc}"))
+    else:
+        sink.put(("done",))
+
+
+def _release_pdf_worker(process: Any, sink: Any) -> None:
+    """超时、取消、异常、成功四条路径都必须回收进程与队列句柄。"""
+    try:
+        if process.is_alive():
+            process.kill()
+    except Exception:  # noqa: BLE001 - 进程可能尚未启动或已退出
+        pass
+    try:
+        process.join(timeout=3)
+    except Exception:  # noqa: BLE001
+        pass
+    if process.is_alive():
+        try:
+            process.terminate()
+            process.join(timeout=2)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        sink.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # 父进程侧没有 feeder 线程需要 join，明确取消可避免退出时卡住。
+        sink.cancel_join_thread()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if not process.is_alive():
+            # 释放 Windows 进程句柄；进程还活着时 close() 会报错，故先判活。
+            process.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _extract_pdf(
+    source: ExtractionSource,
+    limits: ExtractionLimits,
+    *,
+    allow_low_quality: bool = False,
+    on_page: Optional[Callable[[int, int], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> ExtractedDocument:
+    pages, page_count = _extract_pdf_isolated(
+        source,
+        limits,
+        on_page=on_page,
+        cancel_event=cancel_event,
+    )
 
     text = "\n\n".join(page_text for _, page_text in pages).strip()
     if not text:
@@ -436,6 +637,95 @@ def _extract_pdf(
     )
 
 
+def _extract_pdf_isolated(
+    source: ExtractionSource,
+    limits: ExtractionLimits,
+    *,
+    on_page: Optional[Callable[[int, int], None]],
+    cancel_event: Optional[threading.Event],
+) -> Tuple[List[Tuple[int, str]], int]:
+    """在可强杀的子进程里解析 PDF；超时/取消即杀进程并返回中文错误。
+
+    为什么必须是进程而不是线程：Windows 不能中断一个正在运行的 Python 线程，
+    而 ``pypdf`` 的 ``extract_text()`` 是纯 Python 死循环级别的 CPU 占用时，线程
+    只能等它自己跑完。子进程用 ``spawn`` 启动，父进程在 ``sink.get`` 上计时，
+    超过 ``pdf_page_timeout_seconds`` 就 ``kill()``，进程、队列、临时状态在
+    ``finally`` 里全部释放；父进程本身只做等待与组装，不会被拖住。
+    """
+    context = multiprocessing.get_context(_PDF_WORKER_START_METHOD)
+    sink = context.Queue()
+    process = context.Process(
+        target=_pdf_worker,
+        args=(source, limits, sink),
+        daemon=True,
+    )
+    pages: List[Tuple[int, str]] = []
+    page_count = 0
+    budget = float(limits.pdf_page_timeout_seconds)
+
+    try:
+        process.start()
+    except Exception as exc:  # noqa: BLE001 - 启动失败要给出可读原因
+        _release_pdf_worker(process, sink)
+        raise CorruptedDocument(f"PDF 解析子进程启动失败：{exc}") from exc
+
+    try:
+        # 第一页的计时从“启动 + 打开 + 解析”整体算起：xref 畸形时卡在打开阶段
+        # 同样要能被掐掉。之后每页独立计时。
+        page_started = time.monotonic()
+        while True:
+            try:
+                item = sink.get(timeout=budget)
+            except _QueueEmpty:
+                raise PdfPageTimeout(
+                    f"PDF 第 {len(pages) + 1} 页解析超过 {budget:.0f}s 上限，"
+                    "解析进程已被强制终止；该页可能已损坏或异常复杂，"
+                    "请拆分后再上传"
+                ) from None
+            except (EOFError, OSError) as exc:
+                # 子进程在回传前异常死亡（管道已关闭）：同样按损坏处理，
+                # 不能把裸 EOFError 抛到接口层。
+                raise CorruptedDocument(f"PDF 解析进程异常退出：{exc}") from exc
+
+            kind = item[0]
+            if kind == "done":
+                return pages, page_count or len(pages)
+            if kind == "error":
+                _, error_name, message = item
+                raise _PDF_WORKER_ERRORS.get(error_name, CorruptedDocument)(
+                    message
+                )
+            if kind == "crash":
+                raise CorruptedDocument(f"PDF 解析进程异常退出：{item[1]}")
+
+            if kind == "meta":
+                page_count = int(item[1])
+                # 拿到总页数后立即响应取消：此时一页都还没读，处理数为 0。
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ExtractionCancelled(0, page_count)
+                continue
+
+            _, index, total, page_text = item
+            page_count = int(total)
+            elapsed = time.monotonic() - page_started
+            if elapsed > budget:
+                # 窗口内返回但耗时超预算：与硬超时同样拒绝，文案保留真实耗时。
+                raise PdfPageTimeout(
+                    f"PDF 第 {index} 页解析耗时 {elapsed:.1f}s，超过 "
+                    f"{budget:.0f}s 上限；解析进程已被强制终止，请拆分后再上传"
+                )
+            pages.append((int(index), page_text))
+            if on_page is not None:
+                # Progress is counted in real pages, blank ones included: they
+                # were genuinely parsed and skipping them fakes the percentage.
+                on_page(int(index), page_count)
+            if cancel_event is not None and cancel_event.is_set():
+                raise ExtractionCancelled(len(pages), page_count)
+            page_started = time.monotonic()
+    finally:
+        _release_pdf_worker(process, sink)
+
+
 # ---------------------------------------------------------------------------
 # DOCX
 # ---------------------------------------------------------------------------
@@ -452,10 +742,10 @@ def _heading_level(style_name: str) -> Optional[int]:
     return None
 
 
-def _zip_is_safe(data: bytes, limits: ExtractionLimits) -> None:
+def _zip_is_safe(source: ExtractionSource, limits: ExtractionLimits) -> None:
     """Refuse a zip bomb before python-docx expands it into memory."""
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with zipfile.ZipFile(_parser_source(source)) as archive:
             total = sum(info.file_size for info in archive.infolist())
     except zipfile.BadZipFile as exc:
         raise CorruptedDocument(f"DOCX 文件损坏（不是有效的 zip 包）：{exc}")
@@ -480,9 +770,9 @@ def _iter_docx_blocks(document) -> Iterator[Any]:
 
 
 def _extract_docx(
-    data: bytes, limits: ExtractionLimits, allow_low_quality: bool = False
+    source: ExtractionSource, limits: ExtractionLimits, allow_low_quality: bool = False
 ) -> ExtractedDocument:
-    _zip_is_safe(data, limits)
+    _zip_is_safe(source, limits)
     try:
         from docx import Document
     except ImportError as exc:  # pragma: no cover - declaration is mandatory
@@ -491,7 +781,7 @@ def _extract_docx(
         )
 
     try:
-        document = Document(io.BytesIO(data))
+        document = Document(_parser_source(source))
     except Exception as exc:
         raise CorruptedDocument(f"DOCX 文件损坏或格式不合法，无法解析：{exc}")
 
@@ -677,13 +967,14 @@ class _HtmlTextParser(HTMLParser):
 
 
 def _extract_html(
-    data: bytes, limits: ExtractionLimits, allow_low_quality: bool = False
+    source: ExtractionSource, limits: ExtractionLimits, allow_low_quality: bool = False
 ) -> ExtractedDocument:
+    raw_bytes = _read_source_bytes(source)
     try:
-        raw = data.decode("utf-8-sig")
+        raw = raw_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
         try:
-            raw = data.decode("gb18030")
+            raw = raw_bytes.decode("gb18030")
         except UnicodeDecodeError as exc:
             raise EmptyDocument(
                 f"HTML 文件编码无法识别（既不是 UTF-8 也不是 GB18030）：{exc}"

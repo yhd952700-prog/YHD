@@ -17,6 +17,7 @@ Every case below is executed, not asserted from reading the code.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import tarfile
@@ -99,6 +100,41 @@ class TestRestoreCannotEscapeTheTarget:
     def test_reject_traversal_allows_paths_inside_the_root(self, ops_backup, tmp_path):
         root = tmp_path / "root"
         ops_backup._reject_traversal(["root/a.txt", "root/nested/b.txt"], root)
+
+    def test_pre312_fallback_refuses_symlink_members(
+        self, ops_backup, tmp_path, monkeypatch
+    ):
+        """3.11 没有 filter="data"，回退路径必须自己拒绝链接成员。
+
+        名字本身完全合法（``good/link``），越界发生在 linkname 上；只查
+        member.name 的旧实现会把这种归档放过去。
+        """
+        store = tmp_path / "store"
+        store.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "must-not-exist.txt"
+        archive = store / "symlink.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            meta = tarfile.TarInfo("good/metadata.json")
+            payload = b"{}"
+            meta.size = len(payload)
+            tar.addfile(meta, io.BytesIO(payload))
+            link = tarfile.TarInfo("good/escape")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../must-not-exist.txt"
+            tar.addfile(link)
+
+        original = tarfile.TarFile.extractall
+
+        def pre312(self, path=".", *args, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("unexpected keyword argument 'filter'")
+            return original(self, path, *args, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", pre312)
+        manager = _manager(ops_backup, tmp_path)
+
+        assert manager.restore_backup(archive, tmp_path / "restore-target") is False
+        assert not outside.exists()
 
 
 class TestRestoreRoundTrip:

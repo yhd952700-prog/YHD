@@ -372,8 +372,15 @@ def test_employee_scope_follows_subtree(tree, client):
         )
         assert created.status_code == 201, (name, created.text)
 
+    # 产品内置员工（``src/ai/builtin_employees.py``）由
+    # ``EmployeeStore.create_employee`` 以调用方 ``owner_account_id`` 幂等种入，
+    # 归属首次创建员工的那个账号。本用例根账号先雇佣 ``emp-root``，因此它归属
+    # 根账号；按 docs/account-hierarchy.md §3.9 / v1 范围（根账号只读整棵子树、
+    # 员工按 owner 归属），根账号的期望集合必须包含它。成员视图看不到它，
+    # 说明没有跨账号串数据。
     assert _employee_names(client, tree.root) == {
         "liuhao-default",  # 网关自带的 seed 员工，归属根账号
+        "AI 全栈工程师",  # 产品内置员工，归属首次雇佣的账号（这里是根）
         "emp-root",
         "emp-child1",
         "emp-child2",
@@ -382,6 +389,11 @@ def test_employee_scope_follows_subtree(tree, client):
     assert _employee_names(client, tree.child1) == {"emp-child1", "emp-grand1"}
     assert _employee_names(client, tree.child2) == {"emp-child2"}
     assert _employee_names(client, tree.grand1) == {"emp-grand1"}
+    # 成员视图不得出现任何层级/创建关系字段或文案：成员不能知道
+    # "自己是被谁创建的"，也不能借员工列表反推账号树结构。
+    child_view = client.get("/v1/employees", headers=tree.child1)
+    assert child_view.status_code == 200, child_view.text
+    _assert_no_hierarchy_leak(child_view.json())
 
 
 def _seed_goal(owner: str, goal_id: str) -> None:
@@ -465,9 +477,13 @@ def test_model_key_scope_and_borrowing(tree, client):
     assert grand_ids == set()
 
     # 成员不能用别人的 Key：兄弟的模型既不可读也不可改。
+    # 越权读必须与"不存在"同形（中性 404），否则可以按状态码枚举 model_id。
     foreign = client.get(f"/v1/models/{child2_model['id']}", headers=tree.child1)
-    assert foreign.status_code == 403, foreign.text
-    assert _error_code(foreign) == "ACCOUNT_KEY_NOT_OWNED"
+    missing = client.get("/v1/models/no-such-model", headers=tree.child1)
+    assert foreign.status_code == 404, foreign.text
+    assert missing.status_code == 404, missing.text
+    assert foreign.json() == missing.json(), (foreign.json(), missing.json())
+    assert _error_code(foreign) == "ACCOUNT_SUBTREE_DENIED"
     _assert_no_hierarchy_leak(foreign.json())
 
     # 成员不能把模型挂到别人名下。
@@ -479,9 +495,10 @@ def test_model_key_scope_and_borrowing(tree, client):
     assert assign.status_code == 403, assign.text
     assert _error_code(assign) == "ACCOUNT_KEY_NOT_OWNED"
 
-    # 根：未开启共享时拿不到成员 Key；成员本人开启后可借用；再撤销即失效。
+    # 根：未开启共享时拿不到成员 Key（中性 404，避免 403/404 对比枚举）；
+    # 成员本人开启后可借用；再撤销即失效。
     before = client.get(f"/v1/models/{child1_model['id']}", headers=tree.root)
-    assert before.status_code == 403, before.text
+    assert before.status_code == 404, before.text
 
     shared = client.patch(
         "/v1/accounts/child1/key-sharing", json={"allow": True}, headers=tree.child1
@@ -495,7 +512,7 @@ def test_model_key_scope_and_borrowing(tree, client):
     )
     assert revoked.status_code == 200, revoked.text
     again = client.get(f"/v1/models/{child1_model['id']}", headers=tree.root)
-    assert again.status_code == 403, again.text
+    assert again.status_code == 404, again.text
 
 
 def test_borrowed_key_usage_is_attributed_to_borrower(tree, client):
@@ -623,6 +640,77 @@ def test_memory_scope_root_subtree_member_self(tree, client):
     assert client.get(f"/v1/memory/entries/{child_id}", headers=tree.root).status_code == 200
 
 
+def test_memory_search_treats_like_wildcards_literally_and_pages(
+    tree, client
+):
+    """q 里的 % / _ 必须是字面量；一次请求也不能吐出全部记忆。"""
+    for text in ("alpha", "a_b", "100% done"):
+        _add_memory(client, tree.child1, text)
+
+    def search(query, **extra):
+        response = client.get(
+            "/v1/memory/entries", headers=tree.child1,
+            params={"q": query, **extra},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    percent = search("%")
+    assert [e["text"] for e in percent["entries"]] == ["100% done"]
+
+    underscore = search("_")
+    assert [e["text"] for e in underscore["entries"]] == ["a_b"]
+
+    first = search("", limit=1, offset=0)
+    assert first["count"] == 1
+    assert first["has_more"] is True
+    second = search("", limit=1, offset=1)
+    assert second["count"] == 1
+    assert second["has_more"] is True
+    assert {e["id"] for e in first["entries"]} != {
+        e["id"] for e in second["entries"]
+    }
+
+
+def test_revoke_grant_outside_subtree_is_neutral_404(tree, client):
+    """管理员撤销凭据也必须受水平归属约束（不能凭 grant_id 撤别人）。"""
+    from src.kernels import _sovereignty as sov
+    from src.kernels.identity import get_identity_manager
+    from src.security.jwt_handler import create_access_token
+
+    get_identity_manager().create_human_identity("outsider", permissions=set())
+    outsider_grant = sov.issue_grant(
+        "outsider", ["capability.retire"], target="*", reason="probe",
+        ttl_seconds=600, issued_by="root1", allow_wildcard=True,
+    )
+    own_grant = sov.issue_grant(
+        "child1", ["capability.retire"], target="*", reason="probe",
+        ttl_seconds=600, issued_by="child1", allow_wildcard=True,
+    )
+    # 给 child1 一枚带 admin 声明的令牌：证明即使有管理员声明，也只能撤销
+    # 自己子树内的凭据。
+    token, _ = create_access_token(
+        "child1", roles=["admin"], ttl=600,
+        metadata={"kind": "human", "scope": "L1"},
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    foreign = client.delete(
+        f"/v1/policy/approvals/{outsider_grant.grant_id}", headers=headers
+    )
+    missing = client.delete(
+        "/v1/policy/approvals/no-such-grant", headers=headers
+    )
+    assert foreign.status_code == 404, foreign.text
+    assert missing.status_code == 404, missing.text
+    assert foreign.json() == missing.json(), (foreign.json(), missing.json())
+
+    allowed = client.delete(
+        f"/v1/policy/approvals/{own_grant.grant_id}", headers=headers
+    )
+    assert allowed.status_code == 200, allowed.text
+
+
 def _write_workspace_file(owner: str, relative: str, content: str) -> None:
     import os
     from pathlib import Path
@@ -685,6 +773,75 @@ def test_artifact_file_scope(tree, client):
     _assert_neutral_404(_file_paths(client, tree.root, "outsider"))
 
 
+def test_root_artifact_download_is_confined_to_subtree(tree, client):
+    """根下载产物只认自己子树，且 ``accounts/<树外>/...`` 前缀不能绕过。
+
+    单根部署里 ``child2`` 本身就是 root1 的下级，HTTP 层面无法构造"另一棵树
+    的 child2"；跨根语义由下面的 ``GoalViewer.sees_any_owner`` 用例覆盖。
+    这里钉住真实的下载面：自己的、子树的能下；树外的主体与路径前缀都是
+    中性 404，且响应里不出现对方内容。
+    """
+    _write_workspace_file("root1", "reports/own.txt", "root1 自己的产物")
+    _write_workspace_file("child1", "reports/a.txt", "child1 的产物")
+    _write_workspace_file("outsider", "reports/secret.txt", "树外主体的产物")
+
+    for account, path, marker in (
+        ("root1", "reports/own.txt", "root1 自己的产物"),
+        ("child1", "reports/a.txt", "child1 的产物"),
+    ):
+        got = client.get(
+            "/v1/files/content",
+            params={"account": account, "path": path},
+            headers=tree.root,
+        )
+        assert got.status_code == 200, got.text
+        assert marker in got.text
+
+    outside = client.get(
+        "/v1/files/content",
+        params={"account": "outsider", "path": "reports/secret.txt"},
+        headers=tree.root,
+    )
+    _assert_neutral_404(outside)
+    assert "树外主体的产物" not in outside.text
+
+    # 根默认视角是工作区根；必须挡住 accounts/<树外>/... 这条绕过路径。
+    for endpoint, params in (
+        ("/v1/files", {"path": "accounts/outsider/reports"}),
+        ("/v1/files/content", {"path": "accounts/outsider/reports/secret.txt"}),
+    ):
+        denied = client.get(endpoint, params=params, headers=tree.root)
+        _assert_neutral_404(denied)
+        assert "树外主体的产物" not in denied.text
+
+    # 子树内成员按同一路径形式访问仍然可用（不误伤正常回填路径）。
+    allowed = client.get(
+        "/v1/files/content",
+        params={"path": "accounts/child1/reports/a.txt"},
+        headers=tree.root,
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert "child1 的产物" in allowed.text
+
+
+def test_multi_root_artifact_view_is_confined_to_subtree():
+    """``sees_any_owner`` 不再按 ``is_root`` 放行全站（多根语义）。"""
+    from src.gateway.ai_management import GoalViewer
+
+    tree_a_root = GoalViewer(
+        principal="root1", subtree=("root1", "child1"), is_root=True
+    )
+    tree_b_member = GoalViewer(principal="child2", subtree=("child2",))
+
+    assert tree_a_root.sees_any_owner(set()) is True  # 无归属记录不是别人的产物
+    assert tree_a_root.sees_any_owner({"root1"}) is True
+    assert tree_a_root.sees_any_owner({"child1"}) is True
+    assert tree_a_root.sees_any_owner({"child2"}) is False  # 另一棵树的下级
+    assert tree_a_root.sees_any_owner({"root2"}) is False
+
+    assert tree_b_member.sees_any_owner({"root1"}) is False
+    assert tree_b_member.sees_any_owner({"child2"}) is True
+
 
 def test_session_history_isolation(tree, client):
     model = _create_model(client, tree.root, name="chat-key", owner="child1")
@@ -709,6 +866,97 @@ def test_session_history_isolation(tree, client):
         )
 
     _assert_no_hierarchy_leak(mine.json())
+
+
+def test_foreign_session_and_missing_session_are_indistinguishable(tree, client):
+    """越权读取和"根本没有这个会话"必须同状态、同 body，不能当存在性探针。"""
+    model = _create_model(client, tree.child1, name="indist-key")
+    chat = client.post(
+        "/v1/chat",
+        json={"message": "child1 的会话", "session_id": "occupied-session", "model_id": model["id"]},
+        headers=tree.child1,
+    )
+    assert chat.status_code == 200, chat.text
+
+    foreign = client.get("/v1/chat/history?session_id=occupied-session", headers=tree.child2)
+    missing = client.get("/v1/chat/history?session_id=never-existed", headers=tree.child2)
+    _assert_neutral_404(foreign, missing=missing)
+
+    foreign_stats = client.get("/v1/chat/stats?session_id=occupied-session", headers=tree.child2)
+    missing_stats = client.get("/v1/chat/stats?session_id=never-existed", headers=tree.child2)
+    _assert_neutral_404(foreign_stats, missing=missing_stats)
+
+    foreign_delete = client.delete("/v1/chat/sessions/occupied-session", headers=tree.child2)
+    missing_delete = client.delete("/v1/chat/sessions/never-existed", headers=tree.child2)
+    _assert_neutral_404(foreign_delete, missing=missing_delete)
+
+    # 显式分页是控制台首屏路径：两种会话都返回"空历史"，仍然不可区分。
+    foreign_page = client.get(
+        "/v1/chat/history", params={"session_id": "occupied-session", "limit": 10}, headers=tree.child2
+    )
+    missing_page = client.get(
+        "/v1/chat/history", params={"session_id": "never-existed", "limit": 10}, headers=tree.child2
+    )
+    assert foreign_page.status_code == missing_page.status_code == 200
+    assert foreign_page.json()["count"] == missing_page.json()["count"] == 0
+    assert foreign_page.json()["history"] == missing_page.json()["history"] == []
+
+
+def test_root_reads_subtree_sessions_and_child_cannot_read_ancestors(tree, client):
+    """产品口径：根可读整棵子树的会话，成员只能读自己。"""
+    child_model = _create_model(client, tree.child1, name="subtree-child")
+    grand_model = _create_model(client, tree.grand1, name="subtree-grand")
+    root_model = _create_model(client, tree.root, name="subtree-root")
+    for headers, session_id, model_id in (
+        (tree.child1, "child-session", child_model["id"]),
+        (tree.grand1, "grand-session", grand_model["id"]),
+        (tree.root, "root-session", root_model["id"]),
+    ):
+        sent = client.post(
+            "/v1/chat",
+            json={"message": f"{session_id} 的消息", "session_id": session_id, "model_id": model_id},
+            headers=headers,
+        )
+        assert sent.status_code == 200, sent.text
+
+    # 根读子 / 孙：200，能看到内容。
+    for session_id in ("child-session", "grand-session"):
+        viewed = client.get(f"/v1/chat/history?session_id={session_id}", headers=tree.root)
+        assert viewed.status_code == 200, viewed.text
+        assert viewed.json()["count"] > 0
+
+    # 子读父 / 孙读祖父 / 子读平级：一律中性 404。
+    for headers, session_id in (
+        (tree.child1, "root-session"),
+        (tree.child1, "grand-session"),
+        (tree.grand1, "child-session"),
+        (tree.child2, "child-session"),
+    ):
+        _assert_neutral_404(
+            client.get(f"/v1/chat/history?session_id={session_id}", headers=headers)
+        )
+
+    # 根的列表聚合子树，并用 users 标出每个会话属于谁。
+    root_stats = client.get("/v1/chat/stats?session_id=child-session", headers=tree.root)
+    assert root_stats.status_code == 200, root_stats.text
+    assert root_stats.json()["turn"] >= 1
+
+    listed = client.get("/v1/chat/sessions", headers=tree.root)
+    assert listed.status_code == 200, listed.text
+    payload = listed.json()
+    for session_id, owner in (
+        ("root-session", "root1"),
+        ("child-session", "child1"),
+        ("grand-session", "grand1"),
+    ):
+        assert session_id in payload["sessions"], payload
+        assert payload["users"][session_id] == owner, payload
+
+    # 成员列表仍然只有自己。
+    child_listed = client.get("/v1/chat/sessions", headers=tree.child1).json()
+    assert "child-session" in child_listed["sessions"]
+    assert "root-session" not in child_listed["sessions"]
+    assert "grand-session" not in child_listed["sessions"]
 
 
 # --------------------------------------------------------------------------- #
@@ -808,3 +1056,38 @@ def test_concurrent_permission_updates_are_consistent(client):
     ]
     final = client.get("/v1/accounts/permchild", headers=root).json()["account"]
     assert final["permissions"] == [], final
+
+
+def test_auth_me_is_root_false_for_second_and_third_level(tree):
+    """钉住二级/三级账号的 ``/auth/me`` 必须是 ``is_root=false``。
+
+    真实流程：root1 → child1 → grand1，逐层用账号密码重新登录拿令牌
+    （不是激活令牌）。``is_root`` 是控制台渲染主账号入口的唯一开关，
+    任何一层成员被回报 ``true`` 都会让子账号看到主账号界面。
+    """
+    for principal, expected in (("root1", True), ("child1", False), ("grand1", False)):
+        headers = _login(tree.client, principal)
+        me = tree.client.get("/v1/auth/me", headers=headers)
+        assert me.status_code == 200, me.text
+        assert me.json()["is_root"] is expected, (principal, me.text)
+        # 整棵树只对根可用；成员一律得到与"不存在"一致的 404。
+        tree_view = tree.client.get("/v1/accounts/tree", headers=headers)
+        assert tree_view.status_code == (200 if expected else 404), tree_view.text
+
+
+def test_token_outside_account_tree_is_not_root(client):
+    """账号树存在时，树外主体的令牌不得被当成主账号。
+
+    内部工具/测试可能直接用同一签名路径签令牌给一个没有账号节点的主体；
+    这类令牌此前会被 ``_account_is_root`` 的兼容兜底回答 ``true``，控制台
+    就会把它渲染成根账号。账号树一旦存在，只有节点自身的 ``is_root`` 成立。
+    """
+    from src.security import get_jwt_handler
+
+    _register_root(client, "root3")
+    token, _payload = get_jwt_handler().create_token(
+        subject="tool-token-holder", metadata={"kind": "human", "scope": "L7"}
+    )
+    me = client.get("/v1/auth/me", headers=_bearer(token))
+    assert me.status_code == 200, me.text
+    assert me.json()["is_root"] is False, me.text

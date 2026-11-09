@@ -217,6 +217,10 @@ class TestAccountScopeDeletion:
         listed = service.list_documents(scope=self._root_scope())
         assert {doc["document_id"] for doc in listed["documents"]} == {"root--root-doc"}
 
+        # 根也读不到子文档内容（与列表同口径），删除仍只限自有文档。
+        assert service.document_chunks(
+            "member--member-doc", scope=self._root_scope()
+        )["count"] == 0
         denied = service.delete_document("member--member-doc", scope=self._root_scope())
         assert denied["deleted"] is False
         assert service.document_chunks("member--member-doc")["count"] >= 1
@@ -500,6 +504,60 @@ class TestAsyncIngestJobs:
         assert {chunk["page"] for chunk in chunks} == {1, 2}
 
 
+class TestUploadTempFileLifecycle:
+    """上传先落盘：临时文件在成功 / 失败 / 取消三种终态都必须消失。"""
+
+    def test_success_removes_the_temp_upload(self, tmp_path):
+        service = _service()
+        manager = IngestJobManager(service_factory=lambda: service)
+        upload = tmp_path / "note.txt"
+        upload.write_text("临时文件成功路径。" * 20, encoding="utf-8")
+        try:
+            submitted = manager.submit_file(upload, "note.txt")
+            finished = manager.wait(submitted["job_id"], timeout=10)
+            assert finished["status"] == "succeeded", finished
+            assert not upload.exists(), "成功入库后临时上传文件未删除"
+        finally:
+            manager.shutdown()
+
+    def test_failure_removes_the_temp_upload(self, tmp_path):
+        service = _service()
+        manager = IngestJobManager(service_factory=lambda: service)
+        upload = tmp_path / "broken.docx"
+        upload.write_bytes(b"this is not a docx zip")
+        try:
+            submitted = manager.submit_file(upload, "broken.docx")
+            finished = manager.wait(submitted["job_id"], timeout=10)
+            assert finished["status"] == "failed", finished
+            assert not upload.exists(), "解析失败后临时上传文件未删除"
+        finally:
+            manager.shutdown()
+
+    def test_cancel_removes_the_temp_upload(self, tmp_path):
+        slow = _SlowEmbedder()
+        service = _service(slow)
+        manager = IngestJobManager(service_factory=lambda: service, max_workers=1)
+        upload = tmp_path / "pending.txt"
+        upload.write_text("排队中的上传。" * 20, encoding="utf-8")
+        try:
+            # 占住唯一 worker，让文件任务停在队列里，再取消 —— 可确定地覆盖
+            # “排队期间取消”分支。
+            blocker = manager.submit("占位正文。" * 50, "blocker.txt")
+            assert slow.started.wait(5), "worker 未开始嵌入"
+
+            submitted = manager.submit_file(upload, "pending.txt")
+            assert manager.cancel(submitted["job_id"])["cancel_accepted"] is True
+
+            slow.release.set()
+            manager.wait(blocker["job_id"], timeout=10)
+            finished = manager.wait(submitted["job_id"], timeout=10)
+            assert finished["status"] == "cancelled", finished
+            assert finished["result"]["committed_chunks"] == 0
+            assert not upload.exists(), "取消后临时上传文件未删除"
+        finally:
+            manager.shutdown()
+
+
 class TestFileJobProgressAndCancellation:
     def test_progress_is_counted_in_real_pages_not_a_timer(self):
         slow = _SlowEmbedder()
@@ -633,3 +691,30 @@ class TestJobCancellation:
             assert manager.get(job["job_id"])["status"] == "succeeded"
         finally:
             manager.shutdown()
+
+
+def test_account_context_scope_every_account_reads_only_self():
+    from types import SimpleNamespace
+
+    from src.api.routes.knowledge import _scope_from_account_context
+
+    root = SimpleNamespace(
+        standalone=False,
+        is_member=False,
+        is_root=True,
+        principal="root",
+        subtree=("root", "child1", "grand1"),
+    )
+    root_scope = _scope_from_account_context(root)
+    # 知识库是自有资产：主账号也不聚合子树（否则成员文档会出现在主账号列表/检索）。
+    assert root_scope.owners == ("root",)
+
+    child = SimpleNamespace(
+        standalone=False,
+        is_member=True,
+        is_root=False,
+        principal="child1",
+        subtree=("child1",),
+    )
+    child_scope = _scope_from_account_context(child)
+    assert child_scope.owners == ("child1",)

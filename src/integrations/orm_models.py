@@ -934,12 +934,39 @@ class AuditTrail(Base):
 
 # ==================== Session & Engine Management ====================
 
-_DEFAULT_DB_URL = os.environ.get("DATABASE_URL", "sqlite:///./liuhao_ai_os.db")
+def default_database_url() -> str:
+    """默认库地址：``DATABASE_URL`` > 数据根 > 历史 cwd 相对默认值。
+
+    这里不能用 :func:`src.common.data_paths.resolve_store_path` —— 那是"文件
+    路径"解析器，而 ``DATABASE_URL`` 是 SQLAlchemy URL（``sqlite:///...``）。
+    """
+    raw = (os.environ.get("DATABASE_URL") or "").strip()
+    if raw:
+        return raw
+    from ..common.data_paths import data_root
+
+    root = data_root()
+    if root is not None:
+        return "sqlite:///" + str(root / "liuhao_ai_os.db")
+    return "sqlite:///./liuhao_ai_os.db"
+
+
+def _ensure_sqlite_parent(db_url: str) -> None:
+    """SQLite 只会建文件、不会建目录；数据根本身可能还没被别的存储创建。"""
+    if not db_url.startswith("sqlite:///"):
+        return
+    raw = db_url[len("sqlite:///"):]
+    if not raw or raw == ":memory:" or raw.startswith("file:"):
+        return
+    parent = os.path.dirname(os.path.abspath(raw))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
 
 def get_engine(db_url: Optional[str] = None):
     """Get or create the SQLAlchemy engine."""
-    db_url = db_url or _DEFAULT_DB_URL
+    db_url = db_url or default_database_url()
+    _ensure_sqlite_parent(db_url)
     return _create_engine(db_url, connect_args={"check_same_thread": False} if "sqlite" in db_url else {})
 
 

@@ -113,11 +113,33 @@ class TestStorageFieldNamesMatchTheKernel:
 
 
 class TestBackendResolution:
-    def test_nothing_configured_is_the_json_backend_with_no_location(self):
+    def test_nothing_configured_is_the_json_backend_with_no_location(
+        self, monkeypatch
+    ):
+        # "Nothing configured" must mean *no data root either*: ``LIUHAO_DATA_DIR``
+        # is set by ``tests/conftest.py`` for every test, and the data-root
+        # contract says an identity file backend then lives under it. Deleting
+        # it here keeps the fail-closed case honest instead of weakening it.
+        monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
         store = resolve_human_identity_store()
         assert store.backend_name == BACKEND_FILE
         assert store.location == ""
         assert describe_human_identity_store(store)["configured"] is False
+
+    def test_a_data_root_alone_places_the_json_store_inside_it(
+        self, monkeypatch, tmp_path
+    ):
+        # The isolation contract: setting only ``LIUHAO_DATA_DIR`` must route the
+        # identity/account-tree file into the data root, never the repo or
+        # ``%LOCALAPPDATA%``.
+        data_dir = tmp_path / "data"
+        monkeypatch.setenv("LIUHAO_DATA_DIR", str(data_dir))
+        store = resolve_human_identity_store()
+        assert store.backend_name == BACKEND_FILE
+        assert store.location == str(
+            data_dir / "config" / "human_identities.json"
+        )
+        assert describe_human_identity_store(store)["configured"] is True
 
     def test_a_file_variable_alone_keeps_the_json_backend(self, monkeypatch, json_path):
         monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, json_path)
@@ -472,8 +494,10 @@ class TestIdentityManagerUsesTheStore:
         assert reloaded.metadata[METADATA_DISPLAY_NAME_KEY] == "Alice"
         assert reloaded.metadata["registered_at"]
 
-    def test_an_unconfigured_store_never_creates_a_file(self, tmp_path):
-        # Zero behaviour change for deployments that never opted in.
+    def test_an_unconfigured_store_never_creates_a_file(self, monkeypatch, tmp_path):
+        # Zero behaviour change for deployments that never opted in -- including
+        # no data root (conftest always sets one; see the resolution test above).
+        monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
         before = set(os.listdir(tmp_path))
         manager = IdentityManager()
         created = manager.create_human_identity("transient")

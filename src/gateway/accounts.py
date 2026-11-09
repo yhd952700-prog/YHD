@@ -11,11 +11,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..common.atomic_write import StorageWriteError
 from ..kernels.identity import _accounts, get_identity_manager
@@ -28,7 +29,15 @@ from .account_context import (
     require_manage,
     require_visible,
 )
-from .auth import issue_token_for, resolve_secret_store, rotate_credential
+from .auth import (
+    AUDIT_NOT_WRITTEN_MESSAGE,
+    audit_failure_snapshot,
+    audit_notice_after,
+    issue_token_for,
+    resolve_secret_store,
+    rotate_credential,
+    verify_credential,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
@@ -55,6 +64,9 @@ CODE_LOCAL_USER_MISMATCH = "ACCOUNT_LOCAL_USER_MISMATCH"
 
 #: 凭据包导出只接受本机来源时的稳定错误码。
 CODE_BACKUP_EXPORT_LOCAL_ONLY = "ACCOUNT_BACKUP_EXPORT_LOCAL_ONLY"
+
+#: 自助改密时当前密码不正确（400：不能是 401，否则前端会把它当成会话失效）。
+CODE_CURRENT_PASSWORD_REJECTED = "ACCOUNT_CURRENT_PASSWORD_REJECTED"
 
 
 # --------------------------------------------------------------------------- #
@@ -96,7 +108,22 @@ class StatusRequest(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
+    """改密请求。
+
+    * 管理者重置成员：只需 ``password``；
+    * 自己改自己：还必须带上 ``current_password``（令牌被盗也不能静默换密）。
+    """
+
     password: str = Field(..., min_length=8, max_length=256)
+    current_password: Optional[str] = Field(None, max_length=256)
+
+    @field_validator("password")
+    @classmethod
+    def _password_not_blank(cls, value: str) -> str:
+        # min_length 只管长度：8 个空格仍是"空白密码"，必须在入口就拒绝。
+        if not value.strip():
+            raise ValueError("密码不能为空白")
+        return value
 
 
 class RecoveryResetRequest(BaseModel):
@@ -326,16 +353,140 @@ def _require_bootstrap_source(request: Request) -> str:
 
 
 def _require_local_proof(request: Request) -> None:
-    """恢复码交接：回环之外，还必须持有桌面端通过 DACL 通道发放的一次性令牌。
+    """恢复码交接：本机回环 + 同一 Windows 用户即可（桌面端令牌可直接放行）。
 
-    回环只证明“同一台机器”，不证明“同一个账户”。令牌由网关的命名管道
-    发给当前 Windows 用户，HTTP 请求本身不再被当作身份证明。
+    回环只证明“同一台机器”，``_require_same_user`` 再把它收紧成“同一个
+    Windows 账户”；可信启动下其它账户仍会被拒。浏览器直接打开控制台
+    （没有桌面窗口发放的令牌）也能自助生成恢复码 —— 修复“只有桌面端能
+    恢复”的断层；令牌仍然有效，但不再是唯一入口。
     """
     _require_same_user(request)
     raw = local_proof.request_token(request, local_proof.HANDOFF_HEADER)
-    if raw and local_proof.redeem_token(raw, scope=local_proof.SCOPE_HANDOFF):
-        return
-    raise deny(403, CODE_RECOVERY_PROOF_REQUIRED, _PROOF_MESSAGE)
+    if raw:
+        if local_proof.redeem_token(raw, scope=local_proof.SCOPE_HANDOFF):
+            return
+        # 令牌给过但已失效/被重放：明确拒绝，不能悄悄降级成“本机无令牌”路径。
+        raise deny(403, CODE_RECOVERY_PROOF_REQUIRED, _PROOF_MESSAGE)
+    # 同机同账户的浏览器/本机进程：允许自助交接（跨站写已由 Origin 守卫拦截）。
+    return
+
+
+#: 恢复端点按“来源 + 端点”计的请求级限流：10 次 / 15 分钟。
+#: 这是 HTTP 防刷层；恢复码本身的失败次数限制（5 次 / 15 分钟）保持不变。
+RECOVERY_HTTP_ATTEMPT_LIMIT = 10
+
+
+def _recovery_http_scope() -> str:
+    """把限流桶绑到当前部署的数据根。
+
+    生产只有一个数据根，因此等价于“来源 + 端点”；测试每个用例用独立临时
+    数据根，避免一个用例耗尽另一个用例的桶。绝不用于放宽任何来源判定。
+    """
+    return (
+        os.environ.get("LIUHAO_DATA_DIR")
+        or os.environ.get("AUDIT_DB_PATH")
+        or os.environ.get("LIUHAO_WORKSPACE_ROOT")
+        or "-"
+    )
+
+
+def _recovery_http_rate_limit(request: Request, endpoint: str) -> None:
+    """在回环/证明校验之后执行：不放宽既有 403，只对已进入业务的请求计次。"""
+    key = (
+        f"recovery:http:{endpoint}:{_recovery_rate_limit_source(request)}"
+        f":{_recovery_http_scope()}"
+    )
+    try:
+        _accounts.limiter.check(
+            key,
+            limit=RECOVERY_HTTP_ATTEMPT_LIMIT,
+            window=_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS,
+        )
+    except _accounts.AccountError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": _accounts.CODE_RECOVERY_LOCKED,
+                "message": "尝试次数过多，请稍后再试。",
+            },
+            headers={"Retry-After": str(_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS)},
+        ) from exc
+    _accounts.limiter.register(key)
+
+
+def _recovery_rate_limit_source(request: Request) -> str:
+    """限流桶来源：只区分“本机 / 非本机”，绝不按可伪造的代理头分桶。
+
+    uvicorn 对来自回环对端的请求会按 ``X-Forwarded-For`` 重写
+    ``request.client``：若桶 key 直接使用 ``client.host``，客户端每换一个
+    伪造地址就得到一个新桶，10 次/15 分钟的上限被绕开（实测 30 次全部进入
+    业务）。这里按现有 :func:`request_is_local` 的可信来源判定收敛：本机
+    请求无论带什么转发头都归到同一个桶；非本机（只有显式开启远程恢复时
+    才会走到限流）也一律归到同一个桶——不新增“信任任何代理头”的逻辑。
+    """
+    return "local" if request_is_local(request) else "untrusted"
+
+
+def _http_error_code(exc: HTTPException) -> str:
+    detail = exc.detail
+    return str(detail.get("code") or "") if isinstance(detail, dict) else ""
+
+
+def _recovery_http_audit(
+    request: Request,
+    *,
+    endpoint: str,
+    outcome: str,
+    actor: str,
+    target: str,
+    error_code: str = "",
+    mode: str = "",
+) -> bool:
+    """取码/重置的 HTTP 级审计：成功与失败都写，且带上来源地址。
+
+    返回是否真正写入。失败不反向阻断恢复流程：审计库异常只记日志，仍按原
+    结果返回；调用方据此在响应里显式告知“审计未写入”。
+    """
+    details: Dict[str, Any] = {
+        "action": f"account.recovery.{endpoint}",
+        "endpoint": f"/v1/accounts/recovery/{endpoint}",
+        "source": getattr(request.client, "host", None) or "unknown",
+        "actor": actor,
+        "target": target,
+    }
+    if error_code:
+        # 审计脱敏规则会把全大写多段常量当成环境变量名（→ <环境变量>）；
+        # 这里落小写机器可读原因，既保留失败分类又不触发该规则。
+        details["error_code"] = error_code.lower()
+    if mode:
+        details["mode"] = mode
+    written = False
+    try:
+        written = bool(
+            get_identity_manager().record_event(
+                action=f"account.recovery.{endpoint}",
+                actor=actor,
+                target=target,
+                outcome=outcome,
+                details=details,
+            )
+        )
+    except Exception:  # noqa: BLE001 - 审计失败不能把用户挡在恢复流程外
+        logger.warning(
+            "恢复端点审计写入失败 endpoint=%s outcome=%s",
+            endpoint,
+            outcome,
+            exc_info=True,
+        )
+    if not written:
+        # 与身份内核的 "account audit event lost" 不同，这条是面向运维/用户
+        # 的明确结论：操作已完成，但这次没有留下审计记录。
+        logger.warning(
+            "审计未写入：恢复端点操作已完成但未留下审计记录 endpoint=%s outcome=%s",
+            endpoint,
+            outcome,
+        )
+    return written
 
 
 def _require_initialization_proof(request: Request) -> str:
@@ -358,10 +509,12 @@ def _require_initialization_proof(request: Request) -> str:
 
 
 def _require_recovery_source(request: Request) -> str:
-    """重置来源判定，返回已占用的重置令牌（空串表示受控运维开关放行）。
+    """重置来源判定，返回已占用的重置令牌（空串表示本机浏览器/受控开关放行）。
 
-    默认：本机 + 一次性重置令牌。远程只在显式开关打开时放行（受控运维，
-    风险见 :func:`recovery_handoff.remote_recovery_enabled`）。
+    默认：本机回环（可信启动下再校验同一 Windows 用户）。桌面端一次性令牌
+    仍然有效且会被占用；但不再是唯一入口 —— 本机浏览器（以及经中继的
+    手机端）没有令牌也能用恢复码自救。远程只在显式开关打开时放行（受控
+    运维，风险见 :func:`recovery_handoff.remote_recovery_enabled`）。
     令牌在这里“占用”而不是立即消费：改密失败时可以释放重试，并发请求里
     只有一个能占用成功（避免同一令牌并发重置两次都成功）。
     """
@@ -394,7 +547,9 @@ def _require_recovery_source(request: Request) -> str:
             recovery_handoff.REMOTE_RECOVERY_ENV,
         )
         return ""
-    raise deny(403, CODE_RECOVERY_PROOF_REQUIRED, _PROOF_MESSAGE)
+    # 同机同账户的浏览器重置：不再要求桌面端令牌（枚举与凭据仍是硬门槛）。
+    # 跨站写请求由 HostGuardMiddleware 的 Origin 守卫拦截，令牌入口保持可用。
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +575,7 @@ def _settle_existing_root(
     request: Request,
 ) -> Dict[str, Any]:
     """根已存在：要么"已完成"（409），要么"初始化停在半路"（可恢复）。"""
+    snapshot = audit_failure_snapshot()
     if _credential_record(root.principal) is not None:
         # 已完成初始化。交给内核产生 409 并写审计，**绝不先碰凭据**。
         _kernel_call(
@@ -469,12 +625,14 @@ def _settle_existing_root(
     local_proof.consume_token(proof)
     _clear_local_recovery_file()
     node = _kernel_call(manager.get_account, root.principal)
-    return {
+    response = {
         "account": _public_member(node),
         "recovery_code": recovery_code,
         "resumed": True,
         "notice": "初始化已补全；恢复码只显示这一次，请离线保存，它可用于重置密码。",
     }
+    response.update(audit_notice_after(snapshot, "初始化补全"))
+    return response
 
 
 @router.post("/register")
@@ -491,6 +649,7 @@ def register_root(payload: RegisterRootRequest, request: Request) -> Dict[str, A
     远程透露根账号名。
     """
     manager = get_identity_manager()
+    snapshot = audit_failure_snapshot()
     with _ROOT_INIT_LOCK:
         root = _kernel_call(manager.account_root)
         if root is not None:
@@ -523,27 +682,32 @@ def register_root(payload: RegisterRootRequest, request: Request) -> Dict[str, A
         if proof:
             local_proof.consume_token(proof)
     _clear_local_recovery_file()
-    return {
+    response = {
         "account": _public_member(node),
         "recovery_code": recovery_code,
         "notice": "恢复码只显示这一次，请离线保存；它没有有效期，但一经使用即失效。",
     }
+    response.update(audit_notice_after(snapshot, "根账号注册"))
+    return response
 
 
 @router.post("/activate")
 def activate(payload: ActivateRequest) -> Dict[str, Any]:
     """用一次性激活码设置密码并登录（一次性 + 限时 + 限次）。"""
     manager = get_identity_manager()
+    snapshot = audit_failure_snapshot()
     _kernel_call(manager.verify_activation_code, payload.principal, payload.code)
     if not rotate_credential(payload.principal, payload.password):
         raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号初始化失败")
     _kernel_call(manager.consume_activation_code, payload.principal)
     token = issue_token_for(payload.principal, client="web")
-    return {
+    response = {
         "token": token["access_token"],
         "access_token": token["access_token"],
         "account": _public_member(manager.get_account(payload.principal)),
     }
+    response.update(audit_notice_after(snapshot, "成员激活"))
+    return response
 
 
 @router.post("/recovery/reset")
@@ -554,38 +718,77 @@ def recovery_reset(payload: RecoveryResetRequest, request: Request) -> Dict[str,
     恢复码一起作废且不能重发，用户彻底锁死。这里与激活流程
     （``verify_activation_code`` → 改密 → ``consume_activation_code``）同序。
 
-    来源契约：默认只接受本机回环请求，且必须携带桌面端通过 DACL 命名管道
-    发放的一次性重置令牌（防止同机其他账户只凭回环就重置）。远程重置必须
-    由管理员显式开启 ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭；开启后
+    来源契约：默认只接受本机回环请求（本机浏览器直接重置即可，不再强制
+    桌面端一次性令牌）；可信启动下仍校验调用者与网关是同一个 Windows 账户。
+    远程重置必须显式开启 ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭；开启后
     任何能访问服务端口、且持有恢复码的来源都可重置根密码，风险自担）。
     """
-    proof = _require_recovery_source(request)
-    manager = get_identity_manager()
+    actor = "anonymous"
+    target = "root"
+    proof = ""
     try:
-        principal = _kernel_call(manager.verify_recovery_code, payload.recovery_code)
-        _write_credential(
-            principal,
-            payload.password,
-            message="账号恢复失败，恢复码仍然有效，可重新提交",
+        proof = _require_recovery_source(request)
+        _recovery_http_rate_limit(request, "reset")
+        manager = get_identity_manager()
+        try:
+            principal = _kernel_call(
+                manager.verify_recovery_code, payload.recovery_code
+            )
+            # 校验通过即记录“谁”：后续改密失败也要知道是哪个根账号的恢复请求。
+            actor = target = principal
+            _write_credential(
+                principal,
+                payload.password,
+                message="账号恢复失败，恢复码仍然有效，可重新提交",
+            )
+            _kernel_call(manager.consume_recovery_code, payload.recovery_code)
+        except Exception:
+            # 本次失败不消耗证明：用户改正密码/换正确恢复码后还能重试，
+            # 而并发请求里只有一个能占用成功，不会出现两次重置都成功。
+            if proof:
+                local_proof.release_token(proof)
+            raise
+        # 改密成功后才作废一次性证明：成功一次即失效。
+        if proof:
+            local_proof.consume_token(proof)
+        # 本机交接文件里的码已经被作废，删除它避免用户下次误用。
+        _clear_local_recovery_file()
+        token = issue_token_for(principal, client="web")
+        written = _recovery_http_audit(
+            request,
+            endpoint="reset",
+            outcome="allowed",
+            actor=actor,
+            target=target,
+            mode="password_reset",
         )
-        _kernel_call(manager.consume_recovery_code, payload.recovery_code)
-    except Exception:
-        # 本次失败不消耗证明：用户改正密码/换正确恢复码后还能重试，
-        # 而并发请求里只有一个能占用成功，不会出现两次重置都成功。
+        response = {
+            "token": token["access_token"],
+            "access_token": token["access_token"],
+            "account": _public_member(manager.get_account(principal)),
+        }
+        if not written:
+            response["audit_written"] = False
+            response["audit_warning"] = AUDIT_NOT_WRITTEN_MESSAGE
+        return response
+    except HTTPException as exc:
         if proof:
             local_proof.release_token(proof)
+        try:
+            root = get_identity_manager().account_root()
+            if root is not None:
+                target = root.principal
+        except Exception:  # noqa: BLE001 - 审计目标查询失败不改变原错误
+            pass
+        _recovery_http_audit(
+            request,
+            endpoint="reset",
+            outcome="denied",
+            actor=actor,
+            target=target,
+            error_code=_http_error_code(exc),
+        )
         raise
-    # 改密成功后才作废一次性证明：成功一次即失效。
-    if proof:
-        local_proof.consume_token(proof)
-    # 本机交接文件里的码已经被作废，删除它避免用户下次误用。
-    _clear_local_recovery_file()
-    token = issue_token_for(principal, client="web")
-    return {
-        "token": token["access_token"],
-        "access_token": token["access_token"],
-        "account": _public_member(manager.get_account(principal)),
-    }
 
 
 @router.post("/self-register")
@@ -601,6 +804,7 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
             403, _accounts.CODE_SELF_REGISTER_DISABLED, "当前已关闭自助注册"
         )
     manager = get_identity_manager()
+    snapshot = audit_failure_snapshot()
     node = _kernel_call(
         manager.register_self_service_account,
         payload.principal,
@@ -609,12 +813,14 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
     if not rotate_credential(payload.principal, payload.password):
         raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号初始化失败")
     token = issue_token_for(payload.principal, client="web")
-    return {
+    response = {
         "account": _public_member(node),
         "token": token["access_token"],
         "access_token": token["access_token"],
         "notice": "账号已创建并自动登录；当前使用的是最小权限，如需更多能力可在账号设置中查看。",
     }
+    response.update(audit_notice_after(snapshot, "自助注册"))
+    return response
 
 
 @router.get("/self-registration")
@@ -683,7 +889,13 @@ def account_tree(context: AccountContext = Depends(require_account_principal)) -
         raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
     manager = get_identity_manager()
     nodes = manager.account_nodes()
-    return {"tree": _accounts.tree_view(nodes, context.principal)}
+    warnings = list(
+        manager.describe_identity_namespaces().get("account_warnings") or []
+    )
+    return {
+        "tree": _accounts.tree_view(nodes, context.principal),
+        "warnings": warnings,
+    }
 
 
 @router.post("/backup/export")
@@ -771,9 +983,8 @@ def recovery_rotate(
     }
 
 
-@router.post("/recovery/local")
-def recovery_local_handoff(request: Request) -> Dict[str, Any]:
-    """忘记密码且手上没有恢复码时的**本机**自助出口。
+def _recovery_local_handoff_impl(request: Request) -> Dict[str, Any]:
+    """忘记密码且手上没有恢复码时的**本机**自助出口（业务实现）。
 
     交接文件始终以“非明文”形态落盘：Windows 用 DPAPI（CurrentUser）加密，
     其他平台或 DPAPI 失败时降级为 ACL 收紧 + 短 TTL；任何情况下都不长期留
@@ -788,20 +999,9 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
     # 回环不等于“本人”：同机其他 Windows 账户也能连 127.0.0.1。必须再验
     # 桌面端通过 DACL 命名管道发放的一次性令牌（与发起进程绑定）。
     _require_local_proof(request)
+    # 来源判定完成后再计次：既有 403 不会被限流改写，非回环仍原样拒绝。
+    _recovery_http_rate_limit(request, "local")
     manager = get_identity_manager()
-    limit_key = "recovery:local"
-    try:
-        _accounts.limiter.check(
-            limit_key,
-            limit=_accounts.MAX_RECOVERY_ATTEMPTS,
-            window=_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS,
-        )
-    except _accounts.AccountError as exc:
-        raise from_account_error(
-            _accounts.AccountError(
-                429, _accounts.CODE_RECOVERY_LOCKED, "尝试次数过多，请稍后再试。"
-            )
-        ) from exc
 
     # 旧版明文文件通常在启动时已迁移；这里兜底重试一次（幂等，失败不阻断）。
     try:
@@ -812,7 +1012,6 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
     root = _kernel_call(manager.account_root)
     taken = recovery_handoff.take_handoff()
     if taken and root is not None and recovery_handoff.code_matches_root(taken, root):
-        _accounts.limiter.register(limit_key)
         return {
             "written": False,
             "recovered": True,
@@ -853,7 +1052,6 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
             "ACCOUNT_RECOVERY_WRITE_FAILED",
             "恢复码未能写入本机数据目录，请重试",
         )
-    _accounts.limiter.register(limit_key)
     return {
         "written": True,
         "recovered": False,
@@ -871,6 +1069,49 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
     }
 
 
+@router.post("/recovery/local")
+def recovery_local_handoff(request: Request) -> Dict[str, Any]:
+    """本机自助取码的 HTTP 外壳：来源/证明/限流在 impl 内，审计在此覆盖成败。"""
+    actor = "anonymous"
+    target = "root"
+    try:
+        result = _recovery_local_handoff_impl(request)
+    except HTTPException as exc:
+        try:
+            root = get_identity_manager().account_root()
+            if root is not None:
+                target = root.principal
+        except Exception:  # noqa: BLE001 - 审计目标查询失败不改变原错误
+            pass
+        _recovery_http_audit(
+            request,
+            endpoint="local",
+            outcome="denied",
+            actor=actor,
+            target=target,
+            error_code=_http_error_code(exc),
+        )
+        raise
+    try:
+        root = get_identity_manager().account_root()
+        if root is not None:
+            actor = target = root.principal
+    except Exception:  # noqa: BLE001
+        pass
+    written = _recovery_http_audit(
+        request,
+        endpoint="local",
+        outcome="allowed",
+        actor=actor,
+        target=target,
+        mode="handoff_file" if result.get("recovered") else "generated",
+    )
+    if not written:
+        result["audit_written"] = False
+        result["audit_warning"] = AUDIT_NOT_WRITTEN_MESSAGE
+    return result
+
+
 # --------------------------------------------------------------------------- #
 # 成员管理
 # --------------------------------------------------------------------------- #
@@ -883,6 +1124,7 @@ def create_member(
     manager = get_identity_manager()
     if not context.has_scope(_accounts.SCOPE_MANAGE_CHILDREN):
         raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
+    snapshot = audit_failure_snapshot()
     node, activation_code = _kernel_call(
         manager.create_member_account,
         context.principal,
@@ -892,11 +1134,13 @@ def create_member(
         display_name=payload.display_name,
         allow_key_sharing=payload.allow_key_sharing,
     )
-    return {
+    response = {
         "account": _public_member(node),
         "activation_code": activation_code,
         "notice": "把一次性激活码交给该成员，由其在激活页设置密码。",
     }
+    response.update(audit_notice_after(snapshot, "创建子账号"))
+    return response
 
 
 @router.get("/{principal}")
@@ -915,10 +1159,13 @@ def reissue_activation(
     principal: str, context: AccountContext = Depends(require_account_principal)
 ) -> Dict[str, Any]:
     require_manage(context, principal)
+    snapshot = audit_failure_snapshot()
     code, stamp = _kernel_call(
         get_identity_manager().issue_activation_code, context.principal, principal
     )
-    return {"activation_code": code, "expires_at": stamp}
+    response = {"activation_code": code, "expires_at": stamp}
+    response.update(audit_notice_after(snapshot, "重发激活码"))
+    return response
 
 
 @router.patch("/{principal}/permissions")
@@ -928,6 +1175,7 @@ def update_permissions(
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
     require_manage(context, principal)
+    snapshot = audit_failure_snapshot()
     node = _kernel_call(
         get_identity_manager().grant_account_permissions,
         context.principal,
@@ -935,7 +1183,9 @@ def update_permissions(
         payload.grant,
         payload.revoke,
     )
-    return {"account": _public_member(node)}
+    response = {"account": _public_member(node)}
+    response.update(audit_notice_after(snapshot, "权限变更"))
+    return response
 
 
 @router.patch("/{principal}/key-sharing")
@@ -947,6 +1197,7 @@ def update_key_sharing(
     """自己可以随时开启/撤回共享；管理者可代为调整（均写审计）。"""
     if principal != context.principal:
         require_manage(context, principal)
+    snapshot = audit_failure_snapshot()
     node = _kernel_call(
         get_identity_manager().set_key_sharing, context.principal, principal, payload.allow
     )
@@ -956,6 +1207,7 @@ def update_key_sharing(
         # 这是有意保留的安全行为（权限变更即时生效），但必须显式告知操作者。
         response["requires_reauth"] = True
         response["notice"] = "共享设置已更新；该成员当前的登录凭据已失效，需要重新登录。"
+    response.update(audit_notice_after(snapshot, "Key 共享设置变更"))
     return response
 
 
@@ -974,6 +1226,7 @@ def update_status(
             "根账号不可删除",
         )
     require_manage(context, principal)
+    snapshot = audit_failure_snapshot()
     result = _kernel_call(
         get_identity_manager().set_account_status,
         context.principal,
@@ -981,6 +1234,7 @@ def update_status(
         payload.status,
         payload.reason,
     )
+    result.update(audit_notice_after(snapshot, "账号状态变更"))
     return result
 
 
@@ -990,21 +1244,54 @@ def reset_password(
     payload: PasswordResetRequest,
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
-    """管理者重置成员密码：写凭据 + 立即吊销旧令牌 + 哈希链审计。"""
-    require_manage(context, principal)
+    """改密：管理者重置成员密码；本人可自助改密（需当前密码）。
+
+    管理者路径：写凭据 + 立即吊销旧令牌 + 哈希链审计。
+    自助路径：先校验 ``current_password``，再复用同一套"换凭据 + bump epoch"，
+    因此令牌被盗但不知道当前密码时无法静默夺号。
+    """
+    self_service = principal == context.principal
+    if self_service:
+        record = resolve_secret_store().credential_for(principal)
+        current = payload.current_password or ""
+        if not record or not verify_credential(current, record):
+            raise deny(
+                400,
+                CODE_CURRENT_PASSWORD_REJECTED,
+                "当前密码不正确",
+            )
+    else:
+        require_manage(context, principal)
     if not rotate_credential(principal, payload.password):
         raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "密码重置失败")
     manager = get_identity_manager()
     _kernel_call(manager.bump_account_epoch, principal, "password-reset")
-    _kernel_call(
+    written = _kernel_call(
         manager.record_event,
         action="account.password.reset",
         actor=context.principal,
         target=principal,
         outcome="allowed",
-        details={"credential": "rotated"},
+        details={"credential": "rotated", "mode": "self" if self_service else "admin"},
     )
-    return {"ok": True}
+    response: Dict[str, Any] = {"ok": True}
+    if not written:
+        logger.warning(
+            "审计未写入：密码重置已完成但未留下审计记录 target=%s mode=%s",
+            principal,
+            "self" if self_service else "admin",
+        )
+        response["audit_written"] = False
+        response["audit_warning"] = AUDIT_NOT_WRITTEN_MESSAGE
+    if self_service:
+        # bump epoch 已让当前令牌失效：如实告知，前端不会把后续 401 当成故障。
+        response.update(
+            {
+                "requires_reauth": True,
+                "notice": "密码已修改，当前登录凭据已失效，请用新密码重新登录。",
+            }
+        )
+    return response
 
 
 @router.get("/{principal}/usage")

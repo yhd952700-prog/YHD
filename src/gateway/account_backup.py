@@ -651,6 +651,7 @@ def _collect_files(
         _is_sqlite_sidecar,
         _read_sqlite_snapshot,
     )
+    from src.upgrade.backups import is_protected_state_file
 
     root = workspace_root()
     index = _artifact_owner_index()
@@ -668,6 +669,10 @@ def _collect_files(
             rel = _normalise_rel(os.path.relpath(absolute, root))
             if rel in _WORKSPACE_STATE_FILES:
                 # 员工/目标有结构化分区；记忆/备份尝试计数由各自恢复逻辑负责。
+                continue
+            if is_protected_state_file(rel):
+                # 用户可能把工作区指到数据目录；密钥/凭据/DPAPI 包裹副本
+                # （含迁移临时文件和换机改名副本）一律不进备份包。
                 continue
             if _is_sqlite_sidecar(Path(absolute)):
                 # -wal/-shm 是**本机**的连接状态，随包走会把旧页面带到新机，

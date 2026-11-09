@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.kernels.audit.durability import vacuum_into
 
@@ -75,6 +75,213 @@ def _read_sqlite_snapshot(path: Path) -> bytes:
         dst = Path(tmp) / "snapshot.db"
         vacuum_into(str(path), str(dst))
         return dst.read_bytes()
+
+
+# =====================================================================
+# Machine-bound key material inside migration archives
+# =====================================================================
+#
+# 换机迁移包必须能跨机器恢复，而 DPAPI 密文只有原机/原用户能解。因此：
+#
+# * **导出**：把 ``model_config.key``、``integrity.key`` 与 ``app.env`` 里的
+#   JWT 密钥解包成原始材料再封进口令加密包——包里不再出现 ``LIUHAO-DPAPI-1:``
+#   密文；
+# * **恢复**：用目标机 DPAPI 重新包裹，落盘形态与首次启动生成的一致；
+# * 只有确实解包过的条目才打 ``machine_bound`` 标记，历史明文/旧归档不受影响。
+
+#: app.env 里可能承载 JWT 签名密钥的变量名（与 jwt_handler 保持同源）。
+_JWT_SECRET_ENV_NAMES_FALLBACK = (
+    "LIUHAO_JWT_SECRET", "JWT_SECRET_KEY", "JWT_SECRET",
+)
+
+_RESTORE_DPAPI_UNAVAILABLE_TEXT = (
+    "恢复失败：目标机无法使用 Windows DPAPI，密钥不能重新绑定本机。"
+    "本次未写入任何文件，已有文件未被覆盖。"
+    "请在 Windows 上以当前用户运行，或先修复/安装 pywin32 后再恢复。"
+)
+
+
+def _dpapi_purpose_for(basename: str) -> Optional[bytes]:
+    if basename == "model_config.key":
+        from src.ai.model_config import KEY_DPAPI_PURPOSE
+
+        return KEY_DPAPI_PURPOSE
+    if basename == "integrity.key":
+        from src.common.integrity_key import INTEGRITY_DPAPI_PURPOSE
+
+        return INTEGRITY_DPAPI_PURPOSE
+    return None
+
+
+def _jwt_dpapi_purpose() -> bytes:
+    from src.security.jwt_handler import JWT_SECRET_DPAPI_PURPOSE
+
+    return JWT_SECRET_DPAPI_PURPOSE
+
+
+def _jwt_secret_env_names() -> Tuple[str, ...]:
+    try:
+        from src.security.jwt_handler import JWT_SECRET_ENV, JWT_SECRET_ENV_ALIASES
+
+        return (JWT_SECRET_ENV, *JWT_SECRET_ENV_ALIASES)
+    except Exception:  # noqa: BLE001 - jwt 未安装时仍按已知变量名处理
+        return _JWT_SECRET_ENV_NAMES_FALLBACK
+
+
+def _env_secret_names() -> Tuple[str, ...]:
+    """app.env 里需要目标机 DPAPI 重绑的变量：JWT 密钥 + 会话密钥。"""
+    try:
+        from src.security.app_env_secrets import SECRET_KEY_ENV
+
+        return (*_jwt_secret_env_names(), SECRET_KEY_ENV)
+    except Exception:  # noqa: BLE001 - 模块缺失时仍按已知变量名处理
+        return (*_jwt_secret_env_names(), "SECRET_KEY")
+
+
+def _env_secret_purpose(name: str) -> bytes:
+    """按变量名选 DPAPI 熵：不同用途的密钥密文不可互换。"""
+    try:
+        from src.security.app_env_secrets import (
+            SECRET_KEY_DPAPI_PURPOSE,
+            SECRET_KEY_ENV,
+        )
+
+        if str(name) == SECRET_KEY_ENV:
+            return SECRET_KEY_DPAPI_PURPOSE
+    except Exception:  # noqa: BLE001
+        if str(name) == "SECRET_KEY":
+            return b"secret-key-v1"
+    return _jwt_dpapi_purpose()
+
+
+def _env_value_parts(body: str) -> Tuple[str, str]:
+    name, sep, value = body.partition("=")
+    return name.strip(), (value.strip().strip('"').strip("'") if sep else "")
+
+
+def _extract_env_secrets(raw: bytes) -> Tuple[bytes, Optional[Dict[str, Any]]]:
+    """把 app.env 里的密钥密文还原成明文；返回 ``(内容, 标记)``。
+
+    覆盖 JWT 签名密钥与 ``SECRET_KEY``：两者都用各自用途的 DPAPI 熵包裹，
+    导出时都必须解成原始材料，否则换机恢复后目标机解不开。
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw, None
+    names = _env_secret_names()
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines(keepends=True)
+    extracted: List[str] = []
+    from src.security.encryption import is_machine_bound_payload, unwrap_machine_bound
+
+    for index, line in enumerate(lines):
+        body = line.rstrip("\r\n")
+        name, value = _env_value_parts(body)
+        if name not in names:
+            continue
+        if not is_machine_bound_payload(value):
+            continue
+        try:
+            plain, _mode = unwrap_machine_bound(
+                value.encode("utf-8"), purpose=_env_secret_purpose(name)
+            )
+        except Exception as exc:  # noqa: BLE001 - MachineBoundKeyError/损坏
+            raise ValueError(
+                f"导出失败：app.env 里的 {name} 无法在本机解包，"
+                "无法生成可跨机器恢复的备份包。本次未写出任何归档；"
+                "请先在原机修复/迁移密钥后再导出，或改用「账号备份」导出。\n"
+                f"{exc}"
+            ) from None
+        lines[index] = f"{name}={plain.decode('utf-8', 'ignore')}{newline}"
+        extracted.append(name)
+    if not extracted:
+        return raw, None
+    return "".join(lines).encode("utf-8"), {"env": extracted}
+
+
+def extract_machine_bound_material(
+    basename: str, raw: bytes
+) -> Tuple[bytes, Optional[Dict[str, Any]]]:
+    """导出：把本机密钥密文还原成原始材料。
+
+    返回 ``(内容, 标记)``；``标记`` 为 ``None`` 表示该文件不含机器绑定密钥
+    （历史明文/普通文件原样保留）。
+    """
+    from src.security.encryption import (
+        MachineBoundKeyError,
+        is_machine_bound_payload,
+        unwrap_machine_bound,
+    )
+
+    purpose = _dpapi_purpose_for(basename)
+    if purpose is not None:
+        if not is_machine_bound_payload(raw):
+            return raw, None
+        try:
+            plain, _mode = unwrap_machine_bound(raw, purpose=purpose)
+        except MachineBoundKeyError as exc:
+            raise ValueError(
+                f"导出失败：{basename} 里的密钥无法在本机解包，"
+                "无法生成可跨机器恢复的备份包。本次未写出任何归档；"
+                "请先在原机修复/迁移密钥后再导出，或改用「账号备份」导出。\n"
+                f"{exc}"
+            ) from None
+        return plain, {"file": basename}
+    if basename == "app.env":
+        return _extract_env_secrets(raw)
+    return raw, None
+
+
+def restore_machine_bound_material(
+    basename: str, raw: bytes, marker: Dict[str, Any]
+) -> bytes:
+    """恢复：按标记用目标机 DPAPI 重新包裹；不可用时抛中文 ``ValueError``。"""
+    if not marker:
+        return raw
+    from src.security.encryption import (
+        MachineBoundKeyError,
+        is_machine_bound_payload,
+        wrap_machine_bound,
+    )
+
+    file_name = str(marker.get("file") or "")
+    if file_name:
+        if is_machine_bound_payload(raw):
+            return raw  # 旧归档已经包裹过，不重复包裹
+        purpose = _dpapi_purpose_for(file_name) or _dpapi_purpose_for(basename)
+        if purpose is None:
+            return raw
+        try:
+            return wrap_machine_bound(raw, purpose=purpose)
+        except MachineBoundKeyError:
+            raise ValueError(_RESTORE_DPAPI_UNAVAILABLE_TEXT) from None
+
+    env_names = marker.get("env")
+    if not isinstance(env_names, list) or not env_names:
+        return raw
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    wanted = set(str(name) for name in env_names)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines(keepends=True)
+    rewrapped = False
+    for index, line in enumerate(lines):
+        body = line.rstrip("\r\n")
+        name, value = _env_value_parts(body)
+        if name not in wanted or is_machine_bound_payload(value):
+            continue
+        try:
+            wrapped = wrap_machine_bound(
+                value.encode("utf-8"), purpose=_env_secret_purpose(name)
+            ).decode("ascii")
+        except MachineBoundKeyError:
+            raise ValueError(_RESTORE_DPAPI_UNAVAILABLE_TEXT) from None
+        lines[index] = f"{name}={wrapped}{newline}"
+        rewrapped = True
+    return "".join(lines).encode("utf-8") if rewrapped else raw
 
 
 # =====================================================================
@@ -656,6 +863,13 @@ class BackupManager:
             total_files = 0
             total_bytes = 0
 
+            # 先完成全部密钥重包，再写任何文件：目标机 DPAPI 不可用时在这里
+            # 失败，目标目录保持原样（不覆盖已有文件）。
+            for source in sources_to_restore:
+                source_data = backup_data.get("data", {}).get(source.value)
+                if isinstance(source_data, dict) and source_data.get("exists"):
+                    self._rewrap_source_entries(source_data)
+
             for source in sources_to_restore:
                 source_val = source.value
                 if source_val not in backup_data.get("data", {}):
@@ -712,6 +926,33 @@ class BackupManager:
                 duration_seconds=time.time() - start_time,
                 status=RestoreStatus.FAILED,
             )
+
+    @classmethod
+    def _rewrap_source_entries(cls, source_data: Dict[str, Any]) -> None:
+        """把归档里带 ``machine_bound`` 标记的条目重新包成本机形态。"""
+        if source_data.get("type") == "file":
+            name = Path(str(source_data.get("path") or "")).name
+            cls._restore_entry_machine_bound(name, source_data)
+            return
+        for rel, entry in (source_data.get("files") or {}).items():
+            if isinstance(entry, dict):
+                cls._restore_entry_machine_bound(Path(str(rel)).name, entry)
+
+    @staticmethod
+    def _restore_entry_machine_bound(
+        basename: str, entry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """返回重新包裹后的条目；没有标记时原样返回。"""
+        marker = entry.get("machine_bound")
+        if not isinstance(marker, dict) or not marker:
+            return entry
+        raw = BackupManager._decode_file_entry(entry)
+        wrapped = restore_machine_bound_material(basename, raw, marker)
+        updated = dict(entry)
+        updated.pop("content", None)
+        updated["content_b64"] = base64.b64encode(wrapped).decode("ascii")
+        updated["size_bytes"] = len(wrapped)
+        return updated
 
     @staticmethod
     def _decode_file_entry(entry: Dict[str, Any]) -> bytes:

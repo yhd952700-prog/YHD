@@ -87,9 +87,7 @@ def test_legacy_migration_skips_runtime_telemetry(_env):
     source.executemany("INSERT INTO memory_entries VALUES (?,?,?,?,?,?,?,?)", rows)
 
     target = account_memory._raw_connect()  # noqa: SLF001
-    imported, skipped = account_memory._copy_kernel_entries(  # noqa: SLF001
-        source, target, "root1"
-    )
+    result = account_memory._copy_kernel_entries(source, target)  # noqa: SLF001
     target.commit()
     texts = [
         row[0]
@@ -97,9 +95,20 @@ def test_legacy_migration_skips_runtime_telemetry(_env):
             "SELECT text FROM account_memory_entries ORDER BY created_at"
         ).fetchall()
     ]
-    assert imported == 1
-    assert skipped == 4
+    assert result.source_rows == 5
+    assert result.imported_rows == 1
+    assert result.merged_rows == 0
+    assert result.quarantined_rows == 4  # 遥测不搬进记忆页，但原文进隔离区
+    assert result.lost_rows == 0
+    assert result.skip_reasons == {"non_memory_telemetry": 4}
     assert texts == ["先给结论"]
+    quarantined = target.execute(
+        "SELECT reason, source_ref FROM account_memory_quarantine ORDER BY source_ref"
+    ).fetchall()
+    assert [row[1] for row in quarantined] == [
+        "conv-1", "learn-1", "run-1", "task-1"
+    ]
+    assert {row[0] for row in quarantined} == {"non_memory_telemetry"}
 
 
 def test_backup_carries_memory_and_conversations_across_instances(_env):

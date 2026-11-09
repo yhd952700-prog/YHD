@@ -16,6 +16,8 @@ import sqlite3
 import threading
 from typing import Any, Dict, Iterable, List, Optional
 
+from ..common.data_paths import resolve_store_path
+
 logger = logging.getLogger(__name__)
 
 _ENV_DB = "LIUHAO_ACCOUNT_USAGE_DB"
@@ -84,13 +86,14 @@ def usage_health() -> Dict[str, Any]:
 
 
 def db_path() -> str:
-    explicit = (os.environ.get(_ENV_DB) or "").strip()
-    if explicit:
-        return explicit
-    root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
-    if root:
-        return os.path.join(root, "account_usage.sqlite3")
-    return os.path.join("data", "account_usage.sqlite3")
+    """用量账本落盘路径：``LIUHAO_ACCOUNT_USAGE_DB`` > ``LIUHAO_WORKSPACE_ROOT``
+    > ``LIUHAO_DATA_DIR`` > ``data/account_usage.sqlite3``。"""
+    return resolve_store_path(
+        "account_usage.sqlite3",
+        os.path.join("data", "account_usage.sqlite3"),
+        env_var=_ENV_DB,
+        workspace=True,
+    )
 
 
 def _connect() -> sqlite3.Connection:

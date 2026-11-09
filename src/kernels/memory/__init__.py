@@ -547,6 +547,69 @@ class MemoryKernel:
                 value=value,
             )
 
+    @kernel_action("memory.delete_by_key_prefix")
+    def delete_by_key_prefix(self, prefix: str) -> int:
+        """按 key 前缀删除条目（内存 + 持久化同事务语义），返回删除条数。
+
+        用于「删除画像 / 纠正记忆」的删穿：画像 SQLite 清空后，PERSISTENT
+        副本也必须一起消失，否则 ``search_memory`` 仍能检索到已删除事实。
+        """
+        prefix = str(prefix or "")
+        if not prefix:
+            return 0
+        with self._lock:
+            targets = [
+                key_hash
+                for key_hash, entry in self._entries.items()
+                if str(entry.key).startswith(prefix)
+            ]
+            if not targets:
+                return 0
+            removed = {
+                key_hash: self._entries.pop(key_hash)
+                for key_hash in targets
+                if key_hash in self._entries
+            }
+            try:
+                for key_hash in targets:
+                    self._store.delete(key_hash)
+            except Exception:
+                # 与 auto_cleanup 一致：删库失败就还原内存，绝不假成功。
+                self._entries.update(removed)
+                raise
+            return len(removed)
+
+    @kernel_action("memory.delete_by_key")
+    def delete_by_key(self, key: str) -> int:
+        """精确删除单个 key（内存 + 持久化同事务语义），返回 0/1。
+
+        与 ``delete_by_key_prefix`` 的区别是**不做前缀匹配**：
+        ``profile:u:fact:city`` 与 ``profile:u:fact:city_code`` 必须互不影响。
+        画像里「删除单条事实/偏好」走这里，「清空整份画像」才走前缀删。
+        """
+        key = str(key or "")
+        if not key:
+            return 0
+        with self._lock:
+            target = next(
+                (
+                    key_hash
+                    for key_hash, entry in self._entries.items()
+                    if str(entry.key) == key
+                ),
+                None,
+            )
+            if target is None:
+                return 0
+            entry = self._entries.pop(target)
+            try:
+                self._store.delete(target)
+            except Exception:
+                # 与 auto_cleanup / 前缀删一致：删库失败就还原，绝不假成功。
+                self._entries[target] = entry
+                raise
+            return 1
+
     @kernel_action("memory.auto_cleanup")
     def auto_cleanup(self) -> Dict[str, int]:
         """Evict expired entries from every tier (memory and persistence).

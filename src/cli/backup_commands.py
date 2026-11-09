@@ -47,6 +47,7 @@ from src.backup.backup_manager import (
     BackupType as _FileBackupType,
     RetentionPolicy,
     RetentionPolicyType,
+    extract_machine_bound_material,
 )
 from src.upgrade.backups import is_protected_state_file
 
@@ -266,6 +267,34 @@ class _SanitisingBackupManager(_FileBackupManager):
             return True
         return value.lower().endswith(_RUNTIME_EXCLUDED_SUFFIXES)
 
+    @classmethod
+    def _extract_entry_machine_bound(cls, basename: str, entry: Dict[str, Any]) -> None:
+        """把归档条目里的本机密钥密文换成原始材料，并打 ``machine_bound`` 标记。"""
+        raw = _FileBackupManager._decode_file_entry(entry)
+        plain, marker = extract_machine_bound_material(basename, raw)
+        if not marker:
+            return
+        entry.pop("content", None)
+        entry["content_b64"] = base64.b64encode(plain).decode("ascii")
+        entry["encoding"] = "base64"
+        entry["size_bytes"] = len(plain)
+        entry["machine_bound"] = marker
+
+    @classmethod
+    def _extract_machine_bound(cls, data: Dict[str, Any]) -> None:
+        """加密迁移包：把三把密钥解包成原始材料（包内不留 DPAPI 密文）。"""
+        if data.get("type") == "file":
+            name = Path(str(data.get("path") or "")).name
+            cls._extract_entry_machine_bound(name, data)
+            return
+        files = data.get("files") or {}
+        for rel, entry in files.items():
+            if isinstance(entry, dict):
+                cls._extract_entry_machine_bound(Path(str(rel)).name, entry)
+        data["size_bytes"] = sum(
+            int(info.get("size_bytes") or 0) for info in files.values()
+        )
+
     def _collect_source_data(self, source, source_path):
         data = super()._collect_source_data(source, source_path)
         if data.get("type") == "directory":
@@ -287,6 +316,9 @@ class _SanitisingBackupManager(_FileBackupManager):
                 int(info.get("size_bytes") or 0) for info in kept.values()
             )
             data["excluded_runtime"] = runtime_excluded
+        if self._include_protected and data.get("exists"):
+            # 口令加密包要能换机恢复：DPAPI 密文在这里解成原始材料。
+            self._extract_machine_bound(data)
         if self._include_protected or not data.get("exists"):
             return data
         if data.get("type") == "file":
@@ -660,7 +692,9 @@ class BackupManager:
         else:
             target_root = None
 
-        stage_root = Path(tempfile.mkdtemp(prefix="liuhao-restore-stage-"))
+        stage_root = Path(
+            tempfile.mkdtemp(prefix=f"liuhao-restore-stage-{os.getpid()}-")
+        )
         created_files: List[Path] = []
         created_dirs: List[Path] = []
         existed: set[str] = set()
@@ -950,6 +984,9 @@ class BackupManager:
         for index, (final, entry, _size) in enumerate(plan):
             stage_path = stage_root / f"{index:05d}" / final.name
             stage_path.parent.mkdir(parents=True, exist_ok=True)
+            # 暂存阶段就用本机 DPAPI 重新包裹密钥：目标机不可用时在这里失败，
+            # 提交尚未开始，目标目录/已有文件不会被覆盖。
+            entry = _FileBackupManager._restore_entry_machine_bound(final.name, entry)
             try:
                 _FileBackupManager._write_restored_file(
                     stage_path, entry, bool(entry.get("sqlite"))

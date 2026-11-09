@@ -8,11 +8,14 @@ immediately; progress is observable and cancellation is honoured at the next
 Two job shapes share one ledger:
 
 * ``submit(text, ...)`` -- raw text, progress in chunks;
-* ``submit_file(data, filename, ...)`` -- a real upload, progress in **pages**:
-  extraction reports one step per parsed PDF page (blank pages included) and
-  embedding reports one step per source page, so ``progress_percent`` is
-  computed from counted pages, never from a timer. DOCX / HTML / TXT have no
-  pages and fall back to chunk progress.
+* ``submit_file(source, filename, ...)`` -- a real upload, progress in **pages**.
+  The HTTP layer streams the body to a temporary file and passes its **path**
+  (raw ``bytes`` stay accepted for in-process callers), so a queued job does
+  not hold a 20MB copy. The worker deletes the temp file on success, failure
+  and cancellation. Extraction reports one step per parsed PDF page (blank
+  pages included) and embedding reports one step per source page, so
+  ``progress_percent`` is computed from counted pages, never from a timer.
+  DOCX / HTML / TXT have no pages and fall back to chunk progress.
 
 Partial-ingest policy: **all-or-nothing (全回滚)**. Vectors are computed before
 anything is written, and the store swap is one transaction, so a cancelled job
@@ -30,6 +33,7 @@ already finished are kept for inspection but are never resumed.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
@@ -37,7 +41,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Union
 
 from .documents import (
     IngestCancelled,
@@ -85,6 +90,79 @@ class IngestQueueFull(RuntimeError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _cleanup_source(source: Any) -> None:
+    """删除上传临时文件；bytes 输入没有文件可删。失败只记日志。"""
+    if isinstance(source, (bytes, bytearray)) or source is None:
+        return
+    try:
+        Path(source).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("knowledge ingest temp file could not be removed: %s", source)
+
+
+#: 入库失败对外的中文文案。异常原文（类名、路径、底层报错）只进服务端日志，
+#: 绝不出现在 ``job.error``——它是直接上屏的字段。
+_INGEST_ERROR_MESSAGES: Dict[str, str] = {
+    "unsupported_file_type": (
+        "这个文件格式暂不支持，文件没有入库。请转换成 PDF、Word 或纯文本后重试。"
+    ),
+    "file_too_large": "文件太大，文件没有入库。请拆分或压缩后重试。",
+    "too_many_pages": "文件页数太多，文件没有入库。请拆分后重试。",
+    "empty_document": "解析失败：文件里没有可用的文字，文件没有入库。请换一个文件后重试。",
+    "pdf_no_text_layer": (
+        "解析失败：这个 PDF 没有可提取的文字层（可能是扫描件）。"
+        "请先做文字识别，或换一个文件后重试。"
+    ),
+    "pdf_encrypted": "解析失败：这个 PDF 已加密，文件没有入库。请解除密码后重试。",
+    "corrupted_document": "解析失败：文件已损坏，文件没有入库。请换一个文件后重试。",
+    "pdf_page_timeout": (
+        "解析失败：PDF 里有一页内容异常复杂，超过单页解析时限，文件没有入库。"
+        "请拆分或压缩该页后重试。"
+    ),
+    "extraction_failed": "解析失败：无法读取这个文件的内容，文件没有入库。请换一个文件后重试。",
+    "low_quality_extraction": (
+        "解析失败：提取出的文字太少或质量过低，文件没有入库。"
+        "请换一个文件；确认内容可用时，可允许低质量入库后重试。"
+    ),
+    "extraction_cancelled": "任务已取消，没有写入任何内容。",
+    "ingest_queue_full": "当前排队入库的文件太多，暂时无法接收新文件。请稍后重试。",
+    "disk_full": "磁盘空间不足，文件没有入库。请清理空间后重试。",
+    "service_unavailable": (
+        "本地解析或向量服务暂时不可用，文件没有入库。请稍后重试；"
+        "如果反复出现，请导出诊断包。"
+    ),
+    "ingest_failed": (
+        "处理失败，本次没有入库。请稍后重试；如果反复出现，请导出诊断包。"
+    ),
+}
+
+
+def _classify_ingest_error(exc: Exception) -> str:
+    """把异常归到稳定的 ``error_code``：已知业务码优先，其次按类型兜底。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.strip():
+        return code.strip()
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
+        return "disk_full"
+    name = type(exc).__name__.lower()
+    if any(token in name for token in ("unavailable", "timeout", "connection")):
+        return "service_unavailable"
+    if isinstance(exc, ExtractionError):
+        return "extraction_failed"
+    if isinstance(exc, OSError):
+        return "disk_full" if getattr(exc, "errno", None) == errno.ENOSPC else "service_unavailable"
+    return "ingest_failed"
+
+
+def _friendly_ingest_error(exc: Exception) -> Dict[str, str]:
+    """返回 ``{"code","message"}``：message 是可直接上屏的中文，原文只进日志。"""
+    code = _classify_ingest_error(exc)
+    return {
+        "code": code,
+        "message": _INGEST_ERROR_MESSAGES.get(code, _INGEST_ERROR_MESSAGES["ingest_failed"]),
+    }
 
 
 @dataclass
@@ -197,7 +275,7 @@ class IngestJobManager:
 
     def submit_file(
         self,
-        data: bytes,
+        source: Union[bytes, os.PathLike[str], str],
         filename: str,
         doc_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -205,14 +283,20 @@ class IngestJobManager:
         *,
         owner_account_id: str = "",
     ) -> Dict[str, Any]:
-        """Queue an ingest job that starts from the **uploaded bytes**.
+        """Queue an ingest job that starts from an upload source.
+
+        ``source`` is preferably a **filesystem path** to the temporary upload:
+        extraction runs inside the worker from that path, so the job never holds
+        a full 20MB byte copy while queued, and the worker removes the file on
+        success / failure / cancellation. Raw ``bytes`` remain accepted for
+        in-process callers (tests); the HTTP layer always passes a path.
 
         Extraction runs inside the worker, so the HTTP request returns at once
         and a 300-page PDF reports real page progress instead of blocking.
         """
         return self._submit(
             "file",
-            data,
+            source,
             filename,
             doc_id,
             metadata,
@@ -374,12 +458,16 @@ class IngestJobManager:
                 exc.total,
             )
         except Exception as exc:  # noqa: BLE001 - reported to the caller
+            error = _friendly_ingest_error(exc)
             with self._lock:
                 job.status = "failed"
                 job.phase = "failed"
                 job.finished_at = _now()
-                job.error = f"{type(exc).__name__}: {exc}"
-            logger.error("knowledge ingest job %s failed: %s", job_id, exc)
+                job.error = error["message"]
+                job.error_code = error["code"]
+            logger.error(
+                "knowledge ingest job %s failed: %s", job_id, exc, exc_info=True
+            )
         else:
             with self._lock:
                 job.status = "succeeded"
@@ -409,7 +497,7 @@ class IngestJobManager:
     def _run_file(
         self,
         job_id: str,
-        data: bytes,
+        source: Union[bytes, os.PathLike[str], str],
         filename: Optional[str],
         metadata: Dict[str, Any],
         allow_low_quality: bool,
@@ -417,10 +505,41 @@ class IngestJobManager:
         cancel_event: threading.Event,
         done_event: threading.Event,
     ) -> None:
+        """Worker wrapper: always removes a temp upload and signals completion."""
+        try:
+            self._process_file(
+                job_id,
+                source,
+                filename,
+                metadata,
+                allow_low_quality,
+                owner_account_id,
+                cancel_event,
+            )
+        finally:
+            _cleanup_source(source)
+            done_event.set()
+
+    def _process_file(
+        self,
+        job_id: str,
+        source: Union[bytes, os.PathLike[str], str],
+        filename: Optional[str],
+        metadata: Dict[str, Any],
+        allow_low_quality: bool,
+        owner_account_id: str,
+        cancel_event: threading.Event,
+    ) -> None:
         """Extract -> embed -> commit, with page-counted progress throughout."""
         name = filename or ""
         with self._lock:
             job = self._jobs[job_id]
+        if cancel_event.is_set():
+            # 排队期间已请求取消：不解析、不嵌入，直接回滚。
+            self._mark_cancelled(job, note="已取消（尚未开始解析；未写入任何数据）")
+            logger.info("knowledge file job %s cancelled before extraction", job_id)
+            return
+        with self._lock:
             job.status = "running"
             job.phase = "extracting"
             job.started_at = _now()
@@ -445,7 +564,7 @@ class IngestJobManager:
 
         try:
             extracted = extract_document(
-                data,
+                source,
                 name,
                 allow_low_quality=allow_low_quality,
                 on_page=on_page,
@@ -460,22 +579,18 @@ class IngestJobManager:
                 "knowledge file job %s cancelled during extraction at page %d/%d",
                 job_id, exc.processed, exc.total,
             )
-            done_event.set()
             return
         except LowQualityText as exc:
             self._mark_failed(job, exc, quality=exc.quality.summary())
             logger.error("knowledge file job %s refused low-quality text", job_id)
-            done_event.set()
             return
         except ExtractionError as exc:
             self._mark_failed(job, exc)
             logger.error("knowledge file job %s extraction failed: %s", job_id, exc)
-            done_event.set()
             return
         except Exception as exc:  # noqa: BLE001 - reported to the caller
             self._mark_failed(job, exc)
             logger.error("knowledge file job %s failed: %s", job_id, exc)
-            done_event.set()
             return
 
         with self._lock:
@@ -541,8 +656,6 @@ class IngestJobManager:
                 "knowledge file job %s succeeded: document=%s chunks=%s pages=%s",
                 job_id, job.document_id, outcome.get("chunks"), job.total_pages,
             )
-        finally:
-            done_event.set()
 
     def _mark_cancelled(
         self,
@@ -574,12 +687,14 @@ class IngestJobManager:
         exc: Exception,
         quality: Optional[Dict[str, Any]] = None,
     ) -> None:
+        error = _friendly_ingest_error(exc)
         with self._lock:
             job.status = "failed"
             job.phase = "failed"
             job.finished_at = _now()
-            job.error = f"{type(exc).__name__}: {exc}"
-            job.error_code = getattr(exc, "code", type(exc).__name__)
+            # 上屏字段只放中文分类原因；异常类名/原文只进日志与诊断包。
+            job.error = error["message"]
+            job.error_code = error["code"]
             if quality is not None:
                 job.quality = quality
                 job.note = (

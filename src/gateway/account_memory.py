@@ -19,12 +19,15 @@ import sqlite3
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from ..common.input_guard import normalize_required_text, reject_unsafe_text
+from ..common.data_paths import resolve_store_path
 from ..kernels.identity import _accounts, get_identity_manager
 from .account_context import AccountContext, deny, require_account_principal
 
@@ -33,6 +36,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
 
 _ENV_DB = "LIUHAO_ACCOUNT_MEMORY_DB"
+
+#: 迁移时无法从旧数据判定归属的条目统一落到这里（MEM-016）。
+#: 它不是账号、不出现在任何人的 self/subtree 列表里，只有根账号能通过
+#: ``GET /v1/memory/unassigned`` 查看，避免"猜不出就归给根"的隐私错误。
+_UNASSIGNED_OWNER = "__unassigned__"
+
+#: 记忆写入的短窗口幂等：同内容重复提交在这段时间内只落一条。
+MEMORY_IDEMPOTENCY_WINDOW_SECONDS = 60
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS account_memory_entries (
     id         TEXT PRIMARY KEY,
@@ -54,6 +65,17 @@ CREATE TABLE IF NOT EXISTS account_memory_migrations (
     completed_at TEXT NOT NULL,
     details      TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS account_memory_quarantine (
+    id           TEXT PRIMARY KEY,
+    source       TEXT NOT NULL,
+    source_ref   TEXT NOT NULL DEFAULT '',
+    reason       TEXT NOT NULL,
+    owner_hint   TEXT NOT NULL DEFAULT '',
+    payload      TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_quarantine_reason
+    ON account_memory_quarantine(reason);
 """
 
 
@@ -61,6 +83,40 @@ class MemoryWriteRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=8000)
     source: str = Field("user", max_length=64)
     tags: List[str] = Field(default_factory=list)
+
+    @field_validator("text")
+    @classmethod
+    def _check_text(cls, value: str) -> str:
+        return normalize_required_text(value, "记忆内容", max_chars=8000)
+
+    @field_validator("source")
+    @classmethod
+    def _check_source(cls, value: str) -> str:
+        if value:
+            reject_unsafe_text(value, "来源")
+        return value
+
+
+class MemoryPatchRequest(BaseModel):
+    """纠正一条记忆：只允许改正文/来源/标签，身份与归属不可改。"""
+
+    text: Optional[str] = Field(None, min_length=1, max_length=8000)
+    source: Optional[str] = Field(None, max_length=64)
+    tags: Optional[List[str]] = None
+
+    @field_validator("text")
+    @classmethod
+    def _check_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_text(value, "记忆内容", max_chars=8000)
+
+    @field_validator("source")
+    @classmethod
+    def _check_source(cls, value: Optional[str]) -> Optional[str]:
+        if value:
+            reject_unsafe_text(value, "来源")
+        return value
 
 
 class MemoryExportRequest(BaseModel):
@@ -81,14 +137,84 @@ class MemoryAdoptRequest(BaseModel):
     account_id: str = Field("", max_length=128, description="来源账号；空=整棵子树")
 
 
+class UnassignedMemoryEntry(BaseModel):
+    """一条归属无法判定的历史记忆（``owner="__unassigned__"``）。"""
+
+    id: str
+    account_id: str = Field(description="恒为 __unassigned__：不属于任何账号")
+    text: str
+    source: str
+    tags: List[str] = Field(default_factory=list)
+    created_at: str
+
+
+class QuarantinedMemoryRowResponse(BaseModel):
+    """迁移时被跳过、但原文仍保留在隔离区的一条源记录。"""
+
+    id: str
+    source: str
+    source_ref: str
+    reason: str = Field(
+        description="non_memory_telemetry / empty_text / missing_entry_id / missing_key"
+    )
+    owner_hint: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class UnassignedMemoryResponse(BaseModel):
+    """``GET /v1/memory/unassigned``：未归属记忆 + 迁移隔离区（根账号专属）。"""
+
+    entries: List[UnassignedMemoryEntry]
+    count: int
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+    quarantined: List[QuarantinedMemoryRowResponse]
+    quarantined_count: int
+    quarantined_total: int
+    quarantine_limit: int
+    quarantine_offset: int
+    note: str
+
+
+class MemoryDeletionReceipt(BaseModel):
+    """根账号处置未归属/隔离记录的删除回执。"""
+
+    id: str
+    deleted: bool
+    removed: int = Field(description="实际删除行数；0 表示没有可删的行")
+
+
+class NeutralNotFound(BaseModel):
+    """越权与"不存在"同形的 404 实体（不暴露资源是否存在）。"""
+
+    code: str = Field(examples=[_accounts.CODE_MEMORY_FOREIGN_DENIED])
+    message: str = Field(examples=[_accounts.NEUTRAL_NOT_FOUND_MESSAGE])
+    detail: str = Field(examples=[_accounts.NEUTRAL_NOT_FOUND_MESSAGE])
+
+
+_NOT_FOUND_RESPONSE: Dict[int, Dict[str, Any]] = {
+    404: {
+        "model": NeutralNotFound,
+        "description": (
+            "非根账号一律中性 404：与「这条记录不存在」逐字一致，"
+            "不泄露未归属区/隔离区的存在。"
+        ),
+    }
+}
+
+
 def db_path() -> str:
-    explicit = (os.environ.get(_ENV_DB) or "").strip()
-    if explicit:
-        return explicit
-    root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
-    if root:
-        return os.path.join(root, "account_memory.sqlite3")
-    return os.path.join("data", "account_memory.sqlite3")
+    """账号记忆库落盘路径：``LIUHAO_ACCOUNT_MEMORY_DB`` > ``LIUHAO_WORKSPACE_ROOT``
+    > ``LIUHAO_DATA_DIR`` > ``data/account_memory.sqlite3``。"""
+    return resolve_store_path(
+        "account_memory.sqlite3",
+        os.path.join("data", "account_memory.sqlite3"),
+        env_var=_ENV_DB,
+        workspace=True,
+    )
 
 
 def _connect() -> sqlite3.Connection:
@@ -148,7 +274,23 @@ def _visible_owners(context: AccountContext, scope: str) -> Tuple[str, ...]:
     raise deny(400, "ACCOUNT_SCOPE_INVALID", "范围无效")
 
 
-def _query_entries(owners: Iterable[str], query: str) -> List[Dict[str, Any]]:
+def _escape_like(value: str) -> str:
+    """把 LIKE 通配符转成字面量；先转义反斜杠自身，顺序不能颠倒。"""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+def _query_entries(
+    owners: Iterable[str],
+    query: str,
+    *,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
     owner_list = [str(item) for item in owners if item]
     if not owner_list:
         return []
@@ -160,13 +302,67 @@ def _query_entries(owners: Iterable[str], query: str) -> List[Dict[str, Any]]:
     params: List[Any] = list(owner_list)
     needle = str(query or "").strip()
     if needle:
-        sql += " AND (text LIKE ? OR source LIKE ? OR tags LIKE ?)"
-        pattern = f"%{needle}%"
+        sql += (
+            " AND (text LIKE ? ESCAPE '\\'"
+            " OR source LIKE ? ESCAPE '\\'"
+            " OR tags LIKE ? ESCAPE '\\')"
+        )
+        pattern = f"%{_escape_like(needle)}%"
         params.extend([pattern, pattern, pattern])
     sql += " ORDER BY created_at DESC, id DESC"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([max(0, int(limit)), max(0, int(offset))])
     with _connect() as connection:
         rows = connection.execute(sql, params).fetchall()
     return [_row_to_entry(row) for row in rows]
+
+
+def _count_entries(owner: str) -> int:
+    """某 owner 的条目总数（未归属区只有根账号会查）。"""
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM account_memory_entries WHERE owner = ?",
+            (str(owner),),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _query_quarantine(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """迁移隔离区：跳过但**没有丢**的源行原文（只有根账号会读）。"""
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT id, source, source_ref, reason, owner_hint, payload, created_at "
+            "FROM account_memory_quarantine "
+            "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row[5] or "{}")
+        except Exception:  # noqa: BLE001 - 原文损坏也要能看到这条隔离记录
+            payload = {"raw": row[5]}
+        items.append(
+            {
+                "id": row[0],
+                "source": row[1],
+                "source_ref": row[2],
+                "reason": row[3],
+                "owner_hint": row[4],
+                "payload": payload,
+                "created_at": row[6],
+            }
+        )
+    return items
+
+
+def _count_quarantine() -> int:
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM account_memory_quarantine"
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 # ─── 员工记忆：内部写入 + 按员工读取（归属仍是账号） ──────────────
@@ -233,17 +429,161 @@ def list_employee_entries(owner: str, stable_id: str) -> List[Dict[str, Any]]:
 @router.get("/entries")
 def list_entries(
     scope: str = Query("self", description="self 或 subtree"),
-    q: str = Query("", description="关键词；匹配正文/来源/标签"),
+    q: str = Query("", description="关键词；匹配正文/来源/标签（按字面量，不解释通配符）"),
+    limit: int = Query(100, ge=1, le=500, description="单页条数上限"),
+    offset: int = Query(0, ge=0, le=1000000, description="分页偏移"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
-    """列表与检索共用同一过滤：先按 owner 收敛，再做关键词匹配。"""
+    """列表与检索共用同一过滤：先按 owner 收敛，再做关键词匹配。
+
+    ``q`` 里的 ``%`` / ``_`` 按字面量匹配（显式 ``ESCAPE '\\'``）；分页保证
+    一次请求不可能吐出本人（或子树）的全部记忆。
+    """
     owners = _visible_owners(context, scope)
-    entries = _query_entries(owners, q)
+    # 多取一条判断是否还有下一页，但绝不把它返回给调用方。
+    page = _query_entries(owners, q, limit=limit + 1, offset=offset)
+    has_more = len(page) > limit
+    entries = page[:limit]
     return {
         "entries": entries,
         "scope": "subtree" if len(owners) > 1 else "self",
         "count": len(entries),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
     }
+
+
+@router.get(
+    "/unassigned",
+    response_model=UnassignedMemoryResponse,
+    responses=_NOT_FOUND_RESPONSE,
+    summary="无归属历史记忆与迁移隔离区（仅主账号）",
+)
+def list_unassigned_entries(
+    limit: int = Query(50, ge=1, le=500, description="单页条数上限"),
+    offset: int = Query(0, ge=0, le=1000000, description="分页偏移"),
+    quarantine_limit: int = Query(50, ge=1, le=500, description="隔离区单页条数上限"),
+    quarantine_offset: int = Query(0, ge=0, le=1000000, description="隔离区分页偏移"),
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """迁移时无法判定归属的历史记忆 + 隔离区（MEM-016：仅根账号可查）。
+
+    ``entries`` 是归属无法判定、但仍以 ``__unassigned__`` 存进新库的记录；
+    ``quarantined`` 是迁移时**跳过**的源行原文（运行时遥测、空正文/空 id）。
+    两者都不属于任何账号，普通 ``/entries`` 的 self/subtree 都不会返回；
+    根账号在这里能看到条数与原文，据此人工确认归属后再决定补录或删除。
+    非根账号与"不存在"同形（404），不泄露未归属区与隔离区的存在。
+    """
+    if not context.is_root:
+        raise deny(
+            404, _accounts.CODE_MEMORY_FOREIGN_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+        )
+    page = _query_entries((_UNASSIGNED_OWNER,), "", limit=limit + 1, offset=offset)
+    has_more = len(page) > limit
+    entries = page[:limit]
+    quarantined = _query_quarantine(quarantine_limit, quarantine_offset)
+    return {
+        "entries": entries,
+        "count": len(entries),
+        "total": _count_entries(_UNASSIGNED_OWNER),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "quarantined": quarantined,
+        "quarantined_count": len(quarantined),
+        "quarantined_total": _count_quarantine(),
+        "quarantine_limit": quarantine_limit,
+        "quarantine_offset": quarantine_offset,
+        "note": (
+            "entries 是迁移时无法从 key/tags 识别归属、但已存进新库的记录；"
+            "quarantined 是迁移时跳过、但原始行已落到隔离区的记录"
+            "（reason=non_memory_telemetry / empty_text / missing_entry_id / "
+            "missing_key）。两者都不会出现在任何账号的记忆列表里，"
+            "只有根账号能在这里查看。"
+        ),
+    }
+
+
+@router.delete(
+    "/unassigned/{entry_id}",
+    response_model=MemoryDeletionReceipt,
+    responses=_NOT_FOUND_RESPONSE,
+    summary="删除一条无归属历史记忆（仅主账号）",
+)
+def delete_unassigned_entry(
+    entry_id: str, context: AccountContext = Depends(require_account_principal)
+) -> Dict[str, Any]:
+    """删除一条无归属历史记忆（仅根账号；成员与"不存在"同为中性 404）。
+
+    未归属区不属于任何账号，普通 ``DELETE /entries/{id}`` 对它一律 404；
+    这个根账号专用入口让"看得见"能真的落到"处置得掉"。
+    """
+    if not context.is_root:
+        raise deny(
+            404, _accounts.CODE_MEMORY_FOREIGN_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+        )
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT id, owner FROM account_memory_entries WHERE id = ?",
+            (str(entry_id),),
+        ).fetchone()
+        if row is None or str(row["owner"]) != _UNASSIGNED_OWNER:
+            raise deny(
+                404, _accounts.CODE_MEMORY_FOREIGN_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+            )
+        cursor = connection.execute(
+            "DELETE FROM account_memory_entries WHERE id = ? AND owner = ?",
+            (str(entry_id), _UNASSIGNED_OWNER),
+        )
+        connection.commit()
+    removed = int(cursor.rowcount or 0)
+    get_identity_manager().record_event(
+        action="memory.unassigned.delete",
+        actor=context.principal,
+        target=_UNASSIGNED_OWNER,
+        outcome="allowed",
+        details={"entry_id": str(entry_id), "deleted": removed},
+    )
+    return {"id": str(entry_id), "deleted": True, "removed": removed}
+
+
+@router.delete(
+    "/quarantine/{quarantine_id}",
+    response_model=MemoryDeletionReceipt,
+    responses=_NOT_FOUND_RESPONSE,
+    summary="删除一条迁移隔离记录（仅主账号）",
+)
+def delete_quarantined_row(
+    quarantine_id: str, context: AccountContext = Depends(require_account_principal)
+) -> Dict[str, Any]:
+    """删除一条迁移隔离记录（仅根账号；成员与"不存在"同为中性 404）。
+
+    隔离区保留的是迁移时跳过的源行原文；确认不 (再) 需要时由根账号删除。
+    删除只影响隔离区本身，不会触碰已导入的记忆条目。
+    """
+    if not context.is_root:
+        raise deny(
+            404, _accounts.CODE_MEMORY_FOREIGN_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+        )
+    with _connect() as connection:
+        cursor = connection.execute(
+            "DELETE FROM account_memory_quarantine WHERE id = ?", (str(quarantine_id),)
+        )
+        connection.commit()
+    removed = int(cursor.rowcount or 0)
+    if removed == 0:
+        raise deny(
+            404, _accounts.CODE_MEMORY_FOREIGN_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+        )
+    get_identity_manager().record_event(
+        action="memory.quarantine.delete",
+        actor=context.principal,
+        target=str(quarantine_id),
+        outcome="allowed",
+        details={"quarantine_id": str(quarantine_id), "deleted": removed},
+    )
+    return {"id": str(quarantine_id), "deleted": True, "removed": removed}
 
 
 @router.get("/entries/{entry_id}")
@@ -269,10 +609,39 @@ def write_entry(
     payload: MemoryWriteRequest,
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
-    """只写**自己**的记忆；主账号也不能借这个端点改写子账号记忆。"""
-    entry_id = str(uuid.uuid4())
-    created_at = _now_iso()
+    """只写**自己**的记忆；主账号也不能借这个端点改写子账号记忆。
+
+    幂等窗口：同一账号在 ``MEMORY_IDEMPOTENCY_WINDOW_SECONDS`` 内重复提交
+    完全相同的内容（正文 / 来源 / 标签）时，返回已存在的那条并标记
+    ``deduplicated: true`` —— 重试不会凭空多出一条记忆。
+    """
+    from src._time import utc_now
+
+    cutoff = (
+        utc_now() - timedelta(seconds=MEMORY_IDEMPOTENCY_WINDOW_SECONDS)
+    ).isoformat()
+    tags_json = json.dumps(payload.tags, ensure_ascii=False)
     with _connect() as connection:
+        existing = connection.execute(
+            "SELECT id, owner, text, source, tags, created_at "
+            "FROM account_memory_entries "
+            "WHERE owner = ? AND text = ? AND source = ? AND tags = ? "
+            "AND created_at >= ? ORDER BY created_at DESC LIMIT 1",
+            (
+                context.principal,
+                payload.text,
+                payload.source,
+                tags_json,
+                cutoff,
+            ),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "entry": _row_to_entry(existing),
+                "deduplicated": True,
+            }
+        entry_id = str(uuid.uuid4())
+        created_at = _now_iso()
         connection.execute(
             "INSERT INTO account_memory_entries "
             "(id, owner, text, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -281,7 +650,7 @@ def write_entry(
                 context.principal,
                 payload.text,
                 payload.source,
-                json.dumps(payload.tags, ensure_ascii=False),
+                tags_json,
                 created_at,
             ),
         )
@@ -296,6 +665,104 @@ def write_entry(
             "created_at": created_at,
         }
     }
+
+
+@router.patch("/entries/{entry_id}")
+def patch_entry(
+    entry_id: str,
+    payload: MemoryPatchRequest,
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """纠正**自己**的一条记忆（改正文/来源/标签），并写审计。
+
+    归属不可改：主账号也不能借 PATCH 把条目改到子账号名下。不是本人一律
+    404（与"不存在"不可区分）。
+    """
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT id, owner, text, source, tags, created_at "
+            "FROM account_memory_entries WHERE id = ?",
+            (str(entry_id),),
+        ).fetchone()
+        if row is None or str(row["owner"]) != str(context.principal):
+            raise deny(
+                404,
+                _accounts.CODE_MEMORY_FOREIGN_DENIED,
+                _accounts.NEUTRAL_NOT_FOUND_MESSAGE,
+            )
+        new_text = payload.text if payload.text is not None else row["text"]
+        new_source = payload.source if payload.source is not None else row["source"]
+        new_tags = (
+            json.dumps(payload.tags, ensure_ascii=False)
+            if payload.tags is not None
+            else row["tags"]
+        )
+        if (
+            payload.text is None
+            and payload.source is None
+            and payload.tags is None
+        ):
+            raise deny(400, "MEMORY_PATCH_EMPTY", "没有要修改的字段")
+        connection.execute(
+            "UPDATE account_memory_entries SET text = ?, source = ?, tags = ? "
+            "WHERE id = ? AND owner = ?",
+            (new_text, new_source, new_tags, str(entry_id), context.principal),
+        )
+        connection.commit()
+    get_identity_manager().record_event(
+        action="memory.update",
+        actor=context.principal,
+        target=context.principal,
+        outcome="allowed",
+        details={"entry_id": str(entry_id), "fields": sorted(payload.model_dump(exclude_none=True))},
+    )
+    with _connect() as connection:
+        updated = connection.execute(
+            "SELECT id, owner, text, source, tags, created_at "
+            "FROM account_memory_entries WHERE id = ?",
+            (str(entry_id),),
+        ).fetchone()
+    return {"entry": _row_to_entry(updated)}
+
+
+@router.delete("/entries/{entry_id}")
+def delete_entry(
+    entry_id: str, context: AccountContext = Depends(require_account_principal)
+) -> Dict[str, Any]:
+    """删除**自己**的一条记忆，并清理同 owner 的 ``origin:<id>`` 派生副本。
+
+    不是本人 404；删除后列表/检索/单条读取都不可见。删除动作写审计。
+    """
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT id, owner FROM account_memory_entries WHERE id = ?",
+            (str(entry_id),),
+        ).fetchone()
+        if row is None or str(row["owner"]) != str(context.principal):
+            raise deny(
+                404,
+                _accounts.CODE_MEMORY_FOREIGN_DENIED,
+                _accounts.NEUTRAL_NOT_FOUND_MESSAGE,
+            )
+        cursor = connection.execute(
+            "DELETE FROM account_memory_entries WHERE id = ? AND owner = ?",
+            (str(entry_id), context.principal),
+        )
+        marker = '%"origin:' + str(entry_id) + '"%'
+        derived = connection.execute(
+            "DELETE FROM account_memory_entries WHERE owner = ? AND tags LIKE ?",
+            (context.principal, marker),
+        )
+        connection.commit()
+    deleted = int(cursor.rowcount or 0) + int(derived.rowcount or 0)
+    get_identity_manager().record_event(
+        action="memory.delete",
+        actor=context.principal,
+        target=context.principal,
+        outcome="allowed",
+        details={"entry_id": str(entry_id), "deleted": deleted},
+    )
+    return {"id": str(entry_id), "deleted": True, "removed": deleted}
 
 
 @router.post("/export")
@@ -460,7 +927,9 @@ def set_custody(
 #
 # 策略（幂等、可重试、不丢原库）：
 # 1. 只读源库、只增目标行：``INSERT OR IGNORE``，主键沿用老 ``entry_id``；
-# 2. 归属：老数据没有账号列，统一挂到当前账号树的根（``source`` 里标
+# 2. 归属：老数据没有账号列，按 key/tags 里的账号前缀逐个核对；对得上的
+#    保留原账号，**确实对不上的**落到 ``__unassigned__``（不是根账号本人），
+#    只有根能通过 ``GET /v1/memory/unassigned`` 查看（``source`` 里标
 #    ``legacy:memory_store``，``tags`` 里保留 tier/scope/key/原 TTL）；
 # 3. TTL：**不静默删除**。已过期条目的 ``expires_at`` 刷新为"迁移时刻 +
 #    ``LIUHAO_LEGACY_MEMORY_TTL_DAYS``（默认 30 天）"，并在 tags 里同时保留
@@ -473,6 +942,50 @@ _LEGACY_TTL_DAYS_DEFAULT = 30
 _migration_lock = threading.RLock()
 _migration_done_paths: set[str] = set()
 _migration_backoff: Dict[str, float] = {}
+
+#: 迁移报告里 ``merged_into`` 明细的条数上限（避免一次升级把整库原文
+#: 塞进报告；总数仍然精确）。
+_MERGED_DETAIL_LIMIT = 50
+
+
+@dataclass
+class _CopyResult:
+    """一个来源的逐行去向账：每一行都必须落进且只落进一个桶。
+
+    * ``imported_rows``：新写进 ``account_memory_entries``；
+    * ``merged_rows``：目标已有同 id 条目（重复迁移/重复源行），内容未变；
+    * ``quarantined_rows``：未写进记忆表，但原文已落到隔离区；
+    * ``lost_rows``：以上都不是 == 真丢了，迁移必须让它保持 0。
+    """
+
+    source_rows: int = 0
+    imported_rows: int = 0
+    merged_rows: int = 0
+    quarantined_rows: int = 0
+    merged_into: List[Dict[str, Any]] = field(default_factory=list)
+    quarantine_ids: List[str] = field(default_factory=list)
+    skip_reasons: Dict[str, int] = field(default_factory=dict)
+
+    def merge(self, other: "_CopyResult") -> None:
+        self.source_rows += other.source_rows
+        self.imported_rows += other.imported_rows
+        self.merged_rows += other.merged_rows
+        self.quarantined_rows += other.quarantined_rows
+        self.merged_into.extend(other.merged_into)
+        self.quarantine_ids.extend(other.quarantine_ids)
+        for reason, count in other.skip_reasons.items():
+            self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + count
+
+    def note_skip(self, reason: str, quarantine_id: str) -> None:
+        self.quarantined_rows += 1
+        self.quarantine_ids.append(quarantine_id)
+        self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
+
+    @property
+    def lost_rows(self) -> int:
+        return self.source_rows - (
+            self.imported_rows + self.merged_rows + self.quarantined_rows
+        )
 
 
 def _legacy_paths() -> Tuple[str, str]:
@@ -523,17 +1036,6 @@ def _known_principals() -> List[str]:
     except Exception:  # noqa: BLE001
         pass
     return [item for item in principals if item]
-
-
-def _root_principal() -> str:
-    try:
-        node = get_identity_manager().account_root()
-        if node is not None:
-            return str(node.principal)
-    except Exception:  # noqa: BLE001
-        pass
-    humans = _known_principals()
-    return humans[0] if humans else "liuhao"
 
 
 def _decode_value(raw: Any) -> str:
@@ -635,14 +1137,14 @@ def _refresh_expired(connection: sqlite3.Connection, ttl_days: int) -> int:
     return refreshed
 
 
-def _owner_for_memory(
-    key: str, old_tags: List[str], known: List[str], root: str
-) -> str:
-    """从内核记忆的 key/tags 里认出它属于哪个账号；认不出才算根的。
+def _owner_for_memory(key: str, old_tags: List[str], known: List[str]) -> str:
+    """从内核记忆的 key/tags 里认出它属于哪个账号；认不出就落到未归属区。
 
     内核库没有 owner 列，但写入方把账号编码进了 ``agent:liuhao-<principal>-<session>``
     标签与 ``turn:liuhao-<principal>-...`` key。过去一律记到根，会让成员会话
     在导入/首次迁移后出现在根账号的记忆页；这里按已知账号逐个对前缀。
+    **只有确实对不上任何账号时才返回 ``__unassigned__``**：猜不出归属不是
+    根的错，不能把成员私密记忆塞进根的子树聚合（MEM-016）。
     """
     ordered = sorted((item for item in known if item), key=len, reverse=True)
     for tag in old_tags:
@@ -660,7 +1162,7 @@ def _owner_for_memory(
         for principal in ordered:
             if rest.startswith(principal + "-"):
                 return principal
-    return root
+    return _UNASSIGNED_OWNER
 
 
 #: 只留在内核检索库、不搬进"记忆页"的机器标签。
@@ -671,66 +1173,162 @@ _NON_MEMORY_KERNEL_TAGS = frozenset(
 )
 
 
+def _quarantine_id(source: str, rowid: Any, source_ref: str, reason: str) -> str:
+    """隔离记录 id：同一源行、同一原因在任何一次重跑里都得到同一个 id。"""
+    raw = f"{source}|{rowid}|{source_ref}|{reason}"
+    return f"q-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:20]}"
+
+
+def _quarantine_row(
+    target: sqlite3.Connection,
+    *,
+    quarantine_id: str,
+    source: str,
+    source_ref: str,
+    reason: str,
+    owner_hint: str,
+    payload: Dict[str, Any],
+    created_at: str,
+) -> None:
+    """把一条**没有进入记忆表**的源行原样写进隔离区（同库、可查询、幂等）。
+
+    这是 MEM-016 的关键补口：以前"跳过"只 `continue`，新库查不到、也没有
+    任何地方能证明原文还在；现在跳过之前先落盘，迁移报告里的每个"跳过"
+    都能在这里找到对应原文与原因。
+    """
+    target.execute(
+        "INSERT OR IGNORE INTO account_memory_quarantine "
+        "(id, source, source_ref, reason, owner_hint, payload, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            quarantine_id,
+            source,
+            source_ref,
+            reason,
+            owner_hint,
+            json.dumps(payload, ensure_ascii=False, default=str),
+            created_at,
+        ),
+    )
+
+
 def _copy_kernel_entries(
     source: sqlite3.Connection,
     target: sqlite3.Connection,
-    owner: str,
     known: Optional[List[str]] = None,
-) -> Tuple[int, int]:
+) -> _CopyResult:
     """把 ``memory_entries`` 逐行写进 ``account_memory_entries``（主键沿用）。
 
-    会话轮次（``conversation`` 标签）只留在内核库供检索，不搬进记忆页：
-    它们已经是会话历史，搬过去既重复，也会把成员会话显示成别人的"记忆"。
+    每条源行都有明确去向：
+    * 正常行 -> 新库（认不出归属的落 ``__unassigned__``）；
+    * 运行时遥测 / 空正文 / 空 id -> 隔离区，原文与原因都可查（不再静默丢）；
+    * 同 id 已存在 -> 记为 ``merged``，并给出目标条目 id 与最终正文。
     """
     known = known if known is not None else []
     rows = source.execute(
-        "SELECT entry_id, key, value, tier, scope, created_at, expires_at, tags "
+        "SELECT rowid, entry_id, key, value, tier, scope, created_at, expires_at, tags "
         "FROM memory_entries"
     ).fetchall()
-    imported = 0
-    skipped = 0
+    result = _CopyResult(source_rows=len(rows))
     now_iso = _now_iso()
     for row in rows:
-        entry_id = str(row[0] or "")
-        text = _decode_value(row[2])
-        if not entry_id or not text:
-            skipped += 1
-            continue
+        rowid = row[0]
+        entry_id = str(row[1] or "")
+        key = str(row[2] or "")
+        raw_value = row[3]
+        text = _decode_value(raw_value)
         old_tags: List[str] = []
         try:
-            decoded = json.loads(row[7] or "[]")
+            decoded = json.loads(row[8] or "[]")
             if isinstance(decoded, list):
                 old_tags = [str(item) for item in decoded]
         except Exception:  # noqa: BLE001
             old_tags = []
+        payload = {
+            "entry_id": entry_id,
+            "key": key,
+            "value": raw_value,
+            "tier": str(row[4] or ""),
+            "scope": str(row[5] or ""),
+            "created_at": str(row[6] or ""),
+            "expires_at": str(row[7] or ""),
+            "tags": old_tags,
+        }
+        owner_hint = _owner_for_memory(key, old_tags, known)
+        if owner_hint == _UNASSIGNED_OWNER:
+            owner_hint = ""
+        if not entry_id or not text:
+            # 异常格式：没有主键或正文为空。以前直接 continue，换机后这条
+            # 记录在新库和任何界面都不存在；现在先落隔离区再跳过。
+            reason = "missing_entry_id" if not entry_id else "empty_text"
+            qid = _quarantine_id("memory_store", rowid, entry_id or key, reason)
+            _quarantine_row(
+                target,
+                quarantine_id=qid,
+                source="memory_store",
+                source_ref=entry_id or key,
+                reason=reason,
+                owner_hint=owner_hint,
+                payload=payload,
+                created_at=str(row[6] or "") or now_iso,
+            )
+            result.note_skip(reason, qid)
+            continue
         # 内核库里的机器记录不是"用户的记忆"：会话轮次、目标分解、任务执行、
         # 目标运行/学习回执都属于运行时遥测。它们没有账号归属（key 里只有
         # goal/task id），硬搬进来会全部挂到根账号，换机后根的记忆页会突然
         # 多出成员目标的失败回执——既污染计数，也泄露归属。
+        # 但"不进记忆页"不等于"可以消失"：原文进隔离区，根账号可查。
         if _NON_MEMORY_KERNEL_TAGS & set(old_tags):
-            skipped += 1
+            reason = "non_memory_telemetry"
+            qid = _quarantine_id("memory_store", rowid, entry_id, reason)
+            _quarantine_row(
+                target,
+                quarantine_id=qid,
+                source="memory_store",
+                source_ref=entry_id,
+                reason=reason,
+                owner_hint=owner_hint,
+                payload=payload,
+                created_at=str(row[6] or "") or now_iso,
+            )
+            result.note_skip(reason, qid)
             continue
-        entry_owner = _owner_for_memory(str(row[1] or ""), old_tags, known, owner)
+        entry_owner = _owner_for_memory(key, old_tags, known)
         tags = _legacy_tags(
             origin="memory_store",
-            tier=str(row[3] or ""),
-            scope=str(row[4] or ""),
-            key=str(row[1] or ""),
-            original_expires=str(row[6] or ""),
-            effective_expires=str(row[6] or ""),
+            tier=str(row[4] or ""),
+            scope=str(row[5] or ""),
+            key=key,
+            original_expires=str(row[7] or ""),
+            effective_expires=str(row[7] or ""),
             extra=old_tags,
         )
-        created_at = str(row[5] or "") or now_iso
+        created_at = str(row[6] or "") or now_iso
         cursor = target.execute(
             "INSERT OR IGNORE INTO account_memory_entries "
             "(id, owner, text, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (entry_id, entry_owner, text, "legacy:memory_store", tags, created_at),
         )
         if cursor.rowcount:
-            imported += 1
-        else:
-            skipped += 1
-    return imported, skipped
+            result.imported_rows += 1
+            continue
+        # 同 id 已存在：重复迁移/重复源行，不是丢失。把目标条目的最终正文
+        # 写进报告，证明它是"合并进已有条目"而不是被丢弃。
+        existing = target.execute(
+            "SELECT text FROM account_memory_entries WHERE id = ?", (entry_id,)
+        ).fetchone()
+        result.merged_rows += 1
+        if len(result.merged_into) < _MERGED_DETAIL_LIMIT:
+            result.merged_into.append(
+                {
+                    "source": "memory_store",
+                    "source_ref": entry_id,
+                    "entry_id": entry_id,
+                    "final_text": str(existing[0]) if existing else text,
+                }
+            )
+    return result
 
 
 _PERSONAL_CONTEXT_SOURCES: Dict[str, Tuple[str, str]] = {
@@ -739,8 +1337,11 @@ _PERSONAL_CONTEXT_SOURCES: Dict[str, Tuple[str, str]] = {
 }
 
 
-def _owner_for_profile(raw: str, known: List[str], root: str) -> str:
-    """画像库主体是 ``user-{principal}``；能对上账号树就保留原归属。"""
+def _owner_for_profile(raw: str, known: List[str]) -> str:
+    """画像库主体是 ``user-{principal}``；能对上账号树就保留原归属。
+
+    对不上任何账号时落到未归属区：旧画像可能是成员私密偏好，不能默认归根。
+    """
     candidates = [raw]
     if raw.startswith("user-"):
         candidates.append(raw[len("user-"):])
@@ -749,39 +1350,71 @@ def _owner_for_profile(raw: str, known: List[str], root: str) -> str:
     for candidate in candidates:
         if candidate in known:
             return candidate
-    return root
+    return _UNASSIGNED_OWNER
 
 
 def _copy_personal_context(
-    source: sqlite3.Connection, target: sqlite3.Connection, root: str
-) -> Tuple[int, int]:
-    """画像偏好/事实 -> 记忆条目（id 由来源确定性生成，天然幂等）。"""
+    source: sqlite3.Connection, target: sqlite3.Connection
+) -> _CopyResult:
+    """画像偏好/事实 -> 记忆条目（id 由来源确定性生成，天然幂等）。
+
+    空 key / 空正文不再静默跳过：原文进隔离区，原因标为 ``missing_key`` /
+    ``empty_text``；同 id 已存在记 ``merged`` 并给出目标条目最终正文。
+    """
     known = _known_principals()
-    imported = 0
-    skipped = 0
+    result = _CopyResult()
     now_iso = _now_iso()
     for table, (kind, value_column) in _PERSONAL_CONTEXT_SOURCES.items():
         try:
             rows = source.execute(
-                f"SELECT principal_id, key, {value_column}, updated_at FROM {table}"
+                f"SELECT rowid, principal_id, key, {value_column}, updated_at "
+                f"FROM {table}"
             ).fetchall()
         except sqlite3.Error:
             continue
+        result.source_rows += len(rows)
         for row in rows:
-            principal_id = str(row[0] or "")
-            key = str(row[1] or "")
-            text = _decode_value(row[2])
+            rowid = row[0]
+            principal_id = str(row[1] or "")
+            key = str(row[2] or "")
+            raw_value = row[3]
+            text = _decode_value(raw_value)
+            payload = {
+                "table": table,
+                "principal_id": principal_id,
+                "key": key,
+                "value": raw_value,
+                "updated_at": row[4],
+                "kind": kind,
+            }
             if not key or not text:
-                skipped += 1
+                reason = "missing_key" if not key else "empty_text"
+                owner_hint = _owner_for_profile(principal_id, known)
+                if owner_hint == _UNASSIGNED_OWNER:
+                    owner_hint = ""
+                qid = _quarantine_id(
+                    "personal_context", rowid, f"{table}:{key}", reason
+                )
+                _quarantine_row(
+                    target,
+                    quarantine_id=qid,
+                    source="personal_context",
+                    source_ref=f"{table}:{key or principal_id}",
+                    reason=reason,
+                    owner_hint=owner_hint,
+                    payload=payload,
+                    created_at=now_iso,
+                )
+                result.note_skip(reason, qid)
                 continue
-            owner = _owner_for_profile(principal_id, known, root)
+            owner = _owner_for_profile(principal_id, known)
             digest = hashlib.sha1(
                 f"{principal_id}|{kind}|{key}".encode("utf-8")
             ).hexdigest()[:20]
             entry_id = f"legacy-pc-{digest}"
             try:
                 created_at = datetime.fromtimestamp(
-                    float(row[3]), tz=timezone.utc
+                    float(row[4]), tz=timezone.utc
                 ).isoformat()
             except (TypeError, ValueError, OSError):
                 created_at = now_iso
@@ -790,23 +1423,36 @@ def _copy_personal_context(
                 key=key,
                 extra=[f"kind:{kind}"],
             )
+            final_text = f"{key}: {text}"
             cursor = target.execute(
                 "INSERT OR IGNORE INTO account_memory_entries "
                 "(id, owner, text, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     entry_id,
                     owner,
-                    f"{key}: {text}",
+                    final_text,
                     "legacy:personal_context",
                     tags,
                     created_at,
                 ),
             )
             if cursor.rowcount:
-                imported += 1
-            else:
-                skipped += 1
-    return imported, skipped
+                result.imported_rows += 1
+                continue
+            existing = target.execute(
+                "SELECT text FROM account_memory_entries WHERE id = ?", (entry_id,)
+            ).fetchone()
+            result.merged_rows += 1
+            if len(result.merged_into) < _MERGED_DETAIL_LIMIT:
+                result.merged_into.append(
+                    {
+                        "source": "personal_context",
+                        "source_ref": f"{table}:{key}",
+                        "entry_id": entry_id,
+                        "final_text": str(existing[0]) if existing else final_text,
+                    }
+                )
+    return result
 
 
 def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
@@ -873,19 +1519,15 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
 
         report: Dict[str, Any] = {
             "ran": True,
-            "entries": 0,
-            "skipped": 0,
             "ttl_refreshed": 0,
-            "profile_entries": 0,
-            "profile_skipped": 0,
             "sources": {
                 "memory_store": kernel_path if has_kernel else "",
                 "personal_context": profile_path if has_profile else "",
             },
         }
+        result = _CopyResult()
         target = _raw_connect()
         try:
-            root = _root_principal()
             if has_kernel:
                 source = sqlite3.connect(kernel_path, timeout=10)
                 try:
@@ -894,11 +1536,11 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
                             source, _legacy_ttl_days()
                         )
                         source.commit()
-                        imported, skipped = _copy_kernel_entries(
-                            source, target, root, _known_principals()
+                        kernel_result = _copy_kernel_entries(
+                            source, target, _known_principals()
                         )
-                        report["entries"] += imported
-                        report["skipped"] += skipped
+                        result.merge(kernel_result)
+                        report["entries"] = kernel_result.imported_rows
                         report["kernel_entries"] = int(
                             source.execute(
                                 "SELECT COUNT(*) FROM memory_entries"
@@ -909,11 +1551,53 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
             if has_profile:
                 profile = sqlite3.connect(profile_path, timeout=10)
                 try:
-                    imported, skipped = _copy_personal_context(profile, target, root)
-                    report["profile_entries"] += imported
-                    report["profile_skipped"] += skipped
+                    profile_result = _copy_personal_context(profile, target)
+                    result.merge(profile_result)
+                    report["profile_entries"] = profile_result.imported_rows
                 finally:
                     profile.close()
+            # 逐行去向账：源行数 = 导入 + 合并进已有条目 + 隔离区 + 真丢失。
+            # ``count_conserved`` 只看"导入 + 跳过 == 源"，账平了但跳过可能是
+            # 丢弃；这里改成 ``rows_accounted`` + ``lost_rows``，并单列
+            # ``merged_rows`` / ``quarantined_rows`` / ``skip_reasons``。
+            report["source_rows"] = result.source_rows
+            report["imported_rows"] = result.imported_rows
+            report["merged_rows"] = result.merged_rows
+            report["quarantined_rows"] = result.quarantined_rows
+            report["lost_rows"] = result.lost_rows
+            report["rows_accounted"] = result.source_rows == (
+                result.imported_rows
+                + result.merged_rows
+                + result.quarantined_rows
+            )
+            report["skip_reasons"] = dict(result.skip_reasons)
+            report["merged_into"] = list(result.merged_into)
+            report["merged_into_truncated"] = (
+                result.merged_rows > len(result.merged_into)
+            )
+            # 目标侧真实计数：记忆表里的迁移行 + 隔离区里的源行。
+            report["target_legacy_rows"] = int(
+                target.execute(
+                    "SELECT COUNT(*) FROM account_memory_entries "
+                    "WHERE source LIKE 'legacy:%'"
+                ).fetchone()[0]
+            )
+            report["quarantine_rows"] = int(
+                target.execute(
+                    "SELECT COUNT(*) FROM account_memory_quarantine"
+                ).fetchone()[0]
+            )
+            report["preserved_rows"] = (
+                report["target_legacy_rows"] + report["quarantine_rows"]
+            )
+            # 无法判定归属、落到 __unassigned__ 的行数（根账号可查详情）。
+            report["unassigned_rows"] = int(
+                target.execute(
+                    "SELECT COUNT(*) FROM account_memory_entries "
+                    "WHERE owner = ? AND source LIKE 'legacy:%'",
+                    (_UNASSIGNED_OWNER,),
+                ).fetchone()[0]
+            )
             target.execute(
                 "INSERT OR REPLACE INTO account_memory_migrations "
                 "(name, completed_at, details) VALUES (?, ?, ?)",
@@ -933,10 +1617,16 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
 
         _migration_done_paths.add(path)
         logger.info(
-            "legacy memory migrated: entries=%s skipped=%s ttl_refreshed=%s profile=%s",
-            report["entries"],
-            report["skipped"],
+            "legacy memory migrated: source_rows=%s imported=%s merged=%s "
+            "quarantined=%s lost=%s ttl_refreshed=%s profile_imported=%s "
+            "unassigned=%s",
+            report.get("source_rows"),
+            report.get("imported_rows"),
+            report.get("merged_rows"),
+            report.get("quarantined_rows"),
+            report.get("lost_rows"),
             report["ttl_refreshed"],
-            report["profile_entries"],
+            report.get("profile_entries"),
+            report.get("unassigned_rows"),
         )
         return report

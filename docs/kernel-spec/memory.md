@@ -78,6 +78,39 @@ Memory Kernel 是 Human-Sovereign Agent OS 的**多层（L0–L7）记忆存储�
 - **与 policy/security 边界**：Policy 的 `scope_enforcement` 规则**已激活**（L0，precedence=100，DENY 越权），并非失活；`_adjudicate` 调用 `evaluate_policy_simple` 时传 `scope=None`。memory 自身的 scope 过滤由本地 `_scope_matches` 实现，是否经 Policy 统一裁决需以代码实测确认，不可断言"未受 Policy 裁决"。
 - **越界/重复**：`MemoryBackend` 抽象缺失 → 不可插拔、与 `src/knowledge/memory.py:583` 的 `create_memory_manager` 形成双实现（以代码实测为准）。
 
+## 7.1 迁移去向账与未归属 / 隔离区（现状已核对）
+
+> 归属无法判定的历史数据**不猜归属、不静默丢弃**：要么进新库的可寻址区，要么进
+> 待人工处理的未归属区 / 隔离区，要么在报告里明确计为丢失（丢失必须为 0）。
+
+**逐行去向账**（`src/gateway/account_memory.py` 的迁移报告）。旧口径
+`count_conserved`（「导入 + 跳过 == 源」）会把「跳过」当成账平，而跳过可能等于丢弃；
+现在改成按去向分栏，并单列真丢失：
+
+| 字段 | 含义 |
+| --- | --- |
+| `source_rows` | 源库实际行数 |
+| `imported_rows` | 写进新库、可按账号寻址 |
+| `merged_rows` | 合并进已存在的同键条目（不新增行） |
+| `quarantined_rows` | 迁移时**跳过**的源行，原文留在隔离区 |
+| `lost_rows` | 源行既没导入、没合并、也没隔离——**真丢失** |
+| `rows_accounted` | `source_rows == imported + merged + quarantined`（**不含 lost**：它 True 就等价于「没有丢失」；有丢失则为 False） |
+| `skip_reasons` | 按原因计数（如运行时遥测、空正文 / 空 id） |
+
+`lost_rows` 必须为 0；不为 0 就是迁移丢了数据，不能报成功。
+
+**隔离区与未归属区**：
+
+- 表 `account_memory_quarantine`（同库）保存被跳过的源行原文与原因，供人工复核。
+- `__unassigned__` 是**迁移时无法判定归属**的条目的占位 owner，**不是账号**，
+  不出现在任何人的 self/subtree 列表里（避免「猜不出就归给根」的隐私错误）。
+- `GET /v1/memory/unassigned`（`src/gateway/account_memory.py:388`）仅根账号可读，
+  返回 `entries`（未归属条目）与 `quarantined`（隔离区原文），两段各自分页
+  （`limit`/`offset`、`quarantine_limit`/`quarantine_offset`）。
+- **非根账号访问 = 404**，文案与「资源不存在」完全一致
+  （`_accounts.NEUTRAL_NOT_FOUND_MESSAGE` = 「资源不存在或无权访问」），
+  不泄露未归属区 / 隔离区的存在；与「真的不存在」响应同形。
+
 ## 8. 测试要求（DoD：Implemented+Tested+Observable+Permissioned+Audited+Documented）
 
 - **单元**：`store`→`recall` round-trip；`tier_filter` 跨 tier 独立召回（`__init__.py:314`）；`compress` 晋升并溯源 `source_ids`（`__init__.py:500`）；`stats` 统计准确。

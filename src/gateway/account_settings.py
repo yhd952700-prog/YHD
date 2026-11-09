@@ -33,15 +33,13 @@ _lock = threading.Lock()
 
 
 def _settings_path() -> str:
-    explicit = (os.environ.get(SETTINGS_FILE_ENV) or "").strip()
-    if explicit:
-        return explicit
-    base = (
-        (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
-        or (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
-        or "data"
+    from ..common.data_paths import resolve_store_path
+
+    return resolve_store_path(
+        "account_settings.json",
+        os.path.join("data", "account_settings.json"),
+        env_var=SETTINGS_FILE_ENV,
     )
-    return os.path.join(base, "account_settings.json")
 
 
 def load_settings() -> Dict[str, Any]:

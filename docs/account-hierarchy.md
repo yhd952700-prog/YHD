@@ -1,8 +1,8 @@
 # 账号层级体系规格（ACCOUNT HIERARCHY SPEC）
 
-> 状态：**规格 / 仅文档**。本文件是唯一交付物，**不含任何代码改动**（不新增模块、不改前端、不迁移库、不提交、不 push）。
+> 状态：**规格已部分落地，以代码为准**。成员、权限矩阵、角色模板、Key 共享均已有接口与控制台页面（`/v1/accounts*`、`apps/console/console/src/pages/`）；本文标注为“要求/目标”的条目仍未全部实现，**不再把它当作纯规格文档**。
 > 适用对象：鎏灏 LIUHAO AI OS 的主账号 / 子账号 / 孙账号体系。
-> 本文所有"现状"均指本仓当前代码（路径 + 行号可核对）；"要求"是目标行为，供后续实现按此落地。
+> 本文所有"现状"均指本仓当前代码（路径 + 行号可核对）；"要求"是目标行为，未落地部分以代码为准。
 
 ---
 
@@ -334,6 +334,29 @@
 | 技能授权 | `owner_account_id`、`grant.target_path`、`visible_to_descendants` | 能力注册无 owner（`src/kernels/capability/__init__.py:116`） | 旧能力挂根，`grant_scope=global` 仅根可用 |
 
 迁移完成的判据（必须写进验收）：**双账号种子数据下，A 的列表/检索/导出结果中 0 条 B 的记录**；反之亦然。
+
+**知识库迁移的逐篇去向账（现状已核对）**：`src/knowledge/documents.py` 的迁移报告
+不再只报「迁移了多少」，而是把每篇文档的去向分栏，避免「跳过 = 丢弃」被算成账平：
+
+| 字段 | 含义 |
+| --- | --- |
+| `destinations.imported` | 已迁移 + 原本就在新库、可按账号寻址 |
+| `destinations.merged` | 知识库没有同 id 合并语义，恒为 0 |
+| `destinations.quarantined` | 仍在库里但没有自动解决（需人工处理） |
+| `destinations.pending` | 仅 dry-run 出现的计划项（尚未执行） |
+| `destinations.lost` | 源文档既未导入、未合并、也未保留——**真丢失** |
+| `lost_documents` | 与 `destinations.lost` 同值；**必须为 0** |
+| `rows_accounted` | `lost == 0`（账平判据） |
+| `skip_reasons` | 按原因计数：`missing_owner_metadata`（无归属元数据）、`legacy_id_target_conflict`、`rename_failed` |
+
+`lost_documents > 0` 表示迁移丢了文档，不能报成功；`unassigned` / `unassigned_documents`
+则是归属无法判定、原样保留的清单（不猜归属）。
+
+**无归属历史文档的只读视图**：`GET /v1/knowledge/maintenance/unassigned`
+（`src/api/routes/knowledge.py:418`）只返回 `owner_account_id` 为空的文档，分页
+`limit`（≤200）/ `offset`。**成员访问 = 中性 404**（`_not_found()` 用
+`_accounts.NEUTRAL_NOT_FOUND_MESSAGE`，与「不存在」同形），不暴露「存在但不属于你」，
+隔离边界不放宽；仅主账号 / 老部署可用。
 
 **v1 范围**：全资源账号隔离 + **根账号单向只读子树**（内容面只读；写只发生在控制面：账号、权限、Key、技能授权、预算/额度）。审批凭据的签发/撤销**不属于**可代管范围，只允许针对自身动作（§3.9）。不实现跨账号共同编辑，不实现成员间共享工作区（共享只做"只读查看"）。任何"多人协同编辑同一份文件/会话"的需求在 v1 明确不做。
 

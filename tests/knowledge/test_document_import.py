@@ -688,3 +688,136 @@ def test_default_limits_are_explicit():
     assert DEFAULT_LIMITS.max_pdf_pages == 300
     assert DEFAULT_LIMITS.max_uncompressed_bytes == 150 * 1024 * 1024
     assert DEFAULT_LIMITS.max_extracted_chars == 2_000_000
+
+
+def test_dimension_mismatch_is_visible_in_search_not_silent():
+    """MEM-020：维度错配不能静默返回 no_relevant，要带着原因说明未检索。"""
+
+    class _Embedder:
+        name = "fake"
+        model = "fake-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed(self, texts):
+            self.calls += 1
+            return [[0.0] * 1024 for _ in texts]
+
+    class _Store:
+        def count(self):
+            return 2
+
+        def get_index_meta(self):
+            return {"embedding_dim": "768", "embedding_model": "fake-model"}
+
+        def dimension_distribution(self):
+            return {1024: 2}
+
+    embedder = _Embedder()
+    service = KnowledgeDocumentService(vector_store=_Store(), embedder=embedder)
+
+    result = service.search("任何问题", top_k=3)
+
+    assert result["enabled"] is False
+    assert result["hits"] == []
+    assert result["retrieval"]["status"] == "unavailable"
+    assert "索引记录维度" in result["reason"]
+    assert "768" in result["message"] and "1024" in result["message"]
+    # 降级时不调用嵌入模型，也不假装检索过。
+    assert embedder.calls == 0
+
+
+def test_legacy_document_migration_reports_counts_and_unassigned():
+    """MEM-016 的知识库侧：改名前后的文档条数必须真实守恒且可核对。"""
+
+    class _Store:
+        def __init__(self, documents):
+            self._documents = {item["document_id"]: dict(item) for item in documents}
+
+        def raw_documents(self, owners=None, include_unowned=True):
+            return [dict(item) for item in self._documents.values()]
+
+        def rename_document(self, old_id, new_id):
+            if new_id in self._documents:
+                return {"renamed": False, "reason": "target exists"}
+            document = self._documents.pop(old_id)
+            document["document_id"] = new_id
+            self._documents[new_id] = document
+            return {"renamed": True, "chunks": int(document.get("chunks") or 0)}
+
+        def get_document_chunks(self, document_id):
+            if document_id not in self._documents:
+                return []
+            return [
+                {
+                    "owner_account_id": self._documents[document_id]["owner"],
+                    "text": "旧版正文内容",
+                    "context_header": "",
+                }
+            ]
+
+    store = _Store(
+        [
+            {
+                "document_id": "account---report.txt",
+                "owner": "测试甲",
+                "filename": "报告.txt",
+                "chunks": 2,
+            },
+            {"document_id": "---.txt", "owner": "", "filename": "", "chunks": 1},
+            {
+                "document_id": "member1--txt-deadbeef",
+                "owner": "member1",
+                "filename": "笔记.txt",
+                "chunks": 3,
+            },
+        ]
+    )
+    service = KnowledgeDocumentService(vector_store=store)
+
+    dry = service.migrate_legacy_document_ids(dry_run=True)
+    assert dry["lost_documents"] == 0
+    assert dry["rows_accounted"] is True
+    assert dry["destinations"]["pending"] == 1
+    assert dry["destinations"]["imported"] == 1
+    assert dry["destinations"]["quarantined"] == 1
+
+    report = service.migrate_legacy_document_ids(dry_run=False)
+
+    assert report["documents_before"] == 3
+    assert report["documents_after"] == 3
+    assert report["count_conserved"] is True
+    assert report["lost_documents"] == 0
+    assert report["rows_accounted"] is True
+    assert report["migrated"] == 1
+    assert report["unchanged"] == 1
+    assert report["destinations"] == {
+        "imported": 2,
+        "merged": 0,
+        "quarantined": 1,
+        "pending": 0,
+        "lost": 0,
+    }
+    assert report["skip_reasons"] == {
+        "missing_owner_metadata": 1,
+        "legacy_id_target_conflict": 0,
+        "rename_failed": 0,
+    }
+    # 无法判定归属的历史文档不猜、不改，但必须能被查看到。
+    assert report["unassigned_documents"] == 1
+    item = report["unassigned"][0]
+    assert item["document_id"] == "---.txt"
+    assert item["display_name"] == "---.txt"
+    assert item["reason"] == "missing_owner_metadata"
+
+    # 主账号只读视图：身份、原因、原文预览、引用与删除入口都要能拿到。
+    view = service.unassigned_documents()
+    assert view["total"] == 1
+    assert view["lost"] == 0
+    visible = view["documents"][0]
+    assert visible["document_id"] == "---.txt"
+    assert visible["reason"] == "missing_owner_metadata"
+    assert visible["preview"] == "旧版正文内容"
+    assert visible["reference"] == "knowledge://documents/---.txt#0"
+    assert visible["can_delete"] is True

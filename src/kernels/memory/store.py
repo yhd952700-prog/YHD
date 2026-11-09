@@ -21,6 +21,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+from ...common.data_paths import resolve_store_path
 from ...ai.observability import observe
 
 # 默认落盘位置：项目根目录（非写死某台机器的绝对路径 —— 写死会在 CI 工作区
@@ -30,7 +31,19 @@ _PROJECT_ROOT = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
 )
-DEFAULT_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
+_LEGACY_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
+
+
+def _default_db_path() -> str:
+    """记忆库落盘路径：``MEMORY_DB_PATH`` > ``LIUHAO_DATA_DIR`` > 历史默认。"""
+    return resolve_store_path(
+        "memory_store.db",
+        _LEGACY_DB_PATH,
+        env_var="MEMORY_DB_PATH",
+    )
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 # 断电级持久化：WAL+synchronous=NORMAL 只能扛"进程被杀"（已提交事务在 OS
 # 页缓存里），扛不住"直接断电/蓝屏"（最后若干已确认事务可能随页缓存丢失）。
@@ -65,7 +78,7 @@ class MemoryStore:
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
-            db_path = os.environ.get("MEMORY_DB_PATH", DEFAULT_DB_PATH)
+            db_path = _default_db_path()
         self._db_path = db_path
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
