@@ -1,7 +1,10 @@
 """Mint a console approval token for a verified human principal.
 
-Run:  .venv/Scripts/python.exe scripts/issue_console_token.py --list
-      .venv/Scripts/python.exe scripts/issue_console_token.py --principal <id>
+Run:  python scripts/issue_console_token.py --list
+      python scripts/issue_console_token.py --principal <id>
+
+安装版请用随包解释器（``runtime\python.exe``）；这里不写具体路径，
+避免把开发机的虚拟环境目录写进随包脚本。
 
 Why this script still exists now that ``POST /v1/auth/login`` is real
 --------------------------------------------------------------------
