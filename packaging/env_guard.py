@@ -58,6 +58,10 @@ def _normalise(value: str) -> Optional[Path]:
     text = (value or "").strip().strip('"').strip("'")
     if not text:
         return None
+    # URL（如 LIUHAO_UPGRADE_MANIFEST_URL）不是文件系统路径：按路径解析会把
+    # https://host/a/b 变成相对当前目录的怪路径，再被判成「指向源码仓库」。
+    if "://" in text:
+        return None
     # 非路径值（例如完整性密钥）没有盘符/分隔符，不参与目录判断。
     if not (len(text) > 2 and text[1] == ":" or text.startswith("\\\\") or "/" in text or "\\" in text):
         return None

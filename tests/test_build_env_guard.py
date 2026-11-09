@@ -64,6 +64,21 @@ def test_clean_env_has_no_findings():
     assert findings == []
 
 
+def test_url_value_is_not_treated_as_path():
+    # LIUHAO_UPGRADE_MANIFEST_URL 是 https 地址，不是本地路径；曾因按路径解析
+    # 相对当前目录，被误判成「指向源码仓库」而卡死出包。
+    findings = guard.scan(
+        {
+            "LIUHAO_UPGRADE_MANIFEST_URL": (
+                "https://yhd952700-prog.github.io/liuhao-release/updates/LIUHAO_RELEASE.json"
+            )
+        },
+        REPO,
+        [Path(r"D:\cache\temp")],
+    )
+    assert findings == []
+
+
 def test_cli_exits_nonzero_when_env_is_dirty():
     env = dict(os.environ)
     env["LIUHAO_HUMAN_IDENTITIES_DB"] = str(REPO / "data" / "human_identities.sqlite3")
