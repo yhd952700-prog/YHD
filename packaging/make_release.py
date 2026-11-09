@@ -59,13 +59,14 @@ MANIFEST_SCHEMA = "liuhao.release-manifest/1"
 PRODUCT = "liuhao-ai-os"
 
 #: 旧「仓库根」模式的打包输入（仅在显式 ``--root <仓库>`` 时使用）。
-PACKAGE_ROOTS = ("src", "docs", "pyproject.toml", "requirements.txt", "oss-registry.yaml")
+#: ``docs`` 不再整目录进包：用户文档由 ``DOC_ALLOWLIST`` 逐文件挑选。
+PACKAGE_ROOTS = ("src", "pyproject.toml", "requirements.txt", "oss-registry.yaml")
 
 #: 「安装树」模式的打包输入。升级包就是安装树本身，必须与
 #: ``packaging/stage_payload.py`` 组装出的 ``payload/app`` 一致：
 #: 根级模块（``error_types.py``）、``config/``、启动脚本都在里面，
 #: 否则干净机器 apply 后自检会以 ModuleNotFoundError 失败。
-APP_TREE_DIRS = ("src", "config", "scripts", "console", "assets", "docs")
+APP_TREE_DIRS = ("src", "config", "scripts", "console", "assets")
 APP_TREE_ROOT_FILES = (
     "capability-registry.yaml",
     "pyproject.toml",
@@ -73,18 +74,53 @@ APP_TREE_ROOT_FILES = (
     "oss-registry.yaml",
     "LiuHao.bat",
     "START-HERE.txt",
+    # 合规材料随升级包一起更新，避免用户升级后许可证文本停留在旧版本。
+    "THIRD-PARTY-NOTICES.txt",
+    "sbom-cyclonedx.json",
 )
-#: 许可证声明与文本（THIRD-PARTY-NOTICES.txt、licenses/）由安装包随包分发；
-#: 升级包的允许写入根（src/upgrade/manager.py::INSTALL_ROOTS）尚未包含它们，
-#: 故此处不列入 —— 升级只覆盖文件、不删除，安装目录里的许可证文本会保留。
 APP_TREE_ROOT_GLOBS = ("*.py",)
 APP_TREE_SKIP_SUFFIXES = {
     ".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm",
 }
 APP_TREE_SKIP_PREFIXES = ("unins", "upgrade-backups", "upgrade-state", ".liuhao")
-#: docs 下不随包分发的子目录：``docs/legal`` 只有 AI 起草、待法务确认的草稿，
-#: 留在仓库供审阅，不能装进用户手里的升级包（否则等于对外发布了未定稿条款）。
-APP_TREE_SKIP_DOC_DIRS = ("legal",)
+
+#: 升级包随包的用户文档白名单：**逐文件列出，不用通配**。
+#: 只允许普通用户真的会打开的文档；内部审计、spec、known-gaps、evidence 截图
+#: 一律不进包。新增/改名文档必须主动加到这里，否则不会进包。
+#: 名单内文件缺失时 ``_collect_docs`` 直接中止构建，避免用户指南静默少带。
+#:
+#: 暂未列入的两类（仓库里没有可发布的干净文件，补好后再各加一行）：
+#:   * 安装说明：``docs/INSTALL-WINDOWS.md`` 当前是内部交付状态页（含构建时间、
+#:     SHA256、文件数），不能给用户看；用户侧安装说明由 ``START-HERE.txt`` 承担。
+#:   * 变更记录：``docs/knowledge_base/CHANGELOG.md`` 是 3.0.0 旧稿（含未交付能力）。
+DOC_ALLOWLIST = (
+    "docs/END-USER-GUIDE.md",
+    "docs/USER-GUIDE.md",
+    "docs/faq.md",
+)
+#: 第三方许可证全文（安装树 ``licenses/`` 下）：同样逐文件列出。
+#: 新增依赖带来新的许可证文件时必须显式加入；缺失同样让构建失败。
+APP_TREE_LICENSE_FILES = (
+    "licenses/adodbapi-LGPL-2.1.txt",
+    "licenses/Apache-2.0.txt",
+    "licenses/expat-MIT.txt",
+    "licenses/fastmcp-slim-Apache-2.0.txt",
+    "licenses/LGPL-2.1.txt",
+    "licenses/LGPL-SOURCE-OFFER.txt",
+    "licenses/libffi-MIT.txt",
+    "licenses/libiconv-NOTICE.txt",
+    "licenses/libmpdec-BSD-2-Clause.txt",
+    "licenses/Microsoft-VC-Runtime.txt",
+    "licenses/opentelemetry-util-http-Apache-2.0.txt",
+    "licenses/proxy_tools-BSD.txt",
+    "licenses/pywin32-BSD-3-Clause.txt",
+    "licenses/React-MIT.txt",
+    "licenses/SQLite-Public-Domain.txt",
+    "licenses/Tcl-Tk-license.terms",
+    "licenses/Tix-License.txt",
+    "licenses/Unicode-License.txt",
+    "licenses/zlib-License.txt",
+)
 
 #: 缺少这些文件时不允许产出升级包：整包哈希再一致，装上去也是新旧代码混跑。
 REQUIRED_RELEASE_FILES = (
@@ -203,6 +239,12 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
                 # 硬门禁：升级按「上一版有、新版没有就删」处理，缺入口文件会让
                 # 升级后的桌面快捷方式直接断掉。任何一项缺失都必须拒绝出包。
                 raise BuildError(f"安装树缺少必需根文件：{name}")
+        for name in APP_TREE_LICENSE_FILES:
+            path = root / name
+            if not path.is_file():
+                # 白名单缺失必须失败：静默少带会让用户的合规材料凭空消失。
+                raise BuildError(f"安装树缺少许可证文件：{name}")
+            candidates.append(path)
         for pattern in APP_TREE_ROOT_GLOBS:
             candidates.extend(sorted(root.glob(pattern)))
     else:
@@ -232,8 +274,6 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
                 continue
             if parts[0].startswith(APP_TREE_SKIP_PREFIXES):
                 continue
-            if len(parts) > 1 and parts[0] == "docs" and parts[1] in APP_TREE_SKIP_DOC_DIRS:
-                continue
             if candidate.relative_to(root).as_posix() == MANIFEST_NAME:
                 continue
         elif candidate.suffix.lower() in SKIP_SUFFIXES:
@@ -252,6 +292,23 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
     if total > MAX_UNCOMPRESSED:
         raise BuildError(f"解压后体积超过上限（{total} 字节 > {MAX_UNCOMPRESSED}）")
     return items
+
+
+def _collect_docs(root: Path) -> List[Tuple[str, Path]]:
+    """按 ``DOC_ALLOWLIST`` 收集用户文档；任何一项缺失都中止构建。
+
+    ``root`` 是文档来源根（安装树模式取仓库根，因为它与安装树同一次构建）。
+    不使用通配：新增文件必须有人主动写进白名单，才会进包。
+    """
+    missing = [rel for rel in DOC_ALLOWLIST if not (root / rel).is_file()]
+    if missing:
+        raise BuildError(
+            "升级包文档白名单缺失文件："
+            + "、".join(missing)
+            + "。白名单缺失时拒绝出包——否则用户指南会静默少带。"
+            "新增或改名文档请同步更新 packaging/make_release.py::DOC_ALLOWLIST。"
+        )
+    return [(rel, root / rel) for rel in DOC_ALLOWLIST]
 
 
 def _zip_write(zf: zipfile.ZipFile, rel: str, data: bytes) -> None:
@@ -579,32 +636,16 @@ def build(args: argparse.Namespace) -> int:
     _log(f"  输出    {out_dir}")
 
     entries = _collect_files(root, app_tree=app_tree)
-    if app_tree:
-        # 安装树不需要 docs/，但升级包必须带：用户排障、支持工单、发版说明
-        # 都靠它。docs/ 取自仓库（与安装树同一次构建的源码），开发路径命中
-        # 只报告不阻断（见下方 runtime_hits 的口径）。
-        docs_root = REPO_ROOT / "docs"
-        if docs_root.is_dir():
-            existing = {rel for rel, _path in entries}
-            added = 0
-            for path in sorted(docs_root.rglob("*")):
-                if path.is_symlink() or not path.is_file():
-                    continue
-                if path.suffix.lower() in APP_TREE_SKIP_SUFFIXES:
-                    continue
-                rel_parts = path.relative_to(docs_root).parts
-                if any(part in SKIP_DIR_NAMES for part in rel_parts):
-                    continue
-                if rel_parts[0] in APP_TREE_SKIP_DOC_DIRS:
-                    continue
-                rel = path.relative_to(REPO_ROOT).as_posix()
-                if rel in existing:
-                    continue
-                entries.append((rel, path))
-                existing.add(rel)
-                added += 1
-            entries.sort(key=lambda item: item[0])
-            _log(f"  文档    docs/ 随包 {added} 个文件（升级包排障用）")
+    # 文档不整目录进包：只带用户真的会打开的白名单文件。安装树模式从仓库取
+    # （安装树本身没有 docs/），仓库模式直接从打包根取。
+    doc_entries = _collect_docs(REPO_ROOT if app_tree else root)
+    existing = {rel for rel, _path in entries}
+    duplicated = [rel for rel, _path in doc_entries if rel in existing]
+    if duplicated:
+        raise BuildError("文档白名单与打包输入重复：" + ", ".join(duplicated))
+    entries.extend(doc_entries)
+    entries.sort(key=lambda item: item[0])
+    _log(f"  文档    用户文档白名单 {len(doc_entries)} 个文件（内部文档不进包）")
     if app_tree and not any(rel == "console/index.html" for rel, _path in entries):
         raise BuildError(
             "安装树缺少驾驶舱构建产物 console/index.html："

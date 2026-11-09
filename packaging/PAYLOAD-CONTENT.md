@@ -63,7 +63,7 @@ D:\LiuHaoData\                用户数据（卸载默认保留）
 | **源码仓库的 `.env`** | 不进包；安装版在 `data/config/app.env` 首次生成 |
 | 开发/测试依赖 | pytest、ruff、mypy、semgrep 等不随包 |
 | Docker / 数据库服务 | 安装版是单机单进程 + SQLite，不依赖 Docker/Postgres |
-| 代码签名 | 当前**未签名**，Windows 会提示「未知发布者」 |
+| 代码签名 | 项目自签名（`CN=鎏灏智能中枢`）；导入随包信任脚本后属性显示「有效」，但 SmartScreen 仍按未签名处理，可能提示「未知发布者」 |
 
 ## 与仓库便携包的区别
 

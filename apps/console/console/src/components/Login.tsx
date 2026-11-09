@@ -27,7 +27,6 @@ import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   AuthError,
-  CLIENT_MODES,
   type AuthConfig,
   type ClientMode,
   type Session,
@@ -606,21 +605,24 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
+        {/* 只显示**当前**身份。以前这里把三种身份并排画出来，浏览器里就会
+            出现一枚「桌面端」占位芯片；即使它是灰色未选中，也和"本页是网页版"
+            矛盾。栅格预览的职责已交给设置页，登录页只保留一个真值。 */}
         <div className="os-login-clients">
-          {CLIENT_MODES.map((client) => {
+          {(() => {
+            const client = detectClient()
             const Icon = CLIENT_ICON[client]
             return (
               <div
-                key={client}
                 className="os-client-chip"
-                data-active={client === detectClient() ? 'true' : 'false'}
+                data-active="true"
                 title={`当前以${CLIENT_LABEL[client]}形态打开`}
               >
                 <Icon size={15} />
                 <span>{CLIENT_LABEL[client]}</span>
               </div>
             )
-          })}
+          })()}
         </div>
 
         {/* 只在网页端可见（CSS 按 data-mode/data-client 控制），桌面壳与手机端不出现。 */}

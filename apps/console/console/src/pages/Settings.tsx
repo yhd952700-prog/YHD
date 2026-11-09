@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { DeviceMode, DeviceModeState, Theme } from '../lib/mode'
-import { DEVICE_MODES, MODE_HINTS, MODE_LABELS } from '../lib/mode'
+import { DEVICE_MODES, LAYOUT_LABELS, MODE_HINTS, MODE_LABELS, isDesktopShell } from '../lib/mode'
 import type { Session } from '../lib/auth'
 import { apiFetch, useApi } from '../lib/api'
 import { humanDuration, permissionLabel, toneVar, useNow } from '../lib/format'
@@ -276,25 +276,33 @@ export function Settings({
               去配置模型
             </button>
           </span>
-          <span className="os-attention-item" data-tone="warn">
-            <strong>关闭窗口不会退出</strong>
-            桌面端只有一个鎏灏窗口；关闭后会退到系统托盘，本地服务继续运行，需要时从托盘重新打开即可。
-            <button
-              className="os-link"
-              onClick={() =>
-                document.getElementById('settings-runtime')?.scrollIntoView?.({
-                  behavior: 'smooth',
-                  block: 'start',
-                })
-              }
-            >
-              查看运行说明
-            </button>
-          </span>
+          {/* 「关闭窗口退托盘」只对桌面壳成立。浏览器里没有托盘、也没有
+              "关窗口仍在跑"这回事，网页版读到这句话就是自相矛盾的自述。 */}
+          {isDesktopShell() && (
+            <span className="os-attention-item" data-tone="warn">
+              <strong>关闭窗口不会退出</strong>
+              桌面端只有一个鎏灏窗口；关闭后会退到系统托盘，本地服务继续运行，需要时从托盘重新打开即可。
+              <button
+                className="os-link"
+                onClick={() =>
+                  document.getElementById('settings-runtime')?.scrollIntoView?.({
+                    behavior: 'smooth',
+                    block: 'start',
+                  })
+                }
+              >
+                查看运行说明
+              </button>
+            </span>
+          )}
         </div>
       </div>
 
-      <Card title="端形态" sub="同一份代码的三种呈现 —— 切换只影响布局，不影响权限" span={12}>
+      <Card
+        title="布局与主题预览"
+        sub="只影响排版与配色，不影响权限；身份（桌面端 / 网页版 / 手机端）由运行载体决定"
+        span={12}
+      >
         <div className="os-choice">
           <button
             className="os-choice-option"
@@ -305,7 +313,7 @@ export function Settings({
               <IconRefresh size={15} /> 跟随窗口
             </span>
             <span className="os-choice-desc">
-              桌面客户端固定为桌面端；浏览器按视口宽度判定（当前 {MODE_LABELS[detected]}）
+              桌面客户端固定为宽屏；浏览器按视口宽度判定（当前 {LAYOUT_LABELS[detected]}）
             </span>
           </button>
 
@@ -319,7 +327,7 @@ export function Settings({
                 onClick={() => setOverride(candidate)}
               >
                 <span className="os-choice-title">
-                  <Icon size={15} /> {MODE_LABELS[candidate]}
+                  <Icon size={15} /> {LAYOUT_LABELS[candidate]}
                 </span>
                 <span className="os-choice-desc">{MODE_HINTS[candidate]}</span>
               </button>
@@ -328,7 +336,7 @@ export function Settings({
         </div>
         <div className="os-note" style={{ marginTop: 12 }}>
           <span>
-            当前生效形态：<strong>{MODE_LABELS[mode]}</strong>
+            当前生效布局：<strong>{LAYOUT_LABELS[mode]}</strong>
             {override ? '（已手动覆盖）' : '（跟随窗口）'}。
             三端共用同一批端点与同一套鉴权 —— 断点里没有、也不该有权限边界。
           </span>
@@ -478,7 +486,7 @@ export function Settings({
                 {candidate === 'dark' ? '深色' : '浅色'}
               </span>
               <span className="os-choice-desc">
-                {candidate === 'dark' ? '桌面端 / 手机端默认' : '网页版默认'}
+                {candidate === 'dark' ? '宽屏 / 窄屏布局默认' : '紧凑布局默认'}
               </span>
             </button>
           ))}
@@ -541,7 +549,7 @@ export function Settings({
       <Card
         id="settings-runtime"
         title="安装到设备"
-        sub="PWA —— 桌面端独立窗口 / 手机端主屏图标"
+        sub="PWA —— 桌面浏览器独立窗口 / 手机主屏图标"
         span={6}
       >
         {standalone ? (
@@ -563,7 +571,7 @@ export function Settings({
               <div className="os-row">
                 <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
                 <div className="os-row-main">
-                  <div className="os-row-title">桌面端（Chrome / Edge）</div>
+                  <div className="os-row-title">桌面浏览器（Chrome / Edge）</div>
                   <div className="os-row-sub">
                     地址栏右侧的「安装」图标，或浏览器菜单 → 安装应用
                   </div>
@@ -572,7 +580,7 @@ export function Settings({
               <div className="os-row">
                 <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
                 <div className="os-row-main">
-                  <div className="os-row-title">手机端（iOS Safari / Android Chrome）</div>
+                  <div className="os-row-title">手机浏览器（iOS Safari / Android Chrome）</div>
                   <div className="os-row-sub">
                     分享 → 添加到主屏幕。iOS 不派发安装事件，只能用这个手动方式。
                   </div>
@@ -629,7 +637,7 @@ export function Settings({
         )}
         <div className="os-legend" style={{ marginTop: 12 }}>
           <Dot tone="muted" label={<>共 {notifications.length} 条</>} />
-          <Dot tone="accent" label={<>当前形态 {MODE_LABELS[mode]}</>} />
+          <Dot tone="accent" label={<>当前布局 {LAYOUT_LABELS[mode]}</>} />
           <span className="os-legend-item">
             <IconServer size={13} /> 数据来自真实端点
           </span>

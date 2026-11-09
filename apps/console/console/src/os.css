@@ -1165,14 +1165,17 @@ main#os-main:focus-visible {
   background-attachment: fixed;
 }
 
-[data-mode='desktop'] .os-login {
+/* 只有**桌面壳**在宽屏下才排双栏。浏览器即使视口 >=1280（data-mode=desktop）
+   也只是网页版：单卡居中，不显示桌面端专属左栏，避免「左栏自称桌面端、
+   底部却高亮网页版」的自相矛盾。 */
+[data-client='desktop-shell'][data-mode='desktop'] .os-login {
   grid-template-columns: minmax(0, 1fr) 396px;
   column-gap: 56px;
   justify-items: center;
   padding: 48px 64px;
 }
 
-[data-mode='desktop'] .os-login-aside {
+[data-client='desktop-shell'][data-mode='desktop'] .os-login-aside {
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -1181,7 +1184,7 @@ main#os-main:focus-visible {
   justify-content: center;
 }
 
-[data-mode='desktop'] .os-login-card .os-login-brand {
+[data-client='desktop-shell'][data-mode='desktop'] .os-login-card .os-login-brand {
   /* 左栏已经承担品牌区，卡内不重复。 */
   display: none;
 }
@@ -1261,7 +1264,7 @@ main#os-main:focus-visible {
 }
 
 /* 地平线光：唯一装饰，静态，不参与动画。 */
-[data-mode='desktop'] .os-login-aside::after {
+[data-client='desktop-shell'][data-mode='desktop'] .os-login-aside::after {
   content: '';
   display: block;
   height: 1px;
@@ -3163,6 +3166,15 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
 /* 副标题独占一行：否则 360px 下与标题抢横向空间，右侧被挤到贴边。 */
 [data-mode='mobile'] .os-page-sub {
   flex-basis: 100%;
+}
+
+/* 跳过导航链接在手机上只有 39.5px 高（13px 字号 + 上下各 10px padding）。
+   <a> 是 inline 元素，min-height 不生效，必须改成 inline-flex 才能撑到 44px；
+   它只在键盘聚焦时出现，视觉上不会挤占页面。 */
+[data-mode='mobile'] .os-skip-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 [data-mode='mobile'] .os-search {

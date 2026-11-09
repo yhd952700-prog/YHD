@@ -26,6 +26,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from src.version import APP_VERSION
+
 logger = logging.getLogger(__name__)
 
 #: 桌面壳身份标记：前端读 ``navigator.userAgent`` 里的这一段就能确认"我在
@@ -35,7 +37,10 @@ logger = logging.getLogger(__name__)
 #: 选 User-Agent 而不是注入请求头：UA 由 WebView 进程统一附加到**所有**请求
 #: （页面、静态资源、接口），且页面 JS 可直接读取；请求头只能覆盖同源 fetch，
 #: 首屏导航与静态资源拿不到，前端还得让服务端把头部回显出来才能识别自己。
-DESKTOP_UA_TOKEN = "LiuHaoDesktopShell/1.0"
+#:
+#: 版本号取自 ``src/version.py`` 的 ``APP_VERSION``：升级版本时自动跟随，
+#: 不在 UA 里写死一个和产品版本对不上的数字（旧实现写死 ``/1.0``）。
+DESKTOP_UA_TOKEN = f"LiuHaoDesktopShell/{APP_VERSION}"
 #: 保留 Windows + WebView2 的常规 UA 外形，只在末尾追加身份标记。
 DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

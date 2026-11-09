@@ -49,6 +49,20 @@ export const MODE_HINTS: Record<DeviceMode, string> = {
   mobile: '底部导航 · 单列卡片 · 适配安全区',
 }
 
+/**
+ * 布局称呼：只描述排版，不冒充客户端身份。
+ *
+ * 浏览器在宽屏下也走 ``data-mode=desktop`` 的栅格，但它的身份是「网页版」。
+ * 设置页里描述"当前生效的是什么"时必须用这一组词，不能拿 ``MODE_LABELS``
+ * 说成「桌面端（PC 客户端）」——那会让网页端自称桌面端。身份只由
+ * ``CLIENT_LABEL[detectClient()]`` 表达。
+ */
+export const LAYOUT_LABELS: Record<DeviceMode, string> = {
+  desktop: '宽屏布局',
+  web: '紧凑布局',
+  mobile: '窄屏布局',
+}
+
 function readStored(key: string): string | null {
   try {
     return window.localStorage.getItem(key)
