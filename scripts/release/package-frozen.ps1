@@ -29,6 +29,12 @@
   承认「前端源码/模块数就是本次这样」，重采基线。只在确认当前工作树是本次
   要发布的代码时使用；否则请切到冻结提交再打包。
 
+.PARAMETER ReleasePageFile
+  发布页 HTML 的本地副本（必填）。归档到 dist\installer 之后、打印「冻结打包完成」
+  之前，脚本会用 scripts\verify_release_page_values.py 逐处核对页面上的版本/哈希/
+  字节/文件名/data-copy；任何一处不一致就 throw，不打印成功横幅。
+  页面在独立仓库时先下载一份到本地再传本参数。
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\release\package-frozen.ps1 -DryRun
 
@@ -42,6 +48,7 @@ param(
     [string]$OutRoot = "",
     [string]$PythonExe = "",
     [string]$ReleaseGateDir = "",
+    [string]$ReleasePageFile = "",
     [string]$IsccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     [switch]$DryRun,
     [switch]$AcceptFrontendBaseline
@@ -806,8 +813,60 @@ if ((Resolve-Path $OutRoot).Path -ne (Resolve-Path $distRoot).Path) {
     Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD-$Version.json") -Force
 }
 
+# ------------------- 12. 发布门禁：数值来源唯一 + 发布页数值一致（硬失败）
+# 规矩不再靠人记：这两条不过，绝不打印「冻结打包完成」。
+Write-Step "发布门禁：数值来源唯一性与发布页数值一致性"
+$publishGuard = Join-Path $RepoRoot "scripts\release\verify_publish_source.py"
+$pageChecker = Join-Path $RepoRoot "scripts\verify_release_page_values.py"
+if (-not (Test-Path $publishGuard)) {
+    Add-Check "发布来源唯一性" "FAIL" "缺少 $publishGuard（发布门禁补丁未落地）"
+}
+if (-not (Test-Path $pageChecker)) {
+    Add-Check "发布页数值一致性" "FAIL" "缺少 $pageChecker（补丁 0006 未落地）"
+}
+if (-not $ReleasePageFile -or -not (Test-Path $ReleasePageFile)) {
+    Add-Check "发布页数值一致性" "FAIL" "未提供有效的 -ReleasePageFile（发布页数值未核对，拒绝打成功标记）"
+}
+
+# 12.1 来源唯一性：必须 dist\installer 顶层；同名 exe 不得有第二个不同哈希；
+# SHA256SUMS 首行 / FREEZE-RECORD / 实际 exe 三处一致。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $guardOut = & $PythonExe $publishGuard --repo-root $RepoRoot --installer-dir $distInstaller --expected-version $Version --require-record 2>&1 | Out-String
+    $guardCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEap
+}
+$guardLines = @($guardOut.Trim() -split "`r?`n" | Where-Object { $_ -ne "" })
+$guardLast = if ($guardLines.Count -gt 0) { $guardLines[-1] } else { "（无输出）" }
+if ($guardCode -eq 0) {
+    Add-Check "发布来源唯一性" "PASS" $guardLast
+} else {
+    Write-Host $guardOut.TrimEnd()
+    Add-Check "发布来源唯一性" "FAIL" ("退出码 {0}：{1}" -f $guardCode, $guardLast)
+}
+
+# 12.2 页面数值：版本/哈希/字节/文件名/data-copy 全部按 dist\installer 实测值核对。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $pageOut = & $PythonExe $pageChecker --page $ReleasePageFile --version $Version --sha256 $exeHash --size $exeBytes 2>&1 | Out-String
+    $pageCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEap
+}
+$pageLines = @($pageOut.Trim() -split "`r?`n" | Where-Object { $_ -ne "" })
+$pageLast = if ($pageLines.Count -gt 0) { $pageLines[-1] } else { "（无输出）" }
+if ($pageCode -eq 0) {
+    $pageWarns = @($pageLines | Where-Object { $_.StartsWith("[WARN]") }).Count
+    Add-Check "发布页数值一致性" "PASS" ("{0}（WARN {1} 条）" -f $pageLast, $pageWarns)
+} else {
+    Write-Host $pageOut.TrimEnd()
+    Add-Check "发布页数值一致性" "FAIL" ("退出码 {0}：{1}" -f $pageCode, $pageLast)
+}
+
 Write-Host ""
-Write-Host "================ 冻结打包完成 ================" -ForegroundColor Green
 Write-Host "三要素"
 Write-Host "  版本    $Version"
 Write-Host "  体积    $exeSizeMb MiB（payload 见 manifest.json）"
