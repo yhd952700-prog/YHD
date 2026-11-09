@@ -188,6 +188,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # 纯 CLI 入口也是"进程启动"：上一次进程被强杀 / 断电时留下的自产临时产物
+    # （升级暂存、恢复 staging、提醒脚本）在这里顺手有界清掉，不必等下一次网关
+    # 启动。判据 / 命名集合 / 上限 / pid 探测全部复用网关同一套实现，只对
+    # backup（含 restore）这类低频、会写盘的命令执行。
+    if args.command == "backup":
+        from src.common.temp_sweep import run_startup_temp_sweep
+
+        run_startup_temp_sweep()
+
     # Original commands
     if args.command == "audit" and args.audit_command == "detect":
         print(json.dumps(_run_audit_detect(args.db), indent=2))

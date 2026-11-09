@@ -505,6 +505,41 @@ def _register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             owner="ai_local_tools",
             tags={"kernel", "execution", "local", "filesystem", "workspace"},
         ),
+        # Local Real-Execution Capability — constrained static preview (WS1c)
+        # The static root is fixed at tool-registration time (the task workspace);
+        # no command is executed and the server binds 127.0.0.1 only. Declared
+        # here so the execution kernel's scope check can resolve it; it still only
+        # runs when a preview tool is wired into the ToolRegistry.
+        CapabilityEntry(
+            id="preview_start",
+            version="1.0.0",
+            namespace="kernel",
+            name="Workspace Static Preview (start)",
+            description=(
+                "Start a built-in static file server rooted at the task workspace "
+                "(127.0.0.1, auto free port). Paths outside the workspace, "
+                "cross-drive paths and any '..' segment are refused; no shell or "
+                "arbitrary command is executed. Returns a handle + URL and a real "
+                "HTTP self-check."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "preview", "static-server"},
+        ),
+        CapabilityEntry(
+            id="preview_stop",
+            version="1.0.0",
+            namespace="kernel",
+            name="Workspace Static Preview (stop)",
+            description=(
+                "Stop a preview started by preview_start (by handle, or all "
+                "previews owned by the process). Previews are also auto-stopped "
+                "when the task ends/fails and on idle timeout."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "preview", "cleanup"},
+        ),
     ]
 
     for cap in builtins:

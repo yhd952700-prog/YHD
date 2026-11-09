@@ -84,8 +84,8 @@ class TestCompleteness:
         assert not unclassified, f"未分类的内核动作：{unclassified}"
         assert not stale, f"注册表中有已不存在的动作：{stale}"
 
-    def test_total_is_47(self):
-        assert len(KERNEL_ACTION_RISK) == 47
+    def test_total_is_49(self):
+        assert len(KERNEL_ACTION_RISK) == 49
 
 
 # --------------------------------------------------------------------------- #
@@ -107,7 +107,7 @@ class TestTiers:
         assert counts == {
             RiskTier.LOW: 17,
             RiskTier.MEDIUM: 13,
-            RiskTier.HIGH: 15,
+            RiskTier.HIGH: 17,
             RiskTier.CRITICAL: 2,
         }, counts
 

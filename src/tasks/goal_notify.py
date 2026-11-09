@@ -54,18 +54,50 @@ def _failed_task_count(entry: Dict[str, Any]) -> int:
     )
 
 
+def _artifact_count(entry: Dict[str, Any]) -> int:
+    """真实产物数：只数有路径（且未被标为不存在）的产物条目。"""
+    artifacts = entry.get("artifacts")
+    if not isinstance(artifacts, list):
+        return 0
+    count = 0
+    for item in artifacts:
+        if isinstance(item, str) and item.strip():
+            count += 1
+        elif isinstance(item, dict):
+            path = str(item.get("path") or "").strip()
+            if path and item.get("exists") is not False:
+                count += 1
+    return count
+
+
 def goal_notification_text(entry: Dict[str, Any]) -> Tuple[str, str]:
     """把一条 goal 终态记录翻译成用户看得懂的一句话通知。
 
     没有内部状态码、异常文本或任务 id；失败时只给下一步动作。
+    ``completed`` 不等于「交付」：目标要求文件却没有任何产物时，不能说
+    「可以查看结果」。
     """
     goal_text = _shorten(entry.get("natural_language") or "你派出的任务")
     state = str(entry.get("state") or "").strip().lower()
     failed_tasks = _failed_task_count(entry)
+    artifacts = _artifact_count(entry)
+    try:
+        from src.ai.llm_support import goal_requires_artifact
+
+        needs_artifact = goal_requires_artifact(
+            entry.get("natural_language") or ""
+        )
+    except Exception:  # noqa: BLE001 - 通知不能因导入失败而消失
+        needs_artifact = False
     if state == "completed":
         if failed_tasks > 0:
             return GOAL_NOTIFY_TITLE, (
                 f"「{goal_text}」跑完了，但其中 {failed_tasks} 项没有成功。"
+                "打开「目标与任务」可以查看原因并重试。"
+            )
+        if needs_artifact and artifacts == 0:
+            return GOAL_NOTIFY_TITLE, (
+                f"「{goal_text}」跑完了，但没有产出任何文件，不算完成。"
                 "打开「目标与任务」可以查看原因并重试。"
             )
         body = f"「{goal_text}」已完成。打开「目标与任务」可以查看结果。"

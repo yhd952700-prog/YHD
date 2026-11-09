@@ -38,6 +38,13 @@ EXPECTED_KERNELS = {
 SINGLETON_ENTRIES = [e for e in KERNEL_ENTRIES if e.reason == ""]  # 12 个惰性单例
 
 
+def _skip_or_fail(reason: str) -> None:
+    """本地可 skip 并写明原因；CI 上跳过等于端点没人验证，必须红。"""
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 @pytest.fixture
 def clean_singletons():
     """把 12 个单例的私有全局变量确定性地重置回干净（None），结束后恢复。"""
@@ -175,47 +182,56 @@ def test_kernels_route_mounted_behind_human_principal_gate():
     )
 
 
+@pytest.mark.gate_contract
 def test_kernels_endpoint_requires_human_token_live(monkeypatch):
     """端到端：无令牌返回 401，带有效人类令牌返回 200（覆盖全部 14 内核）。
 
-    若当前环境无法构建完整网关客户端（例如缺少网关运行所需配置），则优雅跳过，
-    但上面的反射测试已证明路由受闸门保护——不属于「橡皮图章」。
+    本地环境无法构建完整网关客户端时 skip 并写明原因（上面的反射测试已证明
+    路由受闸门保护）；CI 上依赖装齐，skip 就意味着这条端到端契约悄悄失效，
+    必须红。
     """
     # Use monkeypatch (not os.environ.setdefault) so the JWT secret is reverted
     # at teardown and never leaks into the shared process for later tests.
     monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-kernel-registry-e2e", prepend=False)
+    # 只有「导入/构造客户端」失败才算环境不足；断言失败（包括 403）必须真红。
     try:
         from fastapi.testclient import TestClient
         from src.gateway.main import get_app
         from src.security.jwt_handler import create_access_token
 
-        app = get_app()
-        with TestClient(app) as client:
-            r401 = client.get("/v1/kernels")
-            assert r401.status_code == 401, (
-                f"无令牌应被闸门拒绝(401)，实际 {r401.status_code}"
-            )
-
-            token, _ = create_access_token("test-principal")
-            r200 = client.get(
-                "/v1/kernels",
-                headers={"X-Liuhao-Token": f"Bearer {token}"},
-            )
-            assert r200.status_code == 200, (
-                f"有效人类令牌应放行(200)，实际 {r200.status_code}: {r200.text}"
-            )
-            body = r200.json()
-            assert set(body["kernels"].keys()) == EXPECTED_KERNELS
-            assert body["total"] == 14
-            # 干净进程里没有任何内核单例被创建（网关 lifespan 只造了 identity，
-            # 那是既有行为，不在本注册表职责内）；context/execution 仍无规范实例。
-            assert body["kernels"]["context"]["lifecycle"] is None
-            assert body["kernels"]["execution"]["lifecycle"] is None
-    except Exception as exc:  # 环境不足以跑完整网关客户端
-        pytest.skip(
+        client_ctx = TestClient(get_app())
+    except Exception as exc:  # noqa: BLE001 - 环境/依赖缺失才跳过
+        _skip_or_fail(
             f"无法在当前环境构建完整网关客户端做端到端 401/200 测试: {exc!r}；"
             "路由受 require_human_principal 闸门保护已由反射测试证明。"
         )
+
+    with client_ctx as client:
+        r401 = client.get("/v1/kernels")
+        assert r401.status_code == 401, (
+            f"无令牌应被闸门拒绝(401)，实际 {r401.status_code}"
+        )
+
+        # 「有效人类令牌」必须是真实个人账号：require_human_principal 要求
+        # metadata.kind == "human"（src/gateway/policy.py:280）。缺 metadata 的
+        # 令牌会被正确判为 403「不是个人账号」，那不是环境问题，也不是产品缺陷。
+        token, _ = create_access_token(
+            "test-principal", metadata={"kind": "human", "scope": "L0"}
+        )
+        r200 = client.get(
+            "/v1/kernels",
+            headers={"X-Liuhao-Token": f"Bearer {token}"},
+        )
+        assert r200.status_code == 200, (
+            f"有效人类令牌应放行(200)，实际 {r200.status_code}: {r200.text}"
+        )
+        body = r200.json()
+        assert set(body["kernels"].keys()) == EXPECTED_KERNELS
+        assert body["total"] == 14
+        # 干净进程里没有任何内核单例被创建（网关 lifespan 只造了 identity，
+        # 那是既有行为，不在本注册表职责内）；context/execution 仍无规范实例。
+        assert body["kernels"]["context"]["lifecycle"] is None
+        assert body["kernels"]["execution"]["lifecycle"] is None
 # --------------------------------------------------------------------------- #
 # 6. 「存在即 READY」不变量 —— 本轮给生命周期补上的驱动方
 # --------------------------------------------------------------------------- #

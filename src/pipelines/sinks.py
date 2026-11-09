@@ -19,6 +19,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -27,6 +28,21 @@ from typing import Any, Dict, List, Optional, TextIO
 from .base import PipelineContext, PipelineError, PipelineStage
 
 logger = logging.getLogger(__name__)
+
+#: SQL 标识符白名单：表名/列名来自配置或首条记录键，绝不允许拼接任意文本
+#: （否则 ``INSERT INTO {table}({cols})`` 就是一个注入面）。
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_]\w*$", re.ASCII)
+
+
+def _assert_sql_identifier(value: Any, kind: str) -> str:
+    text = str(value or "")
+    if not _SQL_IDENTIFIER.fullmatch(text):
+        raise PipelineError(
+            f"unsafe SQL {kind} identifier: {text!r} "
+            "(only [A-Za-z_][A-Za-z0-9_]* is allowed)",
+            stage_name="DatabaseSink",
+        )
+    return text
 
 Record = Dict[str, Any]
 Records = List[Record]
@@ -400,9 +416,12 @@ class DatabaseSink(BaseSink):
             return 0
 
         columns = list(records[0].keys())
+        table = _assert_sql_identifier(self.table_name, "table")
+        for column in columns:
+            _assert_sql_identifier(column, "column")
         placeholders = ", ".join(["?"] * len(columns))
         column_list = ", ".join(columns)
-        sql = f"INSERT INTO {self.table_name} ({column_list}) VALUES ({placeholders})"
+        sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
 
         values = [tuple(r.get(col) for col in columns) for r in records]
         self._cursor.executemany(sql, values)

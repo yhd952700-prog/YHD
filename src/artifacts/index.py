@@ -61,6 +61,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src._time import utc_now
 from src.ai.workspace import WorkspaceViolation, resolve_in_workspace, workspace_root
+from src.common.data_paths import resolve_store_path
 
 __all__ = [
     "ArtifactIndex",
@@ -106,17 +107,17 @@ CREATE INDEX IF NOT EXISTS idx_artifact_path
 def default_index_path() -> str:
     """未显式指定时的索引库位置。
 
-    与执行 journal / 目标历史的落盘约定保持一致：
-    ``LIUHAO_WORKSPACE_ROOT/liuhao_artifacts.db`` 优先（隔离验收可改向），
-    否则 ``<repo_root>/.liuhao_artifacts.db``。
+    ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > ``<repo_root>``
+    （与执行 journal / 目标历史同一套解析，见 ``src.common.data_paths``）。
     """
-    root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
-    if root:
-        return os.path.join(root, "liuhao_artifacts.db")
     repo_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
-    return os.path.join(repo_root, ".liuhao_artifacts.db")
+    return resolve_store_path(
+        "liuhao_artifacts.db",
+        os.path.join(repo_root, ".liuhao_artifacts.db"),
+        workspace=True,
+    )
 
 
 def rewrite_workspace_paths(
@@ -277,6 +278,20 @@ class ArtifactIndex:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self._lock = threading.RLock()
+
+    # ------------------------------------------------------------------ #
+    # 读取
+    # ------------------------------------------------------------------ #
+    def read_rows(self, workspace: Optional[str] = None) -> List[sqlite3.Row]:
+        """只读导出索引行；由本类持有锁，调用方不得直接碰 ``_conn``。"""
+        sql = "SELECT * FROM artifact_writes"
+        params: Tuple[Any, ...] = ()
+        if workspace is not None:
+            sql += " WHERE workspace = ?"
+            params = (workspace,)
+        sql += " ORDER BY workspace, path_key, version"
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
 
     # ------------------------------------------------------------------ #
     # 写入

@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from src.common.redaction import redact_text
+from src.common.data_paths import default_data_file
 
 
 def _redact_details(value: Any) -> Any:
@@ -579,6 +580,13 @@ class AuditStore:
             # Anything else must make a conscious configuration decision instead
             # of clobbering evidence.
             explicit = os.environ.get("AUDIT_DB_PATH")
+            if not explicit:
+                # 隔离运行（测试/冒烟）通常只设 ``LIUHAO_DATA_DIR``；此时把审计库
+                # 落在数据根里，既满足隔离，也不会碰冰封的证据库。数据根未设置时
+                # 仍然 fail-closed（见 :func:`src.common.data_paths.data_root`）。
+                data_path = default_data_file("audit_store.db")
+                if data_path:
+                    explicit = data_path
             if not explicit:
                 raise RuntimeError(
                     "AUDIT_DB_PATH is not set and no db_path was supplied. "

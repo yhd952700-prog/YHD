@@ -245,7 +245,16 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
         "有界、非破坏，且不授予权限。",
     ),
 
-    # ---- HIGH (15): authority change / destructive / code lifecycle ------ #
+    "memory.delete_by_key": ActionRisk(
+        RiskTier.HIGH, False, True,
+        "精确删除单条记忆（内存 + 持久化，不可逆）：破坏面固定为一个 key，"
+        "用于画像纠正（删除单条事实/偏好）。与批量前缀删同档 HIGH + "
+        "destructive，不预批准内部服务——服务主体不应凭动作名自行删用户记忆。"
+        "外部入口仅 DELETE /v1/profile/facts/{key} 与 "
+        "/v1/profile/preferences/{key}，require_human_principal，"
+        "且 key 前缀由服务端锁到本人命名空间。",
+    ),
+    # ---- HIGH (17): authority change / destructive / code lifecycle ------ #
     "identity.grant_permission": ActionRisk(
         RiskTier.HIGH, True, False,
         "授予权限：权限变更。",
@@ -301,6 +310,17 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
     "memory.auto_cleanup": ActionRisk(
         RiskTier.HIGH, False, True,
         "自动清理记忆：不可逆地销毁已存状态。",
+    ),
+    "memory.delete_by_key_prefix": ActionRisk(
+        RiskTier.HIGH, False, True,
+        "按 key 前缀批量删除记忆（内存 + 持久化，不可逆）：是批删而非单 key，"
+        "破坏面比 memory.store 大，故与 auto_cleanup 同档 HIGH + destructive，"
+        "不预批准内部服务。可达路径只有画像删除："
+        "PersonalContextManager.delete_fact / delete_preference / clear 调用它，"
+        "HTTP 入口是 DELETE /v1/profile、/v1/profile/facts/{key}、"
+        "/v1/profile/preferences/{key}，全部经 require_human_principal"
+        "（非 kind=human 令牌 403），且前缀由服务端拼成 "
+        "profile:user-{令牌主体}:，调用方无法指定别人的命名空间。",
     ),
     "event.clear_history": ActionRisk(
         RiskTier.HIGH, False, True,

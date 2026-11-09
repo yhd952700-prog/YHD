@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -25,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from src.tasks import _queue_paths
+from src.tasks import local_scheduler as local_scheduler_module
 from src.tasks.local_handlers import (
     HEARTBEAT_KEY_PREFIX,
     LOCAL_HEARTBEAT_JOB,
@@ -33,11 +36,14 @@ from src.tasks.local_handlers import (
     seed_local_jobs,
 )
 from src.tasks.local_scheduler import (
+    CANCELLED,
     COMPLETED,
     DEAD,
     PENDING,
     RETRY_WAIT,
+    RUNNING,
     LocalScheduler,
+    QueueFull,
     default_max_concurrency,
     default_scheduler_db,
     local_scheduler_enabled,
@@ -499,6 +505,7 @@ async def test_heartbeat_job_chains_and_is_dedupe_safe(tmp_path):
 
 def test_default_paths_and_concurrency_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
     monkeypatch.delenv("LIUHAO_LOCAL_SCHEDULER_DB", raising=False)
     monkeypatch.delenv("LIUHAO_LOCAL_SCHEDULER_CONCURRENCY", raising=False)
     monkeypatch.delenv("LIUHAO_LOCAL_SCHEDULER", raising=False)
@@ -523,3 +530,446 @@ def test_default_paths_and_concurrency_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LIUHAO_LOCAL_SCHEDULER", "maybe")
     with pytest.raises(ValueError):
         local_scheduler_enabled()
+
+
+# ------------------------------------------------- 超时 / 取消终态 / 可重入
+
+
+async def test_hung_handler_times_out_and_goes_dead_not_permanently_running(tmp_path):
+    """证据③：挂住的 handler 超时后判失败（死信），不能永远停在 running。"""
+    clock = FakeClock()
+    sched = _scheduler(tmp_path, clock)
+
+    async def hang():
+        await asyncio.sleep(0.6)
+
+    sched.register("hang", hang)
+    job_id = sched.enqueue(
+        "hang", job_key="hang-1", timeout_seconds=0.05, max_attempts=1
+    )
+
+    assert await _drive(
+        sched, lambda: sched.get_job(job_id)["status"] == DEAD, timeout=3.0
+    )
+    row = sched.get_job(job_id)
+    assert row["status"] == DEAD
+    assert row["attempts"] == 1
+    assert "TimeoutError" in (row["last_error"] or "")
+    sched.close()
+
+
+async def test_cancelled_running_job_stays_cancelled(tmp_path):
+    """证据④：被取消的在途任务，handler 结束后终态仍是 cancelled。"""
+    clock = FakeClock()
+    sched = _scheduler(tmp_path, clock, max_concurrency=1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block():
+        started.set()
+        await release.wait()
+
+    sched.register("block", block, reentrant=True)
+    job_id = sched.enqueue("block", job_key="cancel:1")
+    runner = asyncio.create_task(sched.run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert sched.get_job(job_id)["status"] == RUNNING
+        assert sched.cancel_jobs_by_prefix("cancel") == 1
+        release.set()
+        await asyncio.sleep(0.2)
+        assert sched.get_job(job_id)["status"] == CANCELLED
+    finally:
+        sched.stop()
+        await asyncio.wait_for(runner, timeout=3.0)
+    # _complete 带 AND status='running'：handler 正常返回也不能覆盖 cancelled
+    assert sched.get_job(job_id)["status"] == CANCELLED
+    sched.close()
+
+
+async def test_crash_after_side_effect_is_not_replayed_for_non_reentrant(tmp_path):
+    """TOOL-04：默认不可重入；崩溃恢复后同一副作用只能出现一次。"""
+    clock = FakeClock()
+    sched = _scheduler(tmp_path, clock, lease_seconds=5.0)
+    trace: list[str] = ["pre-crash"]
+
+    async def side():
+        trace.append("side")
+
+    sched.register("side", side)  # 默认 reentrant=False
+    await side()  # 崩溃前已经执行过一次副作用
+    job_id = sched.enqueue("side", job_key="side-1")
+
+    claimed = sched._claim_due(1)
+    assert [job["id"] for job in claimed] == [job_id]
+    sched._mark_executing(job_id)  # handler 已开始 → 副作用可能已发生
+
+    clock.advance(6)
+    assert sched.recover_expired_leases() == 1
+
+    row = sched.get_job(job_id)
+    assert row["status"] == DEAD
+    assert row["attempts"] == 1  # attempts 与实际副作用次数对得上
+    assert "不可重入" in (row["last_error"] or "")
+    assert trace == ["pre-crash", "side"], trace  # 没有第二次 "side"
+    sched.close()
+
+
+async def test_reentrant_job_is_replayed_after_crash(tmp_path):
+    """显式标 reentrant=True 的任务才允许崩溃后重试。"""
+    clock = FakeClock()
+    sched = _scheduler(tmp_path, clock, lease_seconds=5.0)
+
+    async def side():
+        return None
+
+    sched.register("side", side, reentrant=True)
+    job_id = sched.enqueue("side", job_key="side-r")
+    sched._claim_due(1)
+    sched._mark_executing(job_id)
+    clock.advance(6)
+
+    assert sched.recover_expired_leases() == 1
+    assert sched.get_job(job_id)["status"] == RETRY_WAIT
+    sched.close()
+
+
+def test_queue_limit_rejects_new_jobs_but_keeps_idempotent_retry(tmp_path):
+    clock = FakeClock()
+    sched = _scheduler(tmp_path, clock, max_queue=1)
+    first = sched.enqueue("q", job_key="first", delay_seconds=10)
+    with pytest.raises(QueueFull):
+        sched.enqueue("q", job_key="second", delay_seconds=10)
+    # 队列满时，重复入队同一个 key 仍返回原 id（幂等不能被上限打断）
+    assert sched.enqueue("q", job_key="first", delay_seconds=10) == first
+    assert [job["id"] for job in sched.list_jobs(None, 20)] == [first]
+    sched.close()
+
+
+def test_different_concurrency_keys_do_not_serialize_same_job_name(tmp_path):
+    clock = FakeClock()
+    sched = _scheduler(tmp_path, clock, max_concurrency=2)
+    a = sched.enqueue("reminder", job_key="r:1", concurrency_key="reminder:1")
+    b = sched.enqueue("reminder", job_key="r:2", concurrency_key="reminder:2")
+    claimed = sched._claim_due(2)
+    assert {job["id"] for job in claimed} == {a, b}
+    sched.close()
+
+
+# ------------------------------------------------------- 旧库自动补列（升级路径）
+
+#: 迁移前（新增 concurrency_key 等列之前）的建表语句。
+_LEGACY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS local_jobs (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_key              TEXT NOT NULL,
+    job_name             TEXT NOT NULL,
+    payload              TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    run_at               TEXT NOT NULL,
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    max_attempts         INTEGER NOT NULL DEFAULT 3,
+    backoff_seconds      REAL NOT NULL DEFAULT 2.0,
+    backoff_multiplier   REAL NOT NULL DEFAULT 2.0,
+    max_backoff_seconds  REAL NOT NULL DEFAULT 300.0,
+    last_error           TEXT,
+    result               TEXT,
+    lease_owner          TEXT,
+    lease_expires_at     TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    completed_at         TEXT,
+    dead_lettered_at     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_local_jobs_active_key
+    ON local_jobs(job_key) WHERE status IN ('pending', 'running', 'retry_wait');
+CREATE INDEX IF NOT EXISTS idx_local_jobs_due
+    ON local_jobs(status, run_at);
+CREATE INDEX IF NOT EXISTS idx_local_jobs_name
+    ON local_jobs(job_name, status);
+"""
+
+
+def _make_legacy_db(path: Path) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(_LEGACY_SCHEMA)
+        now = "2026-11-01T00:00:00"
+        conn.execute(
+            "INSERT INTO local_jobs (job_key, job_name, payload, status, run_at,"
+            " attempts, max_attempts, backoff_seconds, backoff_multiplier,"
+            " max_backoff_seconds, last_error, result, lease_owner, lease_expires_at,"
+            " created_at, updated_at, completed_at, dead_lettered_at)"
+            " VALUES ('legacy:1', 'liuhao.history.echo', '{}', 'completed', ?,"
+            " 1, 3, 2.0, 2.0, 300.0, NULL, '\"legacy\"', NULL, NULL, ?, ?, ?, NULL)",
+            (now, now, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_legacy_db_is_auto_migrated_and_scheduler_starts(tmp_path):
+    """升级用户真实路径：旧库缺 concurrency_key 等列，启动时必须自动补齐。"""
+    db = tmp_path / "legacy.db"
+    _make_legacy_db(db)
+    before = {row[1] for row in sqlite3.connect(str(db)).execute("PRAGMA table_info(local_jobs)")}
+    assert "concurrency_key" not in before
+
+    sched = LocalScheduler(
+        str(db), now_fn=FakeClock(datetime(2026, 11, 8)),
+        audit_sink=lambda action, outcome, details: None,
+    )
+    try:
+        cols = {row[1] for row in sched._conn.execute("PRAGMA table_info(local_jobs)")}
+        assert set(local_scheduler_module._NEW_COLUMNS) <= cols
+        indexes = {row[1] for row in sched._conn.execute("PRAGMA index_list(local_jobs)")}
+        assert "idx_local_jobs_concurrency" in indexes
+
+        # 历史任务与数据都还在
+        legacy = sched.get_job(1)
+        assert legacy["status"] == COMPLETED
+        assert legacy["result"] == "legacy"
+
+        # 新列真的可用：带 concurrency_key 的新任务能入队并读回
+        job_id = sched.enqueue("new_job", delay_seconds=0, concurrency_key="reminder:1")
+        assert sched.get_job(job_id)["concurrency_key"] == "reminder:1"
+    finally:
+        sched.close()
+
+
+def test_migration_failure_says_scheduler_not_started(tmp_path, monkeypatch):
+    """补列失败必须明确报「排程器未启动」，不能静默带病启动。"""
+    db = tmp_path / "legacy.db"
+    _make_legacy_db(db)
+    broken = dict(local_scheduler_module._NEW_COLUMNS)
+    broken["concurrency_key"] = "TEXT NOT NULL DEFAULT ("
+    monkeypatch.setattr(local_scheduler_module, "_NEW_COLUMNS", broken)
+
+    with pytest.raises(RuntimeError, match="本地排程器未启动"):
+        LocalScheduler(
+            str(db), now_fn=FakeClock(datetime(2026, 11, 8)),
+            audit_sink=lambda action, outcome, details: None,
+        )
+
+
+# --------------------------------------------- 调度库跟随数据根（隔离缺口）
+
+
+def _patch_data_root(monkeypatch, tmp_path: Path, legacy_dir: Path) -> Path:
+    """``LIUHAO_DATA_DIR`` 生效 + 旧位置指向可控目录，返回新目标路径。"""
+    data = tmp_path / "data"
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(data))
+    monkeypatch.delenv("LIUHAO_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("LIUHAO_LOCAL_SCHEDULER_DB", raising=False)
+    monkeypatch.setattr(_queue_paths, "legacy_queue_dir", lambda: legacy_dir)
+    return data / "queue" / "local_scheduler.db"
+
+
+def _new_scheduler(path: Path, clock: FakeClock | None = None) -> LocalScheduler:
+    return LocalScheduler(
+        str(path),
+        now_fn=clock or FakeClock(datetime(2026, 11, 8)),
+        audit_sink=lambda action, outcome, details: None,
+    )
+
+
+def _schema(path: Path) -> tuple[list, list]:
+    conn = sqlite3.connect(str(path))
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(local_jobs)")]
+        idx = [row[1] for row in conn.execute("PRAGMA index_list(local_jobs)")]
+    finally:
+        conn.close()
+    return cols, idx
+
+
+def _job_keys(path: Path) -> list[str]:
+    conn = sqlite3.connect(str(path))
+    try:
+        return sorted(row[0] for row in conn.execute("SELECT job_key FROM local_jobs"))
+    finally:
+        conn.close()
+
+
+def test_queue_db_follows_data_root_when_only_legacy_exists(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+    legacy_db = legacy_dir / "local_scheduler.db"
+    sched = _new_scheduler(legacy_db)
+    sched.enqueue("old_job", job_key="legacy:1", delay_seconds=0)
+    sched.close()
+    legacy_before = _schema(legacy_db)
+
+    resolved = Path(default_scheduler_db())
+
+    assert resolved == target, "旧位置有库时必须判定为目标位置"
+    assert target.exists(), "旧库必须被迁移到数据根"
+    assert legacy_db.exists(), "旧文件必须保留，不能删"
+    assert _job_keys(target) == _job_keys(legacy_db) == ["legacy:1"]
+    assert _schema(target) == legacy_before, "迁移副本的列与索引必须和旧库一致"
+
+
+def test_queue_db_follows_data_root_when_only_new_exists(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sched = _new_scheduler(target)
+    sched.enqueue("new_job", job_key="new:1", delay_seconds=0)
+    sched.close()
+
+    assert Path(default_scheduler_db()) == target
+    assert not (legacy_dir / "local_scheduler.db").exists()
+    assert _job_keys(target) == ["new:1"]
+
+
+def test_queue_db_keeps_new_when_both_locations_exist(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+    legacy_db = legacy_dir / "local_scheduler.db"
+    for path, key in ((target, "new:1"), (legacy_db, "old:1")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sched = _new_scheduler(path)
+        sched.enqueue("job", job_key=key, delay_seconds=0)
+        sched.close()
+    legacy_digest = _queue_paths.file_digest(legacy_db)
+
+    assert Path(default_scheduler_db()) == target
+    assert _job_keys(target) == ["new:1"], "两边都有时必须以新位置为准"
+    assert _queue_paths.file_digest(legacy_db) == legacy_digest, "旧文件不能被改写/删除"
+    assert _job_keys(legacy_db) == ["old:1"]
+
+
+def test_queue_db_initializes_when_neither_exists(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+
+    resolved = Path(default_scheduler_db())
+
+    assert resolved == target
+    assert not target.exists(), "两边都没有时不要凭空建库，交给 LocalScheduler 初始化"
+    sched = _new_scheduler(target)
+    sched.close()
+    assert target.exists()
+
+
+def test_queue_db_migration_failure_falls_back_to_legacy(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+    legacy_db = legacy_dir / "local_scheduler.db"
+    sched = _new_scheduler(legacy_db)
+    sched.enqueue("old_job", job_key="legacy:1", delay_seconds=0)
+    sched.close()
+
+    def _boom(source, target_path, *, kind):
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(_queue_paths, "_copy_and_verify", _boom)
+
+    resolved = Path(default_scheduler_db())
+
+    assert resolved == legacy_db, "迁移失败必须退回旧库，不能以空库启动"
+    assert not target.exists(), "失败不能留下半截新文件"
+    reopened = _new_scheduler(resolved)
+    try:
+        assert _job_keys(resolved) == ["legacy:1"]
+    finally:
+        reopened.close()
+
+
+async def test_migrated_old_schema_db_adds_columns_then_index(tmp_path, monkeypatch):
+    """迁移到旧结构库：补列必须在建新索引之前，不能在迁移路径上重演启动失败。"""
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+    legacy_db = legacy_dir / "local_scheduler.db"
+    _make_legacy_db(legacy_db)
+    conn = sqlite3.connect(str(legacy_db))
+    try:
+        conn.execute(
+            "INSERT INTO local_jobs (job_key, job_name, payload, status, run_at,"
+            " attempts, max_attempts, backoff_seconds, backoff_multiplier,"
+            " max_backoff_seconds, created_at, updated_at)"
+            " VALUES ('legacy:pending', 'after_upgrade', '{}', 'pending',"
+            " '2026-11-08T08:59:00', 0, 3, 2.0, 2.0, 300.0,"
+            " '2026-11-07T00:00:00', '2026-11-07T00:00:00')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = Path(default_scheduler_db())
+    assert migrated == target
+    sched = _new_scheduler(migrated, FakeClock(datetime(2026, 11, 8, 9, 0, 0)))
+    calls: list[str] = []
+
+    async def after_upgrade() -> None:
+        calls.append("ran")
+
+    sched.register("after_upgrade", after_upgrade)
+    try:
+        cols = {row[1] for row in sched._conn.execute("PRAGMA table_info(local_jobs)")}
+        indexes = {row[1] for row in sched._conn.execute("PRAGMA index_list(local_jobs)")}
+        assert set(local_scheduler_module._NEW_COLUMNS) <= cols
+        assert "idx_local_jobs_concurrency" in indexes
+        assert await _drive(sched, lambda: bool(calls), timeout=3.0)
+        jobs = {job["job_key"]: job for job in sched.list_jobs(limit=100)}
+        assert jobs["legacy:pending"]["status"] == COMPLETED
+        assert jobs["legacy:1"]["status"] == COMPLETED
+    finally:
+        sched.close()
+
+
+async def test_migrated_queue_db_keeps_schema_and_runs_pending_job(tmp_path, monkeypatch):
+    """真实证据：旧位置 pending + 已完成 legacy → 迁移 → 用真实排程器跑一次 tick。"""
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target = _patch_data_root(monkeypatch, tmp_path, legacy_dir)
+    legacy_db = legacy_dir / "local_scheduler.db"
+    clock = FakeClock(datetime(2026, 11, 8, 9, 0, 0))
+
+    source = _new_scheduler(legacy_db, clock)
+    done_calls: list[str] = []
+
+    async def legacy_done() -> None:
+        done_calls.append("legacy")
+
+    source.register("legacy_done", legacy_done)
+    source.enqueue("legacy_done", job_key="legacy:done", delay_seconds=0)
+    assert await _drive(source, lambda: bool(done_calls), timeout=3.0)
+    source.enqueue(
+        "after_upgrade",
+        job_key="legacy:pending",
+        delay_seconds=0,
+        concurrency_key="reminder:1",
+    )
+    source.close()
+    source_schema = _schema(legacy_db)
+
+    migrated = Path(default_scheduler_db())
+    assert migrated == target
+    assert legacy_db.exists(), "旧文件保留"
+    assert _schema(migrated) == source_schema, "迁移副本列/索引必须与旧库一致"
+    assert set(local_scheduler_module._NEW_COLUMNS) <= set(_schema(migrated)[0])
+    assert "idx_local_jobs_concurrency" in _schema(migrated)[1]
+
+    dest = _new_scheduler(migrated, clock)
+    pending_calls: list[str] = []
+
+    async def after_upgrade() -> None:
+        pending_calls.append("ran")
+
+    dest.register("after_upgrade", after_upgrade)
+    try:
+        assert await _drive(dest, lambda: bool(pending_calls), timeout=3.0)
+        jobs = {job["job_key"]: job for job in dest.list_jobs(limit=100)}
+        assert jobs["legacy:pending"]["status"] == COMPLETED
+        assert jobs["legacy:pending"]["attempts"] == 1
+        assert jobs["legacy:done"]["status"] == COMPLETED, "已完成的历史行必须还在"
+    finally:
+        dest.close()

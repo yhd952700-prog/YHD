@@ -89,13 +89,34 @@ def register_local_jobs(
     service lazily so the scheduler process and the AI tool share one store
     (same SQLite database).
     """
-    scheduler.register(LOCAL_HEARTBEAT_JOB, _make_heartbeat_handler(scheduler))
     scheduler.register(
-        REMINDER_FIRE_JOB, _make_reminder_handler(scheduler, reminder_service)
+        LOCAL_HEARTBEAT_JOB, _make_heartbeat_handler(scheduler), reentrant=True
+    )
+    # 提醒/摘要自身有 dispatch intent 幂等标记（重启后按 unknown 封口而不是
+    # 重弹），所以允许崩溃后重试；业务层保证最多响一次。
+    scheduler.register(
+        REMINDER_FIRE_JOB,
+        _make_reminder_handler(scheduler, reminder_service),
+        reentrant=True,
     )
     scheduler.register(
-        REMINDER_DIGEST_JOB, _make_reminder_digest_handler(scheduler, reminder_service)
+        REMINDER_DIGEST_JOB,
+        _make_reminder_digest_handler(scheduler, reminder_service),
+        reentrant=True,
     )
+    # 重试耗尽的提醒不能静默消失：排程器死信时回调提醒服务记 missed + 摘要。
+    def _on_dead_letter(info: Dict[str, Any]) -> None:
+        if info.get("job_name") not in (REMINDER_FIRE_JOB, REMINDER_DIGEST_JOB):
+            return
+        try:
+            svc = reminder_service or get_reminder_service(scheduler=scheduler)
+            svc.handle_dead_letter(info)
+        except Exception:  # noqa: BLE001 - 死信已落盘，回调失败只记录
+            logger.exception(
+                "reminder dead-letter hook failed (job_id=%s)", info.get("id")
+            )
+
+    scheduler.on_dead_letter(_on_dead_letter)
     # 每周自动检查更新：只提示新版本，绝不自动安装（src/upgrade/update_check.py）。
     register_update_check_job(scheduler)
     _register_intel_weekly_jobs(scheduler)

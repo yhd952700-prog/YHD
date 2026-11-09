@@ -43,6 +43,8 @@ from typing import Any, Dict, Optional, Tuple
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from src.tasks._queue_paths import resolve_sqlite_store
+
 
 # --------------------------------------------------------------------------- #
 # Signature algorithm registry (PHASE 3.6 / P0-7)
@@ -223,12 +225,18 @@ class DualSignatureStore:
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
+            # 历史默认写在仓库根 ``dual_signature_evidence.db``（程序目录）。
+            # 这是**审计证据**，不能随升级/卸载被清掉，也不能在只设数据根时
+            # 继续写程序目录：改走统一数据根，旧库存在时按队列同款流程迁移，
+            # 迁移失败继续用旧库（绝不以空证据库启动）。
             root = os.path.dirname(
                 os.path.dirname(os.path.dirname(os.path.dirname(
                     os.path.abspath(__file__)))))
-            db_path = os.environ.get(
-                "DUAL_SIGNATURE_DB_PATH",
+            db_path = resolve_sqlite_store(
+                "dual_signature_evidence.db",
                 os.path.join(root, "dual_signature_evidence.db"),
+                env_var="DUAL_SIGNATURE_DB_PATH",
+                label="双签证据库",
             )
         self._db_path = db_path
         os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)

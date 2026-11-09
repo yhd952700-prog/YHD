@@ -19,7 +19,9 @@
 
 * `kick` 落盘 → worker 以 `BEGIN IMMEDIATE` 原子领取 → 执行完成后 ack 删除。
 * worker 崩溃时行停留在 `running`；重启 `startup()` 会把超过
-  `stale_after_seconds` 的 `running` 行改回 `pending`（队列级恢复扫描）。
+  `stale_after_seconds` 的 `running` 行改回 `pending`，并在 worker 内每
+  `requeue_interval_seconds`（默认 60s）周期扫描一次 —— 只在启动时扫一次时，
+  崩溃后 300s 内重启的 worker 会留下永远 `running` 的僵尸行。
 * 队列**不保证恰好一次**：重新投递可能发生，所以任务侧必须用
   `ExecutionJournal.claim_idempotency()` 兜底（见 `src/tasks/handlers.py`）。
 """
@@ -68,6 +70,7 @@ class SqliteTaskBroker(AsyncBroker):
         queue: str = "default",
         poll_interval: float = 0.2,
         stale_after_seconds: float = 300.0,
+        requeue_interval_seconds: float = 60.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -75,6 +78,7 @@ class SqliteTaskBroker(AsyncBroker):
         self.queue = queue
         self.poll_interval = poll_interval
         self.stale_after_seconds = stale_after_seconds
+        self.requeue_interval_seconds = max(0.05, float(requeue_interval_seconds))
         os.makedirs(os.path.dirname(os.path.abspath(db_path)) or ".", exist_ok=True)
         # isolation_level=None => 自动提交，便于使用显式 BEGIN IMMEDIATE。
         self._conn = sqlite3.connect(
@@ -87,6 +91,7 @@ class SqliteTaskBroker(AsyncBroker):
         self._conn.execute("PRAGMA busy_timeout=15000")
         self._conn.executescript(_SCHEMA)
         self._lock = threading.Lock()
+        self._requeue_task: Optional[asyncio.Task] = None
 
     # -- producer side ----------------------------------------------------
 
@@ -190,6 +195,27 @@ class SqliteTaskBroker(AsyncBroker):
 
     # -- lifecycle --------------------------------------------------------
 
+    async def _requeue_loop(self) -> None:
+        """worker 内周期回收过期 ``running`` 行。
+
+        启动时扫一次不够：若 worker 崩溃后在 ``stale_after_seconds`` 内重启，
+        那一行当时还不算 stale，之后又没有第二次扫描，就会永远卡在 running。
+        这里只由 worker 自己跑（调度器不启动该循环），避免误回收长任务。
+        """
+        while True:
+            await asyncio.sleep(self.requeue_interval_seconds)
+            try:
+                reclaimed = self.requeue_stale()
+            except Exception:  # noqa: BLE001 - 扫描失败不能杀死 worker
+                logger.exception("periodic requeue scan failed (queue=%s)", self.queue)
+                continue
+            if reclaimed:
+                logger.warning(
+                    "periodic requeue reclaimed %d stale task(s) (queue=%s)",
+                    reclaimed,
+                    self.queue,
+                )
+
     async def startup(self) -> None:
         # 只有 worker 进程才做队列级恢复。调度器启动时也调 broker.startup()，
         # 此时它并不是消费者，若也回填 running 行，会把仍在执行的长任务
@@ -202,9 +228,19 @@ class SqliteTaskBroker(AsyncBroker):
                     reclaimed,
                     self.queue,
                 )
+            if self._requeue_task is None or self._requeue_task.done():
+                self._requeue_task = asyncio.create_task(self._requeue_loop())
         await super().startup()
 
     async def shutdown(self) -> None:
+        task = self._requeue_task
+        self._requeue_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await super().shutdown()
         with self._lock:
             self._conn.close()

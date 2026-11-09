@@ -935,6 +935,59 @@ class TestMemorySink:
         sink.close()
 
 
+class TestDatabaseSinkIdentifierWhitelist:
+    """表名/列名来自配置或记录键，绝不能被拼接成任意 SQL。"""
+
+    def _sink(self, table: str = "records"):
+        from src.pipelines.sinks import DatabaseSink
+
+        sink = DatabaseSink(table, connection_string=":memory:")
+        sink.open()
+        sink._cursor.execute("CREATE TABLE records (id INTEGER, name TEXT)")
+        sink._connection.commit()
+        return sink
+
+    def test_normal_identifiers_still_work(self):
+        sink = self._sink()
+        try:
+            assert sink.write_batch([{"id": 1, "name": "ok"}]) == 1
+        finally:
+            sink.close()
+
+    def test_unsafe_table_identifier_is_refused_before_sql(self):
+        sink = self._sink("records; DROP TABLE records")
+        try:
+            with pytest.raises(PipelineError, match="unsafe SQL table identifier"):
+                sink.write_batch([{"id": 1}])
+            assert sink._cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='records'"
+            ).fetchone() is not None
+        finally:
+            sink.close()
+
+    def test_unsafe_column_identifier_is_refused_before_sql(self):
+        sink = self._sink()
+        try:
+            with pytest.raises(PipelineError, match="unsafe SQL column identifier"):
+                sink.write_batch([{"id; DROP TABLE records": 1}])
+            assert sink._cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='records'"
+            ).fetchone() is not None
+        finally:
+            sink.close()
+
+    @pytest.mark.parametrize("name", ["records\n", "rec表", "t\u2028"])
+    def test_identifier_must_be_pure_ascii_and_not_end_with_a_line_break(self, name):
+        # ``^...$`` 单独使用会放过结尾换行；``\w`` 还会放过中文等 Unicode 字符。
+        # 两者都与"只允许 [A-Za-z_][A-Za-z0-9_]*"的承诺不符，这里逐字钉住。
+        sink = self._sink(name)
+        try:
+            with pytest.raises(PipelineError, match="unsafe SQL table identifier"):
+                sink.write_batch([{"id": 1}])
+        finally:
+            sink.close()
+
+
 class TestFileSink:
     """Tests for FileSink."""
 

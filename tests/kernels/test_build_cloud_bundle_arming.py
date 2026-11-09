@@ -30,6 +30,13 @@ _spec.loader.exec_module(bundle)
 ARMING_LINE = 'os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "CRITICAL")'
 
 
+def _skip_or_fail(reason: str) -> None:
+    """本地可 skip 并写明原因；CI 上静静跳过等于发布物没人检查，必须红。"""
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def _rendered_launcher() -> str:
     """Apply the same placeholder substitutions build() applies."""
     source = bundle._LAUNCHER
@@ -48,15 +55,19 @@ def test_bundle_launcher_template_arms_critical_not_high_critical():
     assert "HIGH,CRITICAL" not in launcher
 
 
+@pytest.mark.gate_contract
 def test_bundle_full_build_arms_critical(tmp_path):
     """If the console dist exists, run the real build and check generated serve.py.
 
-    Skipped otherwise -- the full build requires the frontend
-    (apps/console/console/dist/index.html).
+    Locally the full build requires the frontend
+    (apps/console/console/dist/index.html), so a missing dist is a skip with
+    the reason printed. CI builds the console before pytest runs, so a skip
+    there means the build silently stopped happening -- that must be red.
     """
     console_index = bundle.CONSOLE_DIST_SRC / "index.html"
     if not console_index.is_file():
-        pytest.skip("console dist missing; full build requires the frontend")
+        _skip_or_fail(
+            f"console dist missing; full build requires the frontend ({console_index})")
 
     out = tmp_path / "bundle"
     rc = bundle.build(out)

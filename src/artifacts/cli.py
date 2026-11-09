@@ -150,14 +150,10 @@ def _build_parser() -> argparse.ArgumentParser:
 # 默认路径
 # --------------------------------------------------------------------------- #
 def _default_journal_path() -> str:
-    """与 ``ai_management._ensure_runtime`` 的 journal 落点保持一致。"""
-    root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
-    if root:
-        return os.path.join(root, "liuhao_execution.journal")
-    repo_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
-    return os.path.join(repo_root, ".liuhao_execution.journal")
+    """与 worker / 网关共用同一个解析入口（含旧位置迁移）。"""
+    from src.tasks.journal import execution_journal_path
+
+    return execution_journal_path()
 
 
 def _resolve_workspace(args: argparse.Namespace) -> str:

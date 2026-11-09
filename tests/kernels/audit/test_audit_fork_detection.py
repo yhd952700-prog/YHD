@@ -6,8 +6,11 @@ chain -- duplicate ``seq`` numbers, the RCA-1 concurrency signature -- and the
 fork metric must be independently countable.
 
 F6: the fail-closed live-DB no-fork monitor (scripts/verify_audit_chain_no_fork.py)
-must (a) SKIP with exit 0 when no live store is deployed, (b) PASS when the
-live store is intact, and (c) FAIL (non-zero) when the live store is forked.
+must (a) report SKIP with exit 3 (NOT VERIFIED) when no live store is deployed,
+(b) PASS with exit 0 when the live store is intact, and (c) FAIL with exit 2
+when the live store is forked. The exit-code contract is the same tri-state
+used by the aggregate (scripts/verify_audit_integrity.py): 0 = PASS,
+3 = SKIP, anything else = FAIL. SKIP is never PASS.
 
 These tests never touch the real deployed audit_store.db; everything runs on
 per-test temp files.
@@ -120,11 +123,50 @@ def _run_gate(db_path) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def _load_aggregate():
+    """Import scripts/verify_audit_integrity.py by path (not a package)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "vai_tristate_contract",
+        REPO_ROOT / "scripts" / "verify_audit_integrity.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_AGGREGATE = _load_aggregate()
+
+
+def _gate_state(rc: int, out: str) -> str:
+    """Classify a gate run with the SAME tri-state contract as the aggregate.
+
+    Mirrors ``scripts/verify_audit_integrity.py::_run_gate`` and reuses its
+    ``SKIP_MARKERS`` so there is one definition of "not verified", not two:
+
+      0 = PASS, 3 = SKIP (NOT VERIFIED), anything else = FAIL.
+      rc 0 that only prints a skip marker is SKIP, never PASS.
+    """
+    if rc == 3:
+        return "SKIP"
+    if rc == 0:
+        lowered = out.lower()
+        if any(marker in lowered for marker in _AGGREGATE.SKIP_MARKERS):
+            return "SKIP"
+        return "PASS"
+    return "FAIL"
+
+
 def test_no_fork_gate_skips_when_no_live_store(tmp_path):
     missing = tmp_path / "does_not_exist.db"
     rc, out = _run_gate(missing)
-    assert rc == 0, "missing live store must SKIP (rc 0), got %d: %s" % (rc, out)
+    assert rc == 3, "missing live store must be SKIP (rc 3), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "SKIP", out
     assert "SKIP" in out
+    assert "NOT VERIFIED" in out
+    # A skip must never be worded as a pass.
+    assert "GATE PASS" not in out, out
 
 
 def test_no_fork_gate_passes_on_clean_live_store(tmp_path):
@@ -132,7 +174,8 @@ def test_no_fork_gate_passes_on_clean_live_store(tmp_path):
     _build_clean_store(str(db), n=4)._conn.close()
     rc, out = _run_gate(db)
     assert rc == 0, "clean live store must PASS (rc 0), got %d: %s" % (rc, out)
-    assert "PASS" in out
+    assert _gate_state(rc, out) == "PASS", out
+    assert "NO-FORK GATE PASS:" in out
 
 
 def _load_gate_module():
@@ -178,10 +221,13 @@ def test_gate_does_not_modify_the_target_store(tmp_path):
 
 def test_gate_selftest_runs_even_without_a_live_store(tmp_path):
     """The deployed DB is gitignored, so CI SKIPs the live check. Prove the gate
-    still does real work there instead of being a green no-op (finding G-2)."""
+    still does real work there instead of being a green no-op (finding G-2),
+    and that the SKIP is reported as NOT VERIFIED (exit 3), not as a pass."""
     rc, out = _run_gate(tmp_path / "does_not_exist.db")
-    assert rc == 0, out
+    assert rc == 3, "no live store must be SKIP (rc 3), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "SKIP", out
     assert "SKIP" in out, "no live store must be reported as a SKIP, not a pass"
+    assert "NOT VERIFIED" in out, out
     assert "SELF-TEST PASS" in out, (
         "no live store means the gate must still prove its detector works; "
         "otherwise CI would learn nothing from this gate")
@@ -238,5 +284,6 @@ def test_no_fork_gate_fails_on_forked_live_store(tmp_path):
     raw.commit()
     raw.close()
     rc, out = _run_gate(db)
-    assert rc != 0, "forked live store must FAIL (non-zero), got %d: %s" % (rc, out)
+    assert rc == 2, "forked live store must FAIL (rc 2), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "FAIL", out
     assert "FAIL" in out

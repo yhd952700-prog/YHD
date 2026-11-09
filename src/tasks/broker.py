@@ -19,8 +19,9 @@
 `LIUHAO_TASK_BROKER` 取值：
 
 * `sqlite`（默认）—— 单机多进程可用，不需要 Redis/Postgres，落盘在
-  `LIUHAO_TASK_DB`（默认 `LIUHAO_WORKSPACE_ROOT/queue/tasks.db`，
-  否则 `~/.liuhao/queue/tasks.db`）。
+  `LIUHAO_TASK_DB`（默认按 `LIUHAO_DATA_DIR/queue` → `LIUHAO_WORKSPACE_ROOT/queue`
+  → `~/.liuhao/queue` 的顺序解析；旧位置已有数据时会先迁移并校验，见
+  `src/tasks/_queue_paths.py`）。
 * `memory` —— 进程内执行（`InMemoryBroker`），只适合单进程开发/测试；
   跨进程的 worker 看不到它。
 * `redis` —— **可选且默认关闭**。需要显式设置 `LIUHAO_TASK_BROKER=redis`
@@ -54,17 +55,9 @@ def broker_mode() -> str:
 
 
 def default_queue_db() -> str:
-    explicit = os.environ.get("LIUHAO_TASK_DB")
-    if explicit:
-        return explicit
-    workspace = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-    base = (
-        os.path.join(workspace, "queue")
-        if workspace
-        else os.path.join(os.path.expanduser("~"), ".liuhao", "queue")
-    )
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "tasks.db")
+    from src.tasks._queue_paths import resolve_queue_file
+
+    return resolve_queue_file("tasks.db", env_var="LIUHAO_TASK_DB")
 
 
 def build_broker(mode: Optional[str] = None, db_path: Optional[str] = None) -> AsyncBroker:

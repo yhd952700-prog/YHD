@@ -234,7 +234,9 @@ class TestChatGate:
         assert result["status"] == "denied"
         # 预算不足与权限不足是两类问题：这里必须说"预算"，不能误导成"权限"。
         assert result["reason"] == "budget_exceeded"
-        assert "预算" in result["reply"]
+        assert "可用预算（按保守 token 估算）" in result["reply"]
+        # 默认配额是系统给的，不能暗示用户自己设错过什么。
+        assert "你设定的" not in result["reply"]
         assert "权限" not in result["reply"]
 
     def test_chat_is_not_refused_when_the_cost_is_unknown(self, monkeypatch):
@@ -324,18 +326,19 @@ class TestTheEstimatorCannotCrashTheGate(_EstimatorHarness):
 
     def test_a_well_formed_history_is_still_counted(self):
         """Hardening must not silently stop counting real prompt text."""
-        from src.ai.liuhao import _history_char_count
+        from src.ai.liuhao import _history_token_count
 
-        n = _history_char_count(
+        n = _history_token_count(
             [{"role": "user", "content": "abcd"}, {"content": "ef"}]
         )
-        assert n == 6
+        # 两段 ASCII 各按 4 字符≈1 token：1 + 1。
+        assert n == 2
 
     def test_a_non_dict_entry_still_contributes_conservatively(self):
-        from src.ai.liuhao import _history_char_count
+        from src.ai.liuhao import _history_token_count
 
         # Raw text in the list is still prompt material -- counted, not dropped.
-        assert _history_char_count(["abcd"]) == 4
+        assert _history_token_count(["abcd"]) == 1
 
 
 class TestAnImplausibleOutputDeclarationCannotFabricateADenial(_EstimatorHarness):

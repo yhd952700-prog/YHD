@@ -4,9 +4,11 @@
 ``list`` / ``failures`` / ``history``。三条命令全部只读：不创建、不修改、
 不取消提醒，也不写投递记录；需要改提醒仍然走对话。
 
-数据库路径与运行时完全一致（``LIUHAO_REMINDERS_DB`` /
-``LIUHAO_LOCAL_SCHEDULER_DB`` / ``LIUHAO_WORKSPACE_ROOT``），所以看到的就是
-排程器进程正在用的那份数据。``--json`` 输出稳定结构，方便以后做界面或监控。
+数据库路径与运行时完全一致：提醒库走 ``reminders.default_reminders_db()``
+（数据根 → 工作区根 → 旧位置，必要时先迁移），排程器库走
+``local_scheduler.default_scheduler_db()``（由排程器进程定义，CLI 只跟随，
+不另搬一份，避免两套并存），所以看到的就是排程器进程正在用的那份数据。
+``--json`` 输出稳定结构，方便以后做界面或监控。
 """
 
 from __future__ import annotations
@@ -19,13 +21,14 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from src.tasks.local_scheduler import LocalScheduler
+from src.tasks.local_scheduler import LocalScheduler, default_scheduler_db
 from src.tasks.reminder_time import WEEKDAY_NAMES, local_timezone
 from src.tasks.reminders import (
     DIGEST_REMINDER_ID,
     REMINDER_DIGEST_JOB,
     REMINDER_FIRE_JOB,
     ReminderStore,
+    default_reminders_db,
 )
 
 DEFAULT_LIST_LIMIT = 10000
@@ -45,29 +48,14 @@ ACK_LABELS = {
 }
 
 
-def _default_db_path(env_key: str, filename: str) -> str:
-    explicit = os.environ.get(env_key)
-    if explicit:
-        return explicit
-    workspace = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-    base = (
-        os.path.join(workspace, "queue")
-        if workspace
-        else os.path.join(os.path.expanduser("~"), ".liuhao", "queue")
-    )
-    return os.path.join(base, filename)
-
-
 def _reminders_db(args: argparse.Namespace) -> str:
-    return getattr(args, "db", None) or _default_db_path(
-        "LIUHAO_REMINDERS_DB", "reminders.db"
-    )
+    """与提醒运行时同一个入口（含旧位置一次性迁移），不另拼路径。"""
+    return getattr(args, "db", None) or default_reminders_db()
 
 
 def _scheduler_db(args: argparse.Namespace) -> str:
-    return getattr(args, "scheduler_db", None) or _default_db_path(
-        "LIUHAO_LOCAL_SCHEDULER_DB", "local_scheduler.db"
-    )
+    """排程器库落点由 ``local_scheduler`` 定义，CLI 只跟随同一函数。"""
+    return getattr(args, "scheduler_db", None) or default_scheduler_db()
 
 
 def _local(

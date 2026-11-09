@@ -9,11 +9,15 @@ and report success.
 Structure:
   * Cases 1-2 are honest behaviours that hold today. They are LOCKED here so a
     future refactor cannot quietly regress them into false success.
-  * Cases 3-5 are RESIDUAL GAPS found by this audit. They are documented with
-    ``xfail`` (non-strict) so the gap is machine-checkable and cannot be
-    forgotten: if it is ever fixed the test reports XPASS rather than silently
-    staying green. Each reason names the exact responsible code site -- see the
-    accompanying inventory report to team-lead.
+  * Cases 3 is a RESIDUAL GAP that has since been FIXED in the execution kernel
+    (non-dict executor returns now fail closed as ``unconfirmed``). The former
+    ``xfail`` was removed so it is a live regression lock -- if the old
+    "wrap non-dict as executed" branch comes back, this test goes red.
+  * Cases 4-5 are still RESIDUAL GAPS. They are documented with **strict**
+    ``xfail`` so they cannot be silently green: if the defect is ever fixed the
+    run goes red (XPASS(strict)) and forces the marker to be removed. Each
+    reason names the exact responsible code site -- see the accompanying
+    inventory report to team-lead.
 
 Data is redirected to temp dirs; the frozen HC-01 audit_store.db is untouched.
 """
@@ -135,20 +139,19 @@ def test_no_artifact_claim_is_not_reported_as_verified_success():
 
 # ---------------------------------------------------------------------------
 # RESIDUAL GAPS (documented, not yet fixed)
+#
+# Strict xfail: a future fix makes XPASS a *failure*, which forces whoever fixed
+# it to delete the marker. Non-strict xfail let both "still broken" and "already
+# fixed" look the same (green) -- that is the假绿 this file used to have.
 # ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "GAP A: ActionExecutor.execute treats a NON-DICT executor return as "
-        "success -- the else-branch wraps it as {'status': 'executed', "
-        "'result': raw} with ok=True (src/kernels/execution/__init__.py). A "
-        "wired executor that returns None therefore reports completed although "
-        "nothing ran. Fixing it changes execution-kernel behaviour: pending "
-        "team-lead authorisation."
-    ),
-)
 def test_executor_returning_none_is_not_reported_as_success():
-    """A wired executor returning ``None`` did nothing -- must not be success."""
+    """GAP A (FIXED 2026-11-08): a wired executor returning ``None`` did nothing.
+
+    The old defect wrapped a non-dict return as ``{'status': 'executed'}`` with
+    ok=True, so the goal reported success. The execution kernel now fails
+    closed (``status: unconfirmed``, ok=False) -- see
+    ``src/kernels/execution/__init__.py``. Kept as a regression lock.
+    """
     res = AgentRuntime(scope="L1", capability_executor=lambda c, i: None).run_goal(
         GOAL, goal_id="fp-none", persist=False
     )
@@ -157,7 +160,7 @@ def test_executor_returning_none_is_not_reported_as_success():
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason=(
         "GAP B: AgentRuntime.run_goal derives state from ctx.failed_tasks ONLY "
         "(src/ai/agent_runtime.py:326-330), ignoring verification results. A "
@@ -183,7 +186,7 @@ def test_verification_failure_is_not_reported_as_completed():
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason=(
         "GAP C: Evaluator reports EvaluationOutcome.SUCCESS with "
         "overall_score=0.0. _determine_outcome returns trivially SUCCESS for an "

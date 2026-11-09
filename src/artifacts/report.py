@@ -147,15 +147,8 @@ def _all_records(index: ArtifactIndex, workspace: Optional[str] = None) -> List[
     这里只读、不写，且复用它的锁避免与写入交错。
     """
     ws = _normalize_workspace(workspace) if workspace else None
-    sql = "SELECT * FROM artifact_writes"
-    params: Tuple[Any, ...] = ()
-    if ws is not None:
-        sql += " WHERE workspace = ?"
-        params = (ws,)
-    sql += " ORDER BY workspace, path_key, version"
     try:
-        with index._lock:  # noqa: SLF001 - 同包只读，见上方说明
-            rows = index._conn.execute(sql, params).fetchall()  # noqa: SLF001
+        rows = index.read_rows(ws)  # 由 ArtifactIndex 自己持锁，避免裸用 _conn
     except sqlite3.DatabaseError:
         return []
     return [_row_to_record(row) for row in rows]

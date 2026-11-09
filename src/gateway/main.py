@@ -32,6 +32,7 @@ _startup_mark("src.gateway.main 开始导入（接下来是 FastAPI / security /
 # 启动耗时统计以此为起点。因此这些导入不能移到文件顶部，逐行 E402 是有意为之。
 from pathlib import Path  # noqa: E402
 from typing import Any, Dict, Optional  # noqa: E402
+import asyncio  # noqa: E402
 
 from fastapi import FastAPI, Request, APIRouter, Depends  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
@@ -1306,7 +1307,7 @@ async def lifespan(app: FastAPI):
     # those to READY and honestly reports the rest as skipped_not_present /
     # no_canonical_instance. Per-kernel failures are recorded (never swallowed)
     # and surfaced below loudly.
-    from ..kernels._registry import initialize_all, shutdown_all
+    from ..kernels._registry import initialize_all, shutdown_all, snapshot as kernel_snapshot
 
     _startup_mark("内核生命周期 initialize_all 开始")
     _init_report = initialize_all()
@@ -1315,6 +1316,16 @@ async def lifespan(app: FastAPI):
     _init_skipped = _init_report.get("skipped_not_present", [])
     _init_no_canonical = _init_report.get("no_canonical_instance", [])
     _init_errors = _init_report.get("errors", [])
+    # 同一份启动报告交给 /v1/ready 的聚合检查项（kernels）。快照只收录启动时
+    # 已存在的实例：之后由请求路径创建的惰性单例天然停在 UNINITIALIZED，不能
+    # 当成故障，否则每次开机都会 503。这里只记录事实，不重新驱动内核。
+    app.state.kernel_lifecycle_report = {
+        "initialized": _init_initialized,
+        "skipped_not_present": _init_skipped,
+        "no_canonical_instance": _init_no_canonical,
+        "errors": _init_errors,
+        "snapshot": kernel_snapshot(),
+    }
     if _init_errors:
         # 失败必须响：绝不静默吞异常（这是本项目反复出现的失败模式）。
         logger.error(
@@ -1675,20 +1686,47 @@ async def lifespan(app: FastAPI):
         return 10.0
 
     def _start_local_scheduler() -> None:
+        """在网关事件循环里托管本地排程器，并把失败如实上报。
+
+        调用方是独立线程（``_deferred_scheduler``），必须把 lifespan 里拿到的
+        事件循环显式传进去：排程器协程只能在该循环里 ``create_task``，否则
+        就是修复前的 ``no running event loop``。失败写进
+        ``/v1/startup.background.errors``，启动器会显示成
+        "核心可用，但后台组件未就绪：<中文原因>"。
+        """
+        step_name = "启动本地排程器（提醒 / 定时任务）"
+        started = time.perf_counter()
+        if scheduler_loop.is_closed():
+            logger.info("本地排程器跳过启动：网关事件循环已关闭")
+            return
         try:
             from ..tasks.scheduler_host import HostedLocalScheduler
 
             hosted_scheduler = HostedLocalScheduler()
-            hosted_scheduler.start()
+            ok = hosted_scheduler.start(loop=scheduler_loop)
             app.state.local_scheduler_host = hosted_scheduler
             _startup_mark(f"本地排程器：{hosted_scheduler.reason}")
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if ok:
+                _bg_step(step_name, True, elapsed_ms)
+            elif hosted_scheduler.start_error:
+                # 真失败：提醒/定时任务不会触发，必须让用户看得见。
+                _bg_step(step_name, False, elapsed_ms, hosted_scheduler.start_error)
+            else:
+                # 按配置不托管 / 另一个进程在跑：正常让位，不是故障。
+                _bg_step(step_name, True, elapsed_ms, hosted_scheduler.reason)
         except Exception as _sched_exc:  # noqa: BLE001 - 托管失败不能阻断启动
+            app.state.local_scheduler_host = None
+            detail = (
+                "本地排程器启动异常（提醒与定时任务不会触发）："
+                f"{type(_sched_exc).__name__}: {_sched_exc}"
+            )
             logger.error(
-                "LOCAL SCHEDULER HOST FAILED TO START -- 提醒将不会被触发：%s",
+                "LOCAL SCHEDULER HOST FAILED TO START -- 提醒与定时任务将不会触发：%s",
                 _sched_exc,
                 exc_info=True,
             )
-            app.state.local_scheduler_host = None
+            _bg_step(step_name, False, (time.perf_counter() - started) * 1000, detail)
 
     def _scheduler_grace_seconds() -> float:
         """排程器延后多久启动。
@@ -1709,6 +1747,23 @@ async def lifespan(app: FastAPI):
                 )
         return 8.0
 
+    def _scheduler_start_timeout_seconds() -> float:
+        """后台启动线程的总预算（含宽限窗口）。
+
+        启动线程可能卡在导入/build 里而不抛异常，``/v1/ready`` 会一直显示
+        "启动中"。超过本阈值即视为启动超时并报 unhealthy。
+        ``LIUHAO_SCHEDULER_START_TIMEOUT_S`` 可覆盖（秒，默认 60）。
+        """
+        raw = (os.environ.get("LIUHAO_SCHEDULER_START_TIMEOUT_S") or "").strip()
+        if raw:
+            try:
+                return max(1.0, float(raw))
+            except ValueError:
+                logger.warning(
+                    "LIUHAO_SCHEDULER_START_TIMEOUT_S=%r 不是数字，按默认 60s", raw
+                )
+        return 60.0
+
     def _deferred_background() -> None:
         grace = _warmup_grace_seconds()
         if grace > 0:
@@ -1726,7 +1781,17 @@ async def lifespan(app: FastAPI):
     # 关闭流程用 getattr 默认 None 读这个属性；先置 None，避免"线程还没跑完
     # 就 Shutdown"时 AttributeError。
     app.state.local_scheduler_host = None
+    # 排程器协程只能在这个循环里 create_task。下面两个后台线程没有运行中的
+    # 事件循环（旧代码就在这里抛出 no running event loop），所以把循环显式
+    # 交给 HostedLocalScheduler.start(loop=...)。
+    scheduler_loop = asyncio.get_running_loop()
     app.state.first_screen_served = threading.Event()
+    # 启动超时基准（含延后启动的宽限窗口）。线程若卡在导入/build 而不抛异常，
+    # /v1/ready 会用这个截止时间把"启动中"转成"启动超时"。
+    app.state.scheduler_start_timeout_s = _scheduler_start_timeout_seconds()
+    app.state.scheduler_start_deadline = (
+        time.monotonic() + app.state.scheduler_start_timeout_s
+    )
     _sched_thread = threading.Thread(
         target=_deferred_scheduler, name="local-scheduler-host", daemon=True
     )

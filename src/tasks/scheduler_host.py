@@ -29,10 +29,12 @@ force=True)`` 会回收所有仍标记 running 的行）。编码为多进程运
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from src._time import utc_now
 from src.common.instance_lock import (
@@ -55,6 +57,14 @@ SCHEDULER_HOST_ENV = "LIUHAO_GATEWAY_SCHEDULER"
 
 _TRUTHY = {"1", "true", "yes", "on", "enabled"}
 _FALSY = {"0", "false", "no", "off", "disabled"}
+
+#: 跨线程启动后，等协程真的进入 ``run()`` 主循环的时间上限（秒）。
+#: 超过即判定"没在网关事件循环里跑起来"，按失败上报而不是假装成功。
+START_HANDSHAKE_SECONDS = 2.0
+
+#: ``run()`` 的句柄：在事件循环线程里是 ``asyncio.Task``，跨线程提交时是
+#: ``concurrent.futures.Future``（``asyncio.run_coroutine_threadsafe`` 的返回值）。
+RunHandle = Union[asyncio.Future, "concurrent.futures.Future"]
 
 
 def hosting_enabled() -> bool:
@@ -119,8 +129,12 @@ class HostedLocalScheduler:
         self._scheduler = scheduler
         self._stop_timeout = stop_timeout
         self._guard: Optional[InstanceLock] = None
-        self._task: Optional[asyncio.Task] = None
+        self._task: Optional[RunHandle] = None
+        #: 给人看的一句"现在是什么状态"（运行中 / 让位原因 / 失败原因）。
         self.reason = ""
+        #: 真失败的中文原因；空字符串表示"不是故障"（按配置关闭或别的进程在跑）。
+        #: 网关把它写进 ``/v1/startup.background.errors``，启动器据此提示用户。
+        self.start_error = ""
 
     @property
     def running(self) -> bool:
@@ -130,14 +144,24 @@ class HostedLocalScheduler:
     def scheduler(self) -> Optional[LocalScheduler]:
         return self._scheduler
 
-    def start(self) -> bool:
-        """在**当前事件循环**里启动；返回是否由本进程运行。
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> bool:
+        """启动托管；返回是否由本进程运行。
 
-        所有失败路径都只记日志并返回 ``False``：托管是增强能力，绝不能
-        阻断网关启动（提醒不响是遗憾，网关起不来是事故）。
+        ``loop`` 必须是网关的事件循环。网关为了不阻塞首屏，把排程器启动放在
+        **独立线程**里（``src/gateway/main.py::_deferred_scheduler``）；在那个
+        线程里没有"运行中的事件循环"，``asyncio.create_task`` 会抛
+        ``RuntimeError: no running event loop`` —— 这正是修复前每次启动都失败、
+        提醒从不触发的根因。从事件循环线程调用时可省略 ``loop``（沿用当前
+        循环）；跨线程调用必须显式传入。
+
+        失败路径都返回 ``False``，并把中文原因写进 :attr:`start_error`。
+        只有"按配置不托管"与"另一个进程已在运行"这两种正常让位不写
+        ``start_error`` —— 它们不是故障，不该让启动器报降级。
         """
+        self.start_error = ""
         if self._task is not None:
             return self.running
+
         try:
             if not hosting_enabled():
                 self.reason = (
@@ -151,7 +175,30 @@ class HostedLocalScheduler:
                 return False
         except ValueError as exc:
             self.reason = f"配置无效：{exc}"
-            logger.error("本地排程器未启动：%s", self.reason)
+            self.start_error = f"本地排程器配置无效：{exc}"
+            logger.error("本地排程器未启动：%s", self.start_error)
+            return False
+
+        target_loop = loop
+        if target_loop is None:
+            try:
+                target_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.reason = "启动位置错误：当前线程没有运行中的事件循环"
+                self.start_error = (
+                    "本地排程器启动失败：调用 start() 的线程没有运行中的事件循环"
+                    "（RuntimeError: no running event loop）。提醒与定时任务不会触发；"
+                    "必须从网关事件循环线程调用，或显式传入 loop=<网关事件循环>"
+                )
+                logger.error(
+                    "本地排程器启动失败（提醒与定时任务不会触发）：%s",
+                    self.start_error,
+                )
+                return False
+        if target_loop.is_closed():
+            # 关闭中的网关：不是故障，也不该在 /v1/startup 上留失败。
+            self.reason = "网关事件循环已关闭，排程器未启动"
+            logger.info("本地排程器未启动：%s", self.reason)
             return False
 
         guard = InstanceLock(self._root, subdir="run", name=LOCK_NAME)
@@ -163,23 +210,31 @@ class HostedLocalScheduler:
             return False
         except InstanceGuardUnavailable as exc:
             self.reason = f"无法获取排程器锁：{exc}"
-            logger.warning("本地排程器未启动：%s", self.reason)
+            self.start_error = f"本地排程器启动失败：无法获取排程器锁（{exc}）"
+            logger.error("本地排程器启动失败：%s", self.start_error)
             return False
 
         try:
             scheduler = self._scheduler or build_local_scheduler()
-            task = asyncio.create_task(scheduler.run(), name="local-scheduler")
         except Exception as exc:  # noqa: BLE001 - 托管失败不能拖垮网关
             guard.release()
-            self.reason = f"{type(exc).__name__}: {exc}"
-            logger.error("本地排程器启动失败：%s", self.reason, exc_info=True)
+            self._record_start_failure(exc)
             return False
 
-        task.add_done_callback(self._on_task_done)
+        try:
+            task = self._schedule_run(scheduler, target_loop)
+        except Exception as exc:  # noqa: BLE001 - 同上
+            guard.release()
+            self._record_start_failure(exc)
+            return False
+
+        # 先落状态再挂回调：若协程此刻已经异常结束，回调会把 reason 覆盖成
+        # "异常退出"，不会被下面的"运行中"抹掉。
         self._guard = guard
         self._scheduler = scheduler
         self._task = task
         self.reason = "运行中"
+        task.add_done_callback(self._on_task_done)
         guard.publish(
             pid=os.getpid(),
             role="gateway",
@@ -188,6 +243,49 @@ class HostedLocalScheduler:
         )
         logger.info("本地排程器已在网关进程内启动（db=%s）", getattr(scheduler, "db_path", "?"))
         return True
+
+    @staticmethod
+    def _schedule_run(
+        scheduler: LocalScheduler, loop: asyncio.AbstractEventLoop
+    ) -> RunHandle:
+        """把 ``scheduler.run()`` 投递到指定的事件循环。
+
+        同线程（lifespan 里直接调用）走 ``create_task``；跨线程（网关后台线程）
+        走 ``run_coroutine_threadsafe``，并等 ``run()`` 真的进入主循环才算成功。
+        """
+        coro = scheduler.run()
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is loop:
+            return loop.create_task(coro, name="local-scheduler")
+
+        handle = asyncio.run_coroutine_threadsafe(coro, loop)
+        deadline = time.monotonic() + START_HANDSHAKE_SECONDS
+        while time.monotonic() < deadline:
+            if scheduler.running:
+                return handle
+            if handle.done():
+                # 协程在启动阶段就结束了（循环已停 / 首轮 tick 直接抛错）。
+                handle.result()
+                raise RuntimeError("本地排程器协程在真正启动前就结束了")
+            time.sleep(0.02)
+        handle.cancel()
+        raise RuntimeError(
+            f"本地排程器协程 {START_HANDSHAKE_SECONDS:.0f}s 内未在网关事件循环中启动"
+            "（事件循环可能被阻塞或已停止）"
+        )
+
+    def _record_start_failure(self, exc: BaseException) -> None:
+        detail = f"{type(exc).__name__}: {exc}"
+        self.reason = detail
+        self.start_error = f"本地排程器启动失败（提醒与定时任务不会触发）：{detail}"
+        logger.error(
+            "本地排程器启动失败（提醒与定时任务不会触发）：%s",
+            detail,
+            exc_info=exc,
+        )
 
     async def stop(self) -> None:
         """停止并释放锁；任何异常都不向调用方抛出。"""
@@ -199,12 +297,14 @@ class HostedLocalScheduler:
             except Exception:  # noqa: BLE001
                 logger.exception("本地排程器停止失败")
         if task is not None:
+            # 跨线程启动时句柄是 concurrent.futures.Future，需要转成可 await 的。
+            awaitable = task if isinstance(task, asyncio.Future) else asyncio.wrap_future(task)
             try:
-                await asyncio.wait_for(task, timeout=self._stop_timeout)
+                await asyncio.wait_for(awaitable, timeout=self._stop_timeout)
             except asyncio.TimeoutError:
                 task.cancel()
                 try:
-                    await asyncio.wait_for(task, timeout=1.0)
+                    await asyncio.wait_for(awaitable, timeout=1.0)
                 except BaseException:  # noqa: BLE001 - 已经是收尾阶段
                     pass
             except asyncio.CancelledError:
@@ -226,12 +326,13 @@ class HostedLocalScheduler:
         if scheduler is not None:
             self._scheduler = None
 
-    def _on_task_done(self, task: asyncio.Task) -> None:
+    def _on_task_done(self, task: RunHandle) -> None:
         if task.cancelled():
             return
         exc = task.exception()
         if exc is not None:
             self.reason = f"异常退出：{type(exc).__name__}: {exc}"
+            self.start_error = f"本地排程器运行中异常退出：{type(exc).__name__}: {exc}"
             logger.error("本地排程器异常退出：%s", self.reason, exc_info=exc)
 
 
@@ -239,6 +340,7 @@ __all__ = [
     "HostedLocalScheduler",
     "LOCK_NAME",
     "SCHEDULER_HOST_ENV",
+    "START_HANDSHAKE_SECONDS",
     "claim_local_scheduler_owner",
     "hosting_enabled",
 ]

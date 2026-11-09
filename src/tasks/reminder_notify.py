@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import List, Optional, Protocol
@@ -84,17 +85,14 @@ def maybe_test_crash(point: str) -> None:
 
 
 def default_reminder_outbox() -> str:
-    explicit = os.environ.get("LIUHAO_REMINDER_OUTBOX")
-    if explicit:
-        return explicit
-    workspace = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-    base = (
-        os.path.join(workspace, "queue")
-        if workspace
-        else os.path.join(os.path.expanduser("~"), ".liuhao", "queue")
+    """出站队列（JSONL）落点；旧位置有内容时按逐字节校验迁移。"""
+    from src.tasks._queue_paths import resolve_queue_file
+
+    return resolve_queue_file(
+        "reminders_outbox.jsonl",
+        env_var="LIUHAO_REMINDER_OUTBOX",
+        kind="text",
     )
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "reminders_outbox.jsonl")
 
 
 def _no_window_flag() -> int:
@@ -183,28 +181,68 @@ $icon.ShowBalloonTip(10000, [string]$payload.title, [string]$payload.body, [Syst
 Start-Sleep -Milliseconds 3000
 $icon.Dispose()
 Write-Output "BALLOON_OK"
+# 异步（合并）模式下由本进程自己清理 payload；同步模式下调用方也会删，
+# 重复删除用 SilentlyContinue 忽略。
+Remove-Item -LiteralPath $PayloadPath -Force -ErrorAction SilentlyContinue
 """
 
 
 class WindowsBalloonNotifier:
-    """从任意进程弹 Windows 托盘气泡（PowerShell + NotifyIcon）。"""
+    """从任意进程弹 Windows 托盘气泡（PowerShell + NotifyIcon）。
+
+    排程路径（带 ``idempotency_key``）**不阻塞**：到点只把事件投进内存队列，
+    由后台线程在 0.5 秒合并窗口内弹**一条**摘要气泡；逐条明细已经由 outbox
+    落盘，所以气泡失败/合并都不影响"提醒被记录"。手工/测试路径（不带 key）
+    仍同步等待 ``BALLOON_OK``，便于确认通道真实可用。
+    """
 
     channel = "windows_balloon"
+    MERGE_WINDOW_SECONDS = 0.5
 
     def __init__(self, timeout_seconds: float = 25.0) -> None:
         self.timeout_seconds = timeout_seconds
         self._script_path: Optional[str] = None
+        self._pending: List[tuple] = []
+        self._pending_lock = threading.Lock()
+        self._worker: Optional[threading.Thread] = None
+
+    #: 遗留气泡脚本的保留天数。每个进程写一份，异常退出不会自动删除；
+    #: 7 天后清理可以避免 ``%TEMP%`` 长期堆积，又不会误删仍在运行的实例
+    #: （脚本被删后本进程下次调用会按下面的 ``exists`` 检查自动重建）。
+    _STALE_SCRIPT_SECONDS = 7 * 24 * 3600
 
     def _script(self) -> str:
         if self._script_path and os.path.exists(self._script_path):
             return self._script_path
-        path = os.path.join(
-            tempfile.gettempdir(), f"liuhao_reminder_balloon_{os.getpid()}.ps1"
-        )
+        directory = tempfile.gettempdir()
+        path = os.path.join(directory, f"liuhao_reminder_balloon_{os.getpid()}.ps1")
+        self._sweep_stale_scripts(directory, keep=path)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(_PS_SCRIPT)
         self._script_path = path
         return path
+
+    def _sweep_stale_scripts(self, directory: str, *, keep: str) -> None:
+        """清掉超过保留期的同类脚本（只在本进程写脚本时顺手清理）。"""
+        cutoff = time.time() - self._STALE_SCRIPT_SECONDS
+        try:
+            candidates = os.listdir(directory)
+        except OSError:
+            return
+        for name in candidates:
+            if not name.startswith("liuhao_reminder_balloon_") or not name.endswith(
+                ".ps1"
+            ):
+                continue
+            stale = os.path.join(directory, name)
+            if stale == keep:
+                continue
+            try:
+                if os.path.getmtime(stale) < cutoff:
+                    os.unlink(stale)
+            except OSError:
+                # 文件正被其他实例/杀软占用：下次再试，不能因为清理失败影响提醒。
+                continue
 
     def notify(
         self,
@@ -215,6 +253,54 @@ class WindowsBalloonNotifier:
     ) -> List[NotifyResult]:
         # 托盘气泡是系统级弹窗，没有可复用的去重 token；跨进程去重由调用方的
         # dispatch marker 保证（这里只接受参数，保持接口一致）。
+        if idempotency_key:
+            self._queue_balloon(str(title), str(body))
+            return [
+                NotifyResult(
+                    self.channel,
+                    True,
+                    "queued (non-blocking, merged); outbox is the durable record",
+                )
+            ]
+        return self._notify_now(str(title), str(body))
+
+    def _queue_balloon(self, title: str, body: str) -> None:
+        with self._pending_lock:
+            self._pending.append((title, body))
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._drain,
+                name="liuhao-reminder-balloon",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _drain(self) -> None:
+        # 合并窗口：同一批到点的提醒只弹一条，避免 N 条各自阻塞/轰炸。
+        time.sleep(self.MERGE_WINDOW_SECONDS)
+        while True:
+            with self._pending_lock:
+                batch = self._pending
+                self._pending = []
+                if not batch:
+                    self._worker = None
+                    return
+            if len(batch) == 1:
+                title, body = batch[0]
+            else:
+                title = f"鎏昊提醒（{len(batch)} 条）"
+                titles = [item[0] for item in batch[:5]]
+                body = "；".join(titles)
+                if len(batch) > 5:
+                    body += f" 等 {len(batch)} 条（详见提醒清单）"
+            try:
+                self._notify_now(title, body)
+            except Exception:  # noqa: BLE001 - 气泡失败不能拖垮后台线程
+                pass
+            time.sleep(self.MERGE_WINDOW_SECONDS)
+
+    def _notify_now(self, title: str, body: str) -> List[NotifyResult]:
         if os.name != "nt":
             return [NotifyResult(self.channel, False, "not Windows")]
         executable = shutil.which("powershell") or shutil.which("powershell.exe")
@@ -223,7 +309,9 @@ class WindowsBalloonNotifier:
 
         # 气泡标题/正文有长度限制，超长会被系统截断甚至拒绝。
         payload = {"title": str(title)[:63], "body": str(body)[:255]}
-        handle, payload_path = tempfile.mkstemp(prefix="liuhao_reminder_", suffix=".json")
+        handle, payload_path = tempfile.mkstemp(
+            prefix=f"liuhao_reminder_{os.getpid()}_", suffix=".json"
+        )
         os.close(handle)
         try:
             with open(payload_path, "w", encoding="utf-8") as stream:
@@ -299,11 +387,10 @@ class MultiNotifier:
 
 
 def build_default_notifier(outbox_path: Optional[str] = None) -> MultiNotifier:
-    """默认：Windows 上托盘气泡 + 控制台；其它平台只有控制台。"""
-    notifiers: List[Notifier] = []
+    """默认：先写 outbox（持久记录），再尽力弹托盘气泡（异步合并、不阻塞）。"""
+    notifiers: List[Notifier] = [ConsoleOutboxNotifier(outbox_path)]
     if os.name == "nt" and _os_notify_enabled():
         notifiers.append(WindowsBalloonNotifier())
-    notifiers.append(ConsoleOutboxNotifier(outbox_path))
     return MultiNotifier(notifiers)
 
 

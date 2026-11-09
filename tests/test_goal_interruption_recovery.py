@@ -340,6 +340,10 @@ MID_CONTENT = "中" * 60
 MID_PATH = "notes/crash-mid.txt"
 AFTER_PATH = "notes/crash-after.txt"
 
+#: 子进程从启动到把目标状态落盘的等待上限。条件是轮询判定的（满足即返回），
+#: 这里只是防止真挂死时无限等；并行负载下解释器启动+全量导入可能超过 20s。
+CHILD_READY_TIMEOUT_SECONDS = 90.0
+
 
 def _spawn_crash_child(ws: Path, mode: str) -> subprocess.Popen:
     code = CHILD_TEMPLATE.substitute(
@@ -387,8 +391,16 @@ def _read_goals(ws: Path) -> dict:
         return {}
 
 
-def _wait_for(proc: subprocess.Popen, ws: Path, predicate, timeout: float = 20.0) -> dict:
-    deadline = time.time() + timeout
+def _wait_for(proc: subprocess.Popen, ws: Path, predicate, timeout: float = CHILD_READY_TIMEOUT_SECONDS) -> dict:
+    """轮询到条件满足为止（不睡固定长秒数），只在**上限**内放弃。
+
+    上限从 20s 提到 90s：本机 CI/并行负载下实测出现过 5+ 个 pytest 进程
+    同时跑全量、子进程仅解释器启动+导入就要十几秒，20s 会在条件马上要满足时
+    误判超时。这里仍然是"每 50ms 读一次落盘状态、满足即返回"，上限只影响
+    真挂死时要等多久；超时路径照旧先杀子进程、再报错，不留后台进程。
+    """
+    started = time.time()
+    deadline = started + timeout
     while time.time() < deadline:
         data = _read_goals(ws)
         if data and predicate(data):
@@ -401,7 +413,10 @@ def _wait_for(proc: subprocess.Popen, ws: Path, predicate, timeout: float = 20.0
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         pass
-    raise AssertionError(f"等待条件超时（{timeout}s）：{_child_output(proc)}")
+    raise AssertionError(
+        f"等待条件超时（{time.time() - started:.1f}s，上限 {timeout:.0f}s）："
+        f"{_child_output(proc)}"
+    )
 
 
 def _close_log(proc: subprocess.Popen) -> None:
@@ -492,10 +507,15 @@ class TestRealKillRecovery:
         """真实杀在任务后：已完成产物保留，第二个任务中断，重试可补完。"""
         proc = _spawn_crash_child(ws, "after")
         try:
+            # 必须等第二个任务真的进入 running 再杀：只在「第一个任务已完成」
+            # 时就 kill，会把第二个任务留在 pending（它还没开始），
+            # 而 pending 按语义只是排队、不算「中断」，测试的前提就不成立了。
             _wait_for(proc, ws, lambda d: (
                 _single_entry(d)["state"] == "running"
                 and (ws / AFTER_PATH).exists()
                 and any(t.get("status") == "completed"
+                        for t in _single_entry(d).get("tasks", []))
+                and any(t.get("status") == "running"
                         for t in _single_entry(d).get("tasks", []))
             ))
             _kill(proc)

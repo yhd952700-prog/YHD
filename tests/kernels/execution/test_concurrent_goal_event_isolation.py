@@ -28,7 +28,8 @@ def test_two_goals_keep_their_own_journal_events(tmp_path):
         if capability_id == "network_bus":
             c_started.set()
             assert release_c.wait(10), "C never continued"
-        return {"ok": True, "capability": capability_id}
+        # 引擎要求显式的 ``success`` 才算执行成功（缺失即 fail-closed）。
+        return {"success": True, "ok": True, "capability": capability_id}
 
     engine.set_capability_executor(executor)
 

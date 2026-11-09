@@ -18,6 +18,7 @@ os.environ.setdefault("AUDIT_DB_PATH", os.path.join(_TMP, "audit_store.db"))
 
 from src.ai.agent_runtime import AgentRuntime  # noqa: E402
 from src.kernels.evaluation import EvaluationOutcome  # noqa: E402
+from src.kernels.execution import ExecutionJournal  # noqa: E402
 
 
 def _allow_all_scope(*args, **kwargs):
@@ -78,7 +79,13 @@ def test_prose_goal_without_artifact_request_is_still_success():
     def ok_executor(capability_id, inputs):
         return {"success": True, "status": "executed"}
 
-    rt = AgentRuntime(scope="L1", capability_executor=ok_executor)
+    # 纯文案目标会拆出 execution_pipeline（属于硬副作用能力）；账本缺失时执行
+    # 内核按 fail-closed 拒绝，所以这里按**网关真实装配**注入 journal。
+    rt = AgentRuntime(
+        scope="L1",
+        capability_executor=ok_executor,
+        journal=ExecutionJournal(os.path.join(_TMP, "journal_eval_reality.db")),
+    )
     result = rt.run_goal(
         "总结一下今天的工作重点", goal_id="GE3", persist=False
     )

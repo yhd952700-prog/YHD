@@ -121,3 +121,56 @@ def test_title_strips_reminder_filler():
     spec = _parse("三天后的会议要提醒我参加")
     assert "提醒我" not in spec.title
     assert spec.title == "会议要参加"
+
+
+def test_ascii_digits_are_accepted():
+    # 回归：_cn_int 曾把 ASCII "9" 当汉字查表 → KeyError: '9'
+    assert _parse("明天上午9点提醒我开会").run_at == datetime(2026, 1, 2, 1, 0)
+    assert _parse("明天09点提醒我开会").run_at == datetime(2026, 1, 2, 1, 0)
+    assert _parse("明天上午9点15分提醒我开会").run_at == datetime(2026, 1, 2, 1, 15)
+    assert _parse("明天10:30提醒我开会").run_at == datetime(2026, 1, 2, 2, 30)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "12月25日上午九点提醒我开会",
+        "2026-12-25 09:00 提醒我开会",
+        "2026/12/25 09:00 提醒我开会",
+        "2026年12月25日上午九点提醒我开会",
+        "12月25号上午九点提醒我开会",
+    ],
+)
+def test_absolute_date_lands_on_that_day_not_tomorrow(text):
+    spec = _parse(text)
+    # 本地 2026-12-25 09:00 = UTC 01:00，而不是 NOW+1 天
+    assert spec.run_at == datetime(2026, 12, 25, 1, 0)
+    assert spec.repeat_kind == "once"
+
+
+def test_invalid_absolute_date_asks_instead_of_guessing():
+    with pytest.raises(NeedsClarification):
+        _parse("2026-02-30 09:00 提醒我开会")
+    with pytest.raises(NeedsClarification):
+        _parse("2月30日上午九点提醒我开会")
+
+
+def test_past_absolute_date_asks_instead_of_silently_rescheduling():
+    # 本地现在 2026-01-01 08:00；"2025-12-25" 已经过去，不能偷偷改到明天
+    with pytest.raises(NeedsClarification) as excinfo:
+        _parse("2025-12-25 09:00 提醒我开会")
+    assert "已经过去" in excinfo.value.question
+
+
+def test_unrecognised_date_shape_asks_instead_of_today_or_tomorrow():
+    # 这些写法本解析器不认识，必须反问；绝不能落到 today/tomorrow
+    for text in ("25号上午九点提醒我开会", "下个月5号上午九点提醒我开会", "月底上午九点提醒我"):
+        with pytest.raises(NeedsClarification):
+            _parse(text)
+
+
+def test_monthly_repeat_is_explicitly_rejected():
+    with pytest.raises(NeedsClarification) as excinfo:
+        _parse("每月5号上午九点提醒我开会")
+    assert "暂不支持每月重复" in excinfo.value.question
+

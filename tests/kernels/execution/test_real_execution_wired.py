@@ -23,15 +23,10 @@ Three honest assertions, each tied to a root cause:
 All data is redirected to temp dirs via ``LIUHAO_WORKSPACE_ROOT`` /
 ``AUDIT_DB_PATH``; the frozen HC-01 ``audit_store.db`` is never touched.
 
-Note on the gateway path: ``src/gateway/__init__`` currently fails to import in
-this environment because of an UNRELATED pre-existing policy-kernel WIP breakage
-(``NameError: kernel_action`` in an uncommitted change to
-``src/kernels/policy/__init__.py``). That is out of scope for this fix. To still
-exercise the *real* production function the endpoint calls
-(``AIStateManager.create_and_execute_goal``), we load ``ai_management`` as a
-standalone module so we skip the broken package ``__init__``. The execution
-machinery it drives (``AgentRuntime`` + ``LCore`` with ``register_local_tools``)
-is exactly what the endpoint uses.
+Note on the gateway path: ``src.gateway`` imports normally now (the old
+policy-kernel WIP breakage is gone), so we import ``ai_management`` through its
+real package. The execution machinery it drives (``AgentRuntime`` + ``LCore``
+with ``register_local_tools``) is exactly what the endpoint uses.
 """
 from __future__ import annotations
 
@@ -62,16 +57,11 @@ def _load_gateway_manager():
     os.environ["AUDIT_DB_PATH"] = os.path.join(_TMP, "audit_store.db")
     os.environ["LIUHAO_AUDIT_DB_PATH"] = os.path.join(_TMP, "audit_store.db")
 
-    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    path = os.path.join(here, "src", "gateway", "ai_management.py")
-    spec = importlib.util.spec_from_file_location("ai_management_standalone", path)
-    module = importlib.util.module_from_spec(spec)
-    # 必须先登记进 sys.modules 再执行：``ai_management`` 里现在有 @dataclass，
-    # dataclasses 在解析 ClassVar/InitVar 时会做
-    # ``sys.modules.get(cls.__module__).__dict__``；模块未登记时取到 None，
-    # 直接 AttributeError: 'NoneType' object has no attribute '__dict__'。
-    sys.modules["ai_management_standalone"] = module
-    spec.loader.exec_module(module)
+    # ``src.gateway`` 现在可以正常导入（旧的 kernel_action 断裂已修复）。
+    # 按包导入，``ai_management`` 的相对导入（``from ..ai.usage_meter import ...``）
+    # 才有已知的父包；standalone 方式加载会直接 ImportError。
+    from src.gateway import ai_management as module
+
     # Fresh singleton so the workspace root resolved at construction == _TMP.
     module.AIStateManager._instance = None
     return module.AIStateManager()

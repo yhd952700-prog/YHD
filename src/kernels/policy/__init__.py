@@ -239,7 +239,17 @@ INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
     # destructive=True). It was briefly allow-listed on the assumption that it
     # is "housekeeping", but no production caller reaches it and destroying
     # state is not a bookkeeping operation -- so it requires a verified human.
+    # delete_by_key_prefix is the same class of act (prefix batch delete,
+    # irreversible, memory + persistence) and must not ride along with
+    # memory.store. Its only callers are the profile-deletion paths behind
+    # require_human_principal, so default_deny + human_sovereignty is exactly
+    # the intended gate.
     "memory.auto_cleanup",
+    "memory.delete_by_key_prefix",
+    # 精确删除单条记忆（画像纠正）同样是不可逆的用户数据删除，且外部入口
+    # 只有 require_human_principal 的 DELETE /v1/profile/facts|preferences/{key}；
+    # 不因为"只删一条"就放给内部服务自动执行。
+    "memory.delete_by_key",
     # network: topology mutations (add_route is now service-operational).
     "network.register_adapter",
     "network.remove_route",
@@ -884,7 +894,38 @@ class PolicyEngine:
         scope: Optional[PolicyScope] = None,
         policy_set_id: Optional[str] = None
     ) -> PolicyDecision:
-        """Core evaluation (no audit write)."""
+        """Core evaluation (no audit write).
+
+        LOCK ORDER -- this method must never ask the Identity Kernel for
+        anything while holding ``self._lock``. ``_compute_verified`` calls
+        ``IdentityManager.get_identity``, which takes the identity lock; the
+        nested call is therefore ``policy -> identity``. Member creation is the
+        opposite order: ``create_member_account`` holds the identity lock and
+        then calls a ``@kernel_action`` method whose adjudication lands here
+        (``identity -> policy``). Both locks are ``RLock``, but re-entrancy only
+        helps the *same* thread: with two threads the pair deadlocks. Measured
+        with two threads (one ``create_member_account``, one
+        ``evaluate_policy_simple``): frozen at ``with self._lock`` below after
+        one iteration each. Verification is pure input preparation, so it runs
+        before the lock is taken.
+        """
+        # Ensure the human-verification signal is present on the
+        # actor/agent context so the human_sovereignty rule can gate
+        # on it (P10). We never trust a caller-supplied "verified"
+        # flag: it is recomputed from the identity kernel here.
+        context = dict(context)
+        actor = context.get("actor")
+        if isinstance(actor, dict):
+            actor = dict(actor)
+            verified = self._compute_verified(actor)
+            actor["verified"] = verified
+            context["actor"] = actor
+            agent = context.get("agent")
+            if isinstance(agent, dict):
+                agent = dict(agent)
+                agent["verified"] = verified
+                context["agent"] = agent
+
         with self._lock:
             if not is_servable(self):
                 # Lifecycle gate: PAUSED/STOPPED -> DENY (a sovereign "engine
@@ -903,23 +944,6 @@ class PolicyEngine:
                     ],
                     context=dict(context),
                 )
-
-            # Ensure the human-verification signal is present on the
-            # actor/agent context so the human_sovereignty rule can gate
-            # on it (P10). We never trust a caller-supplied "verified"
-            # flag: it is recomputed from the identity kernel here.
-            context = dict(context)
-            actor = context.get("actor")
-            if isinstance(actor, dict):
-                actor = dict(actor)
-                verified = self._compute_verified(actor)
-                actor["verified"] = verified
-                context["actor"] = actor
-                agent = context.get("agent")
-                if isinstance(agent, dict):
-                    agent = dict(agent)
-                    agent["verified"] = verified
-                    context["agent"] = agent
 
             # Determine which rules to evaluate
             if policy_set_id and policy_set_id in self._policy_sets:

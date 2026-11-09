@@ -13,8 +13,11 @@
 ----
 仓库内部统一存 naive UTC（见 ``src/_time.py``）。用户说的"十点"是**本地**
 十点，因此这里先按本地时区解析，再换算成 naive UTC。
-本地时区默认取系统时区，可用 ``LIUHAO_TIMEZONE_OFFSET_HOURS``（如 ``8``）
-覆盖；该变量主要给测试和无桌面环境用，不依赖 ``tzdata``。
+
+本地时区优先级：``LIUHAO_TIMEZONE_OFFSET_HOURS`` → ``TZ``（IANA 名，
+如 ``Asia/Shanghai``）→ 默认 ``Asia/Shanghai`` → 系统时区 → UTC。
+注意 ``LIUHAO_TIMEZONE_OFFSET_HOURS`` 是**固定偏移**，不随夏令时（DST）
+变化；需要 DST 语义时请用 ``TZ=America/New_York`` 这类 IANA 时区名。
 """
 
 from __future__ import annotations
@@ -22,8 +25,9 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from src._time import utc_now
 
@@ -104,7 +108,31 @@ _VAGUE_RE = re.compile(
 )
 _DATE_HINT_RE = re.compile(
     r"今天|今日|明天|明日|后天|大后天|下周|下个?星期|这周|本周|"
-    r"周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]"
+    r"周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|"
+    r"\d{1,4}\s*[年月日号]|[一二三四五六七八九十]{1,3}\s*月"
+)
+
+# 「2026-12-25」「2026/12/25」「2026.12.25」「2026年12月25日」。
+_ABS_DATE_RE = re.compile(
+    r"(?P<year>\d{4})\s*[-/.年]\s*(?P<month>\d{1,2})\s*[-/.月]\s*"
+    r"(?P<day>\d{1,2})\s*[日号]?"
+)
+# 「12月25日」「12月25号」：缺年份，按今年/明年判定；已过则反问。
+_CN_MONTH_DAY_RE = re.compile(
+    r"(?P<month>\d{1,2}|[一二三四五六七八九十]{1,3})\s*月\s*"
+    r"(?P<day>\d{1,2}|[一二三四五六七八九十]{1,3})\s*[日号]"
+)
+# 「每月5号」：识别出来但明确拒绝，避免静默落成 today/tomorrow。
+_MONTHLY_RE = re.compile(
+    r"每\s*(?:个\s*)?月\s*(?P<day>\d{1,2}|[一二三四五六七八九十]{1,3})\s*[日号]"
+)
+# 看起来像日期、但本解析器不认识的形态：必须反问，不许猜。
+_DATE_LIKE_RE = re.compile(
+    r"(?:下下|下|上|本|这个|下个|上个)\s*月|"
+    r"\d{1,2}\s*月|"
+    r"月\s*(?:底|初|中)|"
+    r"\d{1,2}\s*[日号]|"
+    r"\d{4}\s*[-/.年]"
 )
 
 _COLON_RE = re.compile(r"(?P<hour>\d{1,2})\s*[:：]\s*(?P<minute>\d{1,2})")
@@ -143,8 +171,12 @@ class ReminderSpec:
     source_text: str = ""
 
 
-def local_timezone() -> timezone:
-    """本地时区；``LIUHAO_TIMEZONE_OFFSET_HOURS`` 覆盖系统时区。"""
+def local_timezone() -> tzinfo:
+    """本地时区（优先 IANA ``ZoneInfo``，其次固定偏移，最后系统时区）。
+
+    ``LIUHAO_TIMEZONE_OFFSET_HOURS`` 是**固定偏移**，不随夏令时变化，主要
+    给测试/无 tzdata 环境用；需要 DST 语义请设 ``TZ`` 为 IANA 时区名。
+    """
     raw = os.environ.get("LIUHAO_TIMEZONE_OFFSET_HOURS")
     if raw:
         try:
@@ -154,6 +186,11 @@ def local_timezone() -> timezone:
                 "LIUHAO_TIMEZONE_OFFSET_HOURS must be a number, "
                 f"got {raw!r}"
             ) from exc
+    name = (os.environ.get("TZ") or "").strip() or "Asia/Shanghai"
+    try:
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - 缺 tzdata / 非法 TZ 时退回系统时区
+        pass
     tz = datetime.now().astimezone().tzinfo
     return tz or timezone.utc
 
@@ -172,6 +209,8 @@ def _cn_int(token: str) -> int:
     token = token.strip()
     if not token:
         raise ValueError("empty number")
+    if token.isdigit():
+        return int(token)
     if "百" in token:
         left, _, right = token.partition("百")
         hundreds = _CN_DIGITS[left] if left else 1
@@ -358,6 +397,41 @@ def _first_run_local(
     )
 
 
+def _build_local_datetime(day: date, hour: int, minute: int, zone: tzinfo) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone)
+
+
+def _resolve_abs_date(match: re.Match, raw: str) -> date:
+    """带年份的绝对日期；非法（2 月 30 日等）直接反问。"""
+    try:
+        year = int(match.group("year"))
+        month = _cn_int(match.group("month"))
+        day = _cn_int(match.group("day"))
+        return date(year, month, day)
+    except (KeyError, ValueError):
+        raise NeedsClarification(
+            f"「{raw}」不是有效日期，请检查年月日（例如「2026-12-25」）。"
+        ) from None
+
+
+def _resolve_month_day(match: re.Match, local_now: datetime, raw: str) -> date:
+    """缺年份的 ``M月D日``：按今年算；今年已过则反问，不偷偷滚到明年。"""
+    try:
+        month = _cn_int(match.group("month"))
+        day = _cn_int(match.group("day"))
+        candidate = date(local_now.year, month, day)
+    except (KeyError, ValueError):
+        raise NeedsClarification(
+            f"「{raw}」不是有效日期，请检查月份和日期（例如「12月25日」）。"
+        ) from None
+    if candidate < local_now.date():
+        raise NeedsClarification(
+            f"「{raw}」在今年（{local_now.year}）已经过去了。是明年吗？"
+            f"请补充年份，例如「{local_now.year + 1}年{month}月{day}日」。"
+        )
+    return candidate
+
+
 def _extract_title(original: str, spans: list[Tuple[int, int]]) -> str:
     masked = list(original)
     for start, end in spans:
@@ -392,7 +466,7 @@ def parse_reminder(
     text: str,
     now: Optional[datetime] = None,
     *,
-    tz: Optional[timezone] = None,
+    tz: Optional[tzinfo] = None,
 ) -> ReminderSpec:
     """把一句中文提醒解析成 :class:`ReminderSpec`。
 
@@ -412,12 +486,28 @@ def parse_reminder(
     delay_match = _DELAY_RE.search(original)
     daily_match = _REPEAT_DAILY_RE.search(original)
     weekly_match = _REPEAT_WEEKLY_RE.search(original)
+    monthly_match = _MONTHLY_RE.search(original)
     rel_match = _REL_DAY_RE.search(original)
     weekday_match = _WEEKDAY_RE.search(original)
+    abs_match = _ABS_DATE_RE.search(original)
+    month_day_match = None if abs_match else _CN_MONTH_DAY_RE.search(original)
+    # 「每月N号」：明确拒绝，绝不静默落成 today/tomorrow。
+    if monthly_match:
+        raise NeedsClarification(
+            f"暂不支持每月重复（「{monthly_match.group(0)}」）。"
+            "请改成「每周一上午九点」，或先建一条一次性提醒。"
+        )
     # 日期/重复词不能参与时刻解析：否则「周一九点」会被读成「一九点」。
     skip_spans = [
         match.span()
-        for match in (daily_match, weekly_match, rel_match, weekday_match)
+        for match in (
+            daily_match,
+            weekly_match,
+            rel_match,
+            weekday_match,
+            abs_match,
+            month_day_match,
+        )
         if match is not None
     ]
     clock = _extract_clock(original, skip_spans)
@@ -458,6 +548,33 @@ def parse_reminder(
             source_text=original,
         )
 
+    # 2.5) 绝对日期：「12月25日上午九点」「2026-12-25 09:00」
+    #      明确日期一律按给定日期算，绝不兜底到 today/tomorrow。
+    date_match = abs_match or month_day_match
+    if date_match is not None:
+        if clock is None:
+            raise NeedsClarification(_missing_time_question(original))
+        hour, minute, clock_span, clock_text, _period = clock
+        raw_date = date_match.group(0)
+        if abs_match is not None:
+            target_day = _resolve_abs_date(abs_match, raw_date)
+        else:
+            target_day = _resolve_month_day(date_match, local_now, raw_date)
+        run_local = _build_local_datetime(target_day, hour, minute, zone)
+        if run_local <= local_now:
+            raise NeedsClarification(
+                f"「{raw_date} {clock_text}」已经过去了，请换一个未来的时间。"
+            )
+        return ReminderSpec(
+            title=_extract_title(original, [date_match.span(), clock_span]),
+            run_at=_to_utc_naive(run_local),
+            repeat_kind="once",
+            hour=hour,
+            minute=minute,
+            time_text=f"{raw_date}{clock_text}",
+            source_text=original,
+        )
+
     # 3) 一次性：相对日期 / 星期几 + 时刻，或只有时刻
     if clock is None:
         raise NeedsClarification(_missing_time_question(original))
@@ -484,6 +601,11 @@ def parse_reminder(
         spans.append(weekday_match.span())
         time_text = f"{weekday_match.group(0)}{clock_text}"
     else:
+        if _DATE_LIKE_RE.search(original):
+            raise NeedsClarification(
+                f"「{original}」里的日期我没认出来。请用完整日期，"
+                "例如「12月25日上午九点」或「2026-12-25 09:00」。"
+            )
         run_local = _first_run_local(local_now, hour, minute, repeat_kind="once")
         time_text = clock_text
 

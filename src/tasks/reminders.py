@@ -44,7 +44,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from src.tasks.local_scheduler import LocalScheduler
+from src.tasks.local_scheduler import LocalScheduler, QueueFull
 from src.tasks.reminder_notify import (
     Notifier,
     NotifyResult,
@@ -181,17 +181,14 @@ class ReminderDeliveryError(RuntimeError):
 
 
 def default_reminders_db() -> str:
-    explicit = os.environ.get("LIUHAO_REMINDERS_DB")
-    if explicit:
-        return explicit
-    workspace = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-    base = (
-        os.path.join(workspace, "queue")
-        if workspace
-        else os.path.join(os.path.expanduser("~"), ".liuhao", "queue")
-    )
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "reminders.db")
+    """提醒库落点：数据根 > 工作区根 > 历史 ``~/.liuhao/queue``。
+
+    旧位置已有提醒数据而新位置缺失时会先迁移（校验表与行数），
+    见 :mod:`src.tasks._queue_paths`。
+    """
+    from src.tasks._queue_paths import resolve_queue_file
+
+    return resolve_queue_file("reminders.db", env_var="LIUHAO_REMINDERS_DB")
 
 
 def reminder_job_key(reminder_id: str, version: int, occurrence: str) -> str:
@@ -1259,24 +1256,31 @@ class ReminderService:
         token = uuid.uuid4().hex[:10]
         occurrence = f"snooze:{token}"
         version = int(record["version"])
-        self.scheduler.enqueue(
-            REMINDER_FIRE_JOB,
-            run_at=run_at,
-            job_key=f"{reminder_key_prefix(record['id'])}v{version}:{occurrence}",
-            payload={
-                "reminder_id": record["id"],
-                "version": version,
-                "occurrence": occurrence,
-                "scheduled_at": run_at.isoformat(),
-                "snooze": True,
-                "user_id": record["user_id"],
-                "title": record["title"],
-            },
-            max_attempts=self.max_attempts,
-            backoff_seconds=self.backoff_seconds,
-            backoff_multiplier=self.backoff_multiplier,
-            max_backoff_seconds=self.max_backoff_seconds,
-        )
+        try:
+            self.scheduler.enqueue(
+                REMINDER_FIRE_JOB,
+                run_at=run_at,
+                job_key=f"{reminder_key_prefix(record['id'])}v{version}:{occurrence}",
+                payload={
+                    "reminder_id": record["id"],
+                    "version": version,
+                    "occurrence": occurrence,
+                    "scheduled_at": run_at.isoformat(),
+                    "snooze": True,
+                    "user_id": record["user_id"],
+                    "title": record["title"],
+                },
+                concurrency_key=f"reminder:{record['id']}",
+                max_attempts=self.max_attempts,
+                backoff_seconds=self.backoff_seconds,
+                backoff_multiplier=self.backoff_multiplier,
+                max_backoff_seconds=self.max_backoff_seconds,
+            )
+        except QueueFull as exc:
+            return {
+                "status": "error",
+                "error": f"排程队列已满（{exc.active}/{exc.limit}），暂时无法稍后提醒。",
+            }
         self._audit(
             "reminder.snoozed",
             "success",
@@ -1396,6 +1400,53 @@ class ReminderService:
             "dead_letter_jobs": dead_jobs,
             "count": len(deliveries) + len(dead_jobs),
         }
+
+    def handle_dead_letter(self, job: Dict[str, Any]) -> None:
+        """排程器重试耗尽后的回调：把提醒记成 missed 并触发摘要。
+
+        没有这一步，一次性提醒在重试耗尽后会永远停在 ``active`` + 过去时间：
+        用户既看不到"没响"，清单里也一直挂着。现在至少 ``missed()`` 和摘要
+        都能证明它确实错过了。
+        """
+        payload = job.get("payload") or {}
+        reminder_id = str(payload.get("reminder_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        if not reminder_id:
+            return
+        record = self.store.get(reminder_id)
+        if record is None:
+            return
+        now_iso = _iso(self.scheduler.now())
+        occurrence = str(payload.get("occurrence") or now_iso)
+        error = f"任务重试耗尽：{job.get('last_error') or 'unknown error'}"
+        self.store.record_delivery(
+            reminder_id=reminder_id,
+            user_id=user_id,
+            occurrence=occurrence,
+            status="missed",
+            channels=[],
+            error=error,
+            now_iso=now_iso,
+        )
+        if record["status"] == "active":
+            if record["repeat_kind"] == "once":
+                self.store.mark_fired(
+                    reminder_id, now_iso, next_run_at=None, now_iso=now_iso
+                )
+                # mark_fired 会清空 last_error；死信失败原因必须保留，用户才能
+                # 在 reminder 详情里看到"为什么没响"。
+                self.store.set_error(reminder_id, error, now_iso)
+            else:
+                self.store.set_error(reminder_id, error, now_iso)
+            try:
+                self._enqueue_digest(user_id)
+            except QueueFull:
+                pass
+        self._audit(
+            "reminder.dead_letter",
+            "failure",
+            {"reminder_id": reminder_id, "error": error[:500]},
+        )
 
     # -- firing -----------------------------------------------------------
 
@@ -1857,6 +1908,7 @@ class ReminderService:
             run_at=quiet_iso,
             job_key=f"{reminder_job_key(record['id'], version, occurrence)}:quiet:{quiet_iso}",
             payload=new_payload,
+            concurrency_key=f"reminder:{record['id']}",
             max_attempts=self.max_attempts,
             backoff_seconds=self.backoff_seconds,
             backoff_multiplier=self.backoff_multiplier,
@@ -1948,6 +2000,7 @@ class ReminderService:
             REMINDER_DIGEST_JOB,
             job_key=job_key,
             payload={"user_id": user_id},
+            concurrency_key=f"reminder:digest:{user_id}",
             max_attempts=self.max_attempts,
             backoff_seconds=self.backoff_seconds,
             backoff_multiplier=self.backoff_multiplier,
@@ -1971,22 +2024,58 @@ class ReminderService:
 
     def _enqueue(self, record: Dict[str, Any], occurrence: str) -> int:
         version = int(record["version"])
-        return self.scheduler.enqueue(
-            REMINDER_FIRE_JOB,
-            run_at=occurrence,
-            job_key=reminder_job_key(record["id"], version, occurrence),
-            payload={
-                "reminder_id": record["id"],
-                "version": version,
-                "occurrence": occurrence,
-                "user_id": record["user_id"],
-                "title": record["title"],
-            },
-            max_attempts=self.max_attempts,
-            backoff_seconds=self.backoff_seconds,
-            backoff_multiplier=self.backoff_multiplier,
-            max_backoff_seconds=self.max_backoff_seconds,
-        )
+        try:
+            return self.scheduler.enqueue(
+                REMINDER_FIRE_JOB,
+                run_at=occurrence,
+                job_key=reminder_job_key(record["id"], version, occurrence),
+                payload={
+                    "reminder_id": record["id"],
+                    "version": version,
+                    "occurrence": occurrence,
+                    "user_id": record["user_id"],
+                    "title": record["title"],
+                },
+                # 同一提醒串行、不同提醒互不阻塞（原来按 job_name 全局串行）。
+                concurrency_key=f"reminder:{record['id']}",
+                max_attempts=self.max_attempts,
+                backoff_seconds=self.backoff_seconds,
+                backoff_multiplier=self.backoff_multiplier,
+                max_backoff_seconds=self.max_backoff_seconds,
+            )
+        except QueueFull as exc:
+            # 队列满：一次性提醒直接转 missed（不无限重试、不静默消失），
+            # 重复提醒保留并在 last_error 里说明，等队列消化后由用户改期。
+            now_iso = _iso(self.scheduler.now())
+            self.store.record_delivery(
+                reminder_id=record["id"],
+                user_id=record["user_id"],
+                occurrence=occurrence,
+                status="missed",
+                channels=[],
+                error=str(exc),
+                now_iso=now_iso,
+            )
+            if record["repeat_kind"] == "once":
+                self.store.mark_fired(
+                    record["id"], now_iso, next_run_at=None, now_iso=now_iso
+                )
+            else:
+                self.store.set_error(record["id"], f"队列已满，本次未排程：{exc}", now_iso)
+            try:
+                self._enqueue_digest(record["user_id"])
+            except QueueFull:
+                pass
+            self._audit(
+                "reminder.queue_full",
+                "failure",
+                {
+                    "reminder_id": record["id"],
+                    "active": exc.active,
+                    "limit": exc.limit,
+                },
+            )
+            return -1
 
     def _reconcile_after_recorded(
         self, record: Dict[str, Any], occurrence: str

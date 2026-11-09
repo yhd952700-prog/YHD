@@ -83,12 +83,12 @@ class TestParseSpec:
         assert len(enf.parse_spec("CRITICAL")) == 2
 
     def test_high_tier_expands_to_its_actions(self):
-        # The HIGH tier holds 15 actions; one of them (capability.register) is
+        # The HIGH tier holds 17 actions; one of them (capability.register) is
         # exempted because production reaches it during startup, so a tier token
-        # expands to 14. See EXEMPT_ACTIONS.
-        assert len(HIGH_ACTIONS) == 15
+        # expands to 16. See EXEMPT_ACTIONS.
+        assert len(HIGH_ACTIONS) == 17
         assert enf.parse_spec("HIGH") == HIGH_ACTIONS - set(enf.EXEMPT_ACTIONS)
-        assert len(enf.parse_spec("HIGH")) == 14
+        assert len(enf.parse_spec("HIGH")) == 16
 
     def test_tier_expansion_never_arms_an_exempt_action(self):
         for tier in ("HIGH", "CRITICAL", "HIGH,CRITICAL"):
@@ -97,7 +97,7 @@ class TestParseSpec:
     def test_full_expansion_is_the_gated_surface_minus_exemptions(self):
         expected = (HIGH_ACTIONS | CRITICAL_ACTIONS) - set(enf.EXEMPT_ACTIONS)
         assert enf.parse_spec("HIGH,CRITICAL") == expected
-        assert len(expected) == 16
+        assert len(expected) == 18
 
     def test_naming_an_exempt_action_is_rejected_loudly(self):
         assert enf.EXEMPT_ACTIONS, "expected at least one documented exemption"

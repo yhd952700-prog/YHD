@@ -24,6 +24,7 @@ from pathlib import Path
 import importlib
 import importlib.util
 import json
+import os
 
 from packaging.version import InvalidVersion, Version
 
@@ -34,6 +35,23 @@ from src.kernels._crosscutting import kernel_action, mark_action_denied
 # This import is safe: src.plugins.base only depends on abc/typing/dataclasses
 # and never imports the kernel layer, so there is no circular dependency.
 from src.plugins.base import Plugin as PluginInterface, PluginMetadata
+from src.common.data_paths import resolve_store_path
+
+
+def _default_registry_dir() -> str:
+    """插件索引（``registry_index.json``）的默认目录。
+
+    这是**运行时状态**，不是源码：旧实现用 cwd 相对的 ``"./plugins"``，于是
+    一次运行就会在共享开发目录 / 源码目录里写下未跟踪的
+    ``registry_index.json``（以及归档的 ``registry_index.retired.json``），
+    只设 ``LIUHAO_DATA_DIR`` 也拦不住。现统一按数据根解析：
+    ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > ``<repo>/plugins``。
+    """
+    return resolve_store_path(
+        "plugins",
+        Path(__file__).resolve().parents[2] / "plugins",
+        workspace=True,
+    )
 
 
 def _version_ge(a: str, b: str) -> bool:
@@ -50,6 +68,50 @@ def _version_ge(a: str, b: str) -> bool:
         return a >= b
 
 
+def _check_plugin_kernel_compat(info: "PluginInfo") -> Optional[str]:
+    """按 ``compatibility`` 声明校验插件与当前内核版本，返回中文不兼容原因。
+
+    历史实现只在 ``discover_plugins`` 的 ``min_version``/``max_version`` 过滤时
+    看插件自身版本，``PluginInfo.compatibility`` 从未在激活前被消费。这里识别
+    常见字段（``kernel_version`` 精确要求、``min_kernel_version`` /
+    ``max_kernel_version`` 边界，兼容 ``api_version`` 别名）；未声明则视为兼容。
+    """
+    compat = info.compatibility or {}
+    if not isinstance(compat, dict) or not compat:
+        return None
+    import os
+
+    current = (os.environ.get("LIUHAO_KERNEL_VERSION") or "").strip()
+    if not current:
+        try:
+            from src.version import APP_VERSION
+
+            current = str(APP_VERSION)
+        except Exception:  # pragma: no cover - 版本模块缺失时放弃校验
+            return None
+
+    exact = compat.get("kernel_version") or compat.get("api_version")
+    minimum = compat.get("min_kernel_version") or compat.get("kernel_min")
+    maximum = compat.get("max_kernel_version") or compat.get("kernel_max")
+
+    if exact and not _version_ge(current, str(exact)):
+        return (
+            f"插件 {info.name} 需要内核版本 {exact}，当前为 {current}；"
+            "请安装匹配版本的内核或改用兼容插件。"
+        )
+    if minimum and not _version_ge(current, str(minimum)):
+        return (
+            f"插件 {info.name} 需要内核版本 >= {minimum}，当前为 {current}；"
+            "请升级内核后重试。"
+        )
+    if maximum and not _version_ge(str(maximum), current):
+        return (
+            f"插件 {info.name} 需要内核版本 <= {maximum}，当前为 {current}；"
+            "请降级内核或改用兼容插件。"
+        )
+    return None
+
+
 def _json_default(obj: Any) -> Any:
     """JSON serializer for types not natively supported.
 
@@ -63,6 +125,24 @@ def _json_default(obj: Any) -> Any:
     if isinstance(obj, datetime):
         return obj.isoformat()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _prune_placeholders_enabled() -> bool:
+    """是否在启动时剔除无入口的历史占位行（默认开启）。
+
+    置 ``LIUHAO_PLUGIN_PRUNE_PLACEHOLDERS=0`` 即为回滚开关：保留原注册表，
+    占位行重新可被读取（但仍不可激活，列表也不会显示）。
+    """
+    raw = (os.environ.get("LIUHAO_PLUGIN_PRUNE_PLACEHOLDERS") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    """先写临时文件再原子替换，避免半截 JSON 让下次启动读不出来。"""
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
 
 
 # Valid L0-L7 scopes (same hierarchy as resource/capability/security kernels).
@@ -99,13 +179,30 @@ class PluginInfo:
     # Honest loader requires this to actually import + instantiate the plugin.
     module_path: Optional[str] = None
 
+    @property
+    def activatable(self) -> bool:
+        """Return True when this entry has a real module entry point.
+
+        兼容历史登记：部分条目把 ``module_path`` 只写在 metadata 里。
+        没有入口的条目（历史占位）永远无法激活，启用列表不应把它们
+        渲染成可点击的按钮。
+        """
+        return bool(self.module_path or (self.metadata or {}).get("module_path"))
+
+    @property
+    def is_builtin(self) -> bool:
+        """Return True for built-in plugins shipped with the OS."""
+        return self.kernel_type == "builtin"
+
 
 class PluginRegistry:
     """Central plugin registry with discovery, loading, and lifecycle management."""
     lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
-    def __init__(self, registry_path: str = "./plugins"):
-        self._registry_path = Path(registry_path)
+    def __init__(self, registry_path: Optional[str] = None):
+        self._registry_path = (
+            Path(registry_path) if registry_path else Path(_default_registry_dir())
+        )
         self._plugins: Dict[str, PluginInfo] = {}
         self._loaded: Dict[str, Any] = {}
         self._lock = threading.RLock()
@@ -120,6 +217,9 @@ class PluginRegistry:
         if index_path.exists():
             with open(index_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            kept_rows: List[Dict[str, Any]] = []
+            retired_rows: List[Dict[str, Any]] = []
+            prune_placeholders = _prune_placeholders_enabled()
             for pdata in data.get("plugins", []):
                 info = PluginInfo(
                     plugin_id=pdata["plugin_id"],
@@ -144,7 +244,73 @@ class PluginRegistry:
                     metadata=pdata.get("metadata", {}),
                     module_path=pdata.get("module_path"),
                 )
+                # 兼容旧版落盘：入口曾经只写在 metadata.module_path。
+                if not info.module_path:
+                    info.module_path = (info.metadata or {}).get("module_path")
+                # 进程重启后内存里没有任何已加载实例，落盘里的 active 只是
+                # 上一次运行的历史状态。保持 active 会让前端显示“已激活”
+                # 却无法执行能力，因此降级为 registered，等待真实激活。
+                if info.status == PluginStatus.ACTIVE:
+                    info.status = PluginStatus.REGISTERED
+                    info.loaded_at = None
+                    info.error = None
+                # 没有入口的历史占位行永远不会激活成功：不再载入内存，
+                # 并从 registry_index.json 中剔除（归档到 retired 文件以便回滚）。
+                # 回滚模式（LIUHAO_PLUGIN_PRUNE_PLACEHOLDERS=0）下保留它们，
+                # 便于排查，列表仍然只显示可加载项。
+                if not info.module_path:
+                    if prune_placeholders:
+                        retired_rows.append(pdata)
+                        continue
+                    self._plugins[info.plugin_id] = info
+                    continue
                 self._plugins[info.plugin_id] = info
+                kept_rows.append(pdata)
+            if retired_rows:
+                self._retire_placeholder_rows(data, kept_rows, retired_rows)
+
+    def _retire_placeholder_rows(
+        self,
+        data: Dict[str, Any],
+        kept_rows: List[Dict[str, Any]],
+        retired_rows: List[Dict[str, Any]],
+    ) -> None:
+        """把无入口的历史占位行移出启用注册表，并归档一份可回滚副本。
+
+        幂等：只有真的发现无入口行时才改写文件；下次启动已无候选，文件不再变化。
+        零影响：保留行按原始字段原样写回，``module_path`` 有值的条目一条都不动。
+        回滚：把 ``registry_index.retired.json`` 的 ``entries`` 重新追加回
+        ``registry_index.json`` 的 ``plugins`` 数组并重启即可。
+        """
+        archive_path = self._registry_path / "registry_index.retired.json"
+        archive: Dict[str, Any] = {}
+        if archive_path.exists():
+            try:
+                with open(archive_path, "r", encoding="utf-8") as f:
+                    archive = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                archive = {}
+        entries: List[Dict[str, Any]] = list(archive.get("entries", []))
+        seen = {(e.get("plugin_id"), e.get("version")) for e in entries}
+        for row in retired_rows:
+            key = (row.get("plugin_id"), row.get("version"))
+            if key in seen:
+                continue
+            entries.append(row)
+            seen.add(key)
+        payload = {
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "reason": "历史占位条目没有可加载的模块入口，已从启用注册表移除。",
+            "restore": (
+                "把 entries 追加回 registry_index.json 的 plugins 数组，"
+                "并设置环境变量 LIUHAO_PLUGIN_PRUNE_PLACEHOLDERS=0 后重启即可恢复"
+                "（这些条目仍然不可激活）。"
+            ),
+            "entries": entries,
+        }
+        _atomic_write_json(archive_path, payload)
+        data["plugins"] = kept_rows
+        _atomic_write_json(self._registry_path / "registry_index.json", data)
 
     @kernel_action("plugin.register_plugin")
     def register_plugin(
@@ -270,6 +436,15 @@ class PluginRegistry:
         with self._lock:
             return list(self._plugins.values())
 
+    def get_loaded_plugin(self, plugin_id: str) -> Optional["PluginInterface"]:
+        """Return the live plugin instance for an activated plugin, if any.
+
+        The gateway uses this to execute real capabilities instead of
+        constructing a second stub instance for every request.
+        """
+        with self._lock:
+            return self._loaded.get(plugin_id)
+
     def load_plugin(self, plugin_id: str) -> Optional["PluginInterface"]:
         """Load a registered plugin into memory and return a real instance.
 
@@ -288,15 +463,15 @@ class PluginRegistry:
             module_path = info.module_path or (info.metadata or {}).get("module_path")
             if not module_path:
                 info.status = PluginStatus.FAILED
-                info.error = "No module_path registered for plugin (cannot load)"
+                info.error = "未登记可加载模块入口（module_path 为空），该条目属于历史占位，无法激活。"
                 self._save_index()
                 return None
 
             try:
                 module = importlib.import_module(module_path)
-            except ImportError as exc:
+            except Exception as exc:
                 info.status = PluginStatus.FAILED
-                info.error = f"Could not import module {module_path!r}: {exc}"
+                info.error = f"无法导入插件模块 {module_path}：{exc}"
                 self._save_index()
                 return None
 
@@ -313,7 +488,7 @@ class PluginRegistry:
                     break
             if plugin_cls is None:
                 info.status = PluginStatus.FAILED
-                info.error = f"No PluginInterface subclass found in {module_path!r}"
+                info.error = f"模块 {module_path} 中未找到插件入口类（PluginInterface 子类）。"
                 self._save_index()
                 return None
 
@@ -326,7 +501,7 @@ class PluginRegistry:
                 instance = plugin_cls(metadata)
             except Exception as exc:
                 info.status = PluginStatus.FAILED
-                info.error = f"Failed to instantiate {plugin_cls.__name__}: {exc}"
+                info.error = f"插件实例化失败（{plugin_cls.__name__}）：{exc}"
                 self._save_index()
                 return None
 
@@ -348,6 +523,14 @@ class PluginRegistry:
 
             if info.status == PluginStatus.ACTIVE and plugin_id in self._loaded:
                 # Already active with a live instance, return existing info.
+                return info
+
+            incompatibility = _check_plugin_kernel_compat(info)
+            if incompatibility:
+                info.status = PluginStatus.ERROR
+                info.error = incompatibility
+                mark_action_denied(f"activate rejected: {incompatibility}")
+                self._save_index()
                 return info
 
             instance = self.load_plugin(plugin_id)
@@ -559,6 +742,7 @@ def register_builtin_plugins() -> None:
             scope="L1",
             compatibility={},
             status=PluginStatus.REGISTERED,
+            module_path="src.plugins.builtin.example_capability_plugin",
             metadata={
                 "module_path": "src.plugins.builtin.example_capability_plugin",
                 "description": "示例能力插件：返回真实的插件注册表心跳与已注册能力清单。",
@@ -567,11 +751,25 @@ def register_builtin_plugins() -> None:
     ]
 
     for info in builtins:
-        if reg.get_plugin(info.plugin_id) is None:
+        existing = reg.get_plugin(info.plugin_id)
+        if existing is None:
             # 仅写入内存注册表，不落盘到 registry_index.json：内置插件由代码定义、
             # 每次启动都会经 register_builtin_plugins 重新注册，不应被当成"用户安装的
             # 插件"持久化进 tracked 文件，避免污染 plugins/registry_index.json。
             reg._plugins[info.plugin_id] = info
+            continue
+        # 兼容旧版落盘：旧条目的入口只写在 metadata（甚至完全缺失），
+        # 这里补齐真实入口，避免内置插件因历史数据而永远无法激活。
+        if not existing.module_path:
+            existing.module_path = info.module_path
+        if not (existing.metadata or {}).get("module_path"):
+            existing.metadata = {**info.metadata, **(existing.metadata or {})}
+        if not existing.capabilities:
+            existing.capabilities = list(info.capabilities)
+        if existing.status == PluginStatus.ACTIVE and info.plugin_id not in reg._loaded:
+            existing.status = PluginStatus.REGISTERED
+            existing.loaded_at = None
+            existing.error = None
 
 
 # 此处曾有**导入期急切实例化**（``_global_plugin_registry = PluginRegistry()``

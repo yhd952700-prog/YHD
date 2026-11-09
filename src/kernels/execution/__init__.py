@@ -19,16 +19,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import json
 import uuid
 import os
 import re
 import hashlib
+import inspect
 import logging
 import threading
+import time
 import contextvars
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 
 # Import dependencies
 from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel  # noqa: F401
@@ -39,6 +41,22 @@ from src.kernels._crosscutting import kernel_action, kernel_action_correlation_i
 from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
 
 logger = logging.getLogger("liuhao.kernel.execution")
+
+#: 执行器接线错误（resolver 返回了非 callable，如员工名字符串）时，任务结果里
+#: 只给人能照着做的提示；Python 异常原文只写日志，不写进用户可见的任务结果。
+EXECUTOR_NOT_WIRED_MESSAGE = (
+    "执行器没有接上，请联系管理员（执行器配置错误，详细异常已写入日志）"
+)
+
+
+def humanize_executor_error(error: Any) -> str:
+    """把执行器抛出的异常/错误文本转成人能读懂的一句话。"""
+    text = str(error or "").strip()
+    if not text:
+        return "未知错误"
+    if "object is not callable" in text:
+        return EXECUTOR_NOT_WIRED_MESSAGE
+    return text
 
 
 def _json_safe_inputs(value: Any) -> Dict[str, Any]:
@@ -93,6 +111,13 @@ def task_result_text(value: Any) -> Optional[str]:
         fetched = value.get("fetched_at")
         if isinstance(fetched, str) and fetched.strip():
             lines.append(f"抓取时间：{fetched.strip()}")
+        # ACTION-01：重复投递被幂等账本拦下时，回放结果必须让人看得见。
+        # 否则二次执行与否在界面上完全无法区分（都显示同一段结果）。
+        replayed_from = value.get("replayed_from")
+        if isinstance(replayed_from, str) and replayed_from.strip():
+            lines.append(
+                f"（已复用首次执行结果 {replayed_from.strip()}，未重复执行副作用）"
+            )
         return "\n".join(lines)
     if isinstance(value, (list, tuple)):
         try:
@@ -105,7 +130,358 @@ def task_result_text(value: Any) -> Optional[str]:
 # Seam for real capability execution. The Execution Kernel must not depend on
 # the ai layer (strict layering: spec -> kernels -> ai -> gateway/console), so
 # the actual executor is injected at assembly time by an upper layer.
-CapabilityExecutor = Callable[[str, Dict[str, Any]], Any]
+#
+# 执行器契约（ACTION-01 定稿，2026-11-08）
+# ----------------------------------------
+# 稳定幂等键必须到达真正产生副作用的那一层。此前 ``Action.id``（同一次执行的所有
+# 重试都相同，例如 ``act-20a9c9d9767f-0``）只在 journal / 事件里成立，执行器根本
+# 收不到 —— 下游工具不去重时，发消息、调外部接口这类副作用仍会被重放。
+#
+# 新签名（推荐，显式关键字参数，不塞进 ``inputs``，避免被业务字段覆盖）::
+#
+#     def executor(capability_id, inputs, *, action_id: str | None = None) -> Any: ...
+#
+# 旧签名 ``executor(capability_id, inputs)`` 继续可用：调用前会做签名内省，
+# 老执行器不会因为多传一个关键字参数而 TypeError。
+CapabilityExecutor = Callable[..., Any]
+
+#: 天然幂等（重放安全）：重复执行得到同一结果，重试无需去重。
+#: * ``file_write`` 同路径覆盖写、``python_compute`` 纯计算；
+#: * ``file.read`` / ``file.list`` / ``memory.search`` / ``audit.query`` /
+#:   ``system.status`` 是只读；
+#: * ``preview_stop`` 对已停止的服务是 no-op。
+REENTRANT_CAPABILITIES = frozenset({
+    "file_write",
+    "python_compute",
+    "file.read",
+    "file.list",
+    "memory.search",
+    "audit.query",
+    "system.status",
+    "preview_stop",
+})
+
+#: 硬副作用能力清单（显式白名单，按仓库里真实存在的 capability id 列出）。
+#:
+#: 判定标准是「重放会产生不可撤销的外部后果」，不是按名字猜：
+#: * ``network_bus``       外发联网检索 / 调外部接口，并消耗模型额度；
+#: * ``personal.write``    写用户可见的持久画像、称呼、待确认事实（后续行为随之改变）；
+#: * ``multi_tier_memory`` 写持久记忆（污染长期上下文，且会被后续回答引用）；
+#: * ``preview_start``     启动对外可见的预览服务/进程（占端口、对外暴露文件）；
+#: * ``execution_pipeline`` 调模型生成，按量计费时产生真实外部成本。
+#:
+#: 这五个 id 都来自真实注册点：
+#: ``src/kernels/capability/__init__.py``（前四个）与
+#: ``src/ai/tools/kernel_tools.py``（``personal.write``）。
+#:
+#: 维护义务：新增「不可撤销外部后果」的能力时**必须**加进这里；否则在账本缺席的
+#: 部署里它会被当作可安全重入而放行（见 :func:`capability_has_hard_side_effects`）。
+HARD_SIDE_EFFECT_CAPABILITIES = frozenset({
+    "network_bus",
+    "personal.write",
+    "multi_tier_memory",
+    "preview_start",
+    "execution_pipeline",
+})
+
+#: 历史名字，保留供文档/旧代码引用；语义等同硬副作用清单。
+#: 注意：**去重判定**仍以 ``REENTRANT_CAPABILITIES`` 白名单为准 —— 名单之外
+#: （含未知能力）一律不可重入，宁可多问一次人工，也不重放无法回滚的副作用。
+NON_REENTRANT_CAPABILITIES = HARD_SIDE_EFFECT_CAPABILITIES
+
+
+def capability_is_reentrant(capability_id: str) -> bool:
+    """能力是否「天然幂等」——只有显式列入白名单的才算。"""
+    return (capability_id or "").strip() in REENTRANT_CAPABILITIES
+
+
+def capability_has_hard_side_effects(capability_id: str) -> bool:
+    """能力是否在**显式**硬副作用清单里（不在清单内 → 按可安全重入处理）。"""
+    return (capability_id or "").strip() in HARD_SIDE_EFFECT_CAPABILITIES
+
+
+def make_action_id(goal_id: str, task_name: str, attempt: int = 0) -> str:
+    """跨进程稳定的 action id（= 幂等键）。
+
+    task id 是 ``uuid4()[:8]``，每次重跑都会变，不能用作键；goal id + task name
+    由拆解器/重试快照稳定保留。同一次执行的所有重试复用同一个 action id，
+    这正是幂等账本能识别「重复投递」的前提。
+    """
+    digest = hashlib.sha1(f"{goal_id}:{task_name}".encode("utf-8")).hexdigest()[:12]
+    return f"act-{digest}-{attempt}"
+
+
+def executor_accepts_action_id(executor: Callable[..., Any]) -> bool:
+    """执行器是否声明了 ``action_id`` 关键字参数（或 ``**kwargs``）。"""
+    try:
+        params = inspect.signature(executor).parameters
+    except (TypeError, ValueError):
+        # 内省失败（C 扩展、某些 callable）时按旧签名调用，保持兼容。
+        return False
+    if "action_id" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def invoke_capability_executor(
+    executor: Callable[..., Any],
+    capability_id: str,
+    inputs: Dict[str, Any],
+    action_id: Optional[str] = None,
+) -> Any:
+    """按执行器声明的签名调用，新执行器拿到 action_id，老执行器不受影响。"""
+    if executor_accepts_action_id(executor):
+        return executor(capability_id, inputs, action_id=action_id)
+    return executor(capability_id, inputs)
+
+
+# 幂等去重能力的运行时可见性（ACTION-01 后续，2026-11-08）
+# ---------------------------------------------------------
+# 「journal 没注入就不去重」不能是静默的：用户看到一切正常，但不可重入动作
+# （发消息、调外部接口、发邮件）在崩溃重试后仍可能产生第二次副作用。
+#
+# 采取的分档策略（刻意选定，不是默认）：
+#   * **硬副作用能力**（``HARD_SIDE_EFFECT_CAPABILITIES``）→ **fail-closed**，
+#     拒绝执行。理由：消息发出去、钱花出去、文件删掉之后无法撤销；只写一行
+#     健康告警挡不住已经发生的外部后果。代价：没有接入 journal 的嵌入/库用法
+#     跑不动这些能力，必须先装配 ``ExecutionJournal``（网关部署默认已装配）。
+#   * **只读 / 明确可安全重入能力 / 名单外能力** → 不阻断执行，但留一条可被
+#     健康/就绪面读取的 advisory（``blocks_readiness=False``），并在首次发生时
+#     打一条中文告警。理由：这些能力重放不会产生额外外部后果，fail-closed 只会
+#     让没接账本的部署连只读动作都跑不动，代价大于收益。
+#   * journal 已接入但**写不进去**（磁盘只读/权限不足）→ **fail-closed**，
+#     拒绝执行不可重入动作。理由：账本不可写时无法证明「这次只执行一次」，
+#     执行下去就是拿外部副作用赌磁盘，代价比拒绝一次更高。
+_DEDUPE_ADVISORY_LOCK = threading.Lock()
+_DEDUPE_ADVISORIES: Dict[str, Dict[str, Any]] = {}
+
+_DEDUPE_ADVISORY_TEXT: Dict[str, Dict[str, str]] = {
+    "hard_side_effect_without_ledger": {
+        "display_status": "硬副作用已拒绝（账本未接入）",
+        "message": (
+            "执行引擎没有接入幂等账本（journal），已拒绝执行硬副作用能力"
+            "（network_bus 外发检索/调外部接口、personal.write 写用户画像、"
+            "multi_tier_memory 写持久记忆、preview_start 启动外部可见服务、"
+            "execution_pipeline 消耗模型额度）。这些动作重放会产生第二次不可撤销"
+            "后果。解决方式：在装配执行引擎时注入 ExecutionJournal（构造参数 "
+            "journal= 或 set_journal()），或通过网关部署运行（网关默认已接入账本）；"
+            "只读与可安全重入能力不受影响。"
+        ),
+        "consequence": "硬副作用已被拒绝执行（fail-closed），没有产生副作用",
+    },
+    "ledger_missing_safe_replay": {
+        "display_status": "幂等账本未接入（安全能力已放行）",
+        "message": (
+            "执行引擎没有接入幂等账本（journal）：当前只读/可安全重入能力的重复"
+            "执行不会产生额外外部副作用，已放行；但硬副作用能力（外发、外部写、"
+            "写持久记忆、启动外部可见服务、消耗额度）会被拒绝执行。解决方式：注入 "
+            "ExecutionJournal，或通过网关部署运行（网关默认已接入账本）。"
+        ),
+        "consequence": "安全能力可重复执行；硬副作用能力会被拒绝，不会产生副作用",
+    },
+    "journal_write_failed": {
+        "display_status": "幂等账本不可写",
+        "message": (
+            "幂等账本写入失败（磁盘只读或权限不足）：不可重入动作已被拒绝执行，"
+            "避免重复副作用；请修复 journal 写入权限后重试。"
+        ),
+        "consequence": "不可重入动作已拒绝执行（fail-closed），没有重复副作用",
+    },
+}
+
+
+def _record_dedupe_advisory(code: str, capability_id: str = "") -> Dict[str, Any]:
+    """记录一条幂等去重告警；同一 code 只告警一次，occurrences 持续累加。"""
+    texts = _DEDUPE_ADVISORY_TEXT.get(code)
+    if texts is None:
+        return {}
+    now = utc_now().isoformat()
+    with _DEDUPE_ADVISORY_LOCK:
+        item = _DEDUPE_ADVISORIES.get(code)
+        first = item is None
+        if item is None:
+            item = {
+                "code": code,
+                "status": "degraded",
+                "advisory": True,
+                "blocks_readiness": False,
+                "display_name": "幂等去重",
+                "display_status": texts["display_status"],
+                "user_message": texts["message"],
+                "consequence": texts["consequence"],
+                "capability": capability_id,
+                "capabilities": [capability_id] if capability_id else [],
+                "occurrences": 1,
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+            _DEDUPE_ADVISORIES[code] = item
+        else:
+            item["occurrences"] = int(item.get("occurrences") or 0) + 1
+            item["last_seen_at"] = now
+            if capability_id and not item.get("capability"):
+                item["capability"] = capability_id
+            if capability_id:
+                caps = item.setdefault("capabilities", [])
+                if capability_id not in caps:
+                    caps.append(capability_id)
+    if first:
+        logger.warning(
+            "evt=idempotency_dedupe_unavailable code=%s capability=%s consequence=%s",
+            code,
+            capability_id or "-",
+            texts["consequence"],
+        )
+    return dict(_DEDUPE_ADVISORIES[code])
+
+
+@dataclass(frozen=True)
+class LedgerGateDecision:
+    """账本闸门判定结果（执行内核与 L-Core 直路由共用）。
+
+    ``ActionExecutor``（经 ``ExecutionEngine``）和 ``LCore.handle_intent``（直接
+    ``ToolRouter.execute``）都必须在**真正产生副作用之前**调用
+    :func:`evaluate_ledger_gate`，避免两条路径的判定分叉：一条拒绝、另一条放行。
+    """
+
+    allowed: bool
+    advisory_code: str = ""
+    status: str = ""
+    error: str = ""
+
+
+def _hard_side_effect_refusal_error(capability_id: str) -> str:
+    """账本缺席时拒绝硬副作用的中文原因（含解决办法，用户可直接照做）。"""
+    return (
+        "执行引擎没有接入幂等账本（journal），已拒绝执行硬副作用能力"
+        f"「{capability_id}」（外发/外部写/写持久记忆/启动外部可见服务/"
+        "消耗额度），避免重复产生不可撤销后果；解决方式：为执行引擎注入 "
+        "ExecutionJournal（构造参数 journal= 或 set_journal()），"
+        "或通过网关部署运行（网关默认已接入账本）；"
+        "只读与可安全重入能力不受影响"
+    )
+
+
+def evaluate_ledger_gate(
+    capability_id: str, *, journal_available: bool
+) -> LedgerGateDecision:
+    """执行前判定：没有账本时，硬副作用拒绝，其余放行并留 advisory。
+
+    判定依据只有两份显式清单：``HARD_SIDE_EFFECT_CAPABILITIES``（拒绝）与
+    ``REENTRANT_CAPABILITIES``（天然幂等，放行）；名单外能力默认按可安全重入，
+    因此这里只看「是否在硬副作用清单里」。
+
+    返回值只描述闸门决策，不构造 ``ActionResult``：执行内核与 L-Core 各自用
+    自己的结果类型承载 ``status`` / ``error``，判定逻辑保持单一来源。
+    """
+    if journal_available:
+        return LedgerGateDecision(allowed=True)
+    if capability_has_hard_side_effects(capability_id):
+        _record_dedupe_advisory("hard_side_effect_without_ledger", capability_id)
+        return LedgerGateDecision(
+            allowed=False,
+            advisory_code="hard_side_effect_without_ledger",
+            status="idempotency_ledger_missing",
+            error=_hard_side_effect_refusal_error(capability_id),
+        )
+    _record_dedupe_advisory("ledger_missing_safe_replay", capability_id)
+    return LedgerGateDecision(
+        allowed=True, advisory_code="ledger_missing_safe_replay"
+    )
+
+
+#: 占坑成功但结果没落账（崩溃/超时）时的用户可见文案。两处（执行内核与
+#: L-Core 直路由）必须一致：这描述的是「副作用可能已经发生」，不能当作失败
+#: 放行重试，也不能当作成功。
+IDEMPOTENCY_UNKNOWN_MESSAGE = (
+    "该动作已执行过但结果未落账（结果未知），已停止重复执行；"
+    "请人工确认后再决定是否重试"
+)
+
+
+def ledger_unavailable_error(capability_id: str) -> str:
+    """账本存在但写不进去时的中文原因（与「没有账本」区分成因）。"""
+    return (
+        "幂等账本不可写（磁盘只读或权限不足），已拒绝执行不可重入动作"
+        f"「{capability_id}」，避免重复副作用；请修复 journal 写入权限后重试"
+    )
+
+
+def replay_from_journal(
+    journal: ExecutionJournal, idem_key: str
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """读取已占坑动作的首次结果，返回 ``(输出, 是否结果未知)``。
+
+    调用方必须**先** ``claim_idempotency`` 且失败，才能调用本函数——否则会把
+    「从未执行」误读成「结果未知」。判定逻辑只有这一份：执行内核与 L-Core
+    直路由都从这里取，避免一条路径把「结果未知」当成功回放。
+    """
+    prior = journal.idempotent_result(idem_key)
+    if isinstance(prior, dict) and isinstance(prior.get("output"), dict):
+        return dict(prior["output"]), False
+    if prior is not None:
+        return {"result": prior}, False
+    return None, True
+
+
+def settle_idempotency(
+    journal: ExecutionJournal,
+    idem_key: Optional[str],
+    *,
+    ok: bool,
+    output: Any,
+    raw: Any,
+    timed_out: bool = False,
+) -> None:
+    """把副作用结果写进账本（或保留「结果未知」）。
+
+    规则与执行内核完全一致：
+    - 超时 → 不落结果也不释放（工具可能已经做完，保持占坑）；
+    - 成功 → 写入首次结果，后续重复投递直接回放；
+    - 工具**明确**说 ``success: False`` → 释放占坑，允许真重试；
+    - 其余（缺 success / 非结构化 / 抛异常）→ 保留占坑。
+    """
+    if journal is None or idem_key is None:
+        return
+    if timed_out:
+        return
+    if ok:
+        try:
+            payload = output if isinstance(output, dict) else {"result": output}
+            journal.remember_idempotent_result(idem_key, output=payload)
+        except Exception as exc:
+            # 写失败（磁盘只读/权限不足）时结果没有落账：占坑仍在，后续重复
+            # 投递会按"结果未知"回放而不会重跑，因此不重做副作用；但必须让人看见。
+            _record_dedupe_advisory("journal_write_failed")
+            logger.warning(
+                "evt=idempotency_remember_failed action_id=%s error=%s",
+                idem_key,
+                exc,
+            )
+        return
+    if isinstance(raw, dict) and raw.get("success") is False:
+        try:
+            journal.release_idempotency(idem_key)
+        except Exception as exc:
+            _record_dedupe_advisory("journal_write_failed")
+            logger.warning(
+                "evt=idempotency_release_failed action_id=%s error=%s",
+                idem_key,
+                exc,
+            )
+
+
+def dedupe_advisories() -> List[Dict[str, Any]]:
+    """幂等去重告警快照（供健康/就绪面展示；不改变执行语义）。"""
+    with _DEDUPE_ADVISORY_LOCK:
+        return [dict(item) for item in _DEDUPE_ADVISORIES.values()]
+
+
+def reset_dedupe_advisories() -> None:
+    """清空告警状态（仅测试/诊断使用）。"""
+    with _DEDUPE_ADVISORY_LOCK:
+        _DEDUPE_ADVISORIES.clear()
+
 
 #: Opt-in switch for the **simulated** capability path.
 #:
@@ -299,6 +675,10 @@ class Action:
     #: EXPLICIT claim about who performs the work (vs. a synthetic placeholder).
     #: Defaults False so every existing Action construction site is unaffected.
     agent_claimed: bool = False
+    #: 本次 action 所属的 execution id。幂等账本按 ``(execution_id, action_id)``
+    #: 记账，让「同一次执行的所有重试」命中同一条记录。默认 None 表示未接入账本
+    #: （旧构造点/无 journal 场景保持历史行为）。
+    execution_id: Optional[str] = None
 
 
 @dataclass
@@ -310,6 +690,13 @@ class ActionResult:
     error: Optional[str] = None
     duration_ms: int = 0
     retry_count: int = 0
+    #: True when the capability was cut off by ``timeout_seconds``. Timeouts are
+    #: NOT retried: retrying a hung tool multiplies the wall-clock cost.
+    timed_out: bool = False
+    #: True when this result was served from the idempotency ledger because the
+    #: same ``action_id`` already succeeded — the capability was NOT invoked
+    #: again. ``output["replayed_from"]`` carries the original action id.
+    replayed: bool = False
 
 
 @dataclass
@@ -339,6 +726,16 @@ class ExecutionContext:
     # 两个目标并发跑时，实例字段会被后启动的目标覆盖，先启动的目标后续
     # 事件就会写到别人的 execution_id 下（串号）。
     execution_id: Optional[str] = None
+    #: 整条目标执行的墙钟预算（time.monotonic 截止点）；None = 未启用。
+    deadline_monotonic: Optional[float] = None
+    #: 跨所有任务累计的尝试次数上限，防止 8 任务 × 4 次重试无限放大。
+    attempts_used: int = 0
+    max_total_attempts: int = 16
+    #: 显式单任务重试：这些任务即使 journal 里只有 task_started 也允许再跑。
+    explicit_retry_names: Set[str] = field(default_factory=set)
+    budget_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
 
 class GoalDecomposer:
@@ -806,10 +1203,17 @@ class PlanBuilder:
 class ActionExecutor:
     """Executes actions via capability registry."""
 
-    def __init__(self, capability_executor: Optional[CapabilityExecutor] = None) -> None:
+    def __init__(
+        self,
+        capability_executor: Optional[CapabilityExecutor] = None,
+        journal: Optional[ExecutionJournal] = None,
+    ) -> None:
         self.capability_registry = get_capability_registry()
         self.event_bus = get_event_bus()
         self._capability_executor = capability_executor
+        #: 幂等账本（与执行 journal 同一个 SQLite 文件）。None 时不做任何去重，
+        #: 与不注入 journal 的历史行为完全一致。
+        self._journal: Optional[ExecutionJournal] = journal
         # ARM1: optional resolver mapping an assigned_agent id -> a callable that
         # performs the capability FOR that agent. When absent (the default), agent
         # attribution cannot be substantiated, so an action carrying an
@@ -821,6 +1225,10 @@ class ActionExecutor:
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
         """Inject (or clear) the real capability executor after construction."""
         self._capability_executor = capability_executor
+
+    def set_journal(self, journal: Optional[ExecutionJournal]) -> None:
+        """Attach (or detach) the idempotency ledger used for non-reentrant tools."""
+        self._journal = journal
 
     def set_agent_resolver(
         self,
@@ -879,11 +1287,12 @@ class ActionExecutor:
         # explicit ``success: False``. We honour that explicit verdict instead
         # of masking it — a rejected/failed capability must never surface as a
         # successful action (the Verifier keys off ``ActionResult.success``).
-        # Legacy executors that return a dict *without* a ``success`` key keep
-        # the previous behaviour (assumed successful), preserving backward
-        # compatibility.
+        # A dict *without* a ``success`` key is NOT assumed successful: if an
+        # executor cannot state success, the action is recorded as unconfirmed
+        # and treated as failed (fail-closed).
         try:
             simulated = False
+            timed_out = False
             # ARM1: when the action is attributed to an agent, the agent's own
             # executor performs the capability -- this is what makes the pool
             # causal instead of decorative. An unresolvable agent does NOT block
@@ -908,8 +1317,67 @@ class ActionExecutor:
             executor = agent_executor if agent_executor is not None else self._capability_executor
 
             if executor is not None:
-                raw = executor(action.capability_id, action.inputs)
-                if isinstance(raw, dict):
+                # ACTION-01 后续：账本缺席时分档处理。
+                # 硬副作用能力（外发/外部写/写持久记忆/启动外部可见服务/消耗额度）
+                # 重放无法撤销，必须在执行前拒绝；只读与可安全重入能力照常放行，
+                # 但留一条健康/就绪面可见的告警（不阻断）。
+                # 判定抽到 ``evaluate_ledger_gate``：``LCore.handle_intent`` 也走
+                # 同一个函数，避免一条路径拒绝、另一条路径放行。
+                gate = evaluate_ledger_gate(
+                    action.capability_id,
+                    journal_available=self._journal is not None,
+                )
+                if not gate.allowed:
+                    return self._ledger_missing_refusal(action, start_time, gate)
+                # ACTION-01: 不可重入工具的稳定幂等键在此生效。先原子占坑再执行，
+                # 重试/重启命中同一 action id 时直接返回首次结果，绝不再执行一次。
+                idem_key = self._action_idempotency_key(action)
+                if idem_key is not None and self._journal is not None:
+                    try:
+                        claimed = self._journal.claim_idempotency(
+                            idem_key, action.execution_id or "", task_name=None
+                        )
+                    except Exception as exc:
+                        # 账本存在但写不进去（磁盘只读/权限不足）：无法证明
+                        # "只执行一次"，不可重入动作一律 fail-closed 拒绝执行。
+                        return self._ledger_unavailable_result(action, exc, start_time)
+                    if not claimed:
+                        return self._replay_action(action, idem_key, start_time)
+                # Real timeout enforcement: ``timeout_seconds`` used to be
+                # metadata only, so a hung tool kept the whole goal hostage and
+                # retries multiplied the wait. The worker cannot be killed in
+                # Python, but the caller gets a verdict at the deadline and this
+                # attempt is never retried (see ``ActionResult.timed_out``).
+                timeout_seconds = max(1, int(action.timeout_seconds or 300))
+                pool = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="action-timeout"
+                )
+                try:
+                    future = pool.submit(
+                        invoke_capability_executor,
+                        executor,
+                        action.capability_id,
+                        action.inputs,
+                        action.id,
+                    )
+                    try:
+                        raw = future.result(timeout=timeout_seconds)
+                    except FuturesTimeout:
+                        raw = None
+                        timed_out = True
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
+
+                if timed_out:
+                    output = {
+                        "capability": action.capability_id,
+                        "status": "timeout",
+                        "timeout_seconds": timeout_seconds,
+                        "executed": False,
+                    }
+                    ok = False
+                    error = f"执行超时（{timeout_seconds} 秒），已中止本次尝试"
+                elif isinstance(raw, dict):
                     output = dict(raw)
                     output.setdefault("capability", action.capability_id)
                     if agent_unattributed:
@@ -917,9 +1385,14 @@ class ActionExecutor:
                         output["unattributed_agent"] = action.assigned_agent
                     explicit = raw.get("success", None)
                     if explicit is None:
-                        output["status"] = "executed"
-                        ok = True
-                        error = None
+                        # FAIL CLOSED: 没有 success 就无法证明成功，不得默认成功。
+                        output["status"] = "unconfirmed"
+                        output["executed"] = False
+                        ok = False
+                        error = (
+                            "执行器返回结果缺少 success 字段，无法确认执行成功"
+                            "（按失败处理）"
+                        )
                     else:
                         ok = bool(explicit)
                         output.setdefault("status", "executed" if ok else "failed")
@@ -929,11 +1402,23 @@ class ActionExecutor:
                 else:
                     output = {
                         "capability": action.capability_id,
-                        "status": "executed",
+                        "status": "unconfirmed",
+                        "executed": False,
                         "result": raw,
                     }
-                    ok = True
-                    error = None
+                    ok = False
+                    error = "执行器返回了非结构化结果，无法确认执行成功（按失败处理）"
+
+                # 账本结清：成功 -> 立刻把首次结果落盘（崩溃后重试可直接复用）；
+                # 明确失败 -> 释放占坑（工具明确说没做成）；超时/缺 success /
+                # 异常抛出 -> 结果未知，保留占坑，绝不再执行一次。
+                self._settle_idempotency(
+                    idem_key,
+                    ok=bool(ok),
+                    output=output,
+                    raw=raw,
+                    timed_out=timed_out,
+                )
             elif simulated_execution_enabled():
                 output = self._simulate_capability(action.capability_id, action.inputs)
                 simulated = True
@@ -987,15 +1472,24 @@ class ActionExecutor:
                 output=output,
                 error=error,
                 duration_ms=duration_ms,
+                timed_out=timed_out,
             )
 
         except Exception as e:
             duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+            # 原文（含 traceback）只进日志；任务结果只给人话。
+            logger.exception(
+                "evt=capability_executor_crashed capability=%s action_id=%s",
+                action.capability_id,
+                action.id,
+            )
+            human_error = humanize_executor_error(e)
 
             publish_event(
                 type="action_failed",
                 source="execution_kernel",
-                data={"action_id": action.id, "task_id": action.task_id, "error": str(e)},
+                data={"action_id": action.id, "task_id": action.task_id,
+                      "error": human_error},
                 correlation_id=action.correlation_id,
                 scope=EventScope(action.scope),
                 priority=EventPriority.HIGH,
@@ -1004,9 +1498,188 @@ class ActionExecutor:
             return ActionResult(
                 action_id=action.id,
                 success=False,
-                error=str(e),
+                error=human_error,
                 duration_ms=duration_ms,
             )
+
+    def _action_idempotency_key(self, action: Action) -> Optional[str]:
+        """The key that dedupes side effects, or ``None`` when dedupe does not apply.
+
+        Only non-reentrant capabilities are deduped. ``file_write`` / pure
+        computation / read-only tools are naturally idempotent, so forcing them
+        through the ledger would turn a harmless retry into a false "replay".
+        """
+        if self._journal is None:
+            return None
+        if not action.execution_id or not action.id:
+            return None
+        if capability_is_reentrant(action.capability_id):
+            return None
+        return action.id
+
+    def _ledger_missing_refusal(
+        self,
+        action: Action,
+        start_time: datetime,
+        decision: LedgerGateDecision,
+    ) -> ActionResult:
+        """账本未装配：拒绝执行硬副作用动作，并给出中文可读的解决办法。
+
+        与 ``_ledger_unavailable_result`` 的区别是成因：这里根本没有账本
+        （未注入），那里是账本存在但写不进去。两种都 fail-closed，因为都无法
+        证明「这次只会执行一次」。
+
+        文案与判定由 :func:`evaluate_ledger_gate` 统一提供（advisory 已在闸门里
+        记录），这里只负责记录事件并转换成 ``ActionResult``。
+        """
+        logger.warning(
+            "evt=idempotency_hard_side_effect_refused capability=%s action_id=%s",
+            action.capability_id,
+            action.id,
+        )
+        duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+        error = decision.error
+        publish_event(
+            type="action_failed",
+            source="execution_kernel",
+            data={
+                "action_id": action.id,
+                "task_id": action.task_id,
+                "capability_id": action.capability_id,
+                "status": decision.status,
+                "error": error,
+            },
+            correlation_id=action.correlation_id,
+            scope=EventScope(action.scope),
+            priority=EventPriority.HIGH,
+        )
+        return ActionResult(
+            action_id=action.id,
+            success=False,
+            output={
+                "success": False,
+                "status": decision.status,
+                "executed": False,
+                "capability": action.capability_id,
+            },
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    def _ledger_unavailable_result(
+        self, action: Action, exc: Exception, start_time: datetime
+    ) -> ActionResult:
+        """账本存在但写不进去：拒绝执行不可重入动作，并给出中文可读原因。
+
+        技术异常只写日志；返回给用户的是"发生了什么 + 为什么拒绝 + 怎么修"。
+        """
+        _record_dedupe_advisory("journal_write_failed", action.capability_id)
+        logger.warning(
+            "evt=idempotency_ledger_write_failed capability=%s action_id=%s error=%s",
+            action.capability_id,
+            action.id,
+            exc,
+        )
+        duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+        error = ledger_unavailable_error(action.capability_id)
+        publish_event(
+            type="action_failed",
+            source="execution_kernel",
+            data={
+                "action_id": action.id,
+                "task_id": action.task_id,
+                "capability": action.capability_id,
+                "status": "idempotency_ledger_unavailable",
+            },
+            correlation_id=action.correlation_id,
+            scope=EventScope(action.scope),
+            priority=EventPriority.HIGH,
+        )
+        return ActionResult(
+            action_id=action.id,
+            success=False,
+            output={
+                "success": False,
+                "status": "idempotency_ledger_unavailable",
+                "executed": False,
+                "capability": action.capability_id,
+            },
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    def _replay_action(
+        self, action: Action, idem_key: str, start_time: datetime
+    ) -> ActionResult:
+        """Serve a previously settled side effect instead of running it again."""
+        output, unknown = replay_from_journal(self._journal, idem_key)
+        duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+        if unknown:
+            # Claimed but the result never landed (crash between the side effect
+            # and the ledger write): the effect may already exist, so re-running
+            # is forbidden. This is "结果未知", not a success and not a clean fail.
+            publish_event(
+                type="action_replayed_unknown",
+                source="execution_kernel",
+                data={"action_id": action.id, "task_id": action.task_id},
+                correlation_id=action.correlation_id,
+                scope=EventScope(action.scope),
+                priority=EventPriority.HIGH,
+            )
+            return ActionResult(
+                action_id=action.id,
+                success=False,
+                output={
+                    "success": False,
+                    "status": "replayed_unknown",
+                    "replayed_from": action.id,
+                    "capability": action.capability_id,
+                },
+                error=IDEMPOTENCY_UNKNOWN_MESSAGE,
+                duration_ms=duration_ms,
+                replayed=True,
+            )
+        output["replayed_from"] = action.id
+        output.setdefault("success", True)
+        output["replayed"] = True
+        publish_event(
+            type="action_replayed",
+            source="execution_kernel",
+            data={"action_id": action.id, "task_id": action.task_id},
+            correlation_id=action.correlation_id,
+            scope=EventScope(action.scope),
+        )
+        return ActionResult(
+            action_id=action.id,
+            success=bool(output.get("success", True)),
+            output=output,
+            duration_ms=duration_ms,
+            replayed=True,
+        )
+
+    def _settle_idempotency(
+        self,
+        idem_key: Optional[str],
+        *,
+        ok: bool,
+        output: Any,
+        raw: Any,
+        timed_out: bool,
+    ) -> None:
+        """Write the side-effect outcome into the ledger (or keep it unknown).
+
+        结清规则本身抽到 :func:`settle_idempotency`，与 ``LCore.handle_intent``
+        共用：只读/可重入路径不走账本，但一旦走了，两条路径的「成功落账 /
+        明确失败释放 / 超时保留占坑」必须完全一致。
+        """
+        settle_idempotency(
+            self._journal,
+            idem_key,
+            ok=ok,
+            output=output,
+            raw=raw,
+            timed_out=timed_out,
+        )
 
     def _simulate_capability(self, capability_id: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Simulate capability execution -- **never** a real side effect.
@@ -1323,7 +1996,9 @@ class ExecutionEngine:
         self.scope = scope
         self.decomposer = GoalDecomposer()
         self.planner = PlanBuilder()
-        self.executor = ActionExecutor(capability_executor=capability_executor)
+        self.executor = ActionExecutor(
+            capability_executor=capability_executor, journal=journal
+        )
         self.verifier = Verifier()
         self.context_kernel = create_context_kernel(scope=scope)
         # journal=None 时行为与历史完全逐字节一致（不注入即不生效），
@@ -1345,6 +2020,8 @@ class ExecutionEngine:
     def set_journal(self, journal: Optional[ExecutionJournal]) -> None:
         """Attach (or detach) the durable journal that enables crash recovery."""
         self.journal = journal
+        # 幂等账本与 journal 是同一个 SQLite 文件，必须同步切换。
+        self.executor.set_journal(journal)
 
     def execute_goal(
         self,
@@ -1421,6 +2098,20 @@ class ExecutionEngine:
             plan.status = PlanStatus.ACTIVE
             plan.started_at = utc_now()
 
+            # Budget guard (per goal): wall-clock deadline + total attempt cap.
+            # Without these, 8 tasks × 4 retries × a 300s tool can run for hours.
+            try:
+                budget_seconds = float(os.environ.get("LIUHAO_GOAL_MAX_SECONDS", "600"))
+            except (TypeError, ValueError):
+                budget_seconds = 600.0
+            ctx.deadline_monotonic = time.monotonic() + max(1.0, budget_seconds)
+            try:
+                ctx.max_total_attempts = max(
+                    1, int(os.environ.get("LIUHAO_GOAL_MAX_ATTEMPTS", "16"))
+                )
+            except (TypeError, ValueError):
+                ctx.max_total_attempts = 16
+
             # Explicit assignment (``POST /v1/goals/assign``): the caller named a
             # specific agent, so every task of this goal is claimed for it --
             # never silently redistributed across the pool. ``agent_claimed=True``
@@ -1437,14 +2128,28 @@ class ExecutionEngine:
             # for the run to finish.
             self._notify_progress(on_task_progress, plan)
 
+            # Single-task retry scope must be known BEFORE journal adoption: an
+            # explicitly retried task may run even if a previous attempt left
+            # only task_started behind (same task id = same idempotency key).
+            retry_scope: Set[str] = set(only_task_names or ())
+            if only_task_name:
+                retry_scope.add(only_task_name)
+            ctx.explicit_retry_names = set(retry_scope)
+
             # Step 2.5: Adopt durable progress (crash recovery)
             # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
             # 才能对上上一次执行留下来的那串事件。
+            #
+            # 即使没接 journal 也要赋值：Action 需要它来判定「这个动作本来
+            # 应该被幂等账本去重」。否则账本缺失会重新变成静默 —— advisory
+            # 根本触发不了（这正是 ACTION-01 后续要修的那条）。
+            ctx.execution_id = goal.id
             resumed_count = 0
             if self.journal is not None:
                 # 归属只存在 ctx 上；实例字段仅作向后兼容的观测值，事件写入
                 # 一律用 ctx.execution_id，避免并发目标互相覆盖。
-                ctx.execution_id = goal.id
+                # 仅在真正接入 journal 时赋值：未接入时保持历史语义
+                # （``_execution_id`` 为 None），避免把「账本不存在」伪装成存在。
                 self._execution_id = goal.id
                 self.journal.record(
                     ctx.execution_id,
@@ -1470,9 +2175,6 @@ class ExecutionEngine:
             # Single-task retry: only the named task(s) may run. Every other task
             # still PENDING after journal adoption is SKIPPED, never executed --
             # a retry of one failed card must not silently re-run the rest.
-            retry_scope: Set[str] = set(only_task_names or ())
-            if only_task_name:
-                retry_scope.add(only_task_name)
             if retry_scope:
                 for t in plan.tasks:
                     if t.name not in retry_scope and t.status == TaskStatus.PENDING:
@@ -1643,18 +2345,89 @@ class ExecutionEngine:
 
         返回跳过的任务数，并在 ctx 里放一个标明来自 journal 的 ActionResult，
         使后续 Verifier 看到的形状与真实执行一致（不是空成功，是「已恢复」）。
+
+        TOOL-04 语义（定死，2026-11-08）
+        ------------------------------
+        * 只有 ``task_started``、没有 ``task_exec_started``：任务「已领取但执行尚未
+          开始」，此时不可能有任何副作用 —— **允许自动重跑**。
+        * 有 ``task_exec_started``（带 ``exec_started_at``）且能力非幂等：副作用
+          可能已经发生，**必须转人工确认，不许自动重跑**。
+        * 有 ``task_exec_started`` 但能力天然幂等（``file_write`` / 纯计算 / 只读）：
+          重跑得到同一结果，**允许自动重跑**。
+        * 人工显式重试（``ctx.explicit_retry_names``）：视为已确认，允许执行一次，
+          并释放「已占坑但无结果」的幂等账（键不变）。
         """
         execution_id = ctx.execution_id or ctx.goal.id
         assert self.journal is not None and execution_id
         ctx.execution_id = execution_id
         done = self.journal.completed_task_names(execution_id)
-        if not done:
-            return 0
         artifacts = self.journal.completed_task_artifacts(execution_id)
+        events = self.journal.events(execution_id)
+        started = {
+            ev.task_name
+            for ev in events
+            if ev.event_type == "task_started" and ev.task_name
+        } - done
+        #: 真正调用过执行器的任务 —— 「副作用可能已经发生」的分界线。
+        exec_started = {
+            ev.task_name
+            for ev in events
+            if ev.event_type == "task_exec_started" and ev.task_name
+        } - done
 
         resumed = 0
         for task in ctx.plan.tasks:
-            if task.status != TaskStatus.PENDING or task.name not in done:
+            if task.status != TaskStatus.PENDING:
+                continue
+            if task.name in ctx.explicit_retry_names and self.journal is not None:
+                # 显式重试 = 人工已经确认「可以再跑一次」。释放「已占坑但无结果」的
+                # 旧账，允许本次真正执行；键本身不变，仍是同一个 action id / 幂等键。
+                self.journal.release_idempotency(
+                    make_action_id(task.goal_id, task.name)
+                )
+            if task.name not in done:
+                if task.name in started and task.name not in ctx.explicit_retry_names:
+                    # TOOL-04 语义（定死，2026-11-08）：
+                    #   1) 任务已领取但执行尚未开始（只有 task_started，没有
+                    #      task_exec_started）-> 没有任何副作用，允许重跑；
+                    #   2) 执行已开始且能力天然幂等（file_write / 纯计算 / 只读）
+                    #      -> 重跑得到同一结果，允许重跑；
+                    #   3) 执行已开始且能力非幂等 -> 结果未知，必须转人工确认，
+                    #      不许自动重跑（TOOL-05 的核心诉求）。
+                    if (
+                        task.name not in exec_started
+                        or capability_is_reentrant(task.capability_id)
+                    ):
+                        self._journal_event(
+                            task,
+                            "task_requeued",
+                            execution_id,
+                            task_id=task.id,
+                            goal_id=task.goal_id,
+                            capability_id=task.capability_id,
+                            reason=(
+                                "no_exec_started"
+                                if task.name not in exec_started
+                                else "reentrant_capability"
+                            ),
+                        )
+                        continue
+                    task.status = TaskStatus.FAILED
+                    task.error = (
+                        "执行中断：结果未知（该任务已开始执行但没有完成记录），"
+                        "已停止自动重跑；请人工确认后再决定是否重试该任务"
+                    )
+                    task.completed_at = utc_now()
+                    ctx.failed_tasks.add(task.id)
+                    self._journal_event(
+                        task,
+                        "task_interrupted_unknown",
+                        execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        capability_id=task.capability_id,
+                        error=task.error,
+                    )
                 continue
 
             # DEFECT E -- "it finished once" is NOT "it is still finished".
@@ -1934,8 +2707,12 @@ class ExecutionEngine:
         # Create action. ARM1: carry the assigned agent across the Action
         # boundary so it actually reaches the executor (previously it stopped at
         # the Task dataclass and was physically unable to influence execution).
+        # Deterministic action id = stable idempotency key. Task ids are uuid4
+        # per run and are NOT stable across restarts; goal id + task name are
+        # (the decomposer/retry snapshot preserves both), so derive the key
+        # from them. Same task + same attempt => same key on replay.
         action = Action(
-            id=str(uuid.uuid4())[:8],
+            id=make_action_id(task.goal_id, task.name, task.retry_count),
             task_id=task.id,
             capability_id=task.capability_id,
             capability_namespace=task.capability_namespace,
@@ -1945,14 +2722,71 @@ class ExecutionEngine:
             timeout_seconds=task.timeout_seconds,
             assigned_agent=task.assigned_agent,
             agent_claimed=task.agent_claimed,
+            execution_id=ctx.execution_id,
         )
+
+        # TOOL-04: ``task_started`` 只表示「任务被领取」，不代表副作用已经开始。
+        # 真正调用执行器之前再落一条 ``task_exec_started``（带 exec_started_at）。
+        # 恢复时据此区分两件事：
+        #   * 只有 task_started        -> 没有任何副作用，允许重跑；
+        #   * task_exec_started 且非幂等 -> 结果未知，转人工确认、不许自动重跑。
+        exec_started_marked = False
 
         # Execute with retries
         while task.retry_count <= task.max_retries:
+            # Per-goal budget: wall clock + cumulative attempts across ALL tasks.
+            with ctx.budget_lock:
+                over_deadline = (
+                    ctx.deadline_monotonic is not None
+                    and time.monotonic() > ctx.deadline_monotonic
+                )
+                over_attempts = ctx.attempts_used >= ctx.max_total_attempts
+                if not (over_deadline or over_attempts):
+                    ctx.attempts_used += 1
+            if over_deadline or over_attempts:
+                reason = (
+                    "执行超出时间预算"
+                    if over_deadline
+                    else "执行超出总尝试次数预算"
+                )
+                task.status = TaskStatus.FAILED
+                task.error = f"{reason}（不重试）：未开始本次尝试"
+                task.completed_at = utc_now()
+                ctx.failed_tasks.add(task.id)
+                self._journal_event(
+                    task,
+                    "task_budget_exhausted",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    error=task.error,
+                )
+                publish_event(
+                    type="task_failed",
+                    source="execution_kernel",
+                    data={"task_id": task.id, "goal_id": task.goal_id,
+                          "error": task.error},
+                    correlation_id=task.correlation_id,
+                    scope=EventScope(task.scope),
+                    priority=EventPriority.CRITICAL,
+                )
+                self._notify_progress(on_task_progress, ctx.plan)
+                return
             # Honour a stop request before each attempt.
             if stop_event is not None and stop_event.is_set():
                 self._record_cancel(ctx)
                 raise GoalCancelled(ctx.goal.id)
+            if not exec_started_marked:
+                self._journal_event(
+                    task,
+                    "task_exec_started",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    capability_id=task.capability_id,
+                    exec_started_at=utc_now().isoformat(),
+                )
+                exec_started_marked = True
             result = self.executor.execute(action)
             ctx.task_results[task.id] = result
 
@@ -1976,33 +2810,90 @@ class ExecutionEngine:
                 task.result = result.output
                 task.completed_at = utc_now()
                 ctx.completed_tasks.add(task.id)
-                # 必须在已被正式标记 COMPLETED 之后立刻落盘：崩溃随时可能发生，
-                # 晚一步写就等于这个任务下次还要重跑（副作用执行第二次）。
-                #
-                # Defect E: record WHAT was produced, not just that it finished.
-                # A bare "task_completed" row only proves the task ran at some
-                # point; the artifact path is what lets a later recovery ask
-                # whether the side effect is STILL there (and is therefore not
-                # silently reclaimable after someone deleted it).
+                artifact_path = artifact_path_from_output(result.output)
+                # 副作用已发生，但「执行过」不等于「完成」。先记 task_executed；
+                # 只有验证通过后才写 task_completed —— 崩溃恢复只认
+                # task_completed，否则一个验证失败的任务会被当成已完成收养。
                 self._journal_event(
                     task,
-                    "task_completed",
+                    "task_executed",
                     ctx.execution_id,
                     task_id=task.id,
                     goal_id=task.goal_id,
-                    artifact_path=artifact_path_from_output(result.output),
+                    artifact_path=artifact_path,
                 )
-
-                # 旁路：已正式标记 COMPLETED 之后记录产物归属；失败只记警告。
-                self._record_task_artifacts(task, result, ctx.goal.id)
 
                 # Verify
                 verification = self.verifier.verify(task, result, verification_criteria)
                 ctx.verification_results[task.id] = verification
 
                 if verification.replan_required:
-                    # Could trigger replan here
-                    pass
+                    # 验证未通过 = 没有交付。子任务与目标必须一起降级，
+                    # 不能留下 state=completed + summary「均已产出」。
+                    task.status = TaskStatus.FAILED
+                    ctx.completed_tasks.discard(task.id)
+                    ctx.failed_tasks.add(task.id)
+                    reason = (
+                        verification.feedback
+                        or (verification.details or {}).get("reason")
+                        or ""
+                    )
+                    detail = (
+                        f"（{getattr(verification.result, 'value', verification.result)}，"
+                        f"得分 {verification.score:.2f}）"
+                    )
+                    task.error = "验证未通过" + detail + (
+                        f"：{reason}" if reason else ""
+                    )
+                    task.completed_at = utc_now()
+                    self._journal_event(
+                        task,
+                        "task_verification_failed",
+                        ctx.execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        error=task.error,
+                        artifact_path=artifact_path,
+                    )
+                    # 也让重启路径的 failed_task_names 看到它。
+                    self._journal_event(
+                        task,
+                        "task_failed",
+                        ctx.execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        error=task.error,
+                    )
+                    publish_event(
+                        type="task_failed",
+                        source="execution_kernel",
+                        data={
+                            "task_id": task.id,
+                            "goal_id": task.goal_id,
+                            "error": task.error,
+                            "verification": getattr(
+                                verification.result, "value", str(verification.result)
+                            ),
+                        },
+                        correlation_id=task.correlation_id,
+                        scope=EventScope(task.scope),
+                        priority=EventPriority.CRITICAL,
+                    )
+                    self._notify_progress(on_task_progress, ctx.plan)
+                    return
+
+                # 验证通过后才是真正的完成：此时写 task_completed。
+                self._journal_event(
+                    task,
+                    "task_completed",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    artifact_path=artifact_path,
+                )
+
+                # 旁路：只有验证通过的产物才记录产物归属。
+                self._record_task_artifacts(task, result, ctx.goal.id)
 
                 publish_event(
                     type="task_completed",
@@ -2018,6 +2909,10 @@ class ExecutionEngine:
                 )
                 self._notify_progress(on_task_progress, ctx.plan)
                 return
+
+            if result.timed_out:
+                # 超时不重试：重试只会把 1 次超时放大成 4 次。
+                break
 
             # Retry
             task.retry_count += 1
@@ -2036,10 +2931,22 @@ class ExecutionEngine:
         # All retries exhausted - preserve the root cause of the last
         # failed attempt alongside the exhaustion notice.
         last_result = ctx.task_results.get(task.id)
-        root_cause = (last_result.error if last_result and last_result.error
-                      else "unknown error")
+        raw_cause = (last_result.error if last_result and last_result.error
+                     else "unknown error")
+        root_cause = humanize_executor_error(raw_cause)
         task.status = TaskStatus.FAILED
-        task.error = f"Max retries ({task.max_retries}) exceeded; last error: {root_cause}"
+        # 人话在前；括号里只放真实发生过的尝试次数，不能把 max_retries 说成
+        # 「已重试 N 次」（超时不重试，实际只尝试了 1 次）。
+        attempts = min(task.retry_count + 1, task.max_retries + 1)
+        if task.retry_count >= task.max_retries:
+            tail = f"（重试耗尽：Max retries ({task.max_retries}) exceeded）"
+        else:
+            tail = ""
+        task.error = f"任务执行失败（已尝试 {attempts} 次）：{root_cause}{tail}"
+        logger.warning(
+            "evt=task_failed task_id=%s capability=%s raw_error=%s",
+            task.id, task.capability_id, raw_cause,
+        )
         task.completed_at = utc_now()
         ctx.failed_tasks.add(task.id)
         self._journal_event(

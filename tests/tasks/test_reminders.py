@@ -949,3 +949,58 @@ async def test_repeat_schedule_is_repaired_when_delivered_but_not_advanced(tmp_p
     scheduler.close()
     store.close()
 
+
+def test_ascii_clock_creates_a_real_fire_job(tmp_path):
+    """证据①：『明天上午9点提醒我开会』必须解析成功并真的建出 job。"""
+    from src.tasks.reminders import REMINDER_FIRE_JOB
+
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))  # 本地 08:00
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    service = ReminderService(
+        scheduler, store=store, notifier=RecordingNotifier(), tz=TZ
+    )
+    created = service.create("u1", "明天上午9点提醒我开会")
+
+    jobs = scheduler.list_jobs(None, 20)
+    assert len(jobs) == 1, jobs
+    job = jobs[0]
+    assert job["job_name"] == REMINDER_FIRE_JOB
+    assert job["status"] == PENDING
+    # 本地 2026-01-02 09:00 = naive UTC 2026-01-02T01:00:00
+    assert job["run_at"] == "2026-01-02T01:00:00"
+    assert job["payload"]["reminder_id"] == created["id"]
+    assert job["payload"]["title"] == "开会"
+    scheduler.close()
+    store.close()
+
+
+def test_queue_full_turns_one_time_reminder_into_missed(tmp_path):
+    """队列满：一次性提醒不无限堆积，直接记 missed（可见），不静默消失。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = LocalScheduler(
+        str(tmp_path / "sched.db"),
+        max_concurrency=1,
+        max_queue=1,
+        tick_seconds=0.01,
+        now_fn=clock,
+        audit_sink=lambda action, outcome, details: None,
+    )
+    store = _store(tmp_path)
+    service = ReminderService(
+        scheduler, store=store, notifier=RecordingNotifier(), tz=TZ
+    )
+
+    service.create("u1", "明天上午9点提醒我开会")  # 占满队列
+    second = service.create("u1", "后天上午9点提醒我交材料")
+
+    assert len(scheduler.list_jobs(None, 20)) == 1
+    # 一次性提醒转 completed（不挂在 active + 过期时间上假装还活着）
+    assert service.get("u1", second["id"])["status"] == "completed"
+    missed = service.missed("u1")
+    assert missed["count"] >= 1
+    assert any(row["reminder_id"] == second["id"] for row in missed["missed"])
+    scheduler.close()
+    store.close()
+
+

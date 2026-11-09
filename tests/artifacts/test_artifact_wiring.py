@@ -100,8 +100,9 @@ def _run(
     return engine, journal, ctx
 
 
-#: journal 事件里与本次改造无关的易变字段（plan_id 每次是新的 uuid）。
-_VOLATILE_PAYLOAD_KEYS = frozenset({"plan_id"})
+#: journal 事件里与本次改造无关的易变字段（plan_id 每次是新的 uuid，
+#: exec_started_at 是执行开始时的真实时间戳，两次运行不可能相同）。
+_VOLATILE_PAYLOAD_KEYS = frozenset({"plan_id", "exec_started_at"})
 
 
 def _journal_signature(journal: ExecutionJournal, execution_id: str):

@@ -24,7 +24,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+
 from uuid import uuid4
+
+from src.tasks._queue_paths import resolve_sqlite_store
 
 logger = logging.getLogger(__name__)
 
@@ -115,20 +118,38 @@ class CheckpointManager:
 
     @staticmethod
     def _default_db_path() -> Path:
-        """默认检查点库位置：与执行 journal / 产物索引同一套解析策略。
+        """默认检查点库位置：工作区/统一数据根，旧仓库 ``data/`` 位置自动迁移。
 
-        ``LIUHAO_WORKSPACE_ROOT`` 优先（安装版由启动器指向用户数据目录），
-        否则回落到仓库的 ``data/workflow_checkpoints.db``；不写死盘符。
+        历史默认写 ``<workspace>/workflow_checkpoints.db``，未设 workspace 时落到
+        仓库的 ``data/workflow_checkpoints.db``——那是程序目录，升级/卸载会把它
+        连同任务进度一起清掉。现在由 ``resolve_sqlite_store`` 统一解析：
+        ``LIUHAO_WORKFLOW_CHECKPOINT_DB`` > ``LIUHAO_WORKSPACE_ROOT`` >
+        ``LIUHAO_DATA_DIR`` > 旧位置；旧库存在时复制 + 校验 + 原子落位，
+        迁移失败继续用旧库，绝不以空检查点启动。
         """
         root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
         if root:
-            return Path(root) / "workflow_checkpoints.db"
-        repo_root = Path(__file__).resolve().parents[2]
-        return repo_root / "data" / "workflow_checkpoints.db"
+            legacy = Path(root) / "workflow_checkpoints.db"
+        else:
+            legacy = Path(__file__).resolve().parents[2] / "data" / "workflow_checkpoints.db"
+        return Path(
+            resolve_sqlite_store(
+                "workflow_checkpoints.db",
+                legacy,
+                env_var="LIUHAO_WORKFLOW_CHECKPOINT_DB",
+                workspace=True,
+                label="工作流检查点库",
+            )
+        )
 
     def _init_db(self) -> None:
         """Initialize the SQLite database schema."""
         with self._lock:
+            # 与其它状态库一致：WAL 允许读写并发，避免长工作流写检查点时
+            # 阻塞状态查询；显式 busy_timeout 不依赖 connect 的隐式默认值。
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=FULL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     checkpoint_id TEXT PRIMARY KEY,
@@ -210,9 +231,13 @@ class CheckpointManager:
         input_data_json = json.dumps(input_data, default=self._json_default)
         output_data_json = json.dumps(output_data, default=self._json_default)
 
-        # Serialize lists
-        node_stack_json = json.dumps(node_id if node_id else [], default=self._json_default)
-        remaining_edges_json = json.dumps(edge_id if edge_id else [], default=self._json_default)
+        # Serialize lists. 这两个字段的读回类型必须恒为 list：此前直接
+        # json.dumps(node_id) 会把单个 ID 写成 JSON 字符串，读回来是 str
+        # 而不是调用方期望的 list，属于写入/读回类型错位。
+        node_stack_json = json.dumps([node_id] if node_id else [], default=self._json_default)
+        remaining_edges_json = json.dumps(
+            [edge_id] if edge_id else [], default=self._json_default
+        )
 
         # Serialize tags
         tags_json = json.dumps(tags if tags else [], default=self._json_default)

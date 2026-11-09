@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -125,3 +126,88 @@ async def test_owner_claim_serializes_runners(_isolate_env, tmp_path):
     third = claim_local_scheduler_owner(tmp_path / "root")
     assert third is not None
     third.release()
+
+
+# -- 回归：网关后台线程启动（OPS-004「no running event loop」） -----------------
+
+
+def test_start_without_running_loop_reports_clear_reason(_isolate_env, tmp_path):
+    """在没有事件循环的线程里启动：必须返回 False + 中文原因，而不是静默吞掉。
+
+    修复前这里抛 ``RuntimeError: no running event loop`` 并被 ``start()`` 内部的
+    except 捕获，调用方只拿到 ``False``；网关因此把"排程器永远起不来"显示成
+    "后台组件正常"。
+    """
+    scheduler = _scheduler(tmp_path, "no-loop")
+    host = HostedLocalScheduler(root=tmp_path / "root", scheduler=scheduler)
+    outcome: dict = {}
+
+    def _start_in_plain_thread() -> None:
+        outcome["ok"] = host.start()
+        outcome["reason"] = host.reason
+        outcome["error"] = host.start_error
+
+    thread = threading.Thread(target=_start_in_plain_thread, name="no-loop-host")
+    thread.start()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert outcome["ok"] is False
+    assert host.running is False
+    # 中文原因必须具体到"为什么"（线程里没有运行中的事件循环），可直接给用户看。
+    assert "事件循环" in outcome["error"]
+    assert "no running event loop" in outcome["error"]
+
+
+def test_cross_thread_start_really_fires_job(_isolate_env, tmp_path):
+    """网关的真实形态：循环在 A 线程，排程器从 B 线程启动，任务必须真的跑一次。"""
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(
+        target=loop.run_forever, name="fake-gateway-loop", daemon=True
+    )
+    loop_thread.start()
+
+    scheduler = _scheduler(tmp_path, "cross")
+    fired: dict = {}
+    fired_event = threading.Event()
+
+    async def handler(value: int = 0, **_):
+        fired["value"] = value
+        fired_event.set()
+        return {"ok": True}
+
+    scheduler.register("test.cross", handler)
+    job_id = scheduler.enqueue(
+        "test.cross", delay_seconds=0.5, payload={"value": 11}
+    )
+    assert scheduler.get_job(job_id)["status"] == "pending"
+
+    host = HostedLocalScheduler(root=tmp_path / "root", scheduler=scheduler)
+    started: dict = {}
+
+    def _start_from_foreign_thread() -> None:
+        started["ok"] = host.start(loop=loop)
+
+    starter = threading.Thread(target=_start_from_foreign_thread, name="host-starter")
+    starter.start()
+    starter.join(10)
+    try:
+        assert not starter.is_alive()
+        assert started["ok"] is True, host.start_error
+        assert fired_event.wait(5) is True, "任务在 5s 内没有被真正触发"
+        assert fired == {"value": 11}
+
+        job = scheduler.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "completed"
+        assert job["attempts"] == 1
+        assert job["completed_at"]
+        assert job["result"] == {"ok": True}
+    finally:
+        stop_future = asyncio.run_coroutine_threadsafe(host.stop(), loop)
+        try:
+            stop_future.result(10)
+        except Exception:  # noqa: BLE001 - 收尾阶段不再掩盖原始断言
+            pass
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(5)
+        loop.close()

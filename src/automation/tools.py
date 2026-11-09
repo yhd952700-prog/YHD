@@ -12,6 +12,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from ..ai.tool_registry import Tool
+from ..tasks._queue_paths import resolve_sqlite_store
 from .audit import AutomationAudit
 from .confirm import SqliteConfirmationBroker
 from .contracts import AutomationError, BackendKind
@@ -27,13 +28,28 @@ _brokers: Dict[str, SqliteConfirmationBroker] = {}
 
 
 def _ticket_db_path() -> str:
-    explicit = os.environ.get(TICKET_DB_ENV)
+    """确认票据库落点：显式配置 > 审计库同目录 > 统一数据根 > 历史 cwd 位置。
+
+    历史默认是 ``<cwd>/data/automation_tickets.db``：快捷方式把工作目录设成
+    用户主目录时，这个"运行时数据库"会悄悄落到 C 盘。现在改走统一数据根，
+    旧位置有库时按队列同款流程迁移（复制 + 校验 + 原子落位 + 旧文件保留），
+    迁移失败继续用旧库，绝不以空库启动。
+    """
+    explicit = (os.environ.get(TICKET_DB_ENV) or "").strip()
     if explicit:
         return explicit
-    audit_db = os.environ.get("AUDIT_DB_PATH")
+    audit_db = (os.environ.get("AUDIT_DB_PATH") or "").strip()
     if audit_db:
-        return os.path.join(os.path.dirname(os.path.abspath(audit_db)), "automation_tickets.db")
-    return os.path.join(os.getcwd(), "data", "automation_tickets.db")
+        # 审计库位置是显式配置，票据库继续放在它旁边（通常已在数据根内）。
+        return os.path.join(
+            os.path.dirname(os.path.abspath(audit_db)), "automation_tickets.db"
+        )
+    return resolve_sqlite_store(
+        "automation_tickets.db",
+        os.path.join(os.getcwd(), "data", "automation_tickets.db"),
+        env_var=TICKET_DB_ENV,
+        label="自动化票据库",
+    )
 
 
 def get_confirmation_broker() -> SqliteConfirmationBroker:
