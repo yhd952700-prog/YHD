@@ -961,18 +961,12 @@ def main() -> int:
         help="叠加本地 HTTPS 反向代理（默认端口 8443），供手机端 PWA 安装。需自签证书。",
     )
     parser.add_argument("--https-port", type=int, default=8443, help="HTTPS 代理监听端口（默认 8443）")
-    parser.add_argument(
-        "--mobile-access",
-        action="store_true",
-        help=(
-            "开启手机访问：网关仍只绑本机回环，另起一个局域网中继（默认端口 8090），"
-            "需要一次性配对码；不开时局域网完全不可达。"
-        ),
-    )
-    parser.add_argument("--mobile-port", type=int, default=8090, help="手机访问中继端口（默认 8090）")
-    parser.add_argument(
-        "--mobile-admin-port", type=int, default=8091, help="手机访问管理端口（只绑回环，默认 8091）"
-    )
+    # 8090 配对中继不进 0.1.2 发布包：/__relay/pair 没有失败限速，6 位码在
+    # 10 分钟有效期内可被穷举。这里保留参数只为不打断已有脚本，但不再在
+    # --help 里宣传；手机访问请用 --host 0.0.0.0 直连（登录自带 5 次/300 秒锁定）。
+    parser.add_argument("--mobile-access", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--mobile-port", type=int, default=8090, help=argparse.SUPPRESS)
+    parser.add_argument("--mobile-admin-port", type=int, default=8091, help=argparse.SUPPRESS)
     parser.add_argument(
         "--diagnose",
         action="store_true",
