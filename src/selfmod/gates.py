@@ -81,6 +81,12 @@ GATE_TIMEOUTS: Dict[str, float] = {
 
 FRONTEND_PREFIX = "apps/console/console/"
 
+#: G7 只对「打包面」生效：打包/安装脚本与打包产物路径。
+#: 未命中必须记 skip（不适用）；不能用「一律 FAIL」把任何提案都卡死在这里。
+PACKAGING_PREFIXES: Tuple[str, ...] = ("packaging/", "installer/")
+PACKAGING_ARTIFACT_PREFIXES: Tuple[str, ...] = ("dist/", "build/", "release/")
+PACKAGING_ARTIFACT_SUFFIXES: Tuple[str, ...] = (".iss", ".nsi", ".wxs", ".spec")
+
 #: §2 永久禁区：命中即 G0 FAIL，且不依赖 PathPolicy 是否被正确构造。
 FORBIDDEN_PREFIXES: Tuple[str, ...] = (
     "src/security",
@@ -192,12 +198,15 @@ class GateResult:
     reason: str
     duration_ms: int = 0
     commands: List[CommandResult] = field(default_factory=list)
+    #: 本门「不适用」而非「通过」：报告里必须能区分，避免被读成已放行。
+    not_applicable: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "status": self.status,
+            "not_applicable": self.not_applicable,
             "reason": self.reason,
             "duration_ms": self.duration_ms,
             "commands": [c.to_dict() for c in self.commands],
@@ -234,6 +243,7 @@ class GateReport:
             "started_at": self.started_at,
             "duration_ms": self.duration_ms,
             "summary": self.summary(),
+            "not_applicable": [g.id for g in self.gates if g.not_applicable],
             "gates": [g.to_dict() for g in self.gates],
         }
 
@@ -402,8 +412,14 @@ def _gate_from_commands(gate_id: str, commands: Sequence[CommandResult]) -> Gate
     )
 
 
-def _skip(gate_id: str, reason: str) -> GateResult:
-    return GateResult(id=gate_id, name=GATE_NAMES[gate_id], status="skip", reason=reason)
+def _skip(gate_id: str, reason: str, *, not_applicable: bool = False) -> GateResult:
+    return GateResult(
+        id=gate_id,
+        name=GATE_NAMES[gate_id],
+        status="skip",
+        reason=reason,
+        not_applicable=not_applicable,
+    )
 
 
 def _console_version(console_dir: Path) -> str:
@@ -461,7 +477,11 @@ def verify_console_provenance(root: Path) -> Tuple[bool, str]:
 def console_build_gate(changed: Sequence[str], root: Path, run_cmd: Any) -> GateResult:
     frontend = [p for p in changed if _norm(p).startswith(FRONTEND_PREFIX)]
     if not frontend:
-        return _skip("G6", "本提案未改动 apps/console/console/，无需构建")
+        return _skip(
+            "G6",
+            "本次提案未涉及 apps/console/console/，G6 不适用（未改动前端，无需构建）",
+            not_applicable=True,
+        )
     result = run_cmd("G6", _DEFAULT_G6_A[0])
     if result.status != "pass":
         return GateResult(
@@ -483,20 +503,35 @@ def console_build_gate(changed: Sequence[str], root: Path, run_cmd: Any) -> Gate
     )
 
 
+def packaging_scope(changed: Sequence[str]) -> List[str]:
+    """返回提案里真正落在打包面上的路径（打包/安装脚本与打包产物）。"""
+    hits: List[str] = []
+    for path in changed:
+        rel = _norm(path)
+        low = rel.lower()
+        if (
+            rel.startswith(PACKAGING_PREFIXES)
+            or rel.startswith(PACKAGING_ARTIFACT_PREFIXES)
+            or low.endswith(PACKAGING_ARTIFACT_SUFFIXES)
+        ):
+            hits.append(rel)
+    return hits
+
+
 def packaging_dry_run_gate(changed: Sequence[str]) -> GateResult:
-    packaging = [
-        p
-        for p in changed
-        if _norm(p).startswith((FRONTEND_PREFIX, "packaging/", "installer/"))
-    ]
-    if not packaging:
-        return _skip("G7", "本提案未改动前端/打包面，无需 dry-run")
+    touched = packaging_scope(changed)
+    if not touched:
+        return _skip(
+            "G7",
+            "本次提案未涉及打包面，不适用（未改动 packaging/、installer/ 或打包产物路径）",
+            not_applicable=True,
+        )
     return GateResult(
         "G7",
         GATE_NAMES["G7"],
         "fail",
-        "打包面未开放：需先补打包白名单与产物校验；G6 只证明控制台可构建且产物同源，"
-        "不等于可出包。packaging/、installer/ 与前端改动在本门一律拒绝。",
+        "打包面未开放：本提案触及 " + "、".join(touched) + "；需先补打包白名单与产物校验才能放行。"
+        "G6 只证明控制台可构建且产物同源，不等于可出包。",
     )
 
 

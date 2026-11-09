@@ -228,22 +228,52 @@ def test_g6_skips_when_no_frontend_change(tmp_path: Path) -> None:
     gate = console_build_gate(["docs/guide.md"], root, _cmd_runner(root))
 
     assert gate.status == "skip"
+    assert gate.not_applicable is True
+    assert "不适用" in gate.reason
 
 
 def test_g7_rejects_packaging_and_installer_changes() -> None:
     for path in ("packaging/version.json", "installer/setup.iss"):
         gate = packaging_dry_run_gate([path])
         assert gate.status == "fail", path
+        assert gate.not_applicable is False, path
         assert "未开放" in gate.reason
         assert "打包白名单" in gate.reason
 
 
-def test_g7_rejects_frontend_until_packaging_whitelist_exists() -> None:
+def test_g7_rejects_packaging_artifact_paths() -> None:
+    for path in ("release/liuhao.iss", "build/setup.nsi", "dist/installer.wxs"):
+        assert packaging_dry_run_gate([path]).status == "fail", path
+
+
+def test_g7_skips_frontend_change_because_packaging_face_untouched() -> None:
+    """前端改动只归 G6；G7 不得因此变成整条提案的总闸。"""
     gate = packaging_dry_run_gate(["apps/console/console/src/App.tsx"])
-    assert gate.status == "fail"
-    assert "未开放" in gate.reason
+    assert gate.status == "skip"
+    assert gate.not_applicable is True
+    assert "不适用" in gate.reason
 
 
 def test_g7_skips_unrelated_changes() -> None:
-    assert packaging_dry_run_gate(["docs/guide.md"]).status == "skip"
+    for path in ("docs/guide.md", "src/core/app.py"):
+        gate = packaging_dry_run_gate([path])
+        assert gate.status == "skip", path
+        assert gate.not_applicable is True, path
+
+
+def test_src_only_change_keeps_g6_g7_not_applicable(tmp_path: Path) -> None:
+    """只动 src/ 的提案：G6/G7 都记不适用，不得记为 FAIL，也不得算作 PASS。"""
+    root = _repo(tmp_path)
+    path = "src/core/app.py"
+    report = _run(root, [FileEdit(path, "x = 2\n")], _diff(path))
+
+    for gate_id in ("G6", "G7"):
+        gate = report.gate(gate_id)
+        assert gate is not None, gate_id
+        assert gate.status == "skip", gate_id
+        assert gate.not_applicable is True, gate_id
+    payload = report.to_dict()
+    assert "G6" in payload["not_applicable"]
+    assert "G7" in payload["not_applicable"]
+    assert payload["summary"]["skip"] >= 2
 
