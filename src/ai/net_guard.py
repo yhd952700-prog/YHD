@@ -128,6 +128,36 @@ def is_local_inference_target(raw: Optional[str]) -> bool:
     return is_local_ollama(raw) or is_local_inference_port(raw)
 
 
+def is_local_service_target(raw: Optional[str]) -> bool:
+    """``raw`` 是否指向本机/本局域网服务（用于**代理绕过**，不是安全校验）。
+
+    ``localhost``、回环、``0.0.0.0``、私网/链路本地 IP 都按本地服务处理：
+    这些地址走系统代理既没有意义，还会把"服务没启动"变成代理返回的 5xx。
+    公网域名（哪怕解析到内网）不在此列——解析结果会变，交给
+    :func:`assert_safe_runtime_target` 在每次请求前判定。
+    """
+    try:
+        parsed = urlparse((raw or "").strip())
+        host = parsed.hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    value = host.strip().strip("[]").lower().rstrip(".")
+    if value == "localhost" or value.endswith(".localhost"):
+        return True
+    try:
+        address = _coerce_address(ipaddress.ip_address(value))
+    except ValueError:
+        return False
+    return bool(
+        address.is_loopback
+        or address.is_unspecified
+        or address.is_private
+        or address.is_link_local
+    )
+
+
 def _pinned_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     """带线程级固定的 ``socket.getaddrinfo``。
 

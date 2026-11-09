@@ -20,7 +20,11 @@ import threading
 import warnings
 from typing import Optional, Dict, Any, Sequence
 
-from .net_guard import RuntimeTargetRejected, assert_safe_runtime_target
+from .net_guard import (
+    RuntimeTargetRejected,
+    assert_safe_runtime_target,
+    is_local_service_target,
+)
 from .observability import observe
 
 logger = logging.getLogger("liuhao.ai.providers")
@@ -78,10 +82,16 @@ _UPSTREAM_INVALID_KEY_TOKENS = (
 _UPSTREAM_MODEL_MISSING_TOKENS = (
     "model not found",
     "model_not_found",
+    "model not exist",
+    "model_not_exist",
     "does not exist",
     "unknown model",
     "no such model",
     "not_found_error",
+    # DeepSeek 的 400 原话：列出支持的模型名 + "but you passed ..."。
+    # 这是**模型名写错**，不是泛化的"请求不合法"。
+    "supported api model names",
+    "but you passed",
 )
 
 #: 上下文超限：上游明确说"这一轮的历史/输入太长"。
@@ -126,10 +136,21 @@ INCOMPLETE_STREAM_MESSAGE = "回复可能不完整（连接提前结束），请
 #: 连不上（去检查服务是否启动）。三句话都要带模型名与可执行动作，用户才
 #: 知道下一步做什么。
 TIMEOUT_MESSAGE = "模型首次加载较慢，还没有返回内容，请稍候或重试。"
+#: 已经自动重试过、仍然等不到内容：必须说清"等待超时 + 试了几次"。
+#: 只保留"首次加载较慢"会让用户以为再等等就好，实际上两次等待都已经结束。
+RETRY_TIMEOUT_MESSAGE = (
+    "等待模型响应超时（{timeout:g} 秒内没有返回内容，已自动重试 {retries} 次仍未成功）。"
+    "首次加载较慢也会这样，请稍候或重试；若此前一直正常，请检查网络。"
+)
 STALLED_RESPONSE_MESSAGE = (
     "模型在生成途中卡住了（超过 {timeout:g} 秒没有新内容），请重试。"
 )
 CONNECTION_FAILURE_MESSAGE = "连不上模型服务，请确认本地服务已启动或网络可用。"
+#: 本地/回环目标的连接失败：系统代理会把"服务没启动"包装成 5xx，
+#: 这两句必须分开，否则用户会去"稍后重试/联系提供方"而不是启动服务。
+LOCAL_CONNECTION_FAILURE_MESSAGE = (
+    "连不上本地服务，请确认本地模型服务已启动、端口正确。"
+)
 INVALID_KEY_MESSAGE = (
     "API Key 无效或已失效，请到「系统设置 → 模型管理」更新密钥。"
 )
@@ -146,6 +167,12 @@ CONTEXT_LENGTH_EXCEEDED_MESSAGE = (
 
 #: 上游自身故障（5xx）：动作是"稍后重试 / 联系服务提供方"，不是检查 Key。
 SERVER_ERROR_MESSAGE = "模型服务端出错了（HTTP 5xx），请稍后重试；持续出现请联系服务提供方。"
+#: 首次调用就 5xx（此前从未成功）：地址填错经常表现为"对方的 5xx"，
+#: 不能一上来就断言"联系提供方"。
+SERVER_ERROR_UNVERIFIED_MESSAGE = (
+    "模型服务端出错了（HTTP 5xx），请先核对接口地址是否正确"
+    "（地址填错时经常表现为对方的 5xx）；若地址无误，请稍后重试。"
+)
 #: 400 是请求本身不合法（模型名、参数、接口形态），与 Key 无关。
 BAD_REQUEST_MESSAGE = "模型服务认为请求不合法（HTTP 400），请检查模型名与参数设置。"
 #: 407 只可能是代理认证，不能让用户在 Key 上兜圈子。
@@ -589,12 +616,31 @@ def user_facing_failure(exc: BaseException, model: Optional[str] = None) -> str:
     if isinstance(exc, ProviderTimeoutError):
         # 首字慢与"出字后卡住"两种超时给不同建议：前者再等等，后者重试。
         actual = model or exc.model
+        attempts = getattr(exc, "_liuhao_retry_attempts", None)
+        if isinstance(attempts, int) and attempts > 1:
+            # 已经等过两轮：说清"等待超时 + 重试次数"，不再只让用户继续等。
+            return _with_model(
+                RETRY_TIMEOUT_MESSAGE.format(
+                    timeout=exc.timeout, retries=attempts - 1
+                ),
+                actual,
+            )
         if exc.before_first_token:
             return _with_model(TIMEOUT_MESSAGE, actual)
         return _with_model(
             STALLED_RESPONSE_MESSAGE.format(timeout=exc.timeout), actual
         )
     if isinstance(exc, TimeoutError):
+        attempts = getattr(exc, "_liuhao_retry_attempts", None)
+        if isinstance(attempts, int) and attempts > 1:
+            timeout = getattr(exc, "timeout", None)
+            if isinstance(timeout, (int, float)):
+                return _with_model(
+                    RETRY_TIMEOUT_MESSAGE.format(
+                        timeout=timeout, retries=attempts - 1
+                    ),
+                    model,
+                )
         return _with_model(TIMEOUT_MESSAGE, model)
     # net_guard 已经写好了可直接展示的中文（"地址当前无法解析"/"指向内网"）。
     # 旧实现把它落到通用文案，等于把最准确的一句诊断丢掉了。
@@ -614,14 +660,27 @@ def user_facing_failure(exc: BaseException, model: Optional[str] = None) -> str:
         or any(token in name for token in _CONNECT_ERROR_NAMES)
     )
     if is_connect:
+        # 代理把"本机端口没开"包装成连接失败/5xx 时，普通文案会让用户去
+        # "稍后重试/联系提供方"；回环与本机地址必须直说启动本地服务。
+        if getattr(exc, "_liuhao_local_target", False):
+            return _with_model(LOCAL_CONNECTION_FAILURE_MESSAGE, model)
         return _with_model(CONNECTION_FAILURE_MESSAGE, model)
     # SDK 会把"请求阶段超时"包成 APITimeoutError（既不是内建 TimeoutError，
     # 也不是 ProviderTimeoutError）。漏掉它就会掉进通用文案，重新引导用户
     # 去查 Key —— 正是 P0 要消除的误导。
     if "timeout" in name:
+        attempts = getattr(exc, "_liuhao_retry_attempts", None)
+        timeout = getattr(exc, "timeout", None)
+        if isinstance(attempts, int) and attempts > 1 and isinstance(timeout, (int, float)):
+            return _with_model(
+                RETRY_TIMEOUT_MESSAGE.format(timeout=timeout, retries=attempts - 1),
+                model,
+            )
         return _with_model(TIMEOUT_MESSAGE, model)
     kind = getattr(exc, "upstream_kind", None)
     status = getattr(exc, "status_code", None)
+    if kind == "local_unreachable":
+        return _with_model(LOCAL_CONNECTION_FAILURE_MESSAGE, model)
     if kind == "context_length_exceeded":
         return _with_model(CONTEXT_LENGTH_EXCEEDED_MESSAGE, model)
     if kind == "quota_exhausted" or status == 402:
@@ -636,6 +695,8 @@ def user_facing_failure(exc: BaseException, model: Optional[str] = None) -> str:
     if kind == "rate_limited" or status == 429:
         return _with_model(RATE_LIMITED_MESSAGE, model)
     if kind == "server_error" or (isinstance(status, int) and status >= 500):
+        if getattr(exc, "never_succeeded", False):
+            return _with_model(SERVER_ERROR_UNVERIFIED_MESSAGE, model)
         return _with_model(SERVER_ERROR_MESSAGE, model)
     if kind == "bad_request" or status == 400:
         return _with_model(BAD_REQUEST_MESSAGE, model)
@@ -708,6 +769,9 @@ class ProviderHTTPError(RuntimeError):
         #: 日志据此认出 ``insufficient_quota`` / ``model_not_found`` 这类未来新增错误码。
         self.upstream_code = upstream_code or ""
         self.upstream_type = upstream_type or ""
+        #: 5xx 且该模型此前从未成功过：文案优先让用户核对接口地址。
+        #: 独立于 ``upstream_kind``，避免改变既有的机器分类契约。
+        self.never_succeeded = False
 
 
 def _error_code_type(raw: Any) -> tuple[str, str]:
@@ -806,6 +870,10 @@ def classify_upstream_error(
     if isinstance(code, int) and 500 <= code <= 599:
         return "server_error"
     if code == 400:
+        # 模型名写错也常是 400（DeepSeek 会列出支持的模型名）。先认模型名，
+        # 剩下的才归"请求不合法（参数）"；两者下一步动作不同。
+        if any(token in body for token in _UPSTREAM_MODEL_MISSING_TOKENS):
+            return "model_not_found"
         return "bad_request"
     if code in (401, 403):
         if any(token in body for token in _UPSTREAM_REVOKED_TOKENS):
@@ -875,18 +943,21 @@ def sanitize_upstream_detail(raw: Any) -> str:
     return text
 
 
-def _raise_upstream_http(label: str, response: Any) -> None:
+def _raise_upstream_http(label: str, response: Any, *, had_success: bool = True) -> None:
     """上游非 200 统一成中性异常，并保留脱敏前的机器分类。
 
     直接把 ``response.text`` 拼进异常会把上游英文原文（含内部地址/账号信息）
     带到用户侧；分类必须在丢弃原文之前完成。
+
+    ``had_success`` 表示该模型此前是否成功过：从未成功时的 5xx 更可能是
+    接口地址写错（别人的网关恰好返回 5xx），不能断言"联系提供方"。
     """
     status = getattr(response, "status_code", 0)
     raw_text = getattr(response, "text", "")
     kind = classify_upstream_error(status=status, text=raw_text)
     code, error_type = _error_code_type(raw_text)
     logger.info("%s upstream HTTP failure status=%s kind=%s", label, status, kind)
-    raise ProviderHTTPError(
+    error = ProviderHTTPError(
         _neutral_http_message(label, status),
         status_code=status,
         upstream_kind=kind,
@@ -895,13 +966,26 @@ def _raise_upstream_http(label: str, response: Any) -> None:
         upstream_type=error_type,
         retry_after=_retry_after_seconds(getattr(response, "headers", None)),
     )
+    if kind == "server_error" and not had_success:
+        error.never_succeeded = True
+    raise error
 
 
-def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> None:
+def _neutralize_http_error(
+    exc: BaseException,
+    label: str = "模型服务",
+    *,
+    had_success: bool = True,
+    local_target: bool = False,
+) -> None:
     """把 SDK 的 HTTP 错误消息换成中性文案；非 HTTP 错误原样返回给调用方。
 
     分类在脱敏之前完成：上游原文可能含密钥/内网地址，所以只保留
     ``upstream_kind`` 与状态码，其余丢弃（不进异常消息、不进日志正文）。
+
+    ``local_target=True`` 时，5xx 多半是系统代理把"本机端口没开"包装出来的：
+    归为 ``local_unreachable``，文案改成"连不上本地服务"；非 HTTP 的连接
+    失败则给原异常打标记，交给 ``user_facing_failure`` 判本地文案。
     """
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
@@ -924,6 +1008,10 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
                     detail=HTML_RESPONSE_DETAIL,
                 )
             _raise_invalid_response(label, exc)
+        if local_target:
+            # 没有状态码的失败（连接被拒绝/代理不可达）：标成本地目标，
+            # 让 user_facing_failure 给出"连不上本地服务"，而不是通用网络话术。
+            setattr(exc, "_liuhao_local_target", True)
         return
     kind = classify_upstream_error(exc, status=status)
     detail = ""
@@ -947,8 +1035,12 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
     if _looks_like_html(detail):
         kind = "redirect_blocked"
         detail = HTML_RESPONSE_DETAIL
+    if local_target and status >= 500:
+        # 回环/本机地址上的 5xx 不是"对方服务挂了"：更常见的是系统代理
+        # 把"本机端口没开"翻译成了 502/503。文案必须是"连不上本地服务"。
+        kind = "local_unreachable"
     logger.info("%s upstream HTTP failure status=%s kind=%s", label, status, kind)
-    raise ProviderHTTPError(
+    error = ProviderHTTPError(
         _neutral_http_message(label, status),
         status_code=status,
         upstream_kind=kind,
@@ -956,7 +1048,11 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
         upstream_code=code,
         upstream_type=error_type,
         retry_after=_retry_after_seconds(getattr(response, "headers", None)),
-    ) from exc
+    )
+    if kind == "server_error" and not had_success:
+        # 从未成功过就 5xx：地址错的概率不低于对方真的挂了，先让用户核对地址。
+        error.never_succeeded = True
+    raise error from exc
 
 
 def _is_retryable_failure(exc: BaseException) -> bool:
@@ -1696,10 +1792,17 @@ class BaseProvider:
         # 短超时（< 阈值）不再重试：用户已经把"别让我等"写进配置了。
         self.retry_min_timeout = _retry_min_timeout_from_env()
         self._capabilities = ProviderCapabilities()
+        #: 该实例是否成功完成过至少一次生成。首次就 5xx 时优先提示核对
+        #: 接口地址（地址错常表现为对方的 5xx），而不是断言对方服务故障。
+        self._ever_succeeded = False
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return self._capabilities
+
+    def _note_success(self) -> None:
+        """生成成功后置位；只用于区分"首次 5xx"与"运行中 5xx"。"""
+        self._ever_succeeded = True
 
     def _note_usage(self, model: str, tokens_in: int, tokens_out: int) -> None:
         """把 provider 返回的**真实** usage 上报给当前记账作用域。
@@ -1901,6 +2004,13 @@ class BaseProvider:
                 return self.chat(messages, **kwargs)
             except Exception as exc:
                 if attempt >= 1 or not self._retry_allowed(exc):
+                    # 带上实际尝试次数：超时文案要说清"已重试几次"，
+                    # 否则用户无法判断是冷启动慢还是网络一直不通。
+                    setattr(exc, "_liuhao_retry_attempts", attempt + 1)
+                    # SDK 的 APITimeoutError 不带 ``timeout`` 属性；不补上的话
+                    # 文案拿不到秒数，会退回"首次加载较慢"那句旧话。
+                    if getattr(exc, "timeout", None) is None:
+                        setattr(exc, "timeout", self.first_token_timeout)
                     raise
                 if callable(on_retry):
                     try:
@@ -1938,6 +2048,9 @@ class BaseProvider:
                 if cancel_token is not None and cancel_token.cancelled:
                     raise TurnCancelled(cancel_token.mode or "client_disconnected")
                 if produced or attempt >= 1 or not self._retry_allowed(exc):
+                    setattr(exc, "_liuhao_retry_attempts", attempt + 1)
+                    if getattr(exc, "timeout", None) is None:
+                        setattr(exc, "timeout", self.first_token_timeout)
                     raise
                 yield {
                     "type": "notice",
@@ -2276,6 +2389,10 @@ class OpenAIProvider(BaseProvider):
                     follow_redirects=False,
                     timeout=self.first_token_timeout,
                     proxy=self.proxy or None,
+                    # 回环/本机地址不继承系统代理：否则代理会把"本机端口没开"
+                    # 变成 502/503，用户看到"服务端 5xx"而永远想不到去启动服务。
+                    # 显式配置的 proxy 优先（见 _env_proxy_applies）。
+                    trust_env=self._env_proxy_applies(),
                 )
 
                 self._client = openai.OpenAI(
@@ -2292,6 +2409,23 @@ class OpenAIProvider(BaseProvider):
                 )
             return self._client
 
+    def _is_local_target(self) -> bool:
+        """目标是否为本机/本局域网服务（决定代理绕过与错误文案）。"""
+        return is_local_service_target(self.base_url)
+
+    def _env_proxy_applies(self) -> bool:
+        """httpx 是否应读取系统/环境代理。
+
+        显式 proxy 配置永远优先；回环与本机地址一律绕过系统代理。
+        """
+        if self.proxy:
+            return False
+        return not self._is_local_target()
+
+    @property
+    def _client_trust_env(self) -> bool:
+        return self._env_proxy_applies()
+
     def _guard_target(self) -> None:
         """每次真实请求前重新校验目标（防 DNS rebinding/私网端点）。"""
         assert_safe_runtime_target(
@@ -2300,7 +2434,12 @@ class OpenAIProvider(BaseProvider):
 
     def _guard_upstream_error(self, exc: BaseException) -> None:
         """把 SDK 的 HTTP 错误转成中性消息；非 HTTP 错误交给调用方原样抛出。"""
-        _neutralize_http_error(exc, "模型服务")
+        _neutralize_http_error(
+            exc,
+            "模型服务",
+            had_success=self._ever_succeeded,
+            local_target=self._is_local_target(),
+        )
 
     def close(self) -> None:
         """Close the cached OpenAI/httpx client (idempotent)."""
@@ -2404,6 +2543,7 @@ class OpenAIProvider(BaseProvider):
                 finish = _openai_finish_reason(response)
                 if finish in TRUNCATED_FINISH_REASONS:
                     raise ProviderTruncatedError("模型服务", finish, partial_text=text)
+            self._note_success()
             return text
         except ProviderHTTPError:
             raise
@@ -2443,6 +2583,7 @@ class OpenAIProvider(BaseProvider):
             if finish in TRUNCATED_FINISH_REASONS:
                 # 内容真实但没说完：保留部分文本，同时明确标记 truncated。
                 raise ProviderTruncatedError("模型服务", finish, partial_text=text)
+            self._note_success()
             return text
         except ProviderHTTPError:
             raise
@@ -2843,7 +2984,9 @@ class OllamaProvider(BaseProvider):
                 allow_redirects=False,
             )
             if response.status_code != 200:
-                _raise_upstream_http("Ollama 服务", response)
+                _raise_upstream_http(
+                    "Ollama 服务", response, had_success=self._ever_succeeded
+                )
             try:
                 result = response.json()
             except ValueError as exc:
@@ -2863,6 +3006,7 @@ class OllamaProvider(BaseProvider):
                     int(result.get("prompt_eval_count") or 0),
                     int(result.get("eval_count") or 0),
                 )
+            self._note_success()
             return text
         except ProviderHTTPError:
             raise
@@ -2904,7 +3048,9 @@ class OllamaProvider(BaseProvider):
                 allow_redirects=False,
             )
             if response.status_code != 200:
-                _raise_upstream_http("Ollama 服务", response)
+                _raise_upstream_http(
+                    "Ollama 服务", response, had_success=self._ever_succeeded
+                )
             try:
                 result = response.json()
             except ValueError as exc:
@@ -2927,6 +3073,7 @@ class OllamaProvider(BaseProvider):
                 int(result.get("prompt_eval_count") or 0),
                 int(result.get("eval_count") or 0),
             )
+            self._note_success()
             return text
         except ProviderHTTPError:
             raise
@@ -2970,7 +3117,9 @@ class OllamaProvider(BaseProvider):
         )
         try:
             if response.status_code != 200:
-                _raise_upstream_http("Ollama 服务", response)
+                _raise_upstream_http(
+                    "Ollama 服务", response, had_success=self._ever_succeeded
+                )
             if cancel_token is not None:
                 cancel_token.bind_closer(response.close)
             yield from _iter_with_cancel(
@@ -3049,7 +3198,7 @@ class MoonshotProvider(BaseProvider):
             ) from exc
         if response.status_code != 200:
             try:
-                _raise_upstream_http("Moonshot", response)
+                _raise_upstream_http("Moonshot", response, had_success=self._ever_succeeded)
             finally:
                 response.close()
         return model, response
@@ -3080,6 +3229,7 @@ class MoonshotProvider(BaseProvider):
         _require_nonempty_text(self.name, text)
         usage = result.get("usage") or {}
         self._note_usage(model, *_usage_counts(usage))
+        self._note_success()
         return text
 
     def chat_stream(self, messages, **kwargs):
@@ -3156,7 +3306,7 @@ class DeepSeekProvider(BaseProvider):
             ) from exc
         if response.status_code != 200:
             try:
-                _raise_upstream_http("DeepSeek", response)
+                _raise_upstream_http("DeepSeek", response, had_success=self._ever_succeeded)
             finally:
                 response.close()
         return model, response
@@ -3182,6 +3332,7 @@ class DeepSeekProvider(BaseProvider):
         _require_nonempty_text(self.name, text)
         usage = result.get("usage") or {}
         self._note_usage(model, *_usage_counts(usage))
+        self._note_success()
         return text
 
     def chat_stream(self, messages, **kwargs):
