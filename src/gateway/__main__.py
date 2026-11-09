@@ -184,6 +184,17 @@ def resolve_timeout_options() -> dict:
 def main() -> int:
     host, port = resolve_bind()
 
+    # 全局启用 faulthandler：原生崩溃（0xC0000005/0xC0000006）发生时把全线程
+    # Python 栈写进 stderr（soak harness 下即 run\gateway-stdout-*.log）。
+    # 此前只有 LoopStallWatchdog 在事件循环停滞时调用 dump_traceback，访问违例
+    # 只留 WER dump，Python 侧无从定位（G-11 24h 浸泡诊断，2026-11-10）。
+    try:
+        import faulthandler
+
+        faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001 - 观测设施自身不得影响启动
+        pass
+
     # 单实例：同一份数据目录只允许一个网关。必须在绑定端口之前拿到锁，
     # 否则第二个实例会先抢到端口、再和第一个实例同时写同一份 SQLite。
     guard = InstanceLock(instance_root(Path.cwd()))
