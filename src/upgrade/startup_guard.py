@@ -29,12 +29,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
+from ..version import APP_VERSION
 from .dataversion import (
     DATA_SCHEMA_VERSION,
     DataSchemaState,
     read_data_schema,
 )
 from .errors import DataSchemaError
+from .keyformat import check_startup_key_format
 
 #: 显式放行开关。启动器把 ``--allow-data-downgrade`` 映射成它，网关子进程继承。
 ALLOW_ENV = "LIUHAO_ALLOW_DATA_DOWNGRADE"
@@ -126,6 +128,18 @@ def check_startup_data(
     ``allow_downgrade=None`` 时读环境变量 :data:`ALLOW_ENV`。
     """
     directory = Path(data_dir)
+    # 密钥格式先于 schema：读不懂密钥不会导致"少几张表"，而是"一个账号都
+    # 登不进"，必须在任何写入之前拦住。
+    key_block = check_startup_key_format(directory, APP_VERSION)
+    if key_block:
+        return StartupDataGate(
+            ok=False,
+            action="key_format_blocked",
+            supported=DATA_SCHEMA_VERSION,
+            version=None,
+            written_by="",
+            message=key_block,
+        )
     try:
         state = read_data_schema(directory)
     except DataSchemaError as exc:

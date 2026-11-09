@@ -44,6 +44,12 @@ from src.common.instance_lock import (
     InstanceLockBusy,
 )
 
+from .keyformat import (
+    assess_key_visibility,
+    downgrade_key_for_legacy,
+    key_format_needs_downgrade,
+)
+
 JOURNAL_SCHEMA = "liuhao.upgrade-orchestration/1"
 REQUEST_SCHEMA = "liuhao.upgrade-orchestration-request/1"
 JOURNAL_NAME = "orchestration.json"
@@ -815,6 +821,102 @@ def _terminate_started(proc: Optional[subprocess.Popen]) -> None:
             pass
 
 
+def _prepare_key_for_target(
+    *,
+    journal: Journal,
+    data_dir: Path,
+    target_version: str,
+    backup_id: str,
+) -> Dict[str, Any]:
+    """回滚到 ``target_version`` 之前，确保身份签名密钥对它是可读的。
+
+    为什么必须做：升级前备份**故意**不包含 ``integrity.key`` /
+    ``human_identities.json``（密钥与身份库不外泄），所以 ``manager.rollback``
+    只恢复代码与普通数据，不会把 0.1.2 迁移过的 DPAPI 密钥变回明文。
+    不在这里降级，旧版启动后就是「健康检查通过、0 个账号可用」。
+
+    返回数据兼容报告；无法恢复登录时带 ``blocked=True`` / ``blocked_reason``。
+    """
+    try:
+        before = assess_key_visibility(data_dir)
+    except Exception as exc:  # noqa: BLE001 - 检查失败也不能带着未知状态回滚
+        return {
+            "blocked": True,
+            "blocked_reason": (
+                f"回滚前数据格式检查失败：{type(exc).__name__}: {exc}。"
+                "为避免把用户锁在门外，已停止回滚。"
+            ),
+            "stage": "assess",
+        }
+    journal.update(
+        "rolling_back",
+        message=(
+            "数据格式检查："
+            f"密钥={before.get('key_format')}，"
+            f"已签身份={before.get('rows_signed')}，"
+            f"旧版语义可见={before.get('rows_visible_legacy')}"
+        ),
+        data_compat=before,
+    )
+    if not key_format_needs_downgrade(before, target_version):
+        return before
+
+    journal.update(
+        "rolling_back",
+        message=(
+            f"准备回滚到 {target_version or '旧版本'}："
+            "该版本读不懂当前密钥格式，先把签名密钥降级为明文格式"
+        ),
+        data_compat=before,
+    )
+    try:
+        result = downgrade_key_for_legacy(data_dir)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "blocked": True,
+            "blocked_reason": (
+                f"回滚到 {target_version or '旧版本'} 前，无法把身份签名密钥降级："
+                f"{type(exc).__name__}: {exc}。"
+                "为避免「能启动但登不进」，已停止回滚并转入人工介入。"
+            ),
+            "stage": "downgrade",
+            "before": before,
+        }
+    try:
+        after = assess_key_visibility(data_dir)
+    except Exception:  # noqa: BLE001 - 降级已成功，复核失败按报告处理
+        after = dict(before)
+    journal.update(
+        "rolling_back",
+        message=(
+            "已将身份签名密钥降级为旧版可读的明文格式（降级窗口内密钥以明文落盘）"
+            if result.get("changed")
+            else "身份签名密钥已是旧版可读的明文格式，无需降级"
+        ),
+        data_compat=after,
+        key_downgrade=result,
+    )
+    if after.get("rows_signed") and not after.get("rows_visible_legacy"):
+        return {
+            "blocked": True,
+            "blocked_reason": (
+                "降级后仍有已登记账号无法通过旧版完整性校验；"
+                "继续回滚会让用户登不进去，已中止。"
+            ),
+            "stage": "verify",
+            **after,
+        }
+    return after
+
+
+def _verify_account_visibility(data_dir: Path) -> Dict[str, Any]:
+    """回滚后的登录可见性复核：健康检查通过 ≠ 用户能登录。"""
+    try:
+        return assess_key_visibility(data_dir)
+    except Exception as exc:  # noqa: BLE001 - 复核失败时如实带上原因
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def _restore_old_version(
     *,
     manager,
@@ -843,6 +945,22 @@ def _restore_old_version(
             detail={"failed_stage": "rollback"},
         )
 
+    # 回滚不只是"把代码换回去"：数据格式（身份签名密钥）也必须跟着回到
+    # 目标版本能读懂的形态，否则旧版启动后 0 个账号可用。
+    compat = _prepare_key_for_target(
+        journal=journal,
+        data_dir=data_dir,
+        target_version=current,
+        backup_id=backup_id,
+    )
+    if compat.get("blocked"):
+        return _manual_intervention(
+            journal,
+            reason=str(compat.get("blocked_reason") or "回滚前无法让旧版读懂数据格式"),
+            backup_id=backup_id,
+            detail={"failed_stage": "key_downgrade", "data_compat": compat},
+        )
+
     journal.update("rolling_back", message=f"代码已回到 {current}，正在启动旧版本")
     try:
         started = _start_and_check(
@@ -869,12 +987,39 @@ def _restore_old_version(
             backup_id=backup_id,
             detail={"failed_stage": "health_old", "version": current},
         )
+    # 健康检查通过 ≠ 用户能登录：健康接口在 0 个可用账号时同样返回 ok。
+    # 这里必须再按"目标版本语义"复核一次账号可见性，否则会把"锁在门外"
+    # 报成回滚成功。
+    visibility = _verify_account_visibility(data_dir)
+    journal.update(
+        "rolling_back",
+        message=(
+            "回滚后账号可见性复核："
+            f"已签身份={visibility.get('rows_signed')}，"
+            f"旧版语义可见={visibility.get('rows_visible_legacy')}"
+        ),
+        data_compat=visibility,
+    )
+    if visibility.get("legacy_would_lock_out"):
+        _terminate_started(started["proc"])
+        return _manual_intervention(
+            journal,
+            reason=(
+                f"已回滚到 {current} 且网关健康，但 {visibility.get('rows_signed')} 个"
+                "已登记账号在旧版完整性校验下全部不可用（0 个能登录）。"
+                "这不等于回滚成功；请按提示恢复数据密钥格式后再启动。"
+            ),
+            backup_id=backup_id,
+            detail={"failed_stage": "login_visibility", "data_compat": visibility},
+        )
+
     journal.update(
         "rolled_back",
-        message=f"已回滚到 {current}，旧版本健康复核通过",
+        message=f"已回滚到 {current}，旧版本健康复核通过且账号可登录",
         from_version=current,
         gateway_pid=started["proc"].pid,
         health=started["health"],
+        data_compat=visibility,
     )
     return {
         "ok": True,
@@ -1185,6 +1330,21 @@ def recover(
             detail={"failed_stage": "recover_version_mismatch"},
         )
 
+    # 中断恢复同样可能停在"代码已回滚、密钥还没降级"的中间态。
+    compat = _prepare_key_for_target(
+        journal=journal,
+        data_dir=data_dir,
+        target_version=current,
+        backup_id=str(journal.data.get("backup_id") or ""),
+    )
+    if compat.get("blocked"):
+        return _manual_intervention(
+            journal,
+            reason=str(compat.get("blocked_reason") or "恢复前无法让旧版读懂数据格式"),
+            backup_id=str(journal.data.get("backup_id") or ""),
+            detail={"failed_stage": "recover_key_downgrade", "data_compat": compat},
+        )
+
     try:
         started = _start_and_check(
             app_root=app_root,
@@ -1210,11 +1370,24 @@ def recover(
             backup_id=str(journal.data.get("backup_id") or ""),
             detail={"failed_stage": "recover_health"},
         )
+    visibility = _verify_account_visibility(data_dir)
+    if visibility.get("legacy_would_lock_out"):
+        _terminate_started(started["proc"])
+        return _manual_intervention(
+            journal,
+            reason=(
+                f"已恢复到 {current} 且网关健康，但所有已登记账号在旧版完整性校验下"
+                "都不可用（0 个能登录），不能算恢复成功。"
+            ),
+            backup_id=str(journal.data.get("backup_id") or ""),
+            detail={"failed_stage": "recover_login_visibility", "data_compat": visibility},
+        )
     journal.update(
         "recovered",
-        message=f"已恢复到 {current} 并重新启动，健康复核通过",
+        message=f"已恢复到 {current} 并重新启动，健康复核通过且账号可登录",
         gateway_pid=started["proc"].pid,
         health=started["health"],
+        data_compat=visibility,
     )
     return {
         "ok": True,

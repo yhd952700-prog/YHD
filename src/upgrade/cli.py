@@ -137,6 +137,21 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "data-version", parents=[common], help="查看数据 schema 版本与当前代码是否兼容"
     )
+    p_keycompat = sub.add_parser(
+        "key-compat",
+        parents=[common],
+        help="检查身份签名密钥格式；回滚到旧版前可用 --downgrade 降级",
+    )
+    p_keycompat.add_argument(
+        "--downgrade",
+        action="store_true",
+        help="把机器绑定包裹格式降级为旧版可读的明文（会以明文落盘，事后请尽快重新升级）",
+    )
+    p_keycompat.add_argument(
+        "--target-version",
+        default=None,
+        help="回滚目标版本（默认当前安装版本；低于 0.1.2 才需要降级）",
+    )
     return parser
 
 
@@ -259,6 +274,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             payload = manager.data_schema_status()
             _emit(args, payload)
             return 0 if payload["compatible"] else 3
+
+        if args.command == "key-compat":
+            from .keyformat import (
+                assess_key_visibility,
+                downgrade_key_for_legacy,
+                key_format_needs_downgrade,
+            )
+
+            manager = _manager(args)
+            data_dir = Path(manager.config.data_dir)
+            target = args.target_version
+            if target is None:
+                try:
+                    target, _ = manager.current_version()
+                except Exception:  # noqa: BLE001 - 读不到版本时按"最保守"处理
+                    target = ""
+            before = assess_key_visibility(data_dir)
+            result: Dict[str, Any] = {"before": before, "target_version": target}
+            if args.downgrade and key_format_needs_downgrade(before, target):
+                result["downgrade"] = downgrade_key_for_legacy(
+                    data_dir, app_version=str(target or "")
+                )
+                result["after"] = assess_key_visibility(data_dir)
+            elif args.downgrade:
+                result["downgrade"] = {
+                    "changed": False,
+                    "reason": "当前格式对目标版本可读，无需降级",
+                }
+            _emit(args, result)
+            effective = result.get("after", before)
+            lock_out = bool(effective.get("legacy_would_lock_out"))
+            return 4 if lock_out else 0
 
         if args.command == "rollback":
             manager = _manager(args)
