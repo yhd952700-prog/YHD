@@ -9,6 +9,9 @@
 ;      已有目录：只要候选里已有账号/员工/记忆等真实数据，就必须优先老目录并
 ;      在日志写明来源；**绝不**在空路径上新建空库冒充老目录。记录到的目录都
 ;      不可用时让用户在这一页选择，没有可写目录就不放行安装。
+;      例外：整机**没有任何可用非系统盘**（只有 C 盘）时，数据目录自动落到
+;      %LOCALAPPDATA%\LiuHao\data、备份落到 %LOCALAPPDATA%\LiuHao\backups，
+;      安装继续，并在首屏与「数据目录」页明确告知「数据与备份都在 C 盘」。
 ;      程序目录 D 盘不可用时的回退保持原样：有管理员权限 → %ProgramFiles%\LiuHao，
 ;      否则 → %LOCALAPPDATA%\Programs\LiuHao（不需要提权、不会装到一半失败）；
 ;   3) 老用户（原先装在 C 盘）覆盖安装/升级默认沿用上次登记的位置（程序目录取
@@ -328,6 +331,9 @@ var
   DataDirPage: TInputDirWizardPage;
   NeedDataDirChoice: Boolean;
   DataDirProblem: String;
+  { 整机没有任何可用的非系统盘（只有 C 盘）时为 True：数据与备份都放在
+    %LOCALAPPDATA%\LiuHao 下并继续安装，而不是拒绝安装。 }
+  NoNonSystemDrive: Boolean;
   { 数据目录页的「沿用了旧账号」提示只弹一次，别每点一次下一步就弹。 }
   ReuseNoticeShown: Boolean;
 
@@ -404,6 +410,35 @@ begin
   begin
     DeleteFile(Probe);
     Result := True;
+  end;
+end;
+
+{ 除系统盘之外，是否还有「可用的固定本地盘」。
+  判定标准与 DDriveUsable 一致：必须是固定盘（U 盘 / 网络盘不算），且根目录
+  能真实写入。只有整机确实没有这样的盘时，数据与备份才允许一起落在 C 盘并
+  继续安装；只要还有别的固定盘，就仍按原规则要求把数据放到非系统盘。 }
+function UsableNonSystemDriveExists: Boolean;
+var
+  Code: Integer;
+  Drive: String;
+  Probe: String;
+begin
+  Result := False;
+  for Code := Ord('C') to Ord('Z') do
+  begin
+    Drive := Chr(Code) + ':\';
+    if CompareText(ExtractFileDrive(Drive),
+                   ExtractFileDrive(ExpandConstant('{sd}'))) = 0 then
+      Continue;
+    if GetDriveTypeW(Drive) <> 3 then
+      Continue;
+    Probe := Drive + '.liuhao-write-probe.tmp';
+    if SaveStringToFile(Probe, 'probe', False) then
+    begin
+      DeleteFile(Probe);
+      Result := True;
+      Exit;
+    end;
   end;
 end;
 
@@ -724,6 +759,14 @@ begin
 
   LegacyData := ExpandConstant('{#LegacyDataDir}');
 
+  { 整机是否根本没有可用的非系统盘（只有 C 盘可用）。这个判定决定两件事：
+    数据目录是否自动回退到 %LOCALAPPDATA%\LiuHao\data，以及备份根是否允许
+    与数据一起落在 C 盘。在解析数据目录之前算一次，后面共用。 }
+  NoNonSystemDrive := not UsableNonSystemDriveExists;
+  if NoNonSystemDrive then
+    Log('没有检测到可用的非系统盘：数据与备份都会放在 C 盘的 ' +
+        ExpandConstant('{localappdata}') + '\LiuHao 下。');
+
   PrevInstallDir := PreviousInstallLocation;
   HasPrevInstall := PrevInstallDir <> '';
 
@@ -848,6 +891,20 @@ begin
     { 全新安装：D 盘可创建就必须落在 D:\LiuHaoData。 }
     ResolvedDataDir := 'D:\LiuHaoData';
   end
+  else if NoNonSystemDrive and DirCreatable(LegacyData) then
+  begin
+    { 整机只有 C 盘：自动回退到旧默认位置，安装继续。
+      不这样做的话，这类机器会在「数据目录」页与备份盘校验上双双卡死，
+      而文档承诺的是「D 盘不可用 → 数据自动回退 %LOCALAPPDATA%\LiuHao\data」。
+      显式 /DATA= 与已有数据目录的优先级在更前面，不受这里影响。
+      （这里用 LegacyData，与 DefaultLegacyDataDir 同一个值；后者声明在本函数之后。） }
+    ResolvedDataDir := LegacyData;
+    DataFallback := True;
+    DataDirProblem := '这台机器没有可用的非系统盘（D 盘等都不存在或不可写），' +
+      '数据目录与升级备份都自动放在 C 盘的 ' +
+      ExpandConstant('{localappdata}') + '\LiuHao 下；建议先确认 C 盘有足够的剩余空间。';
+    Log('数据目录自动回退到 ' + ResolvedDataDir + '（没有可用的非系统盘）。');
+  end
   else
   begin
     ResolvedDataDir := '';
@@ -917,7 +974,13 @@ begin
 #ifdef UpgradeBackupRoot
   Result := TrimTrailingSlash(ExpandConstant('{#UpgradeBackupRoot}'));
 #else
-  Result := TrimTrailingSlash(ExtractFileDrive(ResolvedDataDir) + '\LiuHaoBackups');
+  { 没有可用非系统盘时，备份与数据一起放在 %LOCALAPPDATA%\LiuHao\backups
+    （与升级器 default_backup_root 的最后退路一致）；否则仍按数据目录所在盘
+    推导 <盘符>:\LiuHaoBackups。 }
+  if NoNonSystemDrive then
+    Result := TrimTrailingSlash(ExpandConstant('{localappdata}\LiuHao\backups'))
+  else
+    Result := TrimTrailingSlash(ExtractFileDrive(ResolvedDataDir) + '\LiuHaoBackups');
 #endif
 end;
 
@@ -1036,6 +1099,7 @@ end;
 procedure InitializeWizard;
 var
   Welcome: String;
+  DataPageHint: String;
 begin
   { UsePreviousAppDir 已把安装目录填成上一次的位置；只有全新安装才由我们替换。 }
   if (not HasPrevInstall) and ProgramFallback then
@@ -1043,11 +1107,18 @@ begin
 
   { 数据目录页：始终展示。用户能看到数据到底落在哪，也能改选。
     解析不出可用目录时预填旧默认位置（%LOCALAPPDATA%\LiuHao\data），而不是留空
-    —— 留空会让很多人卡在这一页；路径必须显示出来，用户仍可自行改选。 }
+    —— 留空会让很多人卡在这一页；路径必须显示出来，用户仍可自行改选。
+    没有可用非系统盘时，这一页的说明必须直说「数据与备份都在 C 盘」，
+    否则用户会以为安装器还会把数据放到别处。 }
+  if NoNonSystemDrive then
+    DataPageHint := '这台机器没有可用的非系统盘：数据与升级备份都放在 C 盘（' +
+      DirForDisplay(DefaultLegacyDataDir) + '），安装会继续；建议先确认 C 盘有足够的剩余空间。'
+  else
+    DataPageHint := '默认 D:\LiuHaoData。请选择一个当前 Windows 账户可写的目录，然后点「下一步」。';
   DataDirPage := CreateInputDirPage(wpSelectDir,
     '数据目录（账号与聊天记录）',
     '数据目录与程序目录分开保存；卸载默认保留，升级/重装不会覆盖你的数据。',
-    '默认 D:\LiuHaoData。请选择一个当前 Windows 账户可写的目录，然后点「下一步」。',
+    DataPageHint,
     False, '');
   DataDirPage.Add('数据目录：');
   if ResolvedDataDir <> '' then
@@ -1074,6 +1145,12 @@ begin
     Welcome := Welcome + #13#10#13#10 +
       '因为这台机器上 D 盘不可用（不存在 / 不可写 / 是可移动盘），' +
       '程序目录已改到上面这个无需管理员权限的位置。';
+  if NoNonSystemDrive then
+    Welcome := Welcome + #13#10#13#10 +
+      '提示：没有检测到可用的非系统盘（这台机器只有 C 盘可用）。' +
+      '数据目录与升级备份都会放在 C 盘：' + DirForDisplay(ResolvedDataDir) +
+      '（备份在 ' + DirForDisplay(GetBackupRoot('')) + '）。' +
+      '安装会继续；建议先确认 C 盘有足够的剩余空间。';
   if NeedDataDirChoice then
     Welcome := Welcome + #13#10#13#10 +
       DataDirProblem + #13#10 +
@@ -1086,7 +1163,10 @@ begin
       '本次仍使用上面的数据目录；如需沿用旧数据，可在「数据目录」页改成那个位置。';
   WizardForm.WelcomeLabel2.Caption := Welcome;
   { 默认高度只够两三行，这里内容更长，按行数放开高度以免被裁切。 }
-  WizardForm.WelcomeLabel2.Height := ScaleY(190);
+  if NoNonSystemDrive then
+    WizardForm.WelcomeLabel2.Height := ScaleY(250)
+  else
+    WizardForm.WelcomeLabel2.Height := ScaleY(190);
 end;
 
 { 离开「目录选择」与「数据目录」页时校验，并把用户真正填的值写回全局变量。
@@ -1258,7 +1338,9 @@ begin
 
   { 备份根不能默认落在系统盘：D 盘不可用、数据目录回退到 C 盘时，默认推导会
     得到 C:\LiuHaoBackups，等于把「不占 C 盘」的要求落空。此时明确拒绝并给出
-    可行动的处置，而不是装完才让用户发现备份在 C 盘。 }
+    可行动的处置，而不是装完才让用户发现备份在 C 盘。
+    例外：整机没有任何可用非系统盘（NoNonSystemDrive）时，数据与备份按设计
+    一起放在 C 盘，这条拦截不适用，只补日志。 }
   BackupOverride := Trim(ExpandConstant('{param:BACKUPS|}'));
   BackupRoot := GetBackupRoot('');
 
@@ -1281,14 +1363,18 @@ begin
     Exit;
   end;
 
-  if (BackupOverride = '') and
+  if (BackupOverride = '') and NoNonSystemDrive then
+    Log('没有可用的非系统盘：备份根 ' + BackupRoot + ' 与数据目录 ' +
+        DirForDisplay(ResolvedDataDir) + ' 都在系统盘，按「无盘可选」场景继续安装。');
+
+  if (BackupOverride = '') and (not NoNonSystemDrive) and
      (CompareText(ExtractFileDrive(BackupRoot), ExtractFileDrive(ExpandConstant('{sd}'))) = 0) then
   begin
     Result := '备份目录默认会落在系统盘，安装已停止（没有写入任何文件）。' + #13#10#13#10 +
       '备份根会放在 ' + BackupRoot + '，因为当前数据目录是 ' +
       DirForDisplay(ResolvedDataDir) + '，安装器按「数据目录所在盘」推导备份根，' +
       '结果落在系统盘（' + ExpandConstant('{sd}') + '）。本产品要求备份不占 C 盘。' + #13#10#13#10 +
-      '请这样做：点「上一步」回到「数据目录」页，把数据目录改到 D 盘' +
+      '请这样做：点「上一步」回到「数据目录」页，把数据目录改到非系统盘' +
       '（例如 D:\LiuHaoData），再点「下一步」重试。' + #13#10#13#10 +
       '（仅在使用命令行安装时才需要下列参数，界面安装可忽略：' +
       '安装包加 /DATA=D:\LiuHaoData /BACKUPS=D:\LiuHaoBackups）';
@@ -1430,6 +1516,9 @@ begin
     Lines := WizardForm.ReadyMemo.Lines;
     { 这一页的「数据目录」只写一行：需要用户选择过的场景，说明来源是那一页，
       避免在 Ready 页出现一条空的「数据目录：」（用户会以为路径丢了）。 }
+    if NoNonSystemDrive then
+      Lines.Insert(0, '备份目录：' + DirForDisplay(GetBackupRoot('')) +
+        '（本机没有可用的非系统盘，备份与数据同在 C 盘）');
     if NeedDataDirChoice then
       Lines.Insert(0, '数据目录：' + DirForDisplay(ResolvedDataDir) +
         '（在「数据目录」页确认/选择）')
