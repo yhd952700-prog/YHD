@@ -114,7 +114,7 @@ def test_mobile_nav_points_at_butler():
     nav = _read(root / "lib" / "nav.ts")
     assert "export const MOBILE_NAV_KEYS = [" in nav
     assert "  'butler'," in nav
-    assert "return ['overview', 'my-employees', 'butler', 'goals', fourth, last]" in nav
+    assert "return ['overview', 'my-employees', 'butler', 'goals', fourth, 'me']" in nav
 
     shell = _read(root / "components" / "Shell.tsx")
     assert "item.key === 'butler'" in shell
