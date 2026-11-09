@@ -562,6 +562,11 @@ $sumLines = @("$exeHash  $(Split-Path -Leaf $setupExe)")
 if ($zipHash) { $sumLines += "$zipHash  $(Split-Path -Leaf $releaseZip)" }
 Set-Content -Path $sums -Value $sumLines -Encoding ASCII
 
+# PS 5.1 的 ConvertTo-Json 遇到 List[object] 会抛「参数类型不匹配」，必须先转成
+# 纯对象数组再写记录。
+$checkList = @($script:Checks | ForEach-Object {
+    [pscustomobject]@{ Name = $_.Name; Status = $_.Status; Detail = $_.Detail }
+})
 $record = [ordered]@{
     version = $Version
     source_commit = $sourceCommit
@@ -594,7 +599,7 @@ $record = [ordered]@{
     compliance_upgrade_json = $zipComplianceJson
     compliance_sbom = $sbomJson
     build_log = $buildLog
-    checks = @($script:Checks)
+    checks = $checkList
 }
 $recordPath = Join-Path $OutRoot "FREEZE-RECORD.json"
 $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
@@ -632,7 +637,9 @@ if ($recordProblems.Count -gt 0) {
     throw "FREEZE-RECORD 一致性自检失败，拒绝出包。"
 }
 Add-Check "FREEZE-RECORD 一致性" "PASS" ("字节数 {0} / SHA256 {1}…{2}，三处一致" -f $exeBytesNow, $exeHashNow.Substring(0, 8), $exeHashNow.Substring($exeHashNow.Length - 4))
-$record.checks = @($script:Checks)
+$record.checks = @($script:Checks | ForEach-Object {
+    [pscustomobject]@{ Name = $_.Name; Status = $_.Status; Detail = $_.Detail }
+})
 $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
 Copy-Item -LiteralPath $recordPath -Destination $recordDeliveryPath -Force
 
