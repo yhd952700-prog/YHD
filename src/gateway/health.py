@@ -766,6 +766,40 @@ def _readiness_payload_sync(
         errors.append(f"Encryption Manager: {str(e)}")
         checks["encryption_manager"] = {"status": "unhealthy", "error": str(e)}
 
+    # 主密钥 ACL：启动期自检失败会登记到 boot_report。这里把它转成健康检查项，
+    # 让"收紧后仍可被其他主体读取"在 /v1/ready 上看得见，而不是只留一行日志。
+    # 权限问题需要人工修复，不该让整个产品断服，因此是告警级（不参与 503 判定）。
+    try:
+        from ..observability.boot_report import degraded_components
+
+        acl_issues = [
+            item
+            for item in degraded_components()
+            if item.get("subsystem") == "master_key_acl"
+        ]
+        if acl_issues:
+            issue = acl_issues[0]
+            checks["master_key_acl"] = {
+                "status": "degraded",
+                "blocks_readiness": False,
+                "display_status": "主密钥文件权限过宽",
+                "path": issue.get("path", ""),
+                "user_message": issue.get("action")
+                or "主密钥文件仍可被其他主体读取；按启动日志提示修复后重启。",
+            }
+        else:
+            checks["master_key_acl"] = {
+                "status": "healthy",
+                "blocks_readiness": False,
+            }
+    except Exception as e:  # noqa: BLE001 - 健康面不能因读取自检结果而中断
+        checks["master_key_acl"] = {
+            "status": "degraded",
+            "blocks_readiness": False,
+            "display_status": "主密钥权限状态未知",
+            "user_message": f"无法读取启动期 ACL 自检结果：{e}",
+        }
+
     # Check Rate Limiter
     try:
         get_rate_limiter()

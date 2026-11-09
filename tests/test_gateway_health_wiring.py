@@ -36,6 +36,7 @@ REQUIRED_CHECKS = {
     "jwt_handler",
     "rbac_manager",
     "encryption_manager",
+    "master_key_acl",
     "rate_limiter",
 }
 
@@ -253,6 +254,41 @@ class TestMetricsReadiness:
         metrics = body["checks"]["metrics"]
         assert metrics["status"] == "healthy"
         assert "预热" in metrics["display_status"]
+
+
+class TestMasterKeyAclVisibility:
+    """启动期 ACL 自检失败必须在 /v1/ready 可见（告警级，不断服）。"""
+
+    def test_acl_failure_is_an_advisory_not_silent(self, client):
+        from src.observability import boot_report
+
+        boot_report.reset_degraded()
+        boot_report.add_degraded(
+            "master_key_acl",
+            r"C:\Users\test\data\master.key",
+            "master.key ACL 收紧后复核仍不通过（still-exposed），其他主体仍可读取",
+            "degraded: 检查数据目录/文件是否只读或 ACL 不可写，以当前用户身份修复后重启",
+        )
+        try:
+            body = client.get("/v1/ready").json()
+        finally:
+            boot_report.reset_degraded()
+
+        check = body["checks"]["master_key_acl"]
+        assert check["status"] == "degraded"
+        assert check["blocks_readiness"] is False, "权限问题要让用户看见，但不该断服"
+        assert "master_key_acl" in (body.get("advisories") or [])
+        assert "ACL" in check["user_message"]
+
+    def test_healthy_acl_has_no_advisory(self, client):
+        from src.observability import boot_report
+
+        boot_report.reset_degraded()
+        body = client.get("/v1/ready").json()
+
+        check = body["checks"]["master_key_acl"]
+        assert check["status"] == "healthy"
+        assert "master_key_acl" not in (body.get("advisories") or [])
 
 
 class TestSchedulerStartTimeout:

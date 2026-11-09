@@ -395,6 +395,8 @@ class SelfModService:
                 reason = f"测试 CPU 时间超过上限（{self.limits.cpu_seconds}秒），进程树已终止"
             elif run.returncode != 0:
                 reason = f"测试失败（退出码 {run.returncode}）"
+            elif gate_report.gate_mode != "repo":
+                reason = "副本测试通过；SE-Gate 不适用于该工作区（逐门状态如实记为 skip）"
             elif failures:
                 reason = "门禁未通过：" + "、".join(f"{g.id} {g.reason}" for g in failures)
             else:
