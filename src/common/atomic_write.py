@@ -96,14 +96,35 @@ def volume_is_read_only(directory: str | os.PathLike[str]) -> bool:
         return False
 
 
+def is_database_busy(exc: BaseException) -> bool:
+    """是否属于 SQLite 的「数据库正忙」锁冲突（瞬时故障，可原地重试）。
+
+    与磁盘满/只读/权限不足严格区分：锁冲突**不需要**用户清理磁盘或改权限，
+    把这四种原因混成一句「写入失败」会把人引到错误的修复方向。
+    """
+    text = str(exc).lower()
+    return (
+        "database is locked" in text
+        or "database is busy" in text
+        or "database table is locked" in text
+    )
+
+
 def describe_storage_failure(
     exc: BaseException, target: str | os.PathLike[str]
 ) -> str:
-    """把底层 ``OSError`` 翻译成一句中文可行动提示（含目标路径）。"""
+    """把底层 ``OSError`` / SQLite 故障翻译成一句中文可行动提示（含目标路径）。"""
     path = os.fspath(target)
     errno_value = getattr(exc, "errno", None)
     winerror = getattr(exc, "winerror", None)
-    disk_full = errno_value in (28, 112) or winerror in (39, 112)
+    if is_database_busy(exc):
+        # 锁冲突是并发写入的瞬时状态：不暴露英文原文，也不提磁盘/权限，
+        # 否则用户会去清盘或改 ACL，反而扩大故障面。
+        return (
+            f"暂时无法写入「{path}」：数据库正忙，请稍后重试"
+            "（无需清理磁盘或修改目录权限；如正在备份/导入，等它结束后再试即可）。"
+        )
+    disk_full = errno_value in (28, 112, 122) or winerror in (39, 112)
     read_only = winerror == 19 or errno_value == 30  # ERROR_WRITE_PROTECT / EROFS
     if disk_full:
         reason = "磁盘已满"

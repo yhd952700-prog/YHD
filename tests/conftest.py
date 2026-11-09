@@ -4,8 +4,14 @@ pytest configuration for LiuHao AI OS
 Configures pytest with custom options, markers, and fixtures.
 """
 
+import os
 import sys
 from pathlib import Path
+
+# 网关默认关闭 /docs、/openapi.json（它们会暴露完整路由与参数面）。测试需要
+# 读取 live schema 的用例（console 单端口防遮蔽、gzip 反向用例）显式打开，
+# 等同于本地开发开关；生产判定仍会强制关闭（见 get_app 的 http_docs 计算）。
+os.environ.setdefault("LIUHAO_HTTP_DOCS", "1")
 
 # Add src to Python path for test imports
 SRC_PATH = Path(__file__).parent.parent / "src"
@@ -398,13 +404,40 @@ def _isolate_human_identity_store_env(monkeypatch, tmp_path):
         "LIUHAO_HUMAN_IDENTITIES_DB",
         "LIUHAO_HUMAN_IDENTITIES_FILE",
         "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY",
-        "LIUHAO_LOG_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
     # 默认数据目录（身份库/日志）指向用例的 tmp，避免默认路径落到开发者真实
     # 的 %LOCALAPPDATA%\LiuHao\data 或仓库 data/。
     monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
+    # 桌面壳的用户级配置（desktop.json）与日志目录**不跟随 LIUHAO_DATA_DIR**：
+    # 它们的默认值直接拼 %LOCALAPPDATA%\LiuHao，测试若碰 desktop.repair /
+    # desktop.app 就会写进真实目录（现场实测：真实 desktop.json 的 data_dir
+    # 被写成 D:\cache\temp\pytest-of-Administrator\...，安装版启动后按它找数据，
+    # 用户看到的就是「账号全没了」）。这里显式改成用例 tmp。
+    monkeypatch.setenv(
+        "LIUHAO_DESKTOP_CONFIG", str(tmp_path / "localapp" / "LiuHao" / "desktop.json")
+    )
+    monkeypatch.setenv("LIUHAO_LOG_DIR", str(tmp_path / "data" / "logs"))
     monkeypatch.setattr(identity_module, "_global_manager", None)
+    # RBAC 也有两个进程级单例：``src.security.rbac._default_rbac``（安全包门面
+    # ``get_rbac_manager``）与 ``src.security.rbac_store._rbac_store``（RBAC 内核）。
+    # 两者都在**首次调用时**绑定 ``store_path``，并一直服务到进程结束；只要在
+    # 数据根生效前（或某个用例清空 ``LIUHAO_DATA_DIR`` 后）触发过一次首次调用，
+    # 余下所有用例都会沿用那条路径写盘。按用例复位，等于把“调用时求值”落到
+    # 每一个用例，而不是全进程只求值一次。
+    import src.security.rbac as rbac_module
+    import src.security.rbac_store as rbac_store_module
+
+    monkeypatch.setattr(rbac_module, "_default_rbac", None)
+    monkeypatch.setattr(rbac_store_module, "_rbac_store", None)
+    # 首次解析会把旧位置 ``~/.liuhao/rbac.json`` 迁移到数据根；测试若让它指向
+    # 真实用户目录，每个用例都会把开发者机器上那份真实库复制进 tmp，并带着真实
+    # 角色运行（既污染断言结果，也把真实库当测试夹具）。这里按用例指到 tmp。
+    monkeypatch.setattr(
+        rbac_module,
+        "_legacy_store_path",
+        lambda: tmp_path / "legacy-home" / ".liuhao" / "rbac.json",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -619,6 +652,24 @@ _CURRENT_NODEID = {"nodeid": "<session setup>"}
 _guard_state = _guard_threading.local()
 
 
+def _strip_windows_extended_prefix(path: str) -> str:
+    """去掉 Windows 扩展长度前缀（``\\\\?\\``），让路径能按同一坐标系比较。
+
+    实测根因（2026-11-08，pytest 9.1.1）：``--basetemp`` 复用时，
+    ``_pytest.pathlib.rm_rf`` 会先做 ``ensure_extended_length_path()``，
+    把目标变成 ``\\\\?\\D:\\cache\\...\\basetemp``；而护栏登记的
+    ``--basetemp`` 根是普通形式 ``D:\\cache\\...\\basetemp``。两者字符串不等，
+    ``_is_under`` 判定失败 → 每个用例 setup 都被 fail-closed 拒绝，
+    表现为 ``0 passed / 8799 error`` 的“整场灾难性失败”。
+    """
+    if path.startswith("\\\\?\\UNC\\"):
+        # \\?\UNC\server\share -> \\server\share
+        return "\\\\" + path[len("\\\\?\\UNC\\"):]
+    if path.startswith("\\\\?\\"):
+        return path[len("\\\\?\\"):]
+    return path
+
+
 def _norm_lexical(path) -> _GuardPath:
     """删除目标的**目录项**路径：绝对化，但不跟随符号链接。
 
@@ -628,7 +679,11 @@ def _norm_lexical(path) -> _GuardPath:
     不解析符号链接是刻意的：``os.remove`` / ``unlink`` 删的是**目录项本身**。
     仓库里一个指向外部的链接，解析后落在仓库外，删掉它却仍然在删仓库内容。
     """
-    return _GuardPath(_guard_os.path.abspath(_guard_os.fspath(path)))
+    return _GuardPath(
+        _strip_windows_extended_prefix(
+            _guard_os.path.abspath(_guard_os.fspath(path))
+        )
+    )
 
 
 def _norm_target(path) -> _GuardPath:

@@ -11,8 +11,12 @@
 落点与业务数据无关，按优先级尝试：
 
 1. ``LIUHAO_BOOTSTRAP_LOG``（显式指定，测试与安装器使用）；
-2. ``%LOCALAPPDATA%\\LiuHao\\logs\\bootstrap.log``（正常用户目录）；
-3. ``%TEMP%\\LiuHao\\bootstrap.log``（用户目录也不可写时）。
+2. ``<LIUHAO_DATA_DIR>/logs/bootstrap.log``（设了数据根时先放这里，便于随数据一起打包/迁移）；
+3. ``%LOCALAPPDATA%\\LiuHao\\logs\\bootstrap.log``（正常用户目录）；
+4. ``%TEMP%\\LiuHao\\bootstrap.log``（用户目录也不可写时）。
+
+第 2 条只是「先试」：数据目录不可写时会照旧落到 3/4，这正是本模块存在的意义
+（数据目录和日志目录都写不进去时仍留下一条记录），所以不会因此失去兜底能力。
 
 写入永远不抛异常：引导日志本身失败，绝不能再把启动流程带崩。
 每条记录是单行 ``key=value``，与 ``liuhao.log`` 里的事件格式一致。
@@ -35,6 +39,9 @@ def _candidates() -> list[Path]:
     if explicit:
         return [Path(explicit).expanduser()]
     candidates: list[Path] = []
+    data_dir = (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
+    if data_dir:
+        candidates.append(Path(data_dir).expanduser() / "logs" / "bootstrap.log")
     local_appdata = (os.environ.get("LOCALAPPDATA") or "").strip()
     if local_appdata:
         candidates.append(Path(local_appdata) / "LiuHao" / "logs" / "bootstrap.log")

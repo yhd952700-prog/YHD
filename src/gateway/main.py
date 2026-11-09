@@ -881,6 +881,16 @@ async def lifespan(app: FastAPI):
     # 先把"能不能读这份数据"定下来，再谈初始化。
     _enforce_startup_data_gate()
 
+    # 有界清扫上一次进程被强杀 / 断电后留在临时目录里的自产产物（升级暂存、
+    # 自检沙箱、恢复 staging、提醒脚本）。只认本程序命名模式 + pid 已退出 +
+    # 超过保留期；失败只记 debug，绝不阻断启动。
+    try:
+        from ..common.temp_sweep import run_startup_temp_sweep
+
+        run_startup_temp_sweep()
+    except Exception:  # noqa: BLE001 - 清扫失败不影响启动
+        logger.debug("启动临时产物清扫跳过", exc_info=True)
+
     # Startup
     _startup_begin_run()
     logger.info("Starting LiuHao AI OS Gateway...")
