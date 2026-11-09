@@ -29,6 +29,7 @@ const GOAL_FIELDS = [
   'project_id',
   'employee_name',
   'background',
+  'client_request_id',
 ].sort()
 
 function stubFetch(): { body: <T = Record<string, unknown>>() => T } {
@@ -67,6 +68,18 @@ describe('createGoal 请求体：声明 = 接线', () => {
     const body = f.body<Record<string, unknown>>()
     expect('project_id' in body).toBe(true)
     expect(body.project_id).toBeNull()
+  })
+
+  test('client_request_id 真的上了 wire：不传则生成一次性幂等键，传了则原样透传', async () => {
+    const generated = stubFetch()
+    await createGoal({ natural_language: '幂等' })
+    const generatedBody = generated.body<Record<string, unknown>>()
+    expect(typeof generatedBody.client_request_id).toBe('string')
+    expect(String(generatedBody.client_request_id).length).toBeGreaterThan(0)
+
+    const explicit = stubFetch()
+    await createGoal({ natural_language: '幂等', client_request_id: 'goal-idem-1' })
+    expect(explicit.body<Record<string, unknown>>().client_request_id).toBe('goal-idem-1')
   })
 
   test('请求体键集与后端 GoalCreateRequest 字段集完全一致', async () => {

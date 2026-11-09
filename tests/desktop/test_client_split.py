@@ -97,7 +97,7 @@ def test_browser_identity_never_reports_desktop() -> None:
     assert "return w < MOBILE_MAX_WIDTH ? 'mobile' : 'web'" in mode_ts
 
     login = (CONSOLE_SRC / "components" / "Login.tsx").read_text(encoding="utf-8")
-    assert "CLIENT_LABEL[detectClient()]" in login
+    assert "CLIENT_LABELS[detectClient()]" in login
 
 
 def test_download_entry_is_web_only() -> None:

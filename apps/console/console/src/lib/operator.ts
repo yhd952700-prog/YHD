@@ -65,6 +65,22 @@ export interface CreateGoalBody {
    * 留空 = 管家自己拆解、自己派活。
    */
   employee_name?: string | null
+  /**
+   * 幂等键（`GoalCreateRequest.client_request_id`）：同一次「提交目标」重发时保持
+   * 不变，服务端在一小时窗口内返回同一个 goal_id。留空时由 `createGoal` 生成一次
+   * 性 id —— 否则浏览器/代理层的重投会变成第二条目标。
+   */
+  client_request_id?: string | null
+}
+
+/**
+ * 生成一次性的客户端请求 id。
+ *
+ * 形状与 `chatClient.newSessionId()` 一致（时间戳 base36 + 随机后缀）；后端
+ * `_check_client_request_id` 只要求非空且 ≤128 字符。
+ */
+function newGoalRequestId(): string {
+  return `goal-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 }
 
 export function createGoal(body: CreateGoalBody): Promise<Json> {
@@ -83,6 +99,10 @@ export function createGoal(body: CreateGoalBody): Promise<Json> {
       project_id: body.project_id ?? null,
       employee_name: body.employee_name ?? null,
       background: body.background ?? false,
+      // 后端 `GoalCreateRequest.client_request_id` 是短窗口幂等键：同账号 + 同 id
+      // 在一小时内返回同一个 goal_id。后端能收、前端从没发过 → 这条能力在控制台
+      // 上不可达（与 project_id 同一种缺陷形状），所以这里必须真的序列化出去。
+      client_request_id: body.client_request_id ?? newGoalRequestId(),
     }),
   })
 }
