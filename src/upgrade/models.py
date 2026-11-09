@@ -151,6 +151,10 @@ class ApplyResult:
     message: str = "升级完成，需重启后生效"
     self_check_passed: bool = True
     self_check_issues: int = 0
+    #: 本次删除的旧版本遗留文件（相对安装根）。
+    pruned_files: Tuple[str, ...] = ()
+    #: 保留了但已不在新包清单里的文件：用户自建内容与暂不清理的旧文件。
+    kept_stale_files: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -163,6 +167,8 @@ class ApplyResult:
             "message": self.message,
             "self_check_passed": self.self_check_passed,
             "self_check_issues": self.self_check_issues,
+            "pruned_files": list(self.pruned_files),
+            "kept_stale_files": list(self.kept_stale_files),
         }
 
 

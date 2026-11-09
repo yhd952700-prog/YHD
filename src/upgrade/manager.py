@@ -151,6 +151,29 @@ _STALE_SKIP_SUFFIX = (".pyc", ".pyo", ".lock", ".pem", ".key", ".crt")
 #: 完全由构建产物决定的安装根：旧文件必须清干净（旧哈希前端资源会让自检回滚）。
 _STRICT_PRUNE_ROOTS = ("console",)
 
+#: 上一版安装清单：apply 成功后落 ``<data>/upgrade-state``，下一次升级以它为
+#: 唯一删除依据。用户自建文件不在我方任何清单里，因此不会被升级删掉。
+INSTALLED_FILES_FILENAME = "installed-files.json"
+INSTALLED_FILES_SCHEMA = "liuhao.installed-files/1"
+
+#: 首次升级（还没有上一版清单）的退路：只删我方明确产出、安装版永不使用的
+#: 陈旧项。必须与 ``packaging/stage_payload.CONFIG_EXCLUDES`` 的非凭据部分
+#: 保持一致；这些路径不可能由用户手写产出，所以按名单删除不会误伤。
+#: 目录型排除（``production/``、``external_anchor/``）不在此列：那属于用户
+#: 可能往里放东西的位置，宁可保留并报告，也不整棵子树删。
+_STALE_FALLBACK_FILES = (
+    "config/production.yaml",
+    "config/development.yaml",
+    "config/testing.yaml",
+    "config/docker.env",
+    "config/crontab",
+    "config/supervisor.conf",
+    "config/nginx.conf",
+    "config/prometheus.yml",
+    "config/grafana-dashboard.json",
+    "config/alert-rules.yaml",
+)
+
 logger = logging.getLogger(__name__)
 
 #: 升级失败对外的唯一主文案。路径、异常原文、内部命令只进 ``technical_detail``，
@@ -943,6 +966,7 @@ class UpgradeManager:
         error: Optional[str] = None,
         technical_detail: Optional[str] = None,
         record_id: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
     ) -> None:
         previous = self.status()
         if self._current_version is None:
@@ -967,6 +991,9 @@ class UpgradeManager:
                 redact_log_text(technical_detail) if technical_detail else None
             ),
             "record_id": record_id or previous.get("record_id"),
+            # 阶段详情：目前只承载"本次清理了什么、留下了什么"，让升级结果
+            # 可追溯；不参与 API 对外裁剪，管理员可通过状态文件查看。
+            "detail": detail,
         }
         atomic_write_text(
             self.status_path,
@@ -1720,6 +1747,14 @@ class UpgradeManager:
             # Do not leave a stale failure log that contradicts this success.
             (self.config.state_dir / "last-selfcheck.log").unlink(missing_ok=True)
 
+            # 记录本版实际安装的文件清单（含 fsync）。下一次升级只删「本清单
+            # 有、新版没有」的路径；用户自建文件不在清单里，永远不会被删。
+            installed_manifest = self._record_installed_files(release.version, installed)
+            if installed_manifest is None:
+                logger.warning(
+                    "本版安装清单未落盘：下次升级将按白名单清理陈旧配置，用户文件仍不会被删"
+                )
+
             # Mark the data directory with the schema this release writes. The
             # marker is monotonic: a confirmed downgrade never lowers it, so a
             # later downgrade attempt still sees the highest version written.
@@ -1750,6 +1785,7 @@ class UpgradeManager:
                     "frontend_contract": console_gate,
                     "file_manifest": file_manifest,
                     "pruned_files": pruned,
+                    "installed_files_manifest": installed_manifest,
                     "data_schema": {
                         "supported": DATA_SCHEMA_VERSION,
                         "target": target_schema,
@@ -1761,12 +1797,20 @@ class UpgradeManager:
                     "selfcheck": self_check.to_dict(),
                 },
             ) or marker
+            done_message = (
+                f"完成：已安装 {current_version} → {release.version}，需重启后生效"
+            )
+            if pruned.get("kept_count"):
+                done_message += (
+                    f"；保留 {pruned['kept_count']} 个不在新包清单里的文件（清单见升级记录）"
+                )
             self._set_status(
                 Phase.COMPLETED,
-                f"完成：已安装 {current_version} → {release.version}，需重启后生效",
+                done_message,
                 target_version=release.version,
                 backup_id=backup_id,
                 record_id=record.get("id"),
+                detail={"pruned_files": pruned, "installed_files_manifest": installed_manifest},
             )
             return ApplyResult(
                 record_id=record["id"],
@@ -1777,6 +1821,8 @@ class UpgradeManager:
                 data_checked_files=preflight.files_checked,
                 self_check_passed=bool(self_check.ok),
                 self_check_issues=len(self_check.issues),
+                pruned_files=tuple(pruned.get("deleted") or ()),
+                kept_stale_files=tuple(pruned.get("kept") or ()),
             )
         except Exception as exc:
             rollback_ok = False
@@ -1868,28 +1914,37 @@ class UpgradeManager:
                 shutil.rmtree(staging, ignore_errors=True)
 
     def _prune_stale_files(self, keep: Sequence[str]) -> Dict[str, Any]:
-        """删除安装根里新版清单之外的文件（覆盖安装遗留物）。
+        """清理旧版本遗留在安装根里的文件，并报告"留下了什么"。
 
-        覆盖面刻意收窄：只处理 ``install_roots``，且除 ``console/`` 外只删除
-        父目录已被新包覆盖的文件——避免把安装根里未知的额外内容整体误删。
-        ``console/`` 是纯构建产物，旧哈希资源必须清掉，否则前端指纹校验
-        会把刚装好的版本判成"前端与后端不是同一次构建"并回滚。
+        删除判据按优先级：
+
+        1. ``console/`` 严格清理——纯构建产物，新版清单里没有的一律删，否则
+           旧哈希前端资源会让自检判定"前后端不是同一次构建"并回滚；
+        2. 有上一版安装清单（``<data>/upgrade-state/installed-files.json``）时，
+           只删「上一版清单有、新版清单没有」的路径。用户自建文件从未进过我方
+           清单，因此任何情况下都不会被删；
+        3. 首次升级（还没有上一版清单）退化为白名单：只删
+           :data:`_STALE_FALLBACK_FILES` 里那批安装版永不使用的陈旧配置，
+           不再沿用"父目录被新包覆盖就删"的粗判据。
+
+        没有被删除的旧文件不做静默保留：全部收进 ``kept`` 返回给调用方，写进
+        升级记录与阶段详情。
         """
-        keep_set = {str(item).replace("\\", "/") for item in keep}
-        package_dirs: set[str] = {""}
-        for rel in keep_set:
-            parts = rel.split("/")
-            for index in range(1, len(parts)):
-                package_dirs.add("/".join(parts[:index]))
+        keep_set = {str(item).replace("\\", "/").strip("/") for item in keep}
+        previous = self._load_installed_files()
+        mode = "manifest" if previous is not None else "whitelist"
 
         deleted: List[str] = []
         failed: List[str] = []
+        kept: List[str] = []
         for root_name in self.config.install_roots:
             root_rel = str(root_name).replace("\\", "/").strip("/")
             target = self.config.app_root / root_name
             if target.is_file():
-                if root_rel not in keep_set and self._stale_candidate(root_rel):
-                    self._delete_stale(target, root_rel, deleted, failed)
+                if root_rel not in keep_set:
+                    self._classify_stale(
+                        root_rel, previous, deleted, failed, kept, strict=False, path=target
+                    )
                 continue
             if not target.is_dir():
                 continue
@@ -1900,19 +1955,113 @@ class UpgradeManager:
                 rel = path.relative_to(self.config.app_root).as_posix()
                 if rel in keep_set:
                     continue
-                if not strict and not self._parent_covered(rel, package_dirs):
-                    continue
-                if not self._stale_candidate(rel):
-                    continue
-                self._delete_stale(path, rel, deleted, failed)
+                self._classify_stale(
+                    rel, previous, deleted, failed, kept, strict=strict, path=path
+                )
         if deleted:
-            logger.info("升级后清理了 %d 个陈旧文件：%s", len(deleted), ", ".join(deleted[:10]))
-        return {"deleted": deleted, "failed": failed}
+            logger.info(
+                "升级后清理了 %d 个陈旧文件：%s", len(deleted), ", ".join(deleted[:10])
+            )
+        if kept:
+            logger.info(
+                "升级保留了 %d 个不在新包清单里的文件（未删除）：%s",
+                len(kept),
+                ", ".join(sorted(kept)[:10]),
+            )
+        return {
+            "mode": mode,
+            "deleted": sorted(deleted),
+            "failed": sorted(failed),
+            "kept": sorted(kept),
+            "kept_count": len(kept),
+        }
 
-    @staticmethod
-    def _parent_covered(rel: str, package_dirs: set[str]) -> bool:
-        parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
-        return parent in package_dirs
+    def _classify_stale(
+        self,
+        rel: str,
+        previous: Optional[set[str]],
+        deleted: List[str],
+        failed: List[str],
+        kept: List[str],
+        *,
+        strict: bool,
+        path: Path,
+    ) -> None:
+        """按当前判据决定一个旧文件：删掉，还是保留并记录。"""
+        if not self._stale_candidate(rel):
+            # 受保护路径、运行期生成文件、密钥与字节码缓存：既不删也不报告。
+            return
+        if strict:
+            self._delete_stale(path, rel, deleted, failed)
+            return
+        if previous is not None:
+            removable = rel in previous
+        else:
+            removable = rel in _STALE_FALLBACK_FILES
+        if removable:
+            self._delete_stale(path, rel, deleted, failed)
+        else:
+            kept.append(rel)
+
+    def _installed_files_path(self) -> Path:
+        return self.config.state_dir / INSTALLED_FILES_FILENAME
+
+    def _load_installed_files(self) -> Optional[set[str]]:
+        """读上一版安装清单；不存在 / 损坏 / 格式不符时返回 ``None``。
+
+        返回 ``None`` 表示走白名单退路，绝不把"读不到"当成"清单为空"——否则
+        会退化成"清单里没有就删"。
+        """
+        path = self._installed_files_path()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            logger.warning("读取上一版安装清单失败，本次按白名单清理：%s（%s）", path, exc)
+            return None
+        try:
+            document = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning("上一版安装清单无法解析，本次按白名单清理：%s（%s）", path, exc)
+            return None
+        if not isinstance(document, dict) or document.get("schema") != INSTALLED_FILES_SCHEMA:
+            logger.warning("上一版安装清单格式不符，本次按白名单清理：%s", path)
+            return None
+        raw_files = document.get("files")
+        if not isinstance(raw_files, list):
+            logger.warning("上一版安装清单缺少 files 列表，本次按白名单清理：%s", path)
+            return None
+        files = {
+            str(item).replace("\\", "/").strip("/")
+            for item in raw_files
+            if isinstance(item, str) and item.strip()
+        }
+        return files or None
+
+    def _record_installed_files(
+        self, version: str, files: Sequence[str]
+    ) -> Optional[str]:
+        """把本版实际安装的文件清单原子落盘（含 fsync）。
+
+        写失败不让已成功的升级失败：下一次升级会退化为白名单清理，仍然不会
+        删除用户文件；失败只记日志并回传 ``None`` 供升级记录标注。
+        """
+        payload = {
+            "schema": INSTALLED_FILES_SCHEMA,
+            "version": version,
+            "installed_at": datetime.now(timezone.utc).isoformat(),
+            "files": sorted(
+                {str(item).replace("\\", "/").strip("/") for item in files if str(item).strip()}
+            ),
+        }
+        path = self._installed_files_path()
+        try:
+            atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+        except OSError as exc:
+            logger.warning("写入本版安装清单失败（下次升级将按白名单清理）：%s（%s）", path, exc)
+            return None
+        return str(path)
 
     def _stale_candidate(self, rel: str) -> bool:
         if is_protected(rel, self.config.protected_paths):

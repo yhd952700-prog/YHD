@@ -1099,10 +1099,19 @@ def orchestrate(
 
     journal.update(
         "completed",
-        message=f"{result.from_version} → {result.to_version} 已安装并重启，健康复核通过",
+        message=(
+            f"{result.from_version} → {result.to_version} 已安装并重启，健康复核通过"
+            + (
+                f"；保留 {len(result.kept_stale_files)} 个不在新包清单里的文件（未删除）"
+                if result.kept_stale_files
+                else ""
+            )
+        ),
         backup_id=result.backup_id,
         gateway_pid=started_proc.pid,
         health=health,
+        pruned_files=list(result.pruned_files),
+        kept_stale_files=list(result.kept_stale_files),
     )
     return {
         "ok": True,
@@ -1110,6 +1119,8 @@ def orchestrate(
         "from_version": result.from_version,
         "to_version": result.to_version,
         "installed_files": result.installed_files,
+        "pruned_files": list(result.pruned_files),
+        "kept_stale_files": list(result.kept_stale_files),
         "backup_id": result.backup_id,
         "gateway_pid": started_proc.pid,
         "health": health,

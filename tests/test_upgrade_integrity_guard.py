@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from src.upgrade import LocalDirectorySource, PreflightError, UpgradeConfig, UpgradeManager
+from src.upgrade.manager import INSTALLED_FILES_FILENAME, INSTALLED_FILES_SCHEMA
 from src.upgrade.dataversion import (
     DATA_SCHEMA_FILENAME,
     DATA_SCHEMA_VERSION,
@@ -218,6 +219,7 @@ def test_manifest_without_file_list_is_rejected(tmp_path: Path) -> None:
 
 
 def test_stale_files_are_pruned_but_runtime_config_is_kept(tmp_path: Path) -> None:
+    """首次升级（没有上一版清单）：只按白名单删陈旧配置，用户/旧文件一律保留。"""
     app_root = _setup_app(tmp_path / "app")
     # 旧版本留下的：被移除的模块、已不随包的配置项。
     (app_root / "src" / "legacy.py").write_text("OLD = 1\n", encoding="utf-8")
@@ -239,15 +241,93 @@ def test_stale_files_are_pruned_but_runtime_config_is_kept(tmp_path: Path) -> No
     finally:
         manager.close()
 
-    assert not (app_root / "src" / "legacy.py").exists()
+    # 没有上一版清单时不能"清单里没有就删"：旧模块必须留下并出现在报告里。
+    assert (app_root / "src" / "legacy.py").is_file()
+    assert "src/legacy.py" in result.kept_stale_files
+    # 白名单里的陈旧配置仍然清理。
     assert not (app_root / "config" / "production.yaml").exists()
     assert (app_root / "config" / "app.env").is_file()
     assert (app_root / "config" / "auth_secrets.json").is_file()
     assert (app_root / "config" / "logging.yaml").is_file()
 
+    # 成功后立即落盘本版安装清单，供下一次升级按差集清理。
+    manifest = json.loads(
+        (app_root / "data" / "upgrade-state" / INSTALLED_FILES_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["schema"] == INSTALLED_FILES_SCHEMA
+    assert manifest["version"] == "0.2.0"
+    assert "src/app.py" in manifest["files"]
+    assert "src/legacy.py" not in manifest["files"]
+
+
+def test_user_files_survive_upgrade_with_previous_manifest(tmp_path: Path) -> None:
+    """有上一版清单：只删"上一版有、新版没有"的路径，用户自建文件全部保留。"""
+    app_root = _setup_app(tmp_path / "app")
+    (app_root / "src" / "legacy.py").write_text("OLD = 1\n", encoding="utf-8")
+    (app_root / "config").mkdir()
+    (app_root / "config" / "production.yaml").write_text("old: true\n", encoding="utf-8")
+    # 用户自己写的三类文件：配置、文档、源码补丁。
+    (app_root / "config" / "user-settings.yaml").write_text("my: own\n", encoding="utf-8")
+    (app_root / "docs").mkdir()
+    (app_root / "docs" / "user-notes.md").write_text("notes\n", encoding="utf-8")
+    (app_root / "src" / "gateway" / "local_patch.py").write_text("PATCH = 1\n", encoding="utf-8")
+
+    state_dir = app_root / "data" / "upgrade-state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / INSTALLED_FILES_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema": INSTALLED_FILES_SCHEMA,
+                "version": "0.1.0",
+                "installed_at": "2026-01-01T00:00:00+00:00",
+                "files": [
+                    "pyproject.toml",
+                    "src/gateway/main.py",
+                    "src/legacy.py",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    release_dir = tmp_path / "releases"
+    _write_release(release_dir, _package_files())
+
+    manager = _manager(app_root, release_dir)
+    try:
+        result = _apply(manager)
+    finally:
+        manager.close()
+
+    # 上一版清单里有、新版没有 → 删。
+    assert not (app_root / "src" / "legacy.py").exists()
+    assert result.pruned_files == ("src/legacy.py",)
+    # 用户自建文件不在任何清单里 → 永远不删。
+    assert (app_root / "config" / "user-settings.yaml").is_file()
+    assert (app_root / "docs" / "user-notes.md").is_file()
+    assert (app_root / "src" / "gateway" / "local_patch.py").is_file()
+    # 主判据生效时不再走白名单：不在上一版清单里的 production.yaml 保留并报告。
+    assert (app_root / "config" / "production.yaml").is_file()
+    assert "config/production.yaml" in result.kept_stale_files
+    for rel in (
+        "config/user-settings.yaml",
+        "docs/user-notes.md",
+        "src/gateway/local_patch.py",
+    ):
+        assert rel in result.kept_stale_files
+
+    manifest = json.loads(
+        (state_dir / INSTALLED_FILES_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["version"] == "0.2.0"
+    assert "src/app.py" in manifest["files"]
+    assert "src/legacy.py" not in manifest["files"]
+
 
 def test_console_build_output_is_pruned_strictly(tmp_path: Path) -> None:
-    """console/ 是纯构建产物：旧哈希资源必须清掉，且不受“父目录覆盖”限制。"""
+    """console/ 是纯构建产物：新版没有的旧哈希资源必须清掉（不受清单判据影响）。"""
     app_root = _setup_app(tmp_path / "app")
     (app_root / "console" / "assets").mkdir(parents=True)
     (app_root / "console" / "index.html").write_text("<html>new</html>", encoding="utf-8")
@@ -266,8 +346,9 @@ def test_console_build_output_is_pruned_strictly(tmp_path: Path) -> None:
 
     assert pruned["deleted"] == ["console/assets/index-OLD.js"]
     assert (app_root / "console" / "index.html").is_file()
-    # 不在本次安装根覆盖范围内（docs 无包内文件）的额外内容不删。
+    # docs 不在本次清单里、也不是构建产物：保留并记录。
     assert (app_root / "docs" / "notes.md").is_file()
+    assert "docs/notes.md" in pruned["kept"]
 
 
 def test_apply_stamps_the_data_schema(tmp_path: Path) -> None:
