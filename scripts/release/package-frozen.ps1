@@ -422,8 +422,11 @@ if ($savedEnv.Count -gt 0) {
 
 try {
     $buildScript = Join-Path $RepoRoot "packaging\build_windows_installer.ps1"
+    # 开发目录路径扫描必须是硬门禁：0.1.1 曾因未传 -StrictReleaseDevPaths 而让
+    # 2 处命中静默放行。发布构建默认强制，不提供关闭开关。
     $buildArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $buildScript,
-                   "-Version", $Version, "-OutRoot", $OutRoot, "-PythonExe", $PythonExe)
+                   "-Version", $Version, "-OutRoot", $OutRoot, "-PythonExe", $PythonExe,
+                   "-StrictReleaseDevPaths")
     # npm/vite 把体积告警写到 stderr；PS 5.1 在 EAP=Stop 下会把原生命令 stderr 当终止
     # 错误。这里临时放行，成功与否只看 $LASTEXITCODE。
     $previousEap = $ErrorActionPreference
