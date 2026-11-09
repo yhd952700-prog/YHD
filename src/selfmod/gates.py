@@ -471,7 +471,10 @@ def verify_console_provenance(root: Path) -> Tuple[bool, str]:
             return False, "构建后源码指纹发生变化，产物与源码不同源"
     except Exception as exc:  # noqa: BLE001 - 校验失败一律保守拒绝
         return False, f"产物同源校验异常：{exc}"
-    return True, f"控制台构建通过，产物与源码同源（指纹 {source_fp[:12]}）"
+    return True, (
+        f"控制台构建通过，产物与源码同源（指纹 {source_fp[:12]}）；"
+        "本门当前只放行 build，spec §3 的 run test / run lint 尚未放行"
+    )
 
 
 def console_build_gate(changed: Sequence[str], root: Path, run_cmd: Any) -> GateResult:
