@@ -155,9 +155,10 @@ Source: "{#PayloadDir}\sbom-cyclonedx.json"; DestDir: "{app}"; Flags: ignorevers
 Source: "{#PayloadDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall
 ; Excludes 里的前导反斜杠表示「只匹配 Source 根目录」：不带它时
 ; `licenses\*` 会递归匹配任意层级的 licenses 目录，把 runtime 下
-; `*.dist-info\licenses\*`（lxml/aiohttp 等 109 个许可证全文）一并排除，
-; 成品包合规检查因此缺许可证。实测：`\licenses\*` 只排除根级 licenses。
-Source: "{#PayloadDir}\*"; DestDir: "{app}"; Excludes: "\licenses\*,THIRD-PARTY-NOTICES.txt,sbom-cyclonedx.json,LICENSE"; Flags: ignoreversion recursesubdirs createallsubdirs
+; `*.dist-info\licenses\*`（lxml/aiohttp 等 109 个许可证全文）一并排除；
+; 同理裸文件名 `LICENSE` 会匹配任意层级同名文件，把 dist-info 里的
+; LICENSE 全删掉。实测：`\licenses\*` + `\LICENSE` 只排根级，嵌套仍入包。
+Source: "{#PayloadDir}\*"; DestDir: "{app}"; Excludes: "\licenses\*,\LICENSE,\THIRD-PARTY-NOTICES.txt,\sbom-cyclonedx.json"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\BEFORE-INSTALL.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
