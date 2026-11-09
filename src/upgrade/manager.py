@@ -52,6 +52,12 @@ from .backups import (
     restore_data,
     verify_backup,
 )
+from .compat import (
+    CompatLevel,
+    DataCompatError,
+    apply_rollback_downgrades,
+    assess_rollback,
+)
 from .console_contract import FrontendContractError, verify_package
 from .dataguard import capture_table_inventory, verify_data_paths
 from .dataversion import (
@@ -1774,8 +1780,16 @@ class UpgradeManager:
                         data_schema_before.version if data_schema_before else 0,
                     ),
                 )
+                # 数据格式标记必须与 schema 标记一起落盘。只写 data-schema.json
+                # 会让「密钥已被包裹」这一事实对旧版守卫完全不可见——这正是
+                # 真实安装「两个标记都没有、守卫却认为可以放行」的成因。
+                from .keyformat import stamp_key_format
+
+                key_format_after = stamp_key_format(
+                    self.config.data_dir, release.version
+                )
             except OSError as exc:
-                raise ApplyError(f"写入数据 schema 标记失败：{exc}") from exc
+                raise ApplyError(f"写入数据标记失败：{exc}") from exc
 
             record = self.ledger.update(
                 marker["id"],
@@ -1801,6 +1815,7 @@ class UpgradeManager:
                         ),
                         "after": data_schema_after.to_dict(),
                     },
+                    "key_format": key_format_after,
                     "selfcheck": self_check.to_dict(),
                 },
             ) or marker
@@ -2261,6 +2276,27 @@ class UpgradeManager:
             source_version = str(meta.get("to_version", ""))
             target_version = str(meta.get("from_version", "") or target_version)
             current, _ = self.current_version()
+            # 回滚前先判定「目标版本能不能读懂现在的数据」。数据形态不兼容时，
+            # 只换代码会得到"代码回去了、数据没回去"的半降级状态：账号全部
+            # 不可用、模型凭据解不开、审计链报损坏，向量检索还会静默错排。
+            compat = assess_rollback(
+                self.config.data_dir,
+                target_version=target_version or current,
+                target_schema=target_data_schema(
+                    None,
+                    release_version=target_version or current,
+                    current_version=current,
+                ),
+                backup_dir=self.config.backup_root / backup_id,
+            )
+            if compat.level is CompatLevel.REFUSE:
+                if not getattr(self.config, "allow_data_downgrade", False):
+                    raise DataCompatError(compat.blocked_message())
+                logger.warning(
+                    "回滚数据兼容检查存在阻断项，但已显式允许降级：%s",
+                    compat.to_text(),
+                )
+            downgrades = apply_rollback_downgrades(compat, self.config.data_dir)
             # Record the resolved backup id before touching files, so a kill
             # during the restore itself is recoverable on next start.
             self._set_status(
@@ -2286,6 +2322,8 @@ class UpgradeManager:
                     "backup_dir": str(self.config.backup_root / backup_id),
                     "current_before_rollback": current,
                     "restored_version": restored_version,
+                    "data_compat": compat.to_dict(),
+                    "data_downgrades": downgrades,
                 },
             )
             self._set_status(
@@ -2325,6 +2363,10 @@ class UpgradeManager:
                     f"--app-root {self.config.app_root} --limit 20；"
                     f"或重新下载 {old} 版本安装包后执行：{upgrade_command}"
                 )
+            elif isinstance(exc, DataCompatError):
+                # 数据形态不兼容：直接展示判定给出的可执行说明，不要套
+                # "回滚失败"——用户需要知道"为什么没回滚"以及下一步做什么。
+                message = str(exc)
             else:
                 message = f"失败：回滚失败（{exc}）"
             record = self.ledger.record(
@@ -2334,6 +2376,18 @@ class UpgradeManager:
                 to_version=target_version or None,
                 backup_id=backup_id,
                 reason=message,
+                detail=(
+                    {
+                        # blocked 只表示「判定为 REFUSE、按策略拒绝」，不要和
+                        # 「降级动作写盘失败」混为一谈：后者数据形态是允许的，
+                        # 失败原因是 OSError/权限，用户下一步完全不同。
+                        "blocked": compat.level is CompatLevel.REFUSE,
+                        "data_compat": compat.to_dict(),
+                        "data_downgrades": [],
+                    }
+                    if isinstance(exc, DataCompatError)
+                    else None
+                ),
             )
             self._set_status(
                 Phase.FAILED,

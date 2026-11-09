@@ -18,7 +18,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .compat import CompatLevel, assess_rollback
 from .dataguard import capture_table_inventory
+from .dataversion import target_data_schema
 from .downloader import cleanup_download
 from .errors import UpgradeError
 from .manager import UpgradeConfig, UpgradeManager
@@ -107,6 +109,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rollback = sub.add_parser("rollback", parents=[common], help="回滚到升级前版本")
     p_rollback.add_argument("--backup-id", default=None, help="指定备份 ID")
     p_rollback.add_argument("--record-id", default=None, help="指定升级记录 ID")
+    p_rollback.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只输出数据形态兼容判定（direct/downgrade/refuse），不改动任何文件",
+    )
     p_snapshots = sub.add_parser("snapshots", parents=[common], help="列出升级前数据快照")
     p_snapshots.add_argument("--limit", type=int, default=20)
     p_export = sub.add_parser("export-snapshot", parents=[common], help="单独取出升级前数据快照")
@@ -309,6 +316,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if args.command == "rollback":
             manager = _manager(args)
+            if getattr(args, "dry_run", False):
+                backup_id = manager._resolve_backup_id(
+                    args.backup_id, args.record_id
+                )
+                meta = manager._read_backup(backup_id)
+                current, _ = manager.current_version()
+                target = str(meta.get("from_version") or "") or current
+                report = assess_rollback(
+                    manager.config.data_dir,
+                    target_version=target,
+                    target_schema=target_data_schema(
+                        None, release_version=target, current_version=current
+                    ),
+                    backup_dir=manager.config.backup_root / backup_id,
+                )
+                _emit(args, report.to_dict())
+                if not args.json:
+                    print(report.to_text())
+                return 5 if report.level is CompatLevel.REFUSE else 0
             result = manager.rollback(
                 backup_id=args.backup_id, record_id=args.record_id
             )

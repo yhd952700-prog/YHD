@@ -30,13 +30,18 @@ from pathlib import Path
 from typing import Optional, Union
 
 from ..version import APP_VERSION
+from .compat import check_startup_compat
 from .dataversion import (
     DATA_SCHEMA_VERSION,
     DataSchemaState,
     read_data_schema,
 )
 from .errors import DataSchemaError
-from .keyformat import check_startup_key_format
+from .keyformat import (
+    KeyFormatError,
+    check_startup_key_format,
+    read_key_format_marker_strict,
+)
 
 #: 显式放行开关。启动器把 ``--allow-data-downgrade`` 映射成它，网关子进程继承。
 ALLOW_ENV = "LIUHAO_ALLOW_DATA_DOWNGRADE"
@@ -128,6 +133,25 @@ def check_startup_data(
     ``allow_downgrade=None`` 时读环境变量 :data:`ALLOW_ENV`。
     """
     directory = Path(data_dir)
+    # 标记缺失 = 从未打过标的 0.1.0/0.1.1 老库：必须放行，否则老用户全被拦。
+    # 标记存在但读不懂 = 损坏/写到一半/被人改过：必须拒绝。此时无法判断
+    # 数据是否已被更高版本写过，继续启动等于赌「没有」。
+    try:
+        read_key_format_marker_strict(directory)
+    except KeyFormatError as exc:
+        return StartupDataGate(
+            ok=False,
+            action="marker_unreadable",
+            supported=DATA_SCHEMA_VERSION,
+            message=(
+                "[FAIL] 数据格式标记存在但无法解析，已拒绝启动。\n"
+                f"       原因：{exc}\n"
+                "       无法确认这份数据是否已被更新的版本写过，继续启动可能"
+                "静默读到新格式。\n"
+                f"       下一步：恢复数据目录备份；确认要丢弃该标记时，"
+                f"人工检查并删除 {directory / 'data-format.json'} 后重试。"
+            ),
+        )
     # 密钥格式先于 schema：读不懂密钥不会导致"少几张表"，而是"一个账号都
     # 登不进"，必须在任何写入之前拦住。
     key_block = check_startup_key_format(directory, APP_VERSION)
@@ -140,16 +164,38 @@ def check_startup_data(
             written_by="",
             message=key_block,
         )
+    # 其它会跨版本变化的持久化形态（模型主密钥、app.env 密钥、审计链等）。
+    # 与 schema 门禁不同，这里只看"当前二进制能否读懂"，不涉及数据版本号；
+    # 显式放行时仍然继续，但会在返回的 message 里保留完整判定。
+    allowed_now = (
+        allow_downgrade_requested()
+        if allow_downgrade is None
+        else bool(allow_downgrade)
+    )
+    compat_block = check_startup_compat(directory, APP_VERSION)
+    if compat_block and not allowed_now:
+        return StartupDataGate(
+            ok=False,
+            action="format_blocked",
+            supported=DATA_SCHEMA_VERSION,
+            version=None,
+            written_by="",
+            message=compat_block,
+        )
     try:
         state = read_data_schema(directory)
     except DataSchemaError as exc:
         return StartupDataGate(
-            ok=True,
-            action="unreadable",
+            ok=False,
+            action="marker_unreadable",
             supported=DATA_SCHEMA_VERSION,
             message=(
-                "[warn] 数据版本标记不可读，按兼容处理继续启动；"
-                f"若数据异常请先备份 {directory}。原因：{exc}"
+                "[FAIL] 数据版本标记存在但无法解析，已拒绝启动。\n"
+                f"       原因：{exc}\n"
+                "       无法确认这份数据是否已被更新的版本写过，继续启动可能"
+                "出现会话列表为空、新字段不可见等静默错读。\n"
+                f"       下一步：恢复数据目录备份；确认要丢弃该标记时，"
+                f"人工检查并删除 {directory / 'data-schema.json'} 后重试。"
             ),
         )
     except Exception as exc:  # noqa: BLE001 - 门禁自身故障绝不阻断正常启动

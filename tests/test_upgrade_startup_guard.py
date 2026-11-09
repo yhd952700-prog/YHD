@@ -82,15 +82,21 @@ def test_missing_marker_is_allowed_silently(tmp_path: Path) -> None:
     assert gate.message == ""
 
 
-def test_corrupt_marker_is_allowed_with_readable_diagnostic(tmp_path: Path) -> None:
+def test_corrupt_marker_refuses_with_actionable_message(tmp_path: Path) -> None:
+    """有标记但读不懂 → 拒绝启动（fail-closed），并给出可执行的下一步。
+
+    0.1.2 起把「标记损坏」与「从未打过标」严格区分：前者无法证明数据没被
+    更高版本写过，放行等于赌；后者是老用户的正常形态，必须放行。
+    """
     data_dir = _data_dir(tmp_path)
     marker_path(data_dir).write_text("{not json", encoding="utf-8")
 
     gate = check_startup_data(data_dir)
 
-    assert gate.ok is True
-    assert gate.action == "unreadable"
-    assert "兼容" in gate.message
+    assert gate.ok is False
+    assert gate.action == "marker_unreadable"
+    assert "data-schema.json" in gate.message
+    assert "删除" in gate.message
     assert str(data_dir) in gate.message
 
 
@@ -102,14 +108,14 @@ def test_corrupt_marker_is_allowed_with_readable_diagnostic(tmp_path: Path) -> N
         json.dumps({"schema": "liuhao.data-schema/1", "version": "3"}),  # 类型不对
     ],
 )
-def test_incomplete_marker_is_allowed(tmp_path: Path, raw: str) -> None:
+def test_incomplete_marker_refuses(tmp_path: Path, raw: str) -> None:
     data_dir = _data_dir(tmp_path)
     marker_path(data_dir).write_text(raw, encoding="utf-8")
 
     gate = check_startup_data(data_dir)
 
-    assert gate.ok is True
-    assert gate.action == "unreadable"
+    assert gate.ok is False
+    assert gate.action == "marker_unreadable"
 
 
 def test_explicit_allow_switch_lets_it_start(tmp_path: Path) -> None:

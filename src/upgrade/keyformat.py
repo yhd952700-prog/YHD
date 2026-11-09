@@ -120,6 +120,37 @@ def read_key_format_marker(data_dir: Union[str, Path]) -> Optional[Dict[str, Any
     return payload
 
 
+def read_key_format_marker_strict(
+    data_dir: Union[str, Path],
+) -> Optional[Dict[str, Any]]:
+    """启动门禁用的严格读取。
+
+    与 :func:`read_key_format_marker` 的「兼容优先」相反：**缺失**才返回
+    ``None``（从未打过标的老库），**存在但读不懂**直接抛
+    :class:`KeyFormatError`。门禁必须区分这两者——把损坏当成缺失，就等于
+    把「数据可能已被更高版本写过」判断成「这是老数据，放行」。
+    """
+    path = marker_path(data_dir)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise KeyFormatError(
+            f"数据格式标记存在但无法读取或解析（{path}）：{exc}"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("schema") != KEY_FORMAT_SCHEMA:
+        raise KeyFormatError(
+            f"数据格式标记格式不正确（{path}）：schema 必须是 {KEY_FORMAT_SCHEMA}"
+        )
+    value = payload.get("integrity_key")
+    if value not in (KEY_FORMAT_WRAPPED, KEY_FORMAT_PLAINTEXT):
+        raise KeyFormatError(
+            f"数据格式标记中的 integrity_key 无效（{path}）：{value!r}"
+        )
+    return payload
+
+
 def stamp_key_format(
     data_dir: Union[str, Path], app_version: str
 ) -> Optional[Dict[str, Any]]:

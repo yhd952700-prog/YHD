@@ -474,15 +474,18 @@ def _ensure_integrity_key(path: Path) -> str:
     data_dir = path.parent.parent
     key = ensure_integrity_key(data_dir=data_dir)
     # 记录"这份数据要求的最低可读版本"：0.1.2 起密钥被包裹，低于此版本的
-    # 代码读到它会 0 账号。标记写失败不阻断启动（物理格式仍可被门禁识别）。
+    # 代码读到它会 0 账号。schema 标记与格式标记必须成对落盘——只写一个，
+    # 守卫就只剩一半信息。标记写失败不阻断启动（物理格式仍可被门禁识别）。
     try:
+        from src.upgrade.dataversion import stamp_data_schema
         from src.upgrade.keyformat import stamp_key_format
         from src.version import APP_VERSION
 
         stamp_key_format(data_dir, APP_VERSION)
+        stamp_data_schema(data_dir, app_version=APP_VERSION)
     except Exception as exc:  # noqa: BLE001 - 诊断信息，不影响启动
         print(
-            f"[warn] 无法写入数据格式标记 data-format.json："
+            f"[warn] 无法写入数据标记 data-format.json / data-schema.json："
             f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
