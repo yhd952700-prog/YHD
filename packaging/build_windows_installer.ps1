@@ -176,6 +176,18 @@ Write-Step "组装 payload（源码 + 配置 + 驾驶舱 + 离线运行时）"
 & $Python (Join-Path $Root "packaging\stage_payload.py") --out $PayloadRoot --version $Version
 if ($LASTEXITCODE -ne 0) { throw "payload 组装失败（exit $LASTEXITCODE）" }
 
+Write-Step "安装树入口完整性（升级会删掉新版缺失的旧文件）"
+$requiredEntries = @("LiuHao.bat", "START-HERE.txt", "assets\liuhao.ico")
+$missingEntries = @()
+foreach ($rel in $requiredEntries) {
+    if (-not (Test-Path (Join-Path $PayloadApp $rel) -PathType Leaf)) { $missingEntries += $rel }
+}
+if ($missingEntries.Count -gt 0) {
+    $missingEntries | ForEach-Object { Write-Host "  !! 缺失 $_" -ForegroundColor Red }
+    throw "payload 缺少必需入口文件：$($missingEntries -join '、')；升级会删除旧版对应文件，拒绝出包。"
+}
+Write-Host ("  入口文件齐全：{0}" -f ($requiredEntries -join "、"))
+
 Write-Step "凭据泄漏检查"
 # 注意：不能一刀切拦 *.pem —— certifi 等运行依赖会带 CA 证书包。
 # 这里只拦「用户凭据 / 私钥 / 私钥锚 / 容器环境文件」。

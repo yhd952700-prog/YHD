@@ -91,6 +91,7 @@ REQUIRED_RELEASE_FILES = (
     "src/gateway/main.py",
     "src/gateway/chat.py",
     "src/upgrade/manager.py",
+    "assets/liuhao.ico",
 )
 
 # 与 src/upgrade/manager.py 的默认 install_roots / protected_paths 保持一致。
@@ -198,10 +199,10 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
             path = root / name
             if path.is_file():
                 candidates.append(path)
-            elif name == "pyproject.toml":
-                raise BuildError(f"安装树缺少 {name}，升级包无法确定版本")
             else:
-                _log(f"  [跳过] 安装树没有 {name}")
+                # 硬门禁：升级按「上一版有、新版没有就删」处理，缺入口文件会让
+                # 升级后的桌面快捷方式直接断掉。任何一项缺失都必须拒绝出包。
+                raise BuildError(f"安装树缺少必需根文件：{name}")
         for pattern in APP_TREE_ROOT_GLOBS:
             candidates.extend(sorted(root.glob(pattern)))
     else:
