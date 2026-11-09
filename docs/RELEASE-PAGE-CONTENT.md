@@ -1,8 +1,11 @@
 # LiuHao AI OS · 鎏灏智能中枢 —— 发布页文案（可直接粘贴）
 
 > 用途：对外发布页 / 下载页的唯一文案源。数值类字段在出包后由
-> `scripts/release/package-frozen.ps1` 写入 `FREEZE-RECORD.json` 与
-> `dist/installer/SHA256SUMS.txt`，**不要手抄旧版本的值**。
+> `scripts/release/package-frozen.ps1` 写入 `FREEZE-RECORD.json`（同时落到
+> `<OutRoot>\FREEZE-RECORD.json` 与 `<OutRoot>\installer\FREEZE-RECORD.json`）
+> 与 `dist/installer/SHA256SUMS.txt`，**不要手抄旧版本的值**。
+> 出包末尾有一条硬自检：`FREEZE-RECORD.json` 的 `installer.size`/`installer.sha256`
+> 必须与 `SHA256SUMS.txt` 首行、实际 exe 三处一致，否则拒绝出包。
 > 文案与 `installer/assets/BEFORE-INSTALL.txt` 必须保持一致。
 
 ---
@@ -11,17 +14,19 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 版本 | `0.1.1` |
-| 安装包文件名 | `LiuHao-Setup-0.1.1.exe` |
-| 文件大小 | 由出包记录填写（`FREEZE-RECORD.json` → `installer.size`） |
-| SHA256 | 由出包记录填写（`SHA256SUMS.txt` 中同文件名的值） |
+| 版本 | `0.1.2` |
+| 安装包文件名 | `LiuHao-Setup-0.1.2.exe` |
+| 文件大小 | 由出包记录填写（`FREEZE-RECORD.json` → `installer.size`，字节） |
+| SHA256 | 由出包记录填写（`FREEZE-RECORD.json` → `installer.sha256`，与 `SHA256SUMS.txt` 同文件名的值一致） |
 | 发布渠道 | 只从本页给出的链接/网盘获取；转存、转发来的安装包请先核对 SHA256 |
 
 出包后取值命令（Windows PowerShell）：
 
 ```powershell
-Get-Item .\LiuHao-Setup-0.1.1.exe | Select-Object Name, Length
-Get-FileHash .\LiuHao-Setup-0.1.1.exe -Algorithm SHA256 | Select-Object Hash
+$r = Get-Content -Raw .\FREEZE-RECORD.json | ConvertFrom-Json
+$r.installer.filename; $r.installer.size; $r.installer.sha256
+Get-Item .\LiuHao-Setup-0.1.2.exe | Select-Object Name, Length
+Get-FileHash .\LiuHao-Setup-0.1.2.exe -Algorithm SHA256 | Select-Object Hash
 ```
 
 ---
@@ -49,7 +54,7 @@ Get-FileHash .\LiuHao-Setup-0.1.1.exe -Algorithm SHA256 | Select-Object Hash
 SmartScreen 绕过步骤（Windows 10 / 11 相同）：
 
 1. 看到「Windows 已保护你的电脑」蓝色窗口时，点左侧的**「更多信息」**；
-2. 窗口下方会出现「应用：LiuHao-Setup-0.1.1.exe」和**「仍要运行」**按钮，点它；
+2. 窗口下方会出现「应用：LiuHao-Setup-0.1.2.exe」和**「仍要运行」**按钮，点它；
 3. 若弹出 UAC（只在回退安装到 `C:\Program Files` 时才会出现），点「是」；
 4. 进入安装向导后按提示操作；默认安装路径不需要管理员权限，也不会弹 UAC。
 
@@ -136,6 +141,17 @@ MCP Server）默认全部关闭，需要显式配置或主动连接才会访问�
 需要命令行输出时，在程序目录运行 `LiuHao.bat --console`。
 控制台默认地址 `http://127.0.0.1:8080`；**首启向导里可以换端口；日常启动如果端口被占，
 会告诉你占用原因并给出处理办法**（关掉占用程序再试，或改端口后重新启动）。
+
+---
+
+## 7.1 升级：覆盖安装后必须重启
+
+- 需要换版本时，直接用本页的安装包覆盖安装；安装完成后**请退出并重新启动鎏灏，新版本才生效**。
+- **运行中升级当前不可用**（实测）：运行中的服务会以 409 拒绝安装请求；即使强行替换文件，
+  自检也可能被前端兜底页误判为通过；失败回滚可能留下新旧混合的程序目录；升级完成后
+  也不会自动重启。因此不要把「点一下就自动完成升级」当作可用能力。
+- 覆盖安装不会删除数据目录；程序目录里旧版遗留、新版已排除的文件，按安装器的清理规则处理。
+- 升级包（ZIP）只用于开发/运维验证，不面向普通用户分发。
 
 ---
 

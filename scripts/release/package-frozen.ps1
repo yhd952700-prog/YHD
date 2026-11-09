@@ -472,10 +472,12 @@ if (-not (Test-Path $setupExe)) {
 if (-not (Test-Path $setupExe)) { throw "编译结束但找不到 LiuHao-Setup-$Version.exe（见 $buildLog）" }
 
 $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupExe).Hash
-$exeSizeMb = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
+$exeBytes = (Get-Item $setupExe).Length
+$exeSizeMb = [math]::Round($exeBytes / 1MB, 1)
 $releaseZip = Join-Path $OutRoot ("release\liuhao-$Version-upgrade.zip")
 $zipHash = if (Test-Path $releaseZip) { (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseZip).Hash } else { "" }
-$zipSizeMb = if (Test-Path $releaseZip) { [math]::Round((Get-Item $releaseZip).Length / 1MB, 1) } else { 0 }
+$zipBytes = if (Test-Path $releaseZip) { (Get-Item $releaseZip).Length } else { 0 }
+$zipSizeMb = if (Test-Path $releaseZip) { [math]::Round($zipBytes / 1MB, 1) } else { 0 }
 if (-not (Test-Path $releaseZip)) { Add-Check "升级包" "FAIL" "缺少 $releaseZip" } else { Add-Check "升级包" "PASS" "$releaseZip（$zipSizeMb MB）" }
 
 # --------------------------------------- 9.1 成品包合规（硬门禁，先于 SHA256SUMS）
@@ -571,10 +573,20 @@ $record = [ordered]@{
     iscc = $IsccPath
     iscc_version = (Get-Item $IsccPath).VersionInfo.FileVersion
     frontend_module_count = $moduleCount
+    # 发布页只从这里取值（docs/RELEASE-PAGE-CONTENT.md）：字节数与 SHA256 是
+    # 硬字段，页面不许手抄旧值。
+    installer = [ordered]@{
+        filename = (Split-Path -Leaf $setupExe)
+        size = $exeBytes
+        size_mb = $exeSizeMb
+        sha256 = $exeHash
+    }
     setup_exe = $setupExe
+    setup_bytes = $exeBytes
     setup_size_mb = $exeSizeMb
     setup_sha256 = $exeHash
     release_zip = $(if ($zipHash) { $releaseZip } else { $null })
+    release_bytes = $(if ($zipHash) { $zipBytes } else { $null })
     release_size_mb = $zipSizeMb
     release_sha256 = $(if ($zipHash) { $zipHash } else { $null })
     compliance_status = "PASS"
@@ -586,6 +598,43 @@ $record = [ordered]@{
 }
 $recordPath = Join-Path $OutRoot "FREEZE-RECORD.json"
 $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
+# 交付目录也留一份：发布页/交付核对通常只看 dist\installer，别让它去猜上游路径。
+$recordDeliveryPath = Join-Path $OutRoot "installer\FREEZE-RECORD.json"
+Copy-Item -LiteralPath $recordPath -Destination $recordDeliveryPath -Force
+
+# 出包后硬自检：记录里的字节数/哈希必须与 SHA256SUMS 首行、实际 exe 三处一致。
+# 任何一处不一致都说明「页面拿到的数值」和「用户下载的文件」可能是两个东西。
+Write-Step "校验 FREEZE-RECORD ↔ SHA256SUMS ↔ 实际 exe"
+$recordReread = Get-Content -Raw -LiteralPath $recordPath | ConvertFrom-Json
+$sumsFirst = (Get-Content -LiteralPath $sums | Select-Object -First 1)
+$sumsHash = ($sumsFirst -split '\s+')[0].Trim()
+$exeBytesNow = (Get-Item $setupExe).Length
+$exeHashNow = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupExe).Hash
+$recordProblems = @()
+if ($recordReread.installer.size -ne $exeBytesNow) {
+    $recordProblems += "记录 installer.size=$($recordReread.installer.size) ≠ 实际 exe $exeBytesNow"
+}
+if ($recordReread.installer.sha256 -ne $exeHashNow) {
+    $recordProblems += "记录 installer.sha256=$($recordReread.installer.sha256) ≠ 实际 exe $exeHashNow"
+}
+if ($sumsHash -ne $exeHashNow) {
+    $recordProblems += "SHA256SUMS 首行 $sumsHash ≠ 实际 exe $exeHashNow"
+}
+if (-not $sourceCommit -or -not $sourceTree) {
+    $recordProblems += "记录缺 source_commit/source_tree（提交与树 ID 必须写入）"
+}
+$recordProblems += @(Get-Content -LiteralPath $sums | Where-Object {
+    $line = $_.Trim(); $line -and ($line -split '\s+').Count -ge 2 -and
+    ($line -split '\s+')[1] -eq (Split-Path -Leaf $setupExe) -and ($line -split '\s+')[0] -ne $exeHashNow
+} | ForEach-Object { "SHA256SUMS 中安装包行与记录不一致：$_" })
+if ($recordProblems.Count -gt 0) {
+    $recordProblems | ForEach-Object { Write-Host "  !! $_" -ForegroundColor Red }
+    throw "FREEZE-RECORD 一致性自检失败，拒绝出包。"
+}
+Add-Check "FREEZE-RECORD 一致性" "PASS" ("字节数 {0} / SHA256 {1}…{2}，三处一致" -f $exeBytesNow, $exeHashNow.Substring(0, 8), $exeHashNow.Substring($exeHashNow.Length - 4))
+$record.checks = @($script:Checks)
+$record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
+Copy-Item -LiteralPath $recordPath -Destination $recordDeliveryPath -Force
 
 Write-Host ""
 Write-Host "================ 冻结打包完成 ================" -ForegroundColor Green
