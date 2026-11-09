@@ -332,30 +332,56 @@ class PersonalContextManager:
         return json.loads(row[0]) if row is not None else None
 
     def delete_fact(self, principal_id: str, key: str) -> bool:
-        """删除单条事实，并删穿 memory kernel 里的 PERSISTENT 副本。"""
+        """删除单条事实，并删穿 memory kernel 里的 PERSISTENT 副本。
+
+        顺序：本地先 DELETE 但**不提交** → 再删穿内核 → 两边都成功才 ``commit``。
+        内核拒绝（``PolicyDeferredError`` / ``PolicyDeniedError``，如武装 HIGH
+        后需人工主权）时 ``rollback`` 并原样上抛，画像层保持原样——用户看到的
+        是一次「需要审批 / 被拒绝」，而不是「报错但数据已经删了一半」。
+
+        为什么选「两边都成功才提交」而不是把内核门控前移：内核策略拒绝是这条
+        路径上唯一可预期的失败点，SQLite 未提交的 DELETE 天然可回滚，因此用本地
+        事务包裹就能让该失败路径两侧完全一致，无需引入「补偿写回」这类会再失败
+        一次的路径。残余风险只剩「内核已删、SQLite 提交失败」（如磁盘满），跨
+        两种存储无法真正两阶段提交。
+        """
         with self._lock:
             cursor = self._conn.execute(
                 "DELETE FROM profile_facts WHERE principal_id = ? AND key = ?",
                 (principal_id, key),
             )
+            if not cursor.rowcount:
+                # DELETE 已隐式开启事务，回滚掉以免留下空事务占用写锁。
+                self._conn.rollback()
+                return False
+            try:
+                self._delete_kernel_key(f"profile:{principal_id}:fact:{key}")
+            except Exception:
+                self._conn.rollback()
+                raise
             self._conn.commit()
-        if cursor.rowcount:
-            self._delete_kernel_key(f"profile:{principal_id}:fact:{key}")
             return True
-        return False
 
     def delete_preference(self, principal_id: str, key: str) -> bool:
-        """删除单条偏好，并删穿 memory kernel 里的 PERSISTENT 副本。"""
+        """删除单条偏好，并删穿 memory kernel 里的 PERSISTENT 副本。
+
+        与 :meth:`delete_fact` 相同的两侧一致策略：两边都成功才提交。
+        """
         with self._lock:
             cursor = self._conn.execute(
                 "DELETE FROM profile_preferences WHERE principal_id = ? AND key = ?",
                 (principal_id, key),
             )
+            if not cursor.rowcount:
+                self._conn.rollback()
+                return False
+            try:
+                self._delete_kernel_key(f"profile:{principal_id}:preference:{key}")
+            except Exception:
+                self._conn.rollback()
+                raise
             self._conn.commit()
-        if cursor.rowcount:
-            self._delete_kernel_key(f"profile:{principal_id}:preference:{key}")
             return True
-        return False
 
     def _delete_kernel_key(self, key: str) -> int:
         """精确删穿内核单条 key（删除单条事实/偏好必须用它）。
@@ -363,15 +389,29 @@ class PersonalContextManager:
         前缀删会把同前缀的兄弟 key 一起删掉（``...:fact:city`` 命中
         ``...:fact:city_code``），对用户是静默丢数据，所以单条删除走精确匹配。
         """
+        from src.kernels._crosscutting import PolicyDeniedError
+
         try:
             return int(self._memory().delete_by_key(key))
+        except PolicyDeniedError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"内核记忆删除失败：{exc}") from exc
 
     def _delete_kernel_prefix(self, prefix: str) -> int:
-        """删穿内核；失败抛错（调用方必须把删除失败如实告诉用户）。"""
+        """删穿内核；失败抛错（调用方必须把删除失败如实告诉用户）。
+
+        与 :meth:`_delete_kernel_key` 同一口径：策略类异常原样上抛，让网关按类型
+        映射成 409（需人工审批）或 403（被拒绝），而不是被包成 ``RuntimeError``
+        落进 500。:meth:`clear` 已保证「内核成功才提交 SQLite」，因此这两类拒绝
+        到达用户时两侧数据都保持原样。
+        """
+        from src.kernels._crosscutting import PolicyDeniedError
+
         try:
             return int(self._memory().delete_by_key_prefix(prefix))
+        except PolicyDeniedError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"内核记忆删除失败：{exc}") from exc
 

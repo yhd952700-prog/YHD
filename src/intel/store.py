@@ -166,7 +166,13 @@ class IntelStore:
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = os.environ.get("OSI_DB_PATH", DEFAULT_DB_PATH)
+            from ..common.data_paths import resolve_store_path
+
+            db_path = resolve_store_path(
+                os.path.join("intel", "osi_intel.db"),
+                DEFAULT_DB_PATH,
+                env_var="OSI_DB_PATH",
+            )
         self._db_path = db_path
         self._lock = threading.RLock()
         if db_path != ":memory:":

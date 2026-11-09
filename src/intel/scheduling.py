@@ -67,7 +67,13 @@ def next_weekly_run(now: datetime) -> datetime:
 
 
 def weekly_job_key(run_at: datetime) -> str:
-    return f"{WEEKLY_JOB_KEY_PREFIX}:{run_at.date().isoformat()}"
+    """按 ISO 周取幂等键（``2026-W46``）。
+
+    原来按 ``run_at.date()`` 取键：重启后 ``now + 7 天`` 会滑到不同日期，
+    同一周能 seed 出两条扫描。ISO 周把"同一周"钉死，重启/重复 seed 都幂等。
+    """
+    iso = run_at.isocalendar()
+    return f"{WEEKLY_JOB_KEY_PREFIX}:{iso.year}-W{iso.week:02d}"
 
 
 def register_weekly_jobs(scheduler: Any) -> list[str]:
