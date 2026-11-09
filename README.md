@@ -58,7 +58,7 @@
 | --- | --- |
 | 全量测试 | **以最近一次全量运行为准**：本机执行 `.venv\Scripts\python.exe -m pytest tests/`，看最后一行的 passed/failed/skipped 汇总。仓库内任何签入的测试数字都只是历史快照，不当作交付结论 |
 | 网关 | 实测可启动，`/v1/health`、`/v1/ready`、`/docs` 返回 200 |
-| 控制台（驾驶舱） | 实测可启动（5173），已把 `/v1` 代理到网关 8080 |
+| 控制台 | 实测可启动：默认与网关同端口（8080，网关直接服务已构建的 dist）；`--vite` 开发模式才用 5173，并把 `/v1` 代理到网关 8080 |
 | 真实推理 | 本机 Ollama 模型端到端跑通（实测返回真实中文回复）。注意两条代码路径默认模型不同：首启向导默认 `qwen2.5:7b`，源码冒烟脚本默认 `qwen2.5:3b`（见 `src/ai/chat.py`） |
 | 端到端冒烟 | 9/9 通过（含 KAREN 画像闭环：写入画像后能正确回忆时区与语言） |
 | DoD 七维 | Implemented / Tested / Observable / Permissioned / Policy Controlled / Audited / Documented —— **逐内核真实状态**见 [`docs/spec/KERNEL-DOD-AUDIT.md`](docs/spec/KERNEL-DOD-AUDIT.md)，不以本行为完成度结论 |
@@ -77,7 +77,7 @@
 命令行等价：
 
 ```bash
-# 1) 一键启动：网关 8080 + 控制台 5173，并自动打开浏览器
+# 1) 一键启动：网关与控制台同端口（默认 8080），并自动打开浏览器
 .venv\Scripts\python.exe scripts\start_liuhao.py
 ```
 
@@ -85,12 +85,12 @@
 
 ```
 鎏灏已就绪
-  驾驶舱    http://127.0.0.1:5173
+  控制台    http://127.0.0.1:8080
   API       http://127.0.0.1:8080     文档 http://127.0.0.1:8080/docs
   健康探针  http://127.0.0.1:8080/v1/health
 ```
 
-（启动器输出的这一行原文是「驾驶舱」；产品术语统一按「控制台」理解。）
+> 默认是**单端口模式**：网关直接服务已构建的 `apps/console/console/dist`，`5173` 仅在 `--vite` 开发模式下使用。
 
 `Ctrl+C` 会**把子进程一起带走**，不留孤儿进程。
 
@@ -100,7 +100,7 @@
 .venv\Scripts\python.exe scripts\start_liuhao.py --backend-only
 ```
 
-### 手动启动（等价）
+### 手动启动（开发模式，等价于 `--vite`）
 
 ```bash
 # 网关
@@ -147,13 +147,13 @@ curl --noproxy '*' -X POST http://127.0.0.1:8080/v1/chat \
 规格层   docs/spec/          MASTER-SPEC v3.0 / UNIFIED-BLUEPRINT / KERNEL-CANON
 内核层   src/kernels/        14 个内核
 能力层   src/ai/  +  LiuHao-O/packages/
-场景层   /v1/*  网关（FastAPI, 8080）  +  控制台（vite, 5173）
+场景层   /v1/*  网关（FastAPI, 8080，单端口直接服务控制台 dist）  +  控制台（vite, 5173，仅 --vite 开发模式）
 ```
 
 **14 个内核**：audit、capability、context、evaluation、event、execution、identity、
 memory、network、plugin、policy、resource、security、trust。
 
-**网关路由以仓库根 [`openapi.yaml`](openapi.yaml) 为准**（当前 141 条 path，随代码增删）。
+**网关路由以仓库根 [`openapi.yaml`](openapi.yaml) 为准**（当前 156 条 path，随代码增删）。
 常用入口包括 `/v1/chat`（含 stream / sessions / history / stats）、`/v1/dashboard/*`、
 `/v1/profile*`、`/v1/policy/*`（审批与拦截态势）与 `/knowledge/*`。
 
@@ -168,7 +168,7 @@ memory、network、plugin、policy、resource、security、trust。
 | `src/ai/` | 能力层 |
 | `LiuHao-O/packages/` | 十源 packages 层（SSOT = `LiuHao-O/packages/MAPPING.md`） |
 | `apps/console/console/` | 控制台前端（vite + React + TS） |
-| `scripts/` | `verify_*.py` 护栏（数量以 `scripts/` 实际文件为准，当前 78 个）+ `start_liuhao.py` + `smoke_mvp.py` |
+| `scripts/` | `verify_*.py` 护栏（数量以 `scripts/` 实际文件为准，当前 79 个）+ `start_liuhao.py` + `smoke_mvp.py` |
 | `docs/spec/` | 全部规格文档 |
 | `capability-registry.yaml` | 能力注册表 |
 

@@ -30,6 +30,7 @@ python -c "from src.audit import AuditEvent; print('Audit legacy compat layer im
 python -c "from src.observability import Span; print('Observability module OK')"
 python -c "from src.performance import create_lru_cache; print('Performance module OK')"
 python -c "from src.integrations import Base, init_models; print('Integration module OK')"
+# 注意：插件 marketplace 仅作内部 API 冒烟；0.1.2 不开放第三方插件入口（控制台「应用」页只列内置示例能力，旧插件接口返回 404），0.1.3 适配后方可用于产品。
 python -c "from src.plugins.marketplace import Plugin, get_marketplace_store; print('Plugin marketplace OK')"
 ```
 
@@ -57,6 +58,8 @@ print(f"完整性验证: {ok} (共 {total} 条)")
 ```
 
 ### 第一个插件
+
+> **0.1.2 不开放第三方插件入口**：控制台「应用」页当前只列出内置的示例能力，没有第三方插件的安装、发现或更新入口，也不显示旧插件；旧插件直接调相关接口会返回 404。本节是插件 marketplace 的开发者 API 预览，0.1.3 完成适配与可用性标注后方可用于产品。
 
 ```python
 from src.plugins.marketplace import Plugin, PluginMetadata, PluginVersion, get_marketplace_store

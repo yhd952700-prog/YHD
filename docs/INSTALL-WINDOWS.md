@@ -33,9 +33,10 @@
    - ☑ 创建桌面快捷方式（默认勾选）
    - ☑ 安装完成后立即启动鎏灏（默认勾选，可取消）
 5. 程序默认装到 `D:\LiuHao`（数据 `D:\LiuHaoData`），不需要 UAC 提权；
-   D 盘不可用时自动回退到 `%LOCALAPPDATA%\Programs\LiuHao` / `%LOCALAPPDATA%\LiuHao\data`
+   D 盘不可用时程序目录自动回退到 `%LOCALAPPDATA%\Programs\LiuHao`
    （用户级目录，普通双击安装不会弹 UAC；只有主动“以管理员身份运行”安装包时，
-   程序才回退到 `%ProgramFiles%\LiuHao`），实际位置见程序目录 `data-dir.txt`。
+   程序才回退到 `%ProgramFiles%\LiuHao`）；没有可用非系统盘（只有 C 盘）时，
+   数据目录自动回退到 `%LOCALAPPDATA%\LiuHao\data`。实际位置见程序目录 `data-dir.txt`。
    安装向导里还有一页「数据目录」让你确认（已预填回退位置），点「下一步」即可。
    老版本用户覆盖安装保持原位置不变。
 6. 完成后双击桌面快捷方式或开始菜单「LiuHao AI OS · 鎏灏智能中枢」。
@@ -93,7 +94,7 @@
 前置条件：
 
 - Node.js 18+ / npm
-- Python 3.12 + 项目 `.venv`（已安装依赖）
+- Python 3.11+（构建机建议 3.12）+ 项目 `.venv`（已安装依赖）
 - Inno Setup 6（仅编译 `.exe` 时需要）：<https://jrsoftware.org/isdl.php>
 
 一条命令：
