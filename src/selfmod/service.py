@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import shutil
+import sys
 import tempfile
 import tomllib
 import uuid
@@ -27,6 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from src.common.atomic_write import atomic_write_bytes
 
+from .commands import DEFAULT_ALLOWED_TEST_COMMANDS, TestCommandPolicy
 from .errors import (
     ConfirmationRequired,
     InvalidEdit,
@@ -37,8 +40,16 @@ from .errors import (
     StaleProposal,
     TestCommandMissing,
 )
+from .evidence import (
+    build_evidence,
+    content_digest,
+    read_evidence,
+    validate_evidence,
+    write_evidence,
+)
+from .gates import diff_stat, is_repo_workspace, parse_test_counts, run_gates, validate_snapshot
 from .ledger import SelfModLedger
-from .models import FileEdit, ProposalStatus, ResourceLimits
+from .models import FileEdit, ProposalStatus, ResourceLimits, RunResult
 from .patcher import apply_edits, generate_diff, hash_text, read_text, render
 from .paths import PathPolicy
 from .sandbox import command_from, run_isolated
@@ -101,6 +112,28 @@ def _normalise_edits(edits: Iterable[FileEdit | Dict[str, Any]]) -> List[FileEdi
     return result
 
 
+def _run_from_gate(gate: Any, command: Sequence[str]) -> RunResult:
+    """把 G2 的命令结果还原成统一的测试结果，避免整套 pytest 跑两遍。"""
+    first = gate.commands[0] if gate and gate.commands else None
+    if first is None:
+        return RunResult(
+            command=list(command),
+            returncode=1,
+            timed_out=False,
+            limit_reason="",
+            duration_seconds=0.0,
+            output_tail="G2 未产出命令结果",
+        )
+    return RunResult(
+        command=list(first.command),
+        returncode=first.exit_code if first.exit_code is not None else 1,
+        timed_out="超时" in first.reason,
+        limit_reason="memory" if "内存" in first.reason else ("cpu" if "CPU" in first.reason else ""),
+        duration_seconds=first.duration_ms / 1000.0,
+        output_tail=first.output_tail,
+    )
+
+
 class SelfModService:
     def __init__(
         self,
@@ -113,6 +146,7 @@ class SelfModService:
         max_file_bytes: int = 1024 * 1024,
         max_diff_bytes: int = 4 * 1024 * 1024,
         blocked_prefixes: Optional[Sequence[str]] = None,
+        allowed_test_commands: Optional[Iterable[Sequence[str]]] = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.state_dir = (
@@ -131,8 +165,13 @@ class SelfModService:
             self.workspace,
             blocked_prefixes=blocked_prefixes or PathPolicy(self.workspace).blocked_prefixes,
         )
+        self.test_commands = TestCommandPolicy(
+            allowed_test_commands or DEFAULT_ALLOWED_TEST_COMMANDS
+        )
         self.default_test_command = (
-            command_from(default_test_command) if default_test_command else None
+            self.test_commands.validate(default_test_command)
+            if default_test_command
+            else None
         )
 
     def close(self) -> None:
@@ -153,11 +192,13 @@ class SelfModService:
         if not title:
             raise InvalidEdit("提案标题不能为空")
         normalised = _normalise_edits(edits)
-        command = (
+        raw_command = (
             command_from(test_command)
             if test_command is not None
             else list(self.default_test_command or [])
         )
+        # A patch author must not pick the ruler that measures their own patch.
+        command = self.test_commands.validate(raw_command) if raw_command else []
         diff, base_hashes = generate_diff(
             normalised,
             self.policy,
@@ -260,7 +301,9 @@ class SelfModService:
                 )
 
     def _copy_workspace(self) -> tuple[Path, Path]:
-        temp_root = Path(tempfile.mkdtemp(prefix="liuhao-selfmod-copy-"))
+        temp_root = Path(
+            tempfile.mkdtemp(prefix=f"liuhao-selfmod-copy-{os.getpid()}-")
+        )
         copy_root = temp_root / "workspace"
         shutil.copytree(
             self.workspace,
@@ -288,6 +331,15 @@ class SelfModService:
             self.ledger.add_event(proposal_id, "run", "rejected", {"reason": reason})
             raise TestCommandMissing(reason)
 
+        # Re-validated here, not only in ``propose``: a ledger row may predate the
+        # allowlist (or be edited by hand), and this is the code path that actually
+        # starts a process.
+        try:
+            command = self.test_commands.validate(command)
+        except SelfModError as exc:
+            self._reject(proposal_id, f"测试命令被拒绝：{exc}")
+            raise
+
         try:
             self._verify_base_hashes(proposal)
             temp_root, copy_root = self._copy_workspace()
@@ -305,7 +357,28 @@ class SelfModService:
             edits = [FileEdit(path=edit["path"], content=edit["content"]) for edit in proposal["edits"]]
             try:
                 apply_edits(copy_root, edits, self.policy)
-                run = run_isolated(command, cwd=copy_root, limits=self.limits)
+                # G2 的命令就是整套 pytest；仅在仓库模式下门禁真的会执行它时才复用，
+                # 演练工作区（SE-Gate 不适用）仍然单独跑一次提案测试命令。
+                if command == [sys.executable, "-m", "pytest"] and is_repo_workspace(copy_root):
+                    gate_report = run_gates(
+                        copy_root,
+                        edits=edits,
+                        diff=proposal["diff"],
+                        policy=self.policy,
+                        limits=self.limits,
+                        stage="copy",
+                    )
+                    run = _run_from_gate(gate_report.gate("G2"), command)
+                else:
+                    run = run_isolated(command, cwd=copy_root, limits=self.limits)
+                    gate_report = run_gates(
+                        copy_root,
+                        edits=edits,
+                        diff=proposal["diff"],
+                        policy=self.policy,
+                        limits=self.limits,
+                        stage="copy",
+                    )
             except SandboxError as exc:
                 self._reject(proposal_id, f"测试命令执行失败：{exc}")
                 raise
@@ -313,6 +386,7 @@ class SelfModService:
                 self._reject(proposal_id, f"副本应用或测试执行异常：{exc}")
                 raise
 
+            failures = gate_report.failures()
             if run.timed_out:
                 reason = f"测试超时（>{self.limits.timeout_seconds}秒），进程树已终止"
             elif run.limit_reason == "memory":
@@ -321,24 +395,63 @@ class SelfModService:
                 reason = f"测试 CPU 时间超过上限（{self.limits.cpu_seconds}秒），进程树已终止"
             elif run.returncode != 0:
                 reason = f"测试失败（退出码 {run.returncode}）"
+            elif failures:
+                reason = "门禁未通过：" + "、".join(f"{g.id} {g.reason}" for g in failures)
             else:
-                reason = "副本测试通过"
+                reason = "副本测试与 G0–G14 门禁全部通过"
 
-            status = (
-                ProposalStatus.PASSED.value
-                if run.passed
-                else ProposalStatus.REJECTED.value
+            passed = bool(run.passed) and gate_report.result == "PASS"
+            status = ProposalStatus.PASSED.value if passed else ProposalStatus.REJECTED.value
+            evidence_doc = build_evidence(
+                proposal_id=proposal_id,
+                tier="T1",
+                stage="copy",
+                result="PASS" if passed else "FAIL",
+                base_version=proposal.get("base_version"),
+                base_hashes=proposal.get("base_hashes"),
+                edits=proposal["edits"],
+                diff=proposal["diff"],
+                diff_stat=diff_stat(proposal["diff"]),
+                gate_report=gate_report.to_dict(),
+                test={
+                    "command": " ".join(run.command),
+                    "exit_code": run.returncode,
+                    "passed": bool(run.passed),
+                    "timed_out": run.timed_out,
+                    "duration_seconds": run.duration_seconds,
+                    "counts": parse_test_counts(run.output_tail),
+                    "output_tail_sha256": hashlib.sha256(
+                        (run.output_tail or "").encode("utf-8", "replace")
+                    ).hexdigest(),
+                },
+                approvals={
+                    "test": {
+                        "approver": proposal.get("approver", ""),
+                        "at": proposal.get("approved_at"),
+                    }
+                },
+                approver=proposal.get("approver", ""),
+                extra={"verdict": {"passed": passed, "reason": reason}},
             )
+            evidence_file = write_evidence(self.state_dir, evidence_doc)
+
             updated = self.ledger.update(
                 proposal_id,
                 status=status,
                 reason=reason,
                 test_summary_json=run.to_dict(),
             )
-            self.ledger.add_event(proposal_id, "run", status, run.to_dict())
+            self.ledger.add_event(
+                proposal_id,
+                "run",
+                status,
+                {"test": run.to_dict(), "gates": gate_report.summary(), "evidence": str(evidence_file)},
+            )
             return {
                 "proposal": updated,
                 "test": run.to_dict(),
+                "gates": gate_report.to_dict(),
+                "evidence": str(evidence_file),
                 "status": status,
                 "reason": reason,
                 "real_workspace_modified": False,
@@ -354,6 +467,17 @@ class SelfModService:
         )
         self.ledger.add_event(proposal_id, "run", "rejected", {"reason": reason})
 
+    def _approvals(self, proposal_id: str) -> Dict[str, Any]:
+        record: Dict[str, Any] = {}
+        for event in self.events(proposal_id):
+            if event.get("kind") != "confirm":
+                continue
+            stage = str(event.get("status") or "")
+            approver = str((event.get("detail") or {}).get("approver") or "")
+            if stage in ("test", "promote") and approver:
+                record.setdefault(stage, {"approver": approver, "at": event.get("created_at")})
+        return record
+
     # ------------------------------------------------------------------
     # Promote / rollback (real workspace)
     # ------------------------------------------------------------------
@@ -367,6 +491,16 @@ class SelfModService:
             raise ConfirmationRequired(
                 f"当前状态 {proposal['status']} 未通过副本测试，拒绝应用真实工作区"
             )
+        # 证据件是合入的准入条件：没有证据、字段缺失、哈希不符、或结果不是 PASS，
+        # 都拒绝执行（G10 的判定与这里共用同一个校验函数）。
+        evidence_doc = read_evidence(self.state_dir, proposal_id)
+        check = validate_evidence(evidence_doc)
+        if not check["ok"]:
+            raise ConfirmationRequired(
+                "证据件缺失或不完整，拒绝应用：" + "；".join(check["problems"])
+            )
+        if evidence_doc.get("result") != "PASS":
+            raise ConfirmationRequired("证据件结果为 FAIL（门禁未通过），拒绝应用")
         self._consume_token(proposal_id, token, "promote")
         self._verify_base_hashes(proposal)
         edits = [
@@ -374,6 +508,9 @@ class SelfModService:
             for edit in proposal["edits"]
         ]
         backup_dir = self._backup_for_promotion(proposal_id, edits)
+        snapshot_problems = validate_snapshot(backup_dir, edits)
+        if snapshot_problems:
+            raise SelfModError("回滚点不合格，拒绝应用：" + "；".join(snapshot_problems))
         try:
             apply_edits(self.workspace, edits, self.policy)
         except Exception as exc:
@@ -396,6 +533,58 @@ class SelfModService:
             self.ledger.add_event(proposal_id, "finalize", "rejected", {"reason": str(exc)})
             raise SelfModError(f"应用到真实工作区失败，已恢复原状：{exc}") from exc
 
+        # G12：应用后在真实工作区复跑静态与导入校验；失败立刻回滚。
+        post = run_gates(
+            self.workspace,
+            edits=edits,
+            diff=proposal["diff"],
+            policy=self.policy,
+            limits=self.limits,
+            stage="post-apply",
+        )
+        if post.result != "PASS":
+            self._restore_backup(backup_dir)
+            reason = "G12 应用后校验未通过，已自动回滚：" + "；".join(
+                g.reason for g in post.failures()
+            )
+            self.ledger.update(
+                proposal_id,
+                status=ProposalStatus.REJECTED.value,
+                reason=reason,
+            )
+            self.ledger.add_event(proposal_id, "finalize", "rejected", {"reason": reason})
+            raise SelfModError(reason)
+
+        final_doc = build_evidence(
+            proposal_id=proposal_id,
+            tier=str(evidence_doc.get("tier", "T1")),
+            stage="finalize",
+            result="PASS",
+            base_version=evidence_doc.get("base_version"),
+            base_hashes=evidence_doc.get("base_hashes"),
+            edits=proposal["edits"],
+            diff=proposal["diff"],
+            diff_stat=evidence_doc.get("diff_stat") or diff_stat(proposal["diff"]),
+            gate_report={
+                "gates": evidence_doc.get("gates", []),
+                "summary": evidence_doc.get("gate_summary", {}),
+                "gate_mode": evidence_doc.get("gate_mode", "repo"),
+            },
+            test=evidence_doc.get("test", {}),
+            approvals=self._approvals(proposal_id),
+            approver=proposal.get("approver", ""),
+            snapshot={
+                "backup_dir": str(backup_dir),
+                "entries": [e["path"] for e in proposal["edits"]],
+            },
+            extra={
+                "verdict": {"passed": True, "reason": "已应用并在真实工作区通过 G12"},
+                "post_apply": post.to_dict(),
+                "applied_at": _utc_now(),
+            },
+        )
+        write_evidence(self.state_dir, final_doc)
+
         updated = self.ledger.update(
             proposal_id,
             status=ProposalStatus.APPLIED.value,
@@ -416,6 +605,17 @@ class SelfModService:
         if not backup_dir:
             raise SelfModError("提案没有备份记录，无法回滚")
         self._restore_backup(Path(backup_dir))
+        doc = read_evidence(self.state_dir, proposal_id)
+        if doc is not None:
+            doc.pop("content_sha256", None)
+            doc["result"] = "FAIL"
+            doc["rollback"] = {
+                "at": _utc_now(),
+                "backup_dir": backup_dir,
+                "command": doc.get("rollback_command"),
+            }
+            doc["content_sha256"] = content_digest(doc)
+            write_evidence(self.state_dir, doc)
         updated = self.ledger.update(
             proposal_id,
             status=ProposalStatus.ROLLED_BACK.value,

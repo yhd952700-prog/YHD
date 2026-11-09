@@ -29,6 +29,10 @@ def workspace(tmp_path: Path) -> Path:
 
 
 def _service(workspace: Path, tmp_path: Path, **kwargs) -> SelfModService:
+    # Test-local allowlist: the production default only accepts the repo's own
+    # suite/gates (see tests/test_selfmod_command_whitelist.py). These tests
+    # exercise diff/confirm mechanics, so they declare their own probe command.
+    kwargs.setdefault("allowed_test_commands", [["python", "-c", "pass"]])
     return SelfModService(workspace, state_dir=tmp_path / "state", **kwargs)
 
 

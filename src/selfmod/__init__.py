@@ -12,6 +12,7 @@ Public entry point::
     print(service.show_diff(proposal["id"]))
 """
 
+from .commands import DEFAULT_ALLOWED_TEST_COMMANDS, GateCommandPolicy, TestCommandPolicy
 from .errors import (
     ConfirmationRequired,
     InvalidEdit,
@@ -22,7 +23,16 @@ from .errors import (
     SelfModError,
     StaleProposal,
     TestCommandMissing,
+    TestCommandNotAllowed,
 )
+from .evidence import (
+    build_evidence,
+    evidence_path,
+    read_evidence,
+    validate_evidence,
+    write_evidence,
+)
+from .gates import GateReport, GateResult, diff_stat, run_gates
 from .models import FileEdit, Proposal, ProposalStatus, ResourceLimits, RunResult
 from .patcher import generate_diff, render
 from .paths import PathPolicy
@@ -31,7 +41,11 @@ from .service import SelfModService
 
 __all__ = [
     "ConfirmationRequired",
+    "DEFAULT_ALLOWED_TEST_COMMANDS",
     "FileEdit",
+    "GateCommandPolicy",
+    "GateReport",
+    "GateResult",
     "InvalidEdit",
     "PathNotAllowed",
     "PathPolicy",
@@ -45,9 +59,18 @@ __all__ = [
     "SelfModError",
     "SelfModService",
     "StaleProposal",
+    "TestCommandPolicy",
     "TestCommandMissing",
+    "TestCommandNotAllowed",
+    "build_evidence",
     "command_from",
+    "diff_stat",
+    "evidence_path",
     "generate_diff",
+    "read_evidence",
     "render",
+    "run_gates",
     "run_isolated",
+    "validate_evidence",
+    "write_evidence",
 ]

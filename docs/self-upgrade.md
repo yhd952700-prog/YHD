@@ -117,6 +117,8 @@ python -m src.selfmod rollback --proposal-id <id>
 python -m src.selfmod list
 ```
 
+`--test-command` 只接受 `src/selfmod/commands.py` 中 `TestCommandPolicy` 的精确匹配白名单：全量 `python -m pytest`，或 `python scripts/verify_doc_links.py`、`python scripts/verify_docs_index_coverage.py`、`python scripts/check_docs_commands.py`、`python scripts/verify_doc_count_claims.py`、`python scripts/lint_audit_claims.py`、`python scripts/lint_control_claims.py`。带任何参数（如 `-q`、`tests/`、测试文件名）或 `python -c ...` 一律拒绝，不允许指定测试子集。
+
 默认 `allow_promote=False`：即使测试通过、令牌正确，`finalize` 也会抛 `PromotionDisabled`，真实工作区不会被写入。要启用写入必须显式传 `--allow-promote`。
 
 ---
@@ -144,11 +146,13 @@ python -m src.selfmod list
 | 文件 | 作用 | 必需 |
 | --- | --- | --- |
 | `LIUHAO_RELEASE.json` | 发布清单（本规范 2.2.2 定义的索引），升级器读它判断是否存在新版本 | 必需 |
-| `liuhao-<version>.zip` | 完整安装包；文件名可自定义，但必须与清单里的 `artifact` 完全一致 | 必需 |
+| `liuhao-<version>-build<N>.zip`（推荐） | 完整安装包；文件名可自定义，但必须与清单里的 `artifact` 完全一致，且**一经发布不得复用/覆盖**（见下方约定） | 必需 |
 | （可选）签名 | 写在清单的 `signature` 字段里（见 2.2.6），不单独出文件 | 可选 |
 
 - **文件名定稿为 `LIUHAO_RELEASE.json`。** `release-manifest.json` 仍被兼容读取（优先找 `LIUHAO_RELEASE.json`），但新流水线必须产出前者。
 - 清单和安装包必须在同一目录/同一路径前缀下；HTTP 源的 `artifact` 按相对 URL 解析。
+- **发布包文件名不得复用（发布后永不覆盖）。** 同一版本重新构建、或任何内容变化，都必须换一个新文件名（推荐 `liuhao-<version>-build<N>.zip`，或 `liuhao-<version>-<内容短哈希>.zip`），并同步改清单里的 `artifact`。原因：发布页/CDN 对静态文件有缓存（GitHub Pages 默认 `Cache-Control: max-age=600`，不同边缘节点也不同步），旧清单与新 zip 会在一段时间内**同时可见**；客户端按旧清单的 `sha256` / `size` 去校验新字节，必然失败（见 7.1）。
+- **清单与产物必须成对替换。** 一次发布 = 新文件名 + 新清单 + 新的清单签名（`sequence` 递增）。不要只换 zip 或只换清单。旧文件保留、不要删（仍缓存着旧清单的客户端还能按旧 `artifact` 取到与旧清单匹配的字节；删掉会让它们直接 404）。`sequence` 只能防“旧清单被重放”，**不能**防“旧清单指向的文件名被新字节覆盖”——后者只能靠不复用文件名。
 
 #### 2.2.2 清单字段（根节点）
 
@@ -156,14 +160,17 @@ python -m src.selfmod list
 | --- | --- | --- | --- |
 | `schema` | string | 否（强烈建议写） | 必须为 `liuhao.release-manifest/1`；省略视为 v1；其它值直接拒绝 |
 | `releases` | array | 是 | 非空数组，每项见 2.2.3；同一清单内版本不得重复 |
-| `channel` / `generated_at` / 其它自定义字段 | 任意 | 否 | **升级器忽略**，仅供人看 |
+| `sequence` | int | 签名清单必需 | 防重放序号，>= 1，只能递增；由清单签名覆盖，客户端持久化已接受的最大值 |
+| `manifest_signature` | string | 远端源未配置固定清单哈希时 | Ed25519 签名（base64），覆盖除签名字段外的整份清单（见 2.2.7） |
+| `manifest_signature_algorithm` | string | `manifest_signature` 存在时 | 定稿只允许 `ed25519` |
+| `channel` / `generated_at` / 其它自定义字段 | 任意 | 否 | 升级器不读取；但它们**参与清单签名**，改动后必须重新签名 |
 
 #### 2.2.3 清单里每个 `release` 的字段
 
 | 字段 | 类型 | 必需 | 说明 |
 | --- | --- | --- | --- |
 | `version` | string | 是 | PEP 440 版本号（见 2.2.4） |
-| `artifact` | string | 是 | ZIP 文件名或相对 URL。本地源必须位于发布目录内（拒绝目录穿越/越界）；HTTP 源仅允许 `http`/`https` |
+| `artifact` | string | 是 | ZIP 文件名或相对 URL。本地源必须位于发布目录内（拒绝目录穿越/越界）；HTTP 源仅允许 `http`/`https`。**文件名一经发布不得复用**（见 2.2.1） |
 | `sha256` | string | 是 | **整包** SHA256，64 位小写十六进制（见 2.2.5） |
 | `size` | int | 否（强烈建议） | ZIP 字节数；提供时下载与安装前都会复核 |
 | `signature` | string | 否 | Ed25519 签名，base64（见 2.2.6） |
@@ -226,11 +233,14 @@ python -m src.selfmod list
 
 逐文件清单（`files[]`）在 v1 **不读取、不用于放行或拒绝**；打包侧若要产出，只能当作人工排障信息，不能依赖它通过校验。
 
-#### 2.2.7 签名（可选，定稿结构）
+#### 2.2.7 签名（两级：包签名 + 清单签名，定稿结构）
+
+**为什么有两级**：包签名证明"这个 ZIP 是持钥者发布的"，但清单本身也可能被替换。
+如果只签包，攻击者换掉清单就能指定另一个（同样合法签名的旧包）或降级。因此清单
+自身也要签名，并把信任锚从"每次发布都变的清单哈希"改成**长期不变的公钥**。
 
 - 算法：**仅 Ed25519**。
-- 签名对象：**发布包 ZIP 的完整字节**（原始字节，不做预哈希）；不是清单，也不是逐文件哈希。
-- 结构（写在清单对应 release 项里，扁平字段，不嵌套）：
+- 包签名对象：**发布包 ZIP 的完整字节**（原始字节，不做预哈希），写在 release 项：
 
 ```json
 {
@@ -239,12 +249,38 @@ python -m src.selfmod list
 }
 ```
 
+- 清单签名对象：**规范化后的整份清单**（键排序、紧凑 JSON、UTF-8，剔除
+  `manifest_signature` 与 `manifest_signature_algorithm`），写在根节点：
+
+```json
+{
+  "sequence": 7,
+  "manifest_signature": "<base64( Ed25519_sign(private_key, canonical_manifest) )>",
+  "manifest_signature_algorithm": "ed25519"
+}
+```
+
+- 两级签名都由 `scripts/ops/sign_release_manifest.py sign` 一次写入，见
+  `docs/security/release-signing.md`。
 - base64 使用标准字母表、`validate=True` 解码；非法 base64 直接拒绝。
-- 客户端必须显式配置可信公钥（PEM 文件路径或 base64 原始公钥字节）才会真正验签：
-  - 未配置公钥：升级仍可进行，但状态/CLI 必须显示“发布清单包含签名，但未配置可信公钥，未验证签名（仅哈希校验）”，绝不冒充“已验证”。
-  - 已配置公钥：签名不匹配抛 `SignatureError` 并中止，不写任何文件。
+- 客户端只固定公钥（`LIUHAO_UPGRADE_PUBLIC_KEY` 或 `--public-key`）：
+  - **远端源**：未配置 `manifest_sha256` 时，清单必须带可验证的
+    `manifest_signature`，否则拒绝（`SignatureError`）；签名有效但缺少
+    `sequence` 也拒绝。
+  - **`manifest_sha256`（可选首次引导）**：配置了仍会额外校验清单哈希；它每次
+    发布都会变，**不再作为长期方案**（否则每次升级都要人工下发新哈希，自动升级
+    不成立）。不配置时完全依赖清单签名。配了旧值时用户会看到什么、怎么排障，
+    见 2.2.10。
+  - **本地目录源**：签名可选；带签名且配置了公钥时真验签，坏签名拒绝；无签名时
+    状态/CLI 如实显示「仅哈希校验，无签名」，绝不冒充已验证。
   - 发布包 > 512 MiB 时拒绝在内存中验签（明确报错），不会假装通过。
-- **签名只覆盖安装包，不覆盖清单本身**。清单的完整性依赖 HTTPS 和可选的 `--manifest-sha256` 固定值（把清单哈希提前钉在客户端配置里）。这是 v1 的真实边界，见第 8 节。
+- **防重放/防降级**：签名清单必须带单调递增的 `sequence`。客户端在
+  `upgrade-state/manifest-trust.json` 记录已接受的最大 `sequence`、清单摘要与
+  最高可信版本；`sequence` 回退、同序号内容不一致、最高版本低于已记录水位线
+  都会被拒绝；下载/安装阶段再用同一水位线拒绝旧版本发布包。该状态文件损坏时
+  拒绝检查（丢水位线等于给重放让路），删除它等于重新引导。
+- **轮换**：公钥是唯一信任锚。换钥后新私钥签的第一份清单 `sequence` 必须大于
+  客户端已记录值；完整步骤见 `docs/security/release-signing.md` §5。
 
 #### 2.2.8 增量：v1 不需要
 
@@ -256,12 +292,13 @@ python -m src.selfmod list
 
 1. 改 `pyproject.toml [project].version` 为目标版本；
 2. 只打包安装根（`src/`、`config/`、`scripts/`、`console/`、`assets/`、根级 `*.py`、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`，可选 `docs/` 与根目录 `LIUHAO_RELEASE.json`），不要带 `runtime/`、`data/`、`.env`、密钥、`.git`、缓存；构建流水线用 `make_release.py --app-root <payload/app>`，直接从安装树收集，保证与安装后目录一致；
-3. 生成 `liuhao-<version>.zip`；
+3. 生成发布包，**文件名必须带构建号或内容短哈希**（如 `liuhao-0.2.0-build7.zip`），一经发布不得复用（见 2.2.1）；
 4. 对 ZIP 完整字节算 SHA256 与字节数（**此时之后不再改 ZIP**）；
-5. （可选）用 Ed25519 私钥对 ZIP 完整字节签名，base64 写入 `signature`，`signature_algorithm` 写 `ed25519`；
-6. 生成 `LIUHAO_RELEASE.json`（`schema` + `releases[]`，字段见 2.2.2/2.2.3），与 ZIP 同目录；
+5. 生成 `LIUHAO_RELEASE.json`（`schema` + `releases[]`，字段见 2.2.2/2.2.3），与 ZIP 同目录；
+6. 用 `scripts/ops/sign_release_manifest.py sign` 一次性写包签名 `signature` 与清单签名
+   `manifest_signature`、`sequence`（每次发布递增）；远端源必须做这一步；
 7. 自检：把清单喂给 `python -m src.upgrade check --app-root . --manifest <目录>/LIUHAO_RELEASE.json`（或 `--release-dir <目录>`），确认返回 `update_available` 且退出码 0；若返回 `invalid_manifest`，按消息修字段；
-8. 客户端首次部署时配置可信公钥（`--public-key`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`）。
+8. 客户端首次部署时只需配置可信公钥（`--public-key`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`）；**不需要**为每次发布下发新的清单哈希。
 
 完整示例：
 
@@ -285,6 +322,21 @@ python -m src.selfmod list
 ```
 
 约束回顾：`releases` 必须非空；版本号必须能被 `packaging.version.Version` 解析且不重复；`sha256` 必须 64 位十六进制；`size` 若存在必须是整数；`artifact` 在本地源中必须位于发布目录内，在 HTTP 源中按相对 URL 解析且仅允许 `http/https`。
+
+#### 2.2.10 `LIUHAO_UPGRADE_MANIFEST_SHA256` 配了旧值会怎样（排障）
+
+它校验的是**清单文件本身的整字节 SHA256**（不是签名用的规范化摘要），而每次重签清单（改 `sequence`、改包哈希、改 `notes`）这个值都会变。
+
+实测现象：配置值仍是旧清单的哈希、公网已经是新清单时，`check` 返回 `invalid_manifest`，用户看到：
+
+> 无法检查更新：发布清单无效（发布清单 SHA256 与配置的固定值不一致（清单可能被篡改））
+
+此时不会写 `upgrade-state/manifest-trust.json`（固定哈希模式下验签不通过/清单未签名时不产生水位线），也不会下载任何东西。修法：
+
+1. 先确认是“哈希过旧”而不是真篡改：`Get-FileHash -Algorithm SHA256 <你信任的清单>` 与配置值逐字符比对；
+2. **首选**清除该环境变量（或安装器参数），改为完全依赖 `manifest_signature` + `LIUHAO_UPGRADE_PUBLIC_KEY`——这才是可持续的自动升级；
+3. 确需固定哈希（离线/受控环境）时，更新成**当前这份清单**的整文件 SHA256，不要保留旧值；
+4. 不要用“删 `manifest-trust.json`”去绕过与之无关的 `sequence` 回退——那是防重放，删除等于重新引导。
 
 ### 2.3 离线语义（重要）
 

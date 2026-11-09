@@ -2,7 +2,7 @@
 
 Examples::
 
-    python -m src.selfmod propose --edits-file edits.json --title "修复 X" --test-command "python -m pytest -q tests/test_x.py"
+    python -m src.selfmod propose --edits-file edits.json --title "修复 X" --test-command "python -m pytest"
     python -m src.selfmod show --proposal-id <id>
     python -m src.selfmod confirm --proposal-id <id> --approver owner
     python -m src.selfmod run --proposal-id <id> --token <token>
@@ -44,7 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     p_propose.add_argument("--edits-file", required=True, help="编辑列表 JSON 文件")
     p_propose.add_argument("--title", required=True)
     p_propose.add_argument("--rationale", default="")
-    p_propose.add_argument("--test-command", default=None)
+    p_propose.add_argument(
+        "--test-command",
+        default=None,
+        help="测试/门禁命令；只接受仓库既有的全量 pytest 或文档门禁，其余一律拒绝",
+    )
 
     p_show = sub.add_parser("show", parents=[common], help="展示提案 diff")
     p_show.add_argument("--proposal-id", required=True)

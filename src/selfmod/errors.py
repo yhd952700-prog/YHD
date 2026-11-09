@@ -31,6 +31,10 @@ class TestCommandMissing(SelfModError):
     """No test command was provided, so a verdict is impossible."""
 
 
+class TestCommandNotAllowed(SelfModError):
+    """The test command is not one of the repository's own test/gate commands."""
+
+
 class PromotionDisabled(SelfModError):
     """Promotion to the real workspace is disabled (copy-only mode)."""
 

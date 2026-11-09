@@ -262,7 +262,9 @@ def run_isolated(
             subprocess, "CREATE_NO_WINDOW", 0
         )
 
-    output_fd, output_name = tempfile.mkstemp(prefix="liuhao-selfmod-test-", suffix=".log")
+    output_fd, output_name = tempfile.mkstemp(
+        prefix=f"liuhao-selfmod-test-{os.getpid()}-", suffix=".log"
+    )
     output_path = Path(output_name)
     start = time.monotonic()
     job_handle = None

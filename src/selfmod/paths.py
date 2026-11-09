@@ -1,9 +1,15 @@
 """Path policy for edits.
 
 Self-modification may only touch ordinary source files *inside* the workspace.
-Protected runtime data (``data/``), VCS metadata, virtualenvs, secrets and the
-module's own state/backups are refused. Absolute paths and ``..`` traversal are
-refused before the filesystem is touched.
+The blocklist is aligned with ``docs/spec/SELF-EVOLUTION.md`` §2 (permanent
+prohibited zones): authentication, secrets, database schema, installer/packaging,
+dependency manifests, release gates, evidence ledgers, the rollback machinery and
+tests are all refused. Absolute paths and ``..`` traversal are refused before the
+filesystem is touched.
+
+Alignment is asserted by ``tests/test_selfmod_path_policy.py``: every probe path
+derived from §2 must be refused, and ordinary source files must still be
+accepted (so the assertion cannot pass vacuously).
 """
 
 from __future__ import annotations
@@ -14,23 +20,119 @@ from typing import Iterable, Tuple
 
 from .errors import PathNotAllowed
 
+# Directory or file prefixes (repo-relative, forward slashes) that may never be
+# edited. A prefix matches itself and every descendant.
 DEFAULT_BLOCKED_PREFIXES = (
+    # VCS metadata, virtualenvs, caches
     ".git",
+    ".hg",
+    ".svn",
     ".venv",
     "venv",
+    "env",
     "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".github",
+    # Runtime data, logs and local evidence (not source)
     "data",
-    "upgrade-backups",
-    "upgrade-state",
+    "memory_data",
+    "logs",
+    "reports",
+    "run",
+    "plugins",
+    ".acceptance",
+    ".probe_tmp",
+    "ui-evidence",
+    # Self-modification machinery: state/evidence ledger, backups, rollback
     ".selfmod-state",
+    "upgrade-state",
+    "upgrade-backups",
+    "src/selfmod",
+    "src/upgrade",
+    # Secret material
     "secrets",
+    "config",
+    # Authentication / authorization (§2.1)
+    "src/security",
+    "src/identity",
+    "src/gateway/auth.py",
+    "src/gateway/policy.py",
+    # Database schema (§2.3)
+    "alembic",
+    "migrations",
+    "init-scripts",
+    "src/integrations/orm_models.py",
+    "src/knowledge/db.py",
+    # Installer / packaging (§2.4)
+    "installer",
+    "packaging",
+    # Dependency manifests and build config (§2.5)
+    "requirements.txt",
+    "pyproject.toml",
+    "uv.lock",
+    "oss-registry.yaml",
+    "package.json",
+    "package-lock.json",
+    ".nvmrc",
+    ".python-version",
+    "setup.cfg",
+    "tox.ini",
+    "pytest.ini",
+    ".coveragerc",
+    # Release gates and tooling (§2.6)
+    "scripts",
     "dist",
     "build",
-    "__pycache__",
+    # Tests (§2.8)
+    "tests",
+    # Documentation governance / evidence ledgers (§2.7)
+    "docs/README.md",
+    "docs/MASTER-TASK-LEDGER.md",
+    "docs/known-gaps.md",
+    "docs/spec/SELF-EVOLUTION.md",
+    "RELEASE-READINESS-CONTRACT.md",
+    "RELEASE-RUNBOOK.md",
 )
 
-_BLOCKED_SUFFIXES = (".pem", ".key", ".crt", ".pfx")
+_BLOCKED_SUFFIXES = (
+    # Keys and certificates
+    ".pem",
+    ".key",
+    ".crt",
+    ".pfx",
+    ".p12",
+    ".jks",
+    # Installer / launch scripts
+    ".bat",
+    ".ps1",
+)
+
 _BLOCKED_NAMES = (".env",)
+
+# Names that are blocked anywhere in the tree, not only at the repository root.
+_BLOCKED_ANYWHERE_NAMES = (
+    "package.json",
+    "package-lock.json",
+    "conftest.py",
+)
+
+# A gateway module whose name contains one of these markers decides who may do
+# what; §2.1 forbids editing any of them.
+_AUTH_MARKERS = ("auth", "policy", "permission", "rbac", "principal")
+
+
+def _root_requirements(name: str) -> bool:
+    return name.startswith("requirements") and name.endswith(".txt")
+
+
+def _blocked_gateway_module(rel: str, name: str) -> bool:
+    if not rel.startswith("src/gateway/"):
+        return False
+    lowered = name.lower()
+    return any(marker in lowered for marker in _AUTH_MARKERS)
 
 
 class PathPolicy:
@@ -58,14 +160,22 @@ class PathPolicy:
         if not parts or any(part == ".." for part in parts):
             raise PathNotAllowed(f"拒绝路径穿越：{raw!r}")
         rel = "/".join(parts)
+
         for prefix in self.blocked_prefixes:
             if rel == prefix or rel.startswith(prefix + "/"):
                 raise PathNotAllowed(f"拒绝修改受保护路径：{rel}")
+
         name = parts[-1]
         if name in _BLOCKED_NAMES or name.startswith(".env."):
             raise PathNotAllowed(f"拒绝修改敏感文件：{rel}")
         if name.lower().endswith(_BLOCKED_SUFFIXES):
-            raise PathNotAllowed(f"拒绝修改密钥/证书文件：{rel}")
+            raise PathNotAllowed(f"拒绝修改密钥/证书/安装脚本：{rel}")
+        if name in _BLOCKED_ANYWHERE_NAMES:
+            raise PathNotAllowed(f"拒绝修改依赖/测试配置文件：{rel}")
+        if rel.count("/") == 0 and _root_requirements(name):
+            raise PathNotAllowed(f"拒绝修改依赖清单：{rel}")
+        if _blocked_gateway_module(rel, name):
+            raise PathNotAllowed(f"拒绝修改鉴权模块：{rel}")
 
         target = self.workspace / rel
         resolved = target.resolve()

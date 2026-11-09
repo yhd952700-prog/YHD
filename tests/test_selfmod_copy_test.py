@@ -31,7 +31,31 @@ def workspace(tmp_path: Path) -> Path:
 
 
 def _service(workspace: Path, tmp_path: Path, **kwargs) -> SelfModService:
+    # Each drill declares the exact probe command it uses; the production default
+    # allowlist only accepts the repository's own suite/gates.
+    kwargs.setdefault("allowed_test_commands", _probe_allowlist())
     return SelfModService(workspace, state_dir=tmp_path / "state", **kwargs)
+
+
+def _timeout_command() -> list[str]:
+    return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+
+def _cpu_command() -> list[str]:
+    return [sys.executable, "-c", "while True: pass"]
+
+
+def _env_command() -> list[str]:
+    code = (
+        "import os, pathlib; "
+        "print('LEAKED' if os.environ.get('LIUHAO_SELFTEST_API_KEY') else 'STRIPPED'); "
+        "pathlib.Path('marker.txt').write_text('copy-only')"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _probe_allowlist() -> list[list[str]]:
+    return [_passing_command(), _timeout_command(), _cpu_command(), _env_command()]
 
 
 def _passing_command() -> list[str]:
@@ -107,7 +131,7 @@ def test_timeout_kills_test_and_rejects(workspace: Path, tmp_path: Path) -> None
             title="slow",
             rationale="timeout drill",
             edits=[FileEdit("app.py", "X = 1\n")],
-            test_command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            test_command=_timeout_command(),
         )
         token = service.confirm(proposal["id"], approver="owner")
         result = service.run_on_copy(proposal["id"], token)
@@ -137,7 +161,7 @@ def test_cpu_limit_is_enforced(workspace: Path, tmp_path: Path) -> None:
             title="cpu",
             rationale="resource ceiling drill",
             edits=[FileEdit("app.py", "X = 1\n")],
-            test_command=[sys.executable, "-c", "while True: pass"],
+            test_command=_cpu_command(),
         )
         token = service.confirm(proposal["id"], approver="owner")
         result = service.run_on_copy(proposal["id"], token)
@@ -215,17 +239,12 @@ def test_credential_shaped_env_vars_are_not_inherited(
     """The test child must not see inherited ``*_API_KEY`` style variables."""
     monkeypatch.setenv("LIUHAO_SELFTEST_API_KEY", "must-not-leak")
     service = _service(workspace, tmp_path)
-    code = (
-        "import os, pathlib; "
-        "print('LEAKED' if os.environ.get('LIUHAO_SELFTEST_API_KEY') else 'STRIPPED'); "
-        "pathlib.Path('marker.txt').write_text('copy-only')"
-    )
     try:
         proposal = service.propose(
             title="env isolation",
             rationale="credential-shaped variables are dropped",
             edits=[FileEdit("app.py", ORIGINAL + "\nX = 1\n")],
-            test_command=[sys.executable, "-c", code],
+            test_command=_env_command(),
         )
         token = service.confirm(proposal["id"], approver="owner")
         result = service.run_on_copy(proposal["id"], token)
