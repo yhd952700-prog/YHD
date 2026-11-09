@@ -83,6 +83,9 @@ REQUIRED_LICENSE_FILES: Tuple[str, ...] = (
     "adodbapi-LGPL-2.1.txt",
     "libiconv-NOTICE.txt",
     "LGPL-SOURCE-OFFER.txt",
+    "fastmcp-slim-Apache-2.0.txt",
+    "opentelemetry-util-http-Apache-2.0.txt",
+    "proxy_tools-BSD.txt",
 )
 REQUIRED_LICENSE_MIN_BYTES = 500
 
@@ -188,6 +191,7 @@ def collect(site_packages: Path) -> List[Distribution]:
         if name.lower() in ("liuhao", "liuhao-ai-os"):
             continue
         license_files = _license_files(dist_info, site_packages)
+        home = _home_page(headers)
         override = LICENSE_OVERRIDES.get(name.lower())
         if override:
             license_, extra = override
@@ -200,7 +204,7 @@ def collect(site_packages: Path) -> List[Distribution]:
             version=version,
             license_=license_,
             license_files=license_files,
-            home=_home_page(headers),
+            home=home,
             dist_info=dist_info.name,
         ))
     items.sort(key=lambda item: item.name.lower())

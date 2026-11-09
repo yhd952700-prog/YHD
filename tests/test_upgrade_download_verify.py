@@ -187,8 +187,13 @@ class _HttpArtifactSource:
 
 
 def test_interrupted_http_download_says_incomplete_and_installs_nothing(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # 生产策略要求 https + 私网拒绝；这里只测“下载中断”，用测试专用旁路
+    # 把本机 HTTP 服务放行，策略本身由 test_security_hardening_batch 覆盖。
+    monkeypatch.setattr(
+        "src.upgrade.downloader.validate_remote_url", lambda url, **_kw: url
+    )
     payload = b"PK\x03\x04" + b"x" * 4096
 
     class Handler(BaseHTTPRequestHandler):
@@ -212,11 +217,19 @@ def test_interrupted_http_download_says_incomplete_and_installs_nothing(
             artifact="liuhao-0.2.0.zip",
             sha256=hashlib.sha256(payload).hexdigest(),
             size=len(payload),
+            signature="remote-test-signature",
+            signature_algorithm="ed25519",
         )
         target = tmp_path / "download"
         source = _HttpArtifactSource(f"http://127.0.0.1:{server.server_address[1]}")
         with pytest.raises((ChecksumMismatch, ManifestError)) as exc:
-            download_release(source, release, target_dir=target, timeout=5)
+            download_release(
+                source,
+                release,
+                target_dir=target,
+                timeout=5,
+                public_key="test-only-public-key",
+            )
     finally:
         server.shutdown()
 

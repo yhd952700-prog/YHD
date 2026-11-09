@@ -1,15 +1,18 @@
 """Version discovery and comparison.
 
-The version is read from the application's ``pyproject.toml`` (the source of
-truth for a source checkout), then from ``LIUHAO_RELEASE.json`` (present in
-release packages), and only as a last resort from installed distribution
-metadata. It is never guessed: if all three are missing the caller gets a
+``src/version.py`` (``APP_VERSION``) is the single source of truth and wins
+whenever it exists in the application tree — source checkout and installed
+payload both ship it, so the running code and the upgrade logic cannot drift.
+``pyproject.toml`` and ``LIUHAO_RELEASE.json`` are packaging projections kept
+for older trees; installed distribution metadata is the last resort. It is
+never guessed: if all of them are missing the caller gets a
 ``VersionReadError`` and the user is told checking is impossible.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from importlib import metadata
 from pathlib import Path
@@ -25,6 +28,29 @@ def parse_version(text: str, *, context: str = "版本号") -> Version:
         return Version(str(text).strip())
     except InvalidVersion as exc:
         raise VersionReadError(f"{context}无效：{text!r}") from exc
+
+
+_APP_VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+
+def _read_src_version(app_root: Path) -> Optional[str]:
+    """Read ``APP_VERSION`` from ``<app_root>/src/version.py``.
+
+    只读源码文本、不 import：升级检查可能在别的安装树上下文中运行，
+    import 会把"正在运行的进程版本"和"被检查的树"混为一谈。
+    """
+    module = app_root / "src" / "version.py"
+    if not module.is_file():
+        return None
+    try:
+        text = module.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = _APP_VERSION_RE.search(text)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return value or None
 
 
 def _read_pyproject(version_file: Path) -> Optional[str]:
@@ -57,6 +83,11 @@ def read_current_version(app_root: str | Path) -> Tuple[str, str]:
     Raises ``VersionReadError`` rather than returning a fabricated fallback.
     """
     root = Path(app_root)
+    value = _read_src_version(root)
+    if value:
+        parse_version(value, context="src/version.py 版本号")
+        return value, "src/version.py"
+
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
         value = _read_pyproject(pyproject)

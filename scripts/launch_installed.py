@@ -401,6 +401,13 @@ def _ensure_app_env(path: Path) -> None:
         except OSError:
             return
         upgraded = text.replace("APP_ENV=staging", "APP_ENV=production")
+        if not any(
+            line.split("=", 1)[0].strip() == "SECRET_KEY"
+            for line in upgraded.splitlines()
+        ):
+            if upgraded and not upgraded.endswith(("\n", "\r\n")):
+                upgraded += "\n"
+            upgraded += f"SECRET_KEY={secrets.token_urlsafe(32)}\n"
         if upgraded != text:
             with contextlib.suppress(OSError):
                 path.write_text(upgraded, encoding="utf-8")
@@ -738,6 +745,9 @@ def prepare_environment() -> tuple[Path, Path]:
         app_env = data_dir / APP_ENV_FILE
         _ensure_app_env(app_env)
         _load_dotenv_file(app_env)
+        from src.security.app_env_secrets import ensure_secret_key
+
+        ensure_secret_key(app_env)
 
         integrity_key = _ensure_integrity_key(data_dir / INTEGRITY_KEY_FILE)
     except OSError as exc:

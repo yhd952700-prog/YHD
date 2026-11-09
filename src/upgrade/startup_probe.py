@@ -174,6 +174,7 @@ class StartupCheckConfig:
     mirror_paths: Tuple[str, ...] = (
         "src",
         "config",
+        "console",
         "pyproject.toml",
         "requirements.txt",
         "oss-registry.yaml",
@@ -354,6 +355,11 @@ def _child_env(
     env["USERPROFILE"] = str(home_dir)
     env["LIUHAO_DATA_DIR"] = str(data_dir)
     env["LIUHAO_SELF_CHECK"] = "1"
+    console_dir = sandbox / "console"
+    if (console_dir / "index.html").is_file():
+        # 安装树把前端放在 <app_root>/console；自检沙箱里也要让网关指向它，
+        # 否则只会起 API，验证不到“升级后界面能打开”。
+        env["LIUHAO_CONSOLE_DIST"] = str(console_dir)
     env.update({str(key): str(value) for key, value in config.env.items()})
     return env
 
@@ -484,11 +490,13 @@ def _probe_health(
     """Try every path once.
 
     Returns ``(path, status, body, all_missing)``.  ``path`` is non-empty only
-    for a 2xx answer.  ``all_missing`` is True only when *every* path answered
-    404/405, i.e. the endpoints are explicitly absent; a timeout, a connection
-    failure or a 5xx all mean "the service is not ready yet", and must not be
-    mistaken for absence (that is how ``/openapi.json`` used to be accepted
-    while the app was still starting).
+    for a 2xx answer **whose body is a JSON object**; a 200 that serves an
+    HTML page (the console SPA catch-all) is not health and is treated like an
+    absent route.  ``all_missing`` is True only when *every* path answered
+    404/405 (or a non-JSON 200), i.e. the endpoints are effectively absent; a
+    timeout, a connection failure or a 5xx all mean "the service is not ready
+    yet", and must not be mistaken for absence (that is how ``/openapi.json``
+    used to be accepted while the app was still starting).
     """
     if not paths:
         return "", 0, {}, False
@@ -520,7 +528,19 @@ def _probe_health(
         except (urllib.error.URLError, OSError, ValueError):
             continue
         if 200 <= status < 400:
-            return path, status, _parse_json_object(raw), False
+            body = _parse_json_object(raw)
+            # 2xx 不等于健康：控制台 SPA 的兜底路由会把 /health、/healthz
+            # 这类未注册路径返回 index.html 的 200（text/html），body 也不是
+            # JSON。如果把它当作健康，自检会拿着空 body 去跑前端契约门禁，
+            # 在“旧服务仍在运行”时稳定地把一次正常升级判成失败。
+            # 只接受可解析的 JSON 对象；空对象同样不算（没有任何健康字段），
+            # 继续尝试下一个路径/下一轮，直到预算用完。这种 200 等价于
+            # “该路由不存在”（SPA 兜底），因此计入 missing：若所有路径都
+            # 这样，仍然允许 /openapi.json 兜底，而不是把 SPA 首页当健康。
+            if body:
+                return path, status, body, False
+            missing += 1
+            continue
         if status in (404, 405):
             missing += 1
     return "", 0, {}, missing == len(paths)
@@ -536,7 +556,9 @@ def run_startup_check(
     """Start the installed service on a temp port and verify it becomes healthy."""
     config = config or StartupCheckConfig()
     root = Path(app_root)
-    sandbox = Path(tempfile.mkdtemp(prefix="liuhao-selfcheck-"))
+    sandbox = Path(
+        tempfile.mkdtemp(prefix=f"liuhao-selfcheck-{os.getpid()}-")
+    )
     process: Optional[subprocess.Popen] = None
     log_file = sandbox / ".startup.log"
     stop_file = sandbox / ".stop"

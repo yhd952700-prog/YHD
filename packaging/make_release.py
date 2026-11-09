@@ -18,12 +18,17 @@
   * 有签名私钥才写 ``signature`` / ``signature_algorithm``，没有就**不写**空值或假签名；
   * 自己产生清单、自己回读校验；任何不一致直接失败，不产出坏清单。
 
-用法（在仓库根执行）：
+用法（在仓库根执行，必须显式指定安装树）：
 
-    .venv\\Scripts\\python.exe packaging\\make_release.py
-    .venv\\Scripts\\python.exe packaging\\make_release.py --out dist\\release --strict-dev-paths
+    .venv\\Scripts\\python.exe packaging\\make_release.py --app-root dist\\payload\\app
+    .venv\\Scripts\\python.exe packaging\\make_release.py --app-root dist\\payload\\app --strict-dev-paths
     $env:LIUHAO_UPGRADE_SIGNING_KEY = "D:\\keys\\liuhao-release-ed25519.pem"
-    .venv\\Scripts\\python.exe packaging\\make_release.py --signing-key $env:LIUHAO_UPGRADE_SIGNING_KEY
+    .venv\\Scripts\\python.exe packaging\\make_release.py --app-root dist\\payload\\app --signing-key $env:LIUHAO_UPGRADE_SIGNING_KEY
+
+仓库根模式（不带 --app-root）已停用：它不会把根级 ``error_types.py`` /
+``capability-registry.yaml`` 打进包，安装后自检会失败并回滚。安装树由
+``packaging/stage_payload.py`` 生成；控制台必须先由
+``packaging/build_console.py`` 按当前源码构建并写入来源记录。
 """
 
 from __future__ import annotations
@@ -104,6 +109,11 @@ from src.upgrade.console_contract import (  # noqa: E402
     read_backend_contract_from_source,
     verify_package as verify_console_contract,
 )
+
+_PACKAGING_DIR = Path(__file__).resolve().parent
+if str(_PACKAGING_DIR) not in sys.path:
+    sys.path.insert(0, str(_PACKAGING_DIR))
+import console_provenance  # noqa: E402
 
 PROTECTED_PATHS = (
     "data",
@@ -470,13 +480,76 @@ def _run_cli_check(root: Path, out_dir: Path) -> Tuple[int, str]:
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
+def _verify_console_provenance(entries, version: str) -> None:
+    """校验包内控制台确实由当前前端源码构建，且产物未被替换。"""
+    console_bytes = {
+        rel: path.read_bytes() for rel, path in entries if rel.startswith("console/")
+    }
+    meta_rel = console_provenance.BUILD_META_RELPATH
+    if meta_rel not in console_bytes:
+        raise BuildError(
+            "升级包里的控制台缺少 console/console-build.json 构建来源记录："
+            "无法证明界面来自当前源码，升级后可能仍是旧界面。请先执行 "
+            "packaging/build_console.py --dest <安装树>/console "
+            f"--version {version} 再重新打包。"
+        )
+    try:
+        meta = json.loads(console_bytes[meta_rel].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BuildError(f"控制台构建来源记录无法解析：{exc}") from exc
+
+    source_dir = REPO_ROOT / "apps" / "console" / "console"
+    if not source_dir.is_dir():
+        raise BuildError(
+            f"无法校验控制台来源：前端源码目录不存在（{source_dir}）。"
+            "请在完整仓库内打包，或先恢复 apps/console/console。"
+        )
+    expected_source = console_provenance.frontend_source_fingerprint(source_dir)
+    recorded_source = str(meta.get("source_sha256") or "")
+    if recorded_source != expected_source:
+        raise BuildError(
+            "包内控制台不是由当前前端源码构建的："
+            f"源码指纹 {expected_source[:12]}…，构建记录 {recorded_source[:12] or '<缺失>'}…。"
+            "升级后界面仍是旧版，拒绝出包。请重新执行 packaging/build_console.py "
+            f"--version {version}。"
+        )
+
+    recorded_version = str(meta.get("version") or "")
+    if recorded_version != version:
+        raise BuildError(
+            f"控制台构建记录版本 {recorded_version!r} 与发布版本 {version!r} 不一致："
+            "请按当前版本重新构建控制台后再打包。"
+        )
+
+    actual_files = {
+        rel: data
+        for rel, data in console_bytes.items()
+        if rel not in (meta_rel, CONTRACT_RELPATH)
+    }
+    actual_fp = console_provenance.console_files_fingerprint(actual_files)
+    recorded_files = str(meta.get("files_sha256") or "")
+    if recorded_files != actual_fp:
+        raise BuildError(
+            "包内控制台文件在构建后被改动："
+            f"文件指纹 {actual_fp[:12]}…，构建记录 {recorded_files[:12] or '<缺失>'}…。"
+            "拒绝出包；请重新构建控制台。"
+        )
+    _log(
+        f"  控制台  来源指纹 {expected_source[:12]}… 与当前源码一致，"
+        f"产物 {len(actual_files)} 个文件（{actual_fp[:12]}…）"
+    )
+
+
 def build(args: argparse.Namespace) -> int:
     app_tree = bool(getattr(args, "app_root", None))
-    root = (
-        Path(args.app_root).resolve()
-        if app_tree
-        else Path(args.root).resolve()
-    )
+    if not app_tree:
+        raise BuildError(
+            "拒绝使用默认仓库根模式打包：该模式不会把根级 error_types.py 与 "
+            "capability-registry.yaml 打进升级包，安装后自检会以 ModuleNotFoundError "
+            "失败并触发回滚（默认值等于会踩）。请显式传入 --app-root <安装树>；"
+            "安装树由 packaging/stage_payload.py 生成。"
+        )
+    root = Path(args.app_root).resolve()
     out_dir = (
         Path(args.out).resolve()
         if args.out
@@ -537,6 +610,7 @@ def build(args: argparse.Namespace) -> int:
             "此包升级后界面不会更新，且可能与新后端接口错配，拒绝产出。"
             "请先在 apps/console/console 执行 npm install && npm run build，再重建安装树。"
         )
+    _verify_console_provenance(entries, version)
     total_bytes = sum(path.stat().st_size for _rel, path in entries)
     _log(f"  输入    {len(entries)} 个文件 / {total_bytes / 1024 / 1024:.1f} MB（未压缩）")
 
@@ -688,11 +762,11 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python packaging/make_release.py",
         description="生成升级发布包 ZIP 与 LIUHAO_RELEASE.json（规范见 docs/self-upgrade.md §2.2）",
     )
-    parser.add_argument("--root", default=str(REPO_ROOT), help="仓库根目录（默认脚本上级目录）")
+    parser.add_argument("--root", default=str(REPO_ROOT), help="（保留参数；仓库根模式已停用，必须用 --app-root）")
     parser.add_argument(
         "--app-root",
         default=None,
-        help="按安装树打包（指向 payload/app）；升级包从此目录收集，与安装后结构一致",
+        help="必需：按安装树打包（指向 payload/app）；升级包从此目录收集，与安装后结构一致",
     )
     parser.add_argument("--out", default=None, help="输出目录（默认仓库根 dist/release）")
     parser.add_argument("--version", default=None, help="发布版本号（默认读 pyproject.toml，必须一致）")

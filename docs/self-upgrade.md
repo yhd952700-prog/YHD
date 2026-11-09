@@ -95,7 +95,7 @@ python -m src.upgrade last-check --app-root .
 ```powershell
 # 1) 生成提案 + 展示 diff（绝不修改真实工作区）
 python -m src.selfmod propose --edits-file edits.json --title "修复 X" `
-  --rationale "原因" --test-command "python -m pytest -q tests/test_x.py"
+  --rationale "原因" --test-command "python -m pytest"
 
 # 2) 再次查看 diff
 python -m src.selfmod show --proposal-id <id>
@@ -344,6 +344,25 @@ python -m src.selfmod list
 
 > 复用说明：`vacuum_into` 要求目标文件不存在，内部执行 `VACUUM INTO`；不是文件拷贝，也不是文本读取。`tests/test_upgrade_data_guard.py` 已验证 WAL 中已提交的数据会进入快照，且快照旁不会出现 `-wal`。
 
+#### 4.2.1 备份根与跨盘约束（`LIUHAO_UPGRADE_BACKUP_ROOT`）
+
+跨盘备份**必须显式配置**，不再由程序静默挑盘：
+
+- **配了**：探针与所有备份都落在这个根里；探针真写失败（盘不存在、无写权限、已满）时，
+  `/v1/upgrade/status` 的 `backup.available=false`、`backup.label="备份盘不可写，备份未启用"`，
+  `apply` 在动任何真实文件之前直接拒绝——**绝不静默退回数据目录**。
+- **没配**：按“未启用跨盘备份”处理，备份落 `<data>/upgrade-backups`；`status.backup`
+  会给出中文警告“未启用跨盘备份：备份与主数据在同一磁盘，磁盘损坏时无法恢复”。
+- **配了但与数据同盘**：允许，但状态里明确标出 `same_volume=true` 与
+  “备份与数据在同一磁盘，磁盘损坏时无法恢复”。
+- **空间预检**：创建备份前单独检查备份盘，剩余空间必须不低于
+  “代码 + 数据体积 × 2 倍余量”；不足时给出中文原因并拒绝升级（不会写出半截备份）。
+
+安装说明（安装器负责下发，程序不写注册表/不猜路径）：安装版应设置
+`LIUHAO_UPGRADE_BACKUP_ROOT=D:\LiuHaoBackups`（用户要求装到 D 盘、不占 C 盘；
+D 盘不可用时安装器改为回退路径并同步设置该变量）。启动器
+（`scripts/launch_installed.py`）会把该变量传给网关与升级子进程。
+
 ### 4.3 安装
 
 - 先解压到临时 staging，校验通过后逐文件原子写入（临时文件 + `os.replace`）；
@@ -453,6 +472,13 @@ python -m src.upgrade rollback --app-root .
 **备份/旧版本包缺失时**：消息形如“无法回滚：0.1.0 的升级前备份已不存在…。当前版本 0.2.0 仍可正常使用，未做任何修改。需要回到 0.1.0，需要重新下载 0.1.0 版本安装包，放到发布目录后执行：`python -m src.upgrade upgrade --app-root . --release-dir <发布目录> --allow-same-or-downgrade`”。这是一个明确的“去下载”指引，不会把用户留在既不能升级也不能回滚的状态：下载旧包后可用 `--allow-same-or-downgrade` 重新安装，或直接安装更新的版本。
 
 **没有可回滚记录时**：清空状态是 `failed`，账本记录 `rollback/failed`，消息“没有可回滚的升级记录”，不会卡在 `rolling_back`（有回归测试）。
+
+**数据库回滚失败时**（目标库被运行中的服务占用，连 SQLite 在线备份也写不回去）：消息形如
+“数据库回滚失败（<库路径> 被运行中的服务占用，且无法通过 SQLite 恢复）：<原因>”
+（`src/upgrade/backups.py` 的 `restore_data`）。含义是文件替换走不通、在线备份回写也失败，
+状态不会假装成功。处理顺序：先用 `python -m src.desktop stop` 停掉桌面壳/网关（或关闭占用该库的
+程序），再看 `python -m src.upgrade status --app-root .` 确认状态，然后重跑同一条 `rollback`；
+**不要手工删库文件**——代码可能已回滚而数据没有，重试才是恢复路径。
 
 ### 4.7 升级前数据快照的单独取出
 
@@ -570,7 +596,8 @@ python -m src.upgrade last-check --app-root .
 | `LIUHAO_UPGRADE_RELEASE_DIR` | 本地发布目录 |
 | `LIUHAO_UPGRADE_MANIFEST_URL` | HTTP(S) 清单地址 |
 | `LIUHAO_UPGRADE_PUBLIC_KEY` | Ed25519 公钥（PEM 路径或 base64） |
-| `LIUHAO_DATA_DIR` / `LIUHAO_UPGRADE_BACKUP_ROOT` / `LIUHAO_UPGRADE_STATE_DIR` | 数据/备份/状态目录 |
+| `LIUHAO_DATA_DIR` / `LIUHAO_UPGRADE_STATE_DIR` | 数据/状态目录 |
+| `LIUHAO_UPGRADE_BACKUP_ROOT` | **显式**备份根（跨盘备份必须配它；不配则按“未启用跨盘备份”处理并给中文警告；配了但不可写会拒绝升级，不退回数据目录） |
 | `LIUHAO_UPDATE_CHECK_INTERVAL` | 检查间隔秒数（默认 604800） |
 | `LIUHAO_REMINDER_OS_NOTIFY=0` | 测试/无桌面环境关掉托盘气泡，保留控制台通道 |
 
@@ -648,7 +675,7 @@ propose（生成 diff，不改工作区）
 | 清单 JSON/schema/字段非法、重复版本 | `invalid_manifest` | 无 |
 | 当前版本读不到 | `version_unknown`，拒绝继续 | 无 |
 | 下载超过大小上限 | 失败，删除临时文件 | 无 |
-| SHA256/大小不符 | `ChecksumMismatch`，删除临时文件 | 无 |
+| SHA256/大小不符（含 CDN 缓存窗口内“旧清单 + 新 zip”、同名文件被覆盖） | `ChecksumMismatch`，删除临时文件；文案「发布包大小不符：清单 X 字节，实际 Y 字节（包被追加了内容或清单与包不匹配）」或「SHA256 校验失败：清单 …，实际 …」 | 无 |
 | 有签名但无公钥 | 继续，但明确“未验证签名（仅哈希校验）” | 无 |
 | 有公钥且签名不匹配 | `SignatureError`，中止 | 无 |
 | 应用前数据预检失败 | `PreflightError`，不备份、不改文件 | 无 |
@@ -805,10 +832,10 @@ python -m src.upgrade selfcheck --app-root D:\LiuHao-AI-OS --data-dir <临时> -
 ## 10. 发布一个版本的维护者步骤
 
 1. 修改 `pyproject.toml` 的 `[project].version` 为目标版本（推荐同时在包根写 `LIUHAO_RELEASE.json` 版本标记，两者一致，见 2.2.5）；
-2. 打包发布 ZIP，**只包含安装根**（`src/`、`config/`、`scripts/`、`console/`、`assets/`、根级 `*.py`、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`，可选 `docs/` 与根目录 `LIUHAO_RELEASE.json`），不要包含 `runtime/`、`data/`、`.env`、密钥、`.git`；
+2. 打包发布 ZIP，**只包含安装根**（`src/`、`config/`、`scripts/`、`console/`、`assets/`、根级 `*.py`、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`，可选 `docs/` 与根目录 `LIUHAO_RELEASE.json`），不要包含 `runtime/`、`data/`、`.env`、密钥、`.git`；**文件名必须带构建号或内容短哈希，已发布过的文件名永不覆盖**（见 2.2.1）；
 3. 计算**整包** `sha256` 与字节数（算完后不要再改 ZIP，见 2.2.6）；
-4. （可选但推荐）用 Ed25519 私钥对 ZIP 完整字节签名，填入 `signature`（base64，`signature_algorithm` 为 `ed25519`）；
-5. 写入 `LIUHAO_RELEASE.json`（schema `liuhao.release-manifest/1` + `releases[]`），与 ZIP 放在同一发布目录（HTTP 源同理，`artifact` 可为相对路径）；旧名 `release-manifest.json` 仍兼容，但新流水线用前者；
-6. 在客户端配置可信公钥：`--public-key <PEM 文件或 base64>`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`。
+4. 用 `python scripts/ops/sign_release_manifest.py sign --manifest <清单> --artifact-dir <发布目录>` 一次性写入：包签名 `signature`、清单签名 `manifest_signature`、防重放序号 `sequence`（每次发布自动递增）：**远端源必填**，本地目录源可选但推荐。签发工具与密钥保护见 [`security/release-signing.md`](security/release-signing.md)；
+5. 写入 `LIUHAO_RELEASE.json`（schema `liuhao.release-manifest/1` + `releases[]`），与 ZIP 放在同一发布目录（HTTP 源同理，`artifact` 可为相对路径）；旧名 `release-manifest.json` 仍兼容，但新流水线用前者。**清单与产物必须成对替换**：不要只换 zip 或只换清单；旧 zip 保留不要删（见 2.2.1）；
+6. 在客户端配置可信公钥：`--public-key <PEM 文件或 base64>`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`。**不需要**每次发布重新下发清单哈希。
 
-未配置公钥时，升级仍可进行，但界面/CLI 会明确显示“仅哈希校验，无签名”或“未验证签名（仅哈希校验）”，不会冒充签名已验证。
+**远端（HTTP/HTTPS）源是供应链边界**：清单必须带可验证的 Ed25519 清单签名（`manifest_signature`，覆盖整份清单并带递增 `sequence`），客户端必须配置可信公钥（`LIUHAO_UPGRADE_PUBLIC_KEY` / `--public-key`），否则检查/下载**直接拒绝**，不会"只做哈希就继续"；且禁止 30x 重定向。`LIUHAO_UPGRADE_MANIFEST_SHA256` 仍然支持，但只作为**可选首次引导**（每次发布都会变，不应作为长期方案）。**本地目录源**（本机可信维护路径）不强制签名，未签名时界面/CLI 如实显示「仅哈希校验，无签名」或「未验证签名（仅哈希校验）」，绝不冒充签名已验证。维护者操作、公钥配置与轮换步骤见 [`security/release-signing.md`](security/release-signing.md)。

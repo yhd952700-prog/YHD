@@ -10,8 +10,10 @@ no newer version": an unreachable HTTP source and a missing local file are
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,9 +29,94 @@ from .models import ReleaseInfo
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _MANIFEST_SCHEMA = "liuhao.release-manifest/1"
+_MANIFEST_SIGNATURE_FIELD = "manifest_signature"
+_MANIFEST_SIGNATURE_ALGORITHM_FIELD = "manifest_signature_algorithm"
+_MANIFEST_SEQUENCE_FIELD = "sequence"
 #: 文件级清单要给每个文件记一行路径/哈希/大小，完整安装树约 100KB 量级。
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _USER_AGENT = "LiuHao-AI-OS-Updater/1.0"
+
+_PRIVATE_ADDRESS_FLAGS = (
+    "is_private",
+    "is_loopback",
+    "is_link_local",
+    "is_reserved",
+    "is_unspecified",
+    "is_multicast",
+)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """升级流量一律不跟随 30x：重定向可把已校验的 https 目标换到 http/内网。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ManifestError(
+            f"更新源禁止重定向（收到 HTTP {code}）；请直接在配置里填写最终地址。"
+        )
+
+
+def _coerce_address(address):
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped
+    return address
+
+
+def validate_remote_url(
+    url: str, *, context: str = "更新源", resolve: bool = True
+) -> str:
+    """强制 https、禁止内嵌凭据、拒绝私网/回环/链路本地目标。
+
+    ``resolve=True`` 时会在发起请求前解析域名并逐地址拒绝私网（含
+    ``169.254.169.254``）。失败即 ``ManifestError``，调用方按“无法检查更新”
+    处理，而不是把它当成“已是最新”。
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ManifestError(f"{context}必须使用 https，收到：{parsed.scheme or '(空)'}")
+    if not parsed.hostname:
+        raise ManifestError(f"{context} URL 缺少主机名")
+    if parsed.username or parsed.password:
+        raise ManifestError(f"{context} URL 不能包含用户名或密码")
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ManifestError(f"{context} URL 端口无效：{exc}") from exc
+
+    def _reject(address, source: str) -> None:
+        normalized = _coerce_address(address)
+        if any(getattr(normalized, flag) for flag in _PRIVATE_ADDRESS_FLAGS):
+            raise ManifestError(
+                f"{context}指向私网/回环/链路本地地址，拒绝访问（{source}）。"
+            )
+
+    host = parsed.hostname
+    literal = None
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        literal = None
+    if literal is not None:
+        _reject(literal, host)
+        return url
+    if not resolve:
+        return url
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, ValueError) as exc:
+        raise ManifestError(f"{context}主机名无法解析：{host}（{exc}）") from exc
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError as exc:
+            raise ManifestError(f"{context}解析结果异常：{host}") from exc
+        _reject(address, host)
+    return url
+
+
+def open_no_redirect(request: urllib.request.Request, *, timeout: float):
+    """打开 URL，但不跟随任何 30x 重定向。"""
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    return opener.open(request, timeout=timeout)
 
 
 @dataclass
@@ -113,6 +200,19 @@ def parse_manifest(payload: bytes | str) -> Dict[str, Any]:
     schema = data.get("schema")
     if schema is not None and schema != _MANIFEST_SCHEMA:
         raise ManifestError(f"不支持的发布清单 schema：{schema!r}")
+    signature = data.get(_MANIFEST_SIGNATURE_FIELD)
+    if signature is not None and not isinstance(signature, str):
+        raise ManifestError("发布清单 manifest_signature 必须是字符串")
+    algorithm = data.get(_MANIFEST_SIGNATURE_ALGORITHM_FIELD)
+    if algorithm is not None and str(algorithm).strip().lower() != "ed25519":
+        raise ManifestError(
+            f"不支持的清单签名算法：{algorithm!r}（当前仅支持 ed25519）"
+        )
+    sequence = data.get(_MANIFEST_SEQUENCE_FIELD)
+    if sequence is not None and (
+        isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1
+    ):
+        raise ManifestError("发布清单 sequence 必须是 >= 1 的整数")
     releases = data.get("releases")
     if not isinstance(releases, list) or not releases:
         raise ManifestError("发布清单 releases 必须是非空数组")
@@ -139,6 +239,8 @@ class ReleaseSource:
     """Abstract release source."""
 
     description = ""
+    #: 远端源（HTTPS）：其清单必须可被 Ed25519 签名验证或在首次引导时固定哈希。
+    is_remote = False
 
     def load_manifest(self) -> ManifestLoad:  # pragma: no cover - interface
         raise NotImplementedError
@@ -252,7 +354,18 @@ class LocalManifestFileSource(ReleaseSource):
 
 
 class HttpManifestSource(ReleaseSource):
-    """An HTTP(S) manifest URL. Artifacts are resolved relative to it."""
+    """An HTTPS manifest URL. Artifacts are resolved relative to it.
+
+    远端更新是供应链入口：强制 https、拒绝私网/回环、禁止 30x 跟随。清单的
+    信任依据有两种：
+
+    * **推荐**：清单自带 Ed25519 ``manifest_signature``，客户端只固定公钥，
+      每次发布无需再下发新的哈希（见 ``manifest_trust``）；
+    * **兼容/首次引导**：配置了 ``manifest_sha256`` 时按固定哈希校验。该值
+      每次发布都会变，不应作为长期方案。
+    """
+
+    is_remote = True
 
     def __init__(
         self,
@@ -261,21 +374,19 @@ class HttpManifestSource(ReleaseSource):
         timeout: float = 5.0,
         manifest_sha256: Optional[str] = None,
     ) -> None:
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            raise ManifestError("更新清单 URL 仅支持 http/https")
-        if not parsed.netloc:
-            raise ManifestError("更新清单 URL 缺少主机名")
+        validate_remote_url(url, context="更新清单 URL", resolve=False)
+        digest = (manifest_sha256 or "").strip().lower()
+        if digest and not _HEX64.match(digest):
+            raise ManifestError("manifest_sha256 不是 64 位十六进制")
         self.url = url
         self.timeout = timeout
-        self.manifest_sha256 = manifest_sha256.lower() if manifest_sha256 else None
-        if self.manifest_sha256 and not _HEX64.match(self.manifest_sha256):
-            raise ManifestError("manifest_sha256 不是 64 位十六进制")
-        self.description = f"HTTP 更新清单 {url}"
+        self.manifest_sha256 = digest or None
+        self.description = f"HTTPS 更新清单 {url}"
 
     def _fetch(self) -> bytes:
+        validate_remote_url(self.url, context="更新清单", resolve=True)
         request = urllib.request.Request(self.url, headers={"User-Agent": _USER_AGENT})
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+        with open_no_redirect(request, timeout=self.timeout) as response:
             status = getattr(response, "status", 200)
             if status != 200:
                 raise ManifestError(f"更新源返回 HTTP {status}")
@@ -314,9 +425,7 @@ class HttpManifestSource(ReleaseSource):
 
     def resolve_artifact(self, release: ReleaseInfo) -> str:
         resolved = urllib.parse.urljoin(self.url, release.artifact)
-        parsed = urllib.parse.urlparse(resolved)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ManifestError(f"发布包地址无效：{resolved!r}")
+        validate_remote_url(resolved, context="发布包地址", resolve=False)
         return resolved
 
 

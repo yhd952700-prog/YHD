@@ -15,10 +15,13 @@ the final failure are persisted by the manager and can be polled through
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+
+from src.common.redaction import redact_log_text
 
 from .errors import RollbackError, UpgradeError, VersionReadError
 
@@ -41,10 +44,11 @@ SYNC_WARNING = (
 )
 
 _ADMIN_ROLES = frozenset({"admin", "administrator", "owner"})
-# The repo uses L0 as the highest human sovereignty scope; some deployments and
-# UI copy use L7 for the same "sovereign human" concept. Both are accepted so
-# the upgrade surface cannot lock the owner out over a naming difference.
-_ADMIN_SCOPES = frozenset({"L0", "L7"})
+# L0 is the highest human sovereignty scope. L7 is explicitly the LOWEST
+# privilege scope (see ``src/gateway/auth.py``), and authorisation derivation
+# fails closed to L7 -- accepting it here would hand the most restricted
+# account the most destructive surface (apply/rollback the running system).
+_ADMIN_SCOPES = frozenset({"L0"})
 
 
 class ApplyRequest(BaseModel):
@@ -84,8 +88,47 @@ def _bearer_payload(
     return require_bearer_payload(x_liuhao_token, authorization)
 
 
+def _is_admin_payload(payload: Any) -> bool:
+    """L0 sovereignty or an explicit admin role = full upgrade diagnostics."""
+    metadata = getattr(payload, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    scope = str(metadata.get("scope") or "")
+    claims = {
+        str(item).lower()
+        for item in (
+            (getattr(payload, "roles", None) or [])
+            + (getattr(payload, "permissions", None) or [])
+        )
+    }
+    return scope in _ADMIN_SCOPES or bool(claims & _ADMIN_ROLES)
+
+
+def require_upgrade_viewer(payload=Depends(_bearer_payload)) -> tuple[str, bool]:
+    """Any authenticated human may read upgrade status, at two detail levels.
+
+    The status body carries host infrastructure (install/data/backup paths and
+    drive letters), so a member only gets the conclusion-level payload built by
+    :func:`_member_status_payload`. ``(subject, is_admin)`` lets the route decide
+    whether the full diagnostic body is allowed. Write operations still go
+    through :func:`require_upgrade_admin`.
+    """
+    subject = getattr(payload, "sub", None)
+    if not subject:
+        raise HTTPException(
+            status_code=401, detail="登录状态已失效，请重新登录后再试。"
+        )
+    metadata = getattr(payload, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("kind") != "human":
+        raise HTTPException(
+            status_code=403,
+            detail="升级状态需要用个人账号查看，服务账号不可读取。",
+        )
+    return str(subject), _is_admin_payload(payload)
+
+
 def require_upgrade_admin(payload=Depends(_bearer_payload)) -> str:
-    """Allow only a human administrator (L0/L7 sovereignty or admin role)."""
+    """Allow only a human administrator (L0 sovereignty or admin role)."""
     subject = getattr(payload, "sub", None)
     if not subject:
         raise HTTPException(
@@ -98,15 +141,7 @@ def require_upgrade_admin(payload=Depends(_bearer_payload)) -> str:
             status_code=403,
             detail="升级操作需要用管理员账号完成，服务账号无权操作。",
         )
-    scope = str(metadata.get("scope") or "")
-    claims = {
-        str(item).lower()
-        for item in (
-            (getattr(payload, "roles", None) or [])
-            + (getattr(payload, "permissions", None) or [])
-        )
-    }
-    if scope in _ADMIN_SCOPES or claims & _ADMIN_ROLES:
+    if _is_admin_payload(payload):
         return str(subject)
     raise HTTPException(
         status_code=403,
@@ -114,11 +149,9 @@ def require_upgrade_admin(payload=Depends(_bearer_payload)) -> str:
     )
 
 
-router = APIRouter(
-    prefix="/v1/upgrade",
-    tags=["upgrade"],
-    dependencies=[Depends(require_upgrade_admin)],
-)
+# No router-level admin gate: ``/status`` is read-only and open to any logged-in
+# human, while apply/rollback/check carry ``require_upgrade_admin`` themselves.
+router = APIRouter(prefix="/v1/upgrade", tags=["upgrade"])
 
 
 def get_upgrade_manager() -> Iterator[Any]:
@@ -150,7 +183,7 @@ def _classify_error(text: str) -> str:
     value = text or ""
     if "未配置更新源" in value:
         return "source_not_configured"
-    if "磁盘空间不足" in value:
+    if "磁盘空间不足" in value or "不可写" in value or "备份未启用" in value:
         return "disk_space"
     if "备份不可用" in value or "哈希不符" in value or "SHA256 与记录不符" in value:
         return "backup_corrupt"
@@ -169,11 +202,50 @@ def _classify_error(text: str) -> str:
         return "version_mismatch"
     if "签名" in value:
         return "signature_invalid"
+    if "应用失败" in value or "ApplyError" in value:
+        return "apply_failed"
     if "下载中断" in value or "下载未完成" in value or "网络不可用" in value:
         return "download_failed"
     if "校验" in value or "SHA256" in value:
         return "checksum_mismatch"
     return "unknown"
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+#: 旧状态文件可能把路径 / 英文异常名写进 ``last_error``；即便夹着中文，
+#: 只要命中这两类就要换成中文主文案，原文只进技术详情。
+_UNSAFE_ERROR_RE = re.compile(
+    r"(?i)(?:[A-Za-z]:[\\/]|/(?:Users|home|app|var|tmp|opt|etc|root|usr|mnt|srv)/"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b)"
+)
+
+UPGRADE_ERROR_ROLLED_BACK = "升级失败，已回滚。请重试，或导出诊断包。"
+UPGRADE_ERROR_NOT_ROLLED_BACK = "升级失败，未回滚。请重试，或导出诊断包。"
+ROLLBACK_ERROR_MESSAGE = "回滚失败。请重试，或导出诊断包。"
+CHECK_FAILED_MESSAGE = "检查更新没有完成，请稍后重试；如果反复出现，请导出诊断包。"
+
+
+def _sanitize_check_dict(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not data:
+        return data
+    sanitized = dict(data)
+    message = str(sanitized.get("message") or "")
+    if message and (not _CJK_RE.search(message) or _UNSAFE_ERROR_RE.search(message)):
+        sanitized["message"] = CHECK_FAILED_MESSAGE
+    sanitized.pop("error", None)
+    return sanitized
+
+
+def _public_check_result(result: Any) -> Dict[str, Any]:
+    """检查结果里给界面看的那句话也过一遍：不出现路径 / 异常类名 / 英文原文。"""
+    return _sanitize_check_dict(result.to_dict()) or {}
+
+
+def _friendly_phase_error(phase: str, technical_detail: str = "") -> str:
+    """旧状态文件 / 无中文文案时的兜底：主文案只讲结果与下一步。"""
+    if phase == "rolled_back":
+        return UPGRADE_ERROR_ROLLED_BACK
+    return UPGRADE_ERROR_NOT_ROLLED_BACK
 
 
 def _operation_view(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -241,11 +313,28 @@ def _status_payload(manager: UpgradeManager) -> Dict[str, Any]:
 
     message = str(state_file.get("message") or "")
     error_text = str(state_file.get("error") or "")
+    technical_detail = str(state_file.get("technical_detail") or "")
     if not error_text and phase == "failed":
         error_text = message
     error: Optional[Dict[str, Any]] = None
     if error_text:
-        error = {"category": _classify_error(error_text), "message": error_text}
+        raw_error_text = error_text
+        # 旧状态文件里的 last_error 可能是英文原文 / 绝对路径 / 异常类名；
+        # 只要命中这些，主文案一律换成中文结论，原文只放进 technical_detail。
+        if not _CJK_RE.search(error_text) or _UNSAFE_ERROR_RE.search(error_text):
+            error_text = _friendly_phase_error(phase, technical_detail)
+            if not technical_detail:
+                technical_detail = redact_log_text(raw_error_text)
+        error = {
+            "category": _classify_error(technical_detail or raw_error_text),
+            "message": error_text,
+        }
+        if technical_detail:
+            error["technical_detail"] = technical_detail
+
+    # 状态栏的 message 也不能带路径 / 异常类名（旧状态文件残留）。
+    if message and _UNSAFE_ERROR_RE.search(message):
+        message = _friendly_phase_error(phase, technical_detail)
 
     source_configured = manager.config.source is not None
     if not source_configured:
@@ -265,13 +354,119 @@ def _status_payload(manager: UpgradeManager) -> Dict[str, Any]:
         "current_version": current_version,
         "latest_version": latest_version,
         "update_available": bool(update_available),
-        "last_check": last_check or None,
+        "last_check": _sanitize_check_dict(last_check),
         "last_operation": last_operation,
         "last_apply": last_apply,
         "last_rollback": last_rollback,
         "backup": backup,
         "error": error,
         "updated_at": state_file.get("updated_at", ""),
+    }
+
+
+#: 成员只看结论。任何带绝对路径 / 盘符 / 异常类名 / 纯英文技术原文的字段
+#: 都不进白名单；完整诊断（路径、盘符、迁移记录、技术详情）只给管理员。
+_MEMBER_CHECK_FIELDS = (
+    "status",
+    "message",
+    "current_version",
+    "latest_version",
+    "checked_at",
+    "offline",
+)
+_MEMBER_OPERATION_FIELDS = (
+    "id",
+    "kind",
+    "status",
+    "created_at",
+    "from_version",
+    "to_version",
+    "backup_id",
+    "error_category",
+)
+
+
+def _member_text(value: Any, fallback: str) -> str:
+    """只放行中文结论；路径/异常类名/英文原文一律换成兜底文案。"""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if _UNSAFE_ERROR_RE.search(text) or not _CJK_RE.search(text):
+        return fallback
+    return text
+
+
+def _member_operation(item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not item:
+        return item
+    return {key: item.get(key) for key in _MEMBER_OPERATION_FIELDS}
+
+
+def _member_check(check: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not check:
+        return check
+    view = {key: check.get(key) for key in _MEMBER_CHECK_FIELDS if key in check}
+    view["message"] = _member_text(view.get("message"), "")
+    return view
+
+
+def _member_backup(backup: Dict[str, Any]) -> Dict[str, Any]:
+    label = str(backup.get("label") or "")
+    warning = _member_text(
+        backup.get("warning"), label or "备份状态不可用，请联系管理员。"
+    )
+    return {
+        "enabled": bool(backup.get("available")),
+        "available": backup.get("available"),
+        "configured": backup.get("configured"),
+        "cross_disk": backup.get("cross_disk"),
+        "same_volume": backup.get("same_volume"),
+        "label": label,
+        "warning": warning,
+        "backup_count": backup.get("backup_count"),
+        "last_backup_at": backup.get("last_backup_at"),
+        "last_backup_id": backup.get("last_backup_id"),
+    }
+
+
+def _member_status_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """成员可见的裁剪版：版本 / 是否有更新 / 备份是否启用 / 一句话原因。
+
+    明确不返回 ``source``、``backup.root``、``backup.data_dir``、盘符、
+    迁移记录、``technical_detail`` 与原始 ``reason``（这些是本机基础设施）。
+    """
+    phase = str(payload.get("phase") or "")
+    error_text = (
+        UPGRADE_ERROR_ROLLED_BACK
+        if phase == "rolled_back"
+        else UPGRADE_ERROR_NOT_ROLLED_BACK
+        if phase == "failed"
+        else "升级状态暂不可用，请稍后重试。"
+    )
+    message = _member_text(payload.get("message"), "")
+    if not message and phase in ("failed", "rolled_back"):
+        message = error_text
+    error = payload.get("error")
+    if error:
+        error = {
+            "category": error.get("category"),
+            "message": _member_text(error.get("message"), error_text),
+        }
+    return {
+        "ok": payload.get("ok"),
+        "source_configured": payload.get("source_configured"),
+        "state": payload.get("state"),
+        "message": message,
+        "current_version": payload.get("current_version"),
+        "latest_version": payload.get("latest_version"),
+        "update_available": payload.get("update_available"),
+        "last_check": _member_check(payload.get("last_check")),
+        "last_operation": _member_operation(payload.get("last_operation")),
+        "last_apply": _member_operation(payload.get("last_apply")),
+        "last_rollback": _member_operation(payload.get("last_rollback")),
+        "backup": _member_backup(payload.get("backup") or {}),
+        "error": error,
+        "updated_at": payload.get("updated_at"),
     }
 
 
@@ -301,13 +496,19 @@ def _normalized_version(value: str) -> Version:
 @router.get("/status", summary="当前升级状态（只读）")
 def upgrade_status(
     manager=Depends(get_upgrade_manager),
+    viewer: tuple[str, bool] = Depends(require_upgrade_viewer),
 ) -> Dict[str, Any]:
-    return _status_payload(manager)
+    payload = _status_payload(manager)
+    _principal, is_admin = viewer
+    # 成员只看结论；完整诊断（本机路径 / 盘符 / 迁移记录 / 技术详情）只给
+    # 主账号或管理员。写操作另有 require_upgrade_admin。
+    return payload if is_admin else _member_status_payload(payload)
 
 
 @router.post("/check", summary="检查更新（只检查，不下载不安装）")
 def upgrade_check(
     manager=Depends(get_upgrade_manager),
+    _principal: str = Depends(require_upgrade_admin),
 ) -> Dict[str, Any]:
     _require_source(manager)
     result = manager.check(trigger="api")
@@ -315,7 +516,7 @@ def upgrade_check(
         "ok": True,
         "mode": "synchronous",
         "source_configured": True,
-        "check": result.to_dict(),
+        "check": _public_check_result(result),
         "status": _status_payload(manager),
     }
 
@@ -324,6 +525,7 @@ def upgrade_check(
 def upgrade_apply(
     body: ApplyRequest,
     manager=Depends(get_upgrade_manager),
+    _principal: str = Depends(require_upgrade_admin),
 ) -> Dict[str, Any]:
     from .downloader import cleanup_download
     from .models import CheckStatus
@@ -376,11 +578,14 @@ def upgrade_apply(
         download = manager.download(check.release)
         result = manager.apply(download.path, check.release)
     except UpgradeError as exc:
+        payload = _status_payload(manager)
+        friendly = (payload.get("error") or {}).get("message") or UPGRADE_ERROR_NOT_ROLLED_BACK
         _http_error(
             409,
             _classify_error(str(exc)),
-            str(exc),
-            status=_status_payload(manager),
+            friendly,
+            status=payload,
+            technical_detail=redact_log_text(str(exc)),
         )
     finally:
         if download is not None:
@@ -399,6 +604,7 @@ def upgrade_apply(
 def upgrade_rollback(
     body: RollbackRequest,
     manager=Depends(get_upgrade_manager),
+    _principal: str = Depends(require_upgrade_admin),
 ) -> Dict[str, Any]:
     if not body.confirm:
         _http_error(
@@ -414,11 +620,14 @@ def upgrade_rollback(
     try:
         result = manager.rollback(backup_id=body.backup_id)
     except RollbackError as exc:
+        payload = _status_payload(manager)
+        friendly = (payload.get("error") or {}).get("message") or ROLLBACK_ERROR_MESSAGE
         _http_error(
             409,
             _classify_error(str(exc)),
-            str(exc),
-            status=_status_payload(manager),
+            friendly,
+            status=payload,
+            technical_detail=redact_log_text(str(exc)),
         )
     return {
         "ok": True,

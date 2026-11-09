@@ -126,6 +126,7 @@ failed   ──rollback──> rolled_back
 | `last_operation` | object \| null | 最近一次成功/失败操作（apply 或 rollback 中取时间最新的） |
 | `last_apply` | object \| null | 最近一次 apply 记录 |
 | `last_rollback` | object \| null | 最近一次 rollback 记录 |
+| `backup` | object | 备份位置与跨盘状态，见 5.1.1 |
 | `error` | object \| null | `{"category": "...", "message": "..."}`，失败时可查 |
 | `updated_at` | string | 状态最后写入时间（ISO 8601）；从未升级过为 `""` |
 
@@ -141,6 +142,35 @@ failed   ──rollback──> rolled_back
 | `backup_id` | 本次操作使用的备份 id |
 | `reason` | 失败原因原文（成功时为 `""`） |
 | `error_category` | 由 `reason` 归类出的错误分类（见第 7 节），无失败为 `null` |
+
+#### 5.1.1 `status.backup`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `root` | string | 备份根的真实绝对路径 |
+| `data_dir` | string | 数据目录真实绝对路径 |
+| `source` | string | `configured`（显式配置）/ `data_dir`（未配置，同盘）/ `portable`（便携/开发形态，数据目录在程序目录内） |
+| `configured` | bool | 是否显式配置了 `LIUHAO_UPGRADE_BACKUP_ROOT` |
+| `available` | bool | 显式配置的备份根是否真写探针通过；未配置时恒为 `true` |
+| `error` | string | 备份根不可写时的中文原因（含盘符/路径），可用时为空串 |
+| `label` | string | 一句话结论：`跨盘备份已启用` / `备份与数据在同一磁盘` / `备份盘不可写，备份未启用` |
+| `warning` | string | 给用户的风险说明；未配置或同盘时为中文警告，跨盘可用时为空串 |
+| `same_volume` | bool | 备份根与数据目录是否同一卷 |
+| `cross_disk` | bool | `available && !same_volume`，即是否真正具备跨盘备份能力 |
+| `data_drive` / `backup_drive` | string | 两条路径的卷锚点（如 `D:`） |
+| `backup_count` / `last_backup_at` / `last_backup_id` | int / string \| null / string \| null | 备份目录里真实存在的备份数与最近一份 |
+| `migration` | object \| null | 旧备份迁移记录（见 `backup-migration.json`） |
+
+四种配置情形在 `status.backup` 上的表现：
+
+| 情形 | `source` | `available` | `same_volume` | `cross_disk` | `label` / `warning` |
+| --- | --- | --- | --- | --- | --- |
+| 配了合法跨盘备份根 | `configured` | `true` | `false` | `true` | `跨盘备份已启用` / 空 |
+| 配了不可写路径 | `configured` | `false` | 按路径计算 | `false` | `备份盘不可写，备份未启用` / 中文原因；`apply` 直接拒绝，不退回数据目录 |
+| 配了同盘路径 | `configured` | `true` | `true` | `false` | `备份与数据在同一磁盘` / `备份与数据在同一磁盘，磁盘损坏时无法恢复。` |
+| 没配 | `data_dir`（便携形态为 `portable`） | `true` | `true` | `false` | `备份与数据在同一磁盘` / 未启用跨盘备份的中文警告 |
+
+备份根不可写或备份盘剩余空间不足（低于“代码+数据体积 × 2 倍余量”）时，`apply` 在创建备份、解压 staging、修改任何真实文件之前拒绝，`status.error.category` 为 `disk_space`，`message` 为中文原因；不会静默退回数据目录。
 
 ### 5.2 `POST /v1/upgrade/check`
 

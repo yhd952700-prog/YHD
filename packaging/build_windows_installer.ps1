@@ -29,11 +29,23 @@ param(
     # 指定构建用 Python。默认为仓库 .venv；发布应指向一个严格按
     # requirements.txt 装好的独立 venv，避免随包版本与受审锁漂移。
     [string]$PythonExe = "",
+    # 升级信任配置（开箱自动升级用）：客户端只需「公钥 + 清单地址」两项即可自举，
+    # 不再要求每次发布下发 LIUHAO_UPGRADE_MANIFEST_SHA256。取值由发布线给定时
+    # 通过这两个参数注入安装器，写入 HKCU\Environment；不传则整段预处理剔除，
+    # 安装后 source_configured=false、检查更新如实返回 409（绝不写占位地址）。
+    [string]$UpgradeManifestUrl = "",
+    [string]$UpgradePublicKey = "",
+    # 备份根：由安装器显式下发（写 LIUHAO_UPGRADE_BACKUP_ROOT）。不传时安装器
+    # 按「数据目录所在盘 + \LiuHaoBackups」推导（本项目即 D:\LiuHaoBackups）；
+    # 推导结果落系统盘时安装器直接拒绝，不会静默装到 C 盘、也不退回数据目录。
+    [string]$UpgradeBackupRoot = "",
     [switch]$SkipFrontend,
     [switch]$SkipSmoke,
     [switch]$SkipInstaller,
     [switch]$SkipRelease,
-    [switch]$StrictReleaseDevPaths
+    [switch]$StrictReleaseDevPaths,
+    # 跳过 exe 签名。默认不跳：没有证书时脚本会明确打印「本次未签名」，而不是静默放过。
+    [switch]$SkipSigning
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,19 +77,56 @@ function Resolve-Python {
 
 function Resolve-Version {
     if ($Version) { return $Version }
-    $pyproject = Join-Path $Root "pyproject.toml"
-    $match = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([^"]+)"' |
+    # 版本号唯一可编辑真源是 src/version.py 的 APP_VERSION；pyproject.toml
+    # 只是构建元数据的镜像。此前这里与 stage_payload.py 各兜底一个 "0.1.1"
+    # 字面量，改版本时会悄悄漂移，已全部删除：读不到真源就明确失败。
+    $versionPy = Join-Path $Root "src\version.py"
+    if (-not (Test-Path $versionPy)) {
+        throw "找不到版本号唯一真源：$versionPy"
+    }
+    $match = Select-String -Path $versionPy -Pattern '^APP_VERSION\s*=\s*"([^"]+)"' |
         Select-Object -First 1
-    if ($match) { return $match.Matches[0].Groups[1].Value }
-    return "0.1.1"
+    if (-not $match) {
+        throw "无法从 $versionPy 解析 APP_VERSION（版本号唯一真源缺失）"
+    }
+    return $match.Matches[0].Groups[1].Value
 }
 
 $Python = Resolve-Python
 $Version = Resolve-Version
+
+# 升级信任配置只在发布线给出真实取值时注入。URL 必须是 https（客户端拒绝明文
+# 远端源）；公钥必须是单行 base64（换行/引号会破坏安装脚本）。两项都给才会让
+# 安装后的客户端自举自动升级；都不给则保持「未配置更新源」的真实状态。
+if ($UpgradeManifestUrl -and $UpgradeManifestUrl -notmatch '^https://') {
+    throw "UpgradeManifestUrl 必须是 https 地址（当前：$UpgradeManifestUrl）"
+}
+if ($UpgradePublicKey -and ($UpgradePublicKey -match '\s' -or $UpgradePublicKey.Contains('"') -or $UpgradePublicKey.Contains("'")) ) {
+    throw "UpgradePublicKey 必须是单行 base64，不得含空白、单引号或双引号"
+}
+if ($UpgradeManifestUrl -and -not $UpgradePublicKey) {
+    Write-Host "  注意：只注入了清单地址、没有公钥——客户端会拒绝未签名清单（SignatureError）。" -ForegroundColor Yellow
+}
+if ($UpgradePublicKey -and -not $UpgradeManifestUrl) {
+    Write-Host "  注意：只注入了公钥、没有清单地址——source_configured 仍为 false，不会自动检查。" -ForegroundColor Yellow
+}
+if ($UpgradeBackupRoot) {
+    if ($UpgradeBackupRoot -notmatch '^[A-Za-z]:\\') {
+        throw "UpgradeBackupRoot 必须是绝对路径（当前：$UpgradeBackupRoot）"
+    }
+    if ($UpgradeBackupRoot.Substring(0, 1).ToUpper() -eq 'C') {
+        Write-Host "  注意：备份根被显式指定到系统盘 $UpgradeBackupRoot（默认为数据目录所在盘）。" -ForegroundColor Yellow
+    }
+}
+
 Write-Host "LiuHao AI OS · 鎏灏智能中枢 安装包构建  version=$Version"
 Write-Host "  仓库  $Root"
 Write-Host "  输出  $OutRoot"
 Write-Host "  Python $Python"
+if ($UpgradeManifestUrl) { Write-Host "  更新源  $UpgradeManifestUrl（公钥随装写入 HKCU\Environment）" }
+else { Write-Host "  更新源  未注入（安装后 source_configured=false，检查更新如实返回 409）" }
+if ($UpgradeBackupRoot) { Write-Host "  备份根  $UpgradeBackupRoot（随装写入 LIUHAO_UPGRADE_BACKUP_ROOT）" }
+else { Write-Host "  备份根  未指定（安装器按数据目录所在盘推导，本项目为 D:\LiuHaoBackups）" }
 
 # ---------------------------------------------------------------- 0. 环境闸
 # 构建机与开发机同机时，残留的 LIUHAO_* / AUDIT_DB_* 会让注册写进仓库、启动
@@ -115,6 +164,11 @@ if ($SkipFrontend) {
     } finally {
         $ErrorActionPreference = $previousEap
     }
+    Write-Step "写入控制台构建来源记录（源码指纹 + 产物指纹）"
+    & $Python (Join-Path $Root "packaging\build_console.py") `
+        --source $consoleDir --dest (Join-Path $consoleDir "dist") `
+        --version $Version --skip-build
+    if ($LASTEXITCODE -ne 0) { throw "控制台构建来源记录写入失败（exit $LASTEXITCODE）" }
 }
 
 # ------------------------------------------------------- 2. payload 组装
@@ -178,17 +232,34 @@ if ($LASTEXITCODE -ne 0) {
 $releaseDir = Join-Path $OutRoot "release"
 $releaseZip = $null
 $releaseManifest = $null
+
+# 发布说明要写清签名状态，措辞必须与本轮是否真有证书一致，不能一律写「未签名」。
+$psExe = Join-Path $PSHOME "powershell.exe"
+$signerScript = Join-Path $PSScriptRoot "sign_installer.ps1"
+$signAvailable = $false
+if (-not $SkipSigning) {
+    & $psExe -NoProfile -ExecutionPolicy Bypass -File $signerScript -Check -Quiet | Out-Null
+    $signAvailable = ($LASTEXITCODE -eq 0)
+}
+if ($SkipSigning) {
+    $signingNote = "本次构建跳过签名（-SkipSigning），安装器未做代码签名。"
+} elseif ($signAvailable) {
+    $signingNote = "安装器使用项目自签名证书（非公开权威 CA）；未安装信任脚本前 Windows 仍可能提示未知发布者。"
+} else {
+    $signingNote = "安装器未做代码签名（未找到签名证书）。"
+}
+
 if ($SkipRelease) {
     Write-Step "跳过升级发布包（-SkipRelease）"
 } else {
     Write-Step "生成升级发布包与清单（规范：docs/self-upgrade.md §2.2）"
     $releaseTreeNote = "安装树整包（含根级模块与 config/，不含 runtime/ 与数据目录）"
     if (-not $SkipSmoke -and $smokeCode -eq 0) {
-        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建 payload 冒烟通过。"
+        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建 payload 冒烟通过。"
     } elseif ($SkipSmoke) {
-        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建跳过冒烟（未验证运行）。"
+        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建跳过冒烟（未验证运行）。"
     } else {
-        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建冒烟未通过，产物未验证。"
+        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建冒烟未通过，产物未验证。"
     }
     $releaseArgs = @((Join-Path $Root "packaging\make_release.py"), "--app-root", $PayloadApp, "--out", $releaseDir, "--notes", $releaseNotes)
     if ($StrictReleaseDevPaths) { $releaseArgs += "--strict-dev-paths" }
@@ -322,7 +393,11 @@ if (-not $iscc) {
     exit 2
 }
 
-& $iscc $iss
+$isccArgs = @($iss)
+if ($UpgradeManifestUrl) { $isccArgs += "/DUpgradeManifestUrl=$UpgradeManifestUrl" }
+if ($UpgradePublicKey) { $isccArgs += "/DUpgradePublicKey=$UpgradePublicKey" }
+if ($UpgradeBackupRoot) { $isccArgs += "/DUpgradeBackupRoot=$UpgradeBackupRoot" }
+& $iscc @isccArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup 编译失败（exit $LASTEXITCODE），详见 $iscc 输出。"
 }
@@ -333,11 +408,49 @@ $setup = Get-ChildItem (Join-Path $InstallerOut "LiuHao-Setup-*.exe") |
     Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $setup) { throw "编译成功但找不到 LiuHao-Setup-*.exe" }
 
+# ------------------------------------------------------- 5.1 代码签名（自签名）
+# 必须在计算 SHA256 之前签名：签名会改写 PE 校验和与附加数据，先算哈希再签名
+# 会让清单里的哈希与实际文件对不上。没有证书时不静默跳过，明确打印后继续。
+$signCode = 3
+$signState = "本次未签名"
+if ($SkipSigning) {
+    Write-Step "跳过代码签名（-SkipSigning）—— 本次未签名"
+    Write-Host "  本次未签名（-SkipSigning）。" -ForegroundColor Yellow
+} else {
+    Write-Step "代码签名（Set-AuthenticodeSignature，自签名证书）"
+    & $psExe -NoProfile -ExecutionPolicy Bypass -File $signerScript -InstallerPath $setup.FullName
+    $signCode = $LASTEXITCODE
+    switch ($signCode) {
+        0 { $signState = "已签名，Get-AuthenticodeSignature Status=Valid" }
+        2 { $signState = "已签名，但本机尚未信任该自签名证书（Status 非 Valid）" }
+        3 { $signState = "本次未签名（未找到可用证书，详见上方提示）" }
+        default { throw "安装包签名失败（exit $signCode）。" }
+    }
+}
+
+# 把信任脚本与公钥证书随安装包一起放到产物目录，方便交付后一步信任。
+foreach ($name in @("LiuHao-CodeSigning.cer", "trust-liuhao-signing.ps1", "信任签名证书.cmd")) {
+    $source = Join-Path $Root "signing\$name"
+    if (Test-Path $source) {
+        Copy-Item -LiteralPath $source -Destination $InstallerOut -Force
+    }
+}
+
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup.FullName).Hash
 $sizeMb = [math]::Round($setup.Length / 1MB, 1)
 $payloadMb = [math]::Round((Get-ChildItem $PayloadApp -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
 $sums = Join-Path $InstallerOut "SHA256SUMS.txt"
-"$hash  $($setup.Name)" | Set-Content -Path $sums -Encoding ASCII
+# 安装包与升级包必须同目录交付：把本次 release zip 复制进 installer，
+# 并在同一份 SHA256SUMS.txt 里同时登记 exe 与 zip。两个产物出自同一次
+# 构建，校验和只有一个来源，避免再出现「同一版本两个大小」的文档漂移。
+$sumsLines = @("$hash  $($setup.Name)")
+if ($releaseZip) {
+    $installedZip = Join-Path $InstallerOut $releaseZip.Name
+    Copy-Item -LiteralPath $releaseZip.FullName -Destination $installedZip -Force
+    $releaseHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedZip).Hash
+    $sumsLines += "$releaseHash  $($releaseZip.Name)"
+}
+$sumsLines | Set-Content -Path $sums -Encoding ASCII
 
 Write-Host ""
 Write-Host "安装包  $($setup.FullName)"
@@ -345,6 +458,7 @@ Write-Host "  版本    $Version"
 Write-Host "  体积    $sizeMb MB（payload $payloadMb MB）"
 Write-Host "  SHA256  $hash"
 Write-Host "  校验    $sums"
+Write-Host "  签名    $signState"
 if ($releaseZip) {
     $releaseHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseZip.FullName).Hash
     Write-Host ""
@@ -354,7 +468,16 @@ if ($releaseZip) {
     Write-Host "  清单    $releaseManifest"
 }
 Write-Host ""
-Write-Host "提醒：安装包不含模型权重；安装器未签名，Windows 会提示「未知发布者」。" -ForegroundColor Yellow
+Write-Host "提醒：安装包不含模型权重。" -ForegroundColor Yellow
+if ($signCode -eq 0 -or $signCode -eq 2) {
+    Write-Host "签名状态：$signState" -ForegroundColor Green
+    if ($signCode -eq 2) {
+        Write-Host "提醒：本机尚未信任该证书；运行 signing\信任签名证书.cmd 后再复查签名状态。" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "签名状态：$signState" -ForegroundColor Yellow
+    Write-Host "提醒：生成证书后重跑本脚本即可自动签名：powershell -ExecutionPolicy Bypass -File packaging\new_signing_cert.ps1" -ForegroundColor Yellow
+}
 Write-Host "提醒：前端产物已参与本次同源构建，指纹见 payload\console\console-contract.json。" -ForegroundColor Yellow
 
 if ($smokeCode -ne 0) {

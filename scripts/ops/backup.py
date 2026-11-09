@@ -301,8 +301,17 @@ class BackupManager:
                 try:
                     tar.extractall(target_dir, filter="data")
                 except TypeError:  # Python < 3.12 has no extraction filters
-                    names = tar.getnames()
-                    _reject_traversal(names, target_dir)
+                    members = tar.getmembers()
+                    _reject_traversal([m.name for m in members], target_dir)
+                    # 名字合法不代表目标合法：符号链接/硬链接可以指向
+                    # target_dir 之外的任意路径，extractall 会把它写出来。
+                    # 3.11 的回退路径没有 data_filter 的链接检查，直接拒绝。
+                    for member in members:
+                        if member.issym() or member.islnk():
+                            raise ValueError(
+                                "archive contains a link member (refusing to "
+                                f"extract): {member.name}"
+                            )
                     tar.extractall(target_dir)
 
             logger.info(f"Backup restored to: {target_dir}")

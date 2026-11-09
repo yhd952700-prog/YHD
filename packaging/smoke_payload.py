@@ -146,8 +146,31 @@ def _register(payload: Path, data_dir: Path, log_path: Path) -> int:
         raise SystemExit(
             f"首次启动没有生成 {integrity_path} —— 启动器的数据目录初始化有缺陷"
         )
-    integrity = integrity_path.read_text(encoding="utf-8").strip()
-    env["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = integrity
+    # integrity.key 落盘形态是机器绑定密文（LIUHAO-DPAPI-1:...），**不是**明文密钥。
+    # 直接把文件内容塞进 LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY 会让注册脚本拿密文
+    # 当签名密钥写行，而网关启动时 ensure_integrity_key 解封出明文密钥来校验 →
+    # 行上的 integrity 标签对不上 → 登录 403。这里按产品同一条路径解封：
+    # read_machine_bound_text 与 ensure_integrity_key 用的是同一个 DPAPI 熵。
+    # 本脚本以 packaging\smoke_payload.py 直接执行时 sys.path[0] 是 packaging\，
+    # 仓库根不在搜索路径里，import src.* 会 ModuleNotFoundError。显式补仓库根。
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from src.common.integrity_key import (  # 延迟导入：只在本步骤用
+        INTEGRITY_DPAPI_PURPOSE,
+        INTEGRITY_KEY_ENV,
+    )
+    from src.security.encryption import read_machine_bound_text
+
+    integrity, state = read_machine_bound_text(
+        integrity_path, purpose=INTEGRITY_DPAPI_PURPOSE
+    )
+    if state not in ("ok", "legacy") or not integrity:
+        raise SystemExit(
+            f"无法解封 {integrity_path}（状态={state}）：冒烟不能拿密文当签名密钥，"
+            "否则注册的行在网关侧必然验签失败（登录 403）"
+        )
+    env[INTEGRITY_KEY_ENV] = integrity
     command = [
         str(payload / "runtime" / "python.exe"),
         str(payload / "scripts" / "register_human_identity.py"),

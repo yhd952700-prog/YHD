@@ -9,6 +9,7 @@ Regression targets:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -20,6 +21,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from src.upgrade import (
     CheckStatus,
@@ -89,8 +92,9 @@ def _make_release(
 
 
 def _manager(app_root: Path, source=None) -> UpgradeManager:
+    # 数据目录留在测试 app_root 下，避免 __post_init__ 去探测/写用户目录。
     return UpgradeManager(
-        UpgradeConfig(app_root=app_root, source=source)
+        UpgradeConfig(app_root=app_root, data_dir=app_root / "data", source=source)
     )
 
 
@@ -180,12 +184,24 @@ def test_invalid_manifest_is_a_failure(app_root: Path, tmp_path: Path) -> None:
 def test_offline_http_source_says_cannot_check(
     app_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # 远端源生产策略是 https + 私网拒绝；这里只验证“网络不可用”的语义，
+    # 用测试专用旁路把本机地址放行。
+    monkeypatch.setattr(
+        "src.upgrade.sources.validate_remote_url", lambda url, **_kwargs: url
+    )
+
     def _offline(*_args, **_kwargs):
         raise urllib.error.URLError(OSError("network is offline"))
 
-    monkeypatch.setattr("src.upgrade.sources.urllib.request.urlopen", _offline)
-    source = HttpManifestSource("http://127.0.0.1:9/release-manifest.json", timeout=0.5)
-    manager = _manager(app_root, source)
+    monkeypatch.setattr("src.upgrade.sources.open_no_redirect", _offline)
+    source = HttpManifestSource(
+        "https://127.0.0.1:9/release-manifest.json",
+        timeout=0.5,
+        manifest_sha256="0" * 64,
+    )
+    manager = UpgradeManager(
+        UpgradeConfig(app_root=app_root, data_dir=app_root / "data", source=source)
+    )
     try:
         result = manager.check()
     finally:
@@ -204,7 +220,7 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 @pytest.fixture
 def http_release_server(tmp_path: Path):
     releases = tmp_path / "releases"
-    _make_release(
+    release = _make_release(
         releases,
         version="0.2.0",
         files={
@@ -212,21 +228,57 @@ def http_release_server(tmp_path: Path):
             "src/app.py": "VALUE = 2\n",
         },
     )
+    # 远端发布包必须带签名并有可信公钥：为真实 HTTP 路径准备一套真签名。
+    private = ed25519.Ed25519PrivateKey.generate()
+    artifact = releases / release["artifact"]
+    release["signature"] = base64.b64encode(private.sign(artifact.read_bytes())).decode()
+    release["signature_algorithm"] = "ed25519"
+    manifest_path = releases / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["releases"] = [release]
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    public_pem = private.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
     handler = partial(_QuietHandler, directory=str(releases))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}/release-manifest.json"
+        yield (
+            f"http://127.0.0.1:{server.server_port}/release-manifest.json",
+            manifest_sha,
+            public_pem,
+        )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
 
-def test_http_source_real_manifest_and_download(app_root: Path, http_release_server: str) -> None:
-    source = HttpManifestSource(http_release_server, timeout=5.0)
-    manager = _manager(app_root, source)
+def test_http_source_real_manifest_and_download(
+    app_root: Path, http_release_server: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url, manifest_sha, public_pem = http_release_server
+    # 本机 HTTP 服务只用于跑真实下载链路；https/私网策略由安全用例单独覆盖。
+    monkeypatch.setattr(
+        "src.upgrade.sources.validate_remote_url", lambda value, **_kw: value
+    )
+    monkeypatch.setattr(
+        "src.upgrade.downloader.validate_remote_url", lambda value, **_kw: value
+    )
+    source = HttpManifestSource(url, timeout=5.0, manifest_sha256=manifest_sha)
+    manager = UpgradeManager(
+        UpgradeConfig(
+            app_root=app_root,
+            data_dir=app_root / "data",
+            source=source,
+            public_key=public_pem,
+        )
+    )
     try:
         result = manager.check()
         assert result.status is CheckStatus.UPDATE_AVAILABLE
@@ -234,6 +286,6 @@ def test_http_source_real_manifest_and_download(app_root: Path, http_release_ser
         download = manager.download(result.release)
         assert Path(download.path).is_file()
         assert download.sha256 == result.release.sha256
-        assert download.signature_note == "仅哈希校验，无签名"
+        assert download.signature_note == "已使用配置的 Ed25519 公钥验证签名"
     finally:
         manager.close()

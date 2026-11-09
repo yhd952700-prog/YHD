@@ -21,7 +21,7 @@ D:\LiuHao\                    程序目录（升级时整体替换，不含用�
 ├─ error_types.py
 ├─ THIRD-PARTY-NOTICES.txt   第三方软件清单与许可证索引
 ├─ assets\liuhao.ico
-├─ LiuHao.bat                快捷方式目标
+├─ LiuHao.bat                命令行排障入口（需显式 --console；失败时 pause 留住窗口），不是快捷方式目标
 ├─ START-HERE.txt
 └─ data-dir.txt               安装器写入的实际数据目录（UTF-8 带 BOM）
 
@@ -35,6 +35,11 @@ D:\LiuHaoData\                用户数据（卸载默认保留）
 ├─ audit_store.db
 └─ logs\
 ```
+
+> 桌面 / 开始菜单快捷方式与安装完成页「立即启动」的目标是
+> `runtime\pythonw.exe` + `scripts\liuhao_desktop.py app`（见 `installer\liuhao.iss`
+> 的 `[Icons]` / `[Run]`），不是 `LiuHao.bat`；即便命令行里出现 `--open-browser`
+> （历史参数）也不会切换到浏览器模式，网页模式一律用 `--web`。`LiuHao.bat` 只作命令行排障入口。
 
 ## 包含 ✅
 

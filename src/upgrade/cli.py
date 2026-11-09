@@ -193,6 +193,11 @@ def _print_progress(message: str) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # 升级命令是低频写盘入口：顺手清理上次进程被强杀留下的自产临时产物
+    # （与网关启动共用同一套有界清扫，不复制判据）。
+    from src.common.temp_sweep import run_startup_temp_sweep
+
+    run_startup_temp_sweep()
     try:
         if args.command == "status":
             manager = _manager(args)

@@ -37,9 +37,37 @@ _CODE_BACKUP_SCHEMA = "liuhao.code-backup/1"
 _SNAPSHOT_EXPORT_SCHEMA = "liuhao.snapshot-export/1"
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
 
+#: 数据目录下的运行期目录。里面的文件（实例锁、端口/心跳标记）由正在运行的
+#: 进程独占打开，备份时读取会直接 Permission denied；它们也不是用户数据，
+#: 升级备份不需要、也不应该还原它们。
+_RUNTIME_DIR_NAME = "run"
+#: 运行期锁文件后缀。任意层级出现都跳过：``run/instance.lock`` 只是最常见的
+#: 一个，业务代码也可能在别处建锁。
+_RUNTIME_LOCK_SUFFIX = ".lock"
+
 #: 恢复码交接文件、凭据文件与 DPAPI 密文副本**永不**进入备份或离线导出。
 #: 已生成的旧备份不追溯（其中的副本仍是旧行为），但新备份与导出必须为空。
-_PROTECTED_BASENAME_PREFIXES = ("recovery_code", "recovery_handoff")
+#:
+#: 用**前缀**匹配而不是精确名，是为了同时挡住迁移过程中的临时文件
+#: （``model_config.key.<pid>.tmp``）和换机改名副本
+#: （``integrity.key.unreadable-<时间戳>``）——它们的文件名变了，但内容
+#: 仍是本机密钥，泄露后果一样。
+_PROTECTED_BASENAME_PREFIXES = (
+    "recovery_code",
+    "recovery_handoff",
+    # JWT 签名密钥（DPAPI 包裹后的 LIUHAO_JWT_SECRET=... 就写在 app.env 里）。
+    "app.env",
+    # 模型主密钥：明文裸文件、DPAPI 包裹文件、迁移临时文件都不能进备份。
+    "model_config.key",
+    "model_config_key.bin",
+    # 身份库签名密钥：含换机时改名保留的 ``.unreadable-*`` 副本。
+    "integrity.key",
+    # 凭据/身份库本体：持有者可以伪造或直接读取本机账号。
+    "auth_secrets.json",
+    "human_identities.json",
+    # 审计链 HMAC 密钥：不外传。
+    "audit_chain.key",
+)
 _PROTECTED_BACKUP_NAMES = frozenset(
     {
         "auth_secrets.json",
@@ -52,10 +80,22 @@ _PROTECTED_BACKUP_NAMES = frozenset(
         # 审计链 HMAC 密钥：不外传。恢复出带密钥的审计库但缺这把钥匙时，
         # 校验会明确降级为“仅结构检查”，而不是静默全绿/全红。
         "audit_chain.key",
+        # JWT 签名密钥的落盘位置（含 SECRET_KEY），一律不进备份。
+        "app.env",
         # 兼容 0.1.x 曾用的错误文件名：新代码不会再生成，但旧安装里可能残留。
         "model_config_key.bin",
     }
 )
+
+
+def _is_runtime_state_path(relpath: str) -> bool:
+    """该相对路径是否属于运行期状态（不能、也不该进升级备份）。"""
+    rel = str(relpath or "").replace("\\", "/").strip("/")
+    if not rel:
+        return False
+    if rel == _RUNTIME_DIR_NAME or rel.startswith(_RUNTIME_DIR_NAME + "/"):
+        return True
+    return rel.rsplit("/", 1)[-1].lower().endswith(_RUNTIME_LOCK_SUFFIX)
 
 
 def is_protected_state_file(relpath: str) -> bool:
@@ -63,6 +103,9 @@ def is_protected_state_file(relpath: str) -> bool:
     name = str(relpath or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
     if not name:
         return False
+    # 原子替换的临时文件常以 "." 开头（``.model_config.key.migrate-*``），
+    # 去掉前导点后再做前缀匹配，避免把"正在迁移中的密钥"漏进备份。
+    name = name.lstrip(".")
     if name.startswith(_PROTECTED_BASENAME_PREFIXES):
         return True
     return name in _PROTECTED_BACKUP_NAMES
@@ -237,12 +280,19 @@ def backup_data(
     # 当前进程独占打开，读取会报 Permission denied，而它本身也不是用户数据。
     skipped = [dest_dir.resolve()] + [Path(item).resolve() for item in exclude_dirs]
     excluded_protected = 0
+    excluded_runtime = 0
 
     for source in iter_files([data_dir]):
         if _is_under(source, skipped):
             continue
         rel = source.relative_to(data_dir).as_posix()
         safe_relpath(rel)
+        if _is_runtime_state_path(rel):
+            # 运行期目录/锁文件由正在运行的进程独占打开，读它会 Permission
+            # denied；它们也不是用户数据。SQLite 主库仍走 VACUUM INTO 快照，
+            # 因此跳过这些文件不会漏掉任何业务数据。
+            excluded_runtime += 1
+            continue
         if is_protected_state_file(rel):
             # 恢复码 / 凭据 / DPAPI 密文副本：无论用户数据目录怎么布局都不打包。
             excluded_protected += 1
@@ -271,6 +321,9 @@ def backup_data(
         except ValueError as exc:
             raise RollbackError(f"附加状态文件不在应用目录内：{source}") from exc
         safe_relpath(rel)
+        if _is_runtime_state_path(rel):
+            excluded_runtime += 1
+            continue
         if is_protected_state_file(rel):
             excluded_protected += 1
             continue
@@ -296,6 +349,7 @@ def backup_data(
         "sqlite_count": sqlite_count,
         "total_bytes": total,
         "excluded_protected": excluded_protected,
+        "excluded_runtime": excluded_runtime,
         "entries": entries,
     }
     manifest_path = dest_dir / "data-backup.json"
@@ -609,11 +663,13 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
     trash = trash_root / uuid.uuid4().hex
     trash.mkdir(parents=True, exist_ok=False)
     moved: List[tuple[Path, Path]] = []
+    existed_before: dict[str, bool] = {}
 
     try:
         for root_name in roots:
             current = app_root / root_name
-            if not current.exists():
+            existed_before[root_name] = current.exists()
+            if not existed_before[root_name]:
                 continue
             destination = trash / root_name.replace("/", "__")
             shutil.move(str(current), str(destination))
@@ -633,10 +689,66 @@ def restore_code(app_root: Path, backup_dir: Path, trash_root: Path) -> int:
                 restored += 1
         return restored
     except BaseException as exc:
+        # 回滚必须回到“应用之前”的完整树，不能留下解压到一半的新旧混合目录。
+        # 顺序：先删掉本次解压出来的半成品（它会让 trash 放不回去），再把
+        # trash 原样移回；任何一步失败都显式报“需人工介入”并给出残留路径，
+        # 绝不静默吞掉。
+        failures: List[str] = []
+        blocked: set[Path] = set()
+        moved_names = {str(original.relative_to(app_root).as_posix()) for _d, original in moved}
         for destination, original in moved:
-            if destination.exists() and not original.exists():
-                try:
-                    shutil.move(str(destination), str(original))
-                except OSError:
-                    pass
+            if not original.exists():
+                continue
+            try:
+                _remove_path(original)
+            except OSError as cleanup_exc:
+                blocked.add(original)
+                failures.append(f"半成品目录清理失败：{original}（{cleanup_exc}）")
+        for root_name in roots:
+            if root_name not in existed_before:
+                # 移动阶段还没轮到它就中断了：这个目录从未被动过，不能删。
+                continue
+            if existed_before[root_name]:
+                # 原始目录从未移走（移动本身就失败了）：保留现有内容，人工核对。
+                if root_name in moved_names:
+                    continue
+                partial = app_root / root_name
+                if partial.exists():
+                    failures.append(
+                        f"该目录未被移入回收区，可能仍是半应用状态：{partial}"
+                    )
+                continue
+            partial = app_root / root_name
+            if not partial.exists():
+                continue
+            try:
+                _remove_path(partial)
+            except OSError as cleanup_exc:
+                failures.append(f"新增目录清理失败：{partial}（{cleanup_exc}）")
+        for destination, original in moved:
+            if original in blocked or not destination.exists():
+                continue
+            try:
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(destination), str(original))
+            except OSError as restore_exc:
+                failures.append(
+                    f"旧版本放回失败：{original}（{restore_exc}；"
+                    f"旧版本仍在 {destination}）"
+                )
+        if failures:
+            raise RollbackError(
+                "代码回滚失败，需人工介入："
+                + "；".join(failures)
+                + f"。旧版本代码包：{zip_path}；回滚回收区：{trash}。"
+                "请关闭占用文件的进程后，从回收区或代码包手工恢复。"
+            ) from exc
         raise RollbackError(f"代码回滚失败：{exc}") from exc
+
+
+def _remove_path(path: Path) -> None:
+    """删除文件或目录树；符号链接只删链接本身。"""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()

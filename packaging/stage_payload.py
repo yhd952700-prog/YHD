@@ -49,6 +49,31 @@ CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
 ICON_PNG = REPO_ROOT / "apps" / "console" / "console" / "public" / "icon-192.png"
 LICENSES_DIR = REPO_ROOT / "packaging" / "licenses"
 
+#: 上游 wheel **未随包**许可证文本的发行包：构建时把上游 LICENSE 原文补进
+#: ``*.dist-info/licenses/``。key 为 METADATA ``Name`` 的小写形式，
+#: value = (``licenses/`` 下的文件名, 上游来源链接)。
+#:
+#: 为什么必须补进 dist-info：许可证声明生成器（``third_party_notices``）与
+#: SBOM 合规门禁（``sbom_audit.py --check``）都以「dist-info 里的真实文本」为准，
+#: 补文件而不是放宽这两处校验。
+DIST_INFO_LICENSE_SOURCES: Dict[str, Tuple[str, str]] = {
+    "fastmcp-slim": (
+        "fastmcp-slim-Apache-2.0.txt",
+        "https://github.com/PrefectHQ/fastmcp/blob/main/LICENSE",
+    ),
+    "opentelemetry-util-http": (
+        "opentelemetry-util-http-Apache-2.0.txt",
+        "https://github.com/open-telemetry/opentelemetry-python-contrib/blob/main/LICENSE",
+    ),
+    # proxy_tools 0.1.0 只有 sdist，且 dist-info 里不带任何许可证文本
+    # （METADATA 声明 MIT，上游实际文件 LICENSE.txt 是 BSD 正文，以实际文本为准）。
+    # 不补的话 sbom_audit --check 会以「发行包无随包许可证文本」中止出包。
+    "proxy_tools": (
+        "proxy_tools-BSD.txt",
+        "https://github.com/jtushman/proxy_tools/blob/master/LICENSE.txt",
+    ),
+}
+
 #: 产品自身的许可证（仓库根，按顺序取第一个存在的，统一落成 ``{app}\LICENSE``）。
 #: 仓库里目前没有这类文件时**不伪造许可条款**：安装目录会缺 LICENSE，
 #: 安装后自检（dist/release-gate/verify_installed_compliance.py）会把它列为缺项。
@@ -735,6 +760,16 @@ import fastmcp  # noqa: F401
 import mcp  # noqa: F401
 import prometheus_client  # noqa: F401
 import psutil  # noqa: F401
+# 桌面壳（pywebview 6.2.1）：窗口后端在 src/desktop/native_window.py:243 的函数体
+# 里才 ``import webview``，启动图覆盖不到；而 pywebview 的 WinForms 后端又在
+# 真正开窗时才经 pythonnet/clr_loader 调 .NET、经 bottle/proxy_tools 起本地
+# HTTP 与 JS 桥。少任何一个，安装版双击后不是 ImportError 就是窗口起不来。
+# 这里显式导入整条栈，让实测 import 图把 5 个发行包及其传递依赖带进 payload。
+import webview  # noqa: F401
+import bottle  # noqa: F401
+import proxy_tools  # noqa: F401
+import clr_loader  # noqa: F401
+import clr  # noqa: F401
 
 stdlib = set(sys.stdlib_module_names)
 pseudo = set(%(pseudo)r)
@@ -857,6 +892,38 @@ def _assert_brand_guard(app_dir: Path) -> None:
             "品牌字面门禁未通过（payload 组装中止）：\n  " + "\n  ".join(violations)
         )
     print("      品牌门禁 -> 主名 / 版本 / 旧名 / 错字 / 死域名 全部通过")
+
+
+def _seed_missing_dist_licenses(app_dir: Path) -> int:
+    """把上游 LICENSE 原文补进缺文本的 ``*.dist-info/licenses/``。
+
+    fastmcp-slim 与 opentelemetry-util-http 的 wheel 不带许可证文件，而
+    ``third_party_notices`` / ``sbom_audit --check`` 都只认 dist-info 内的真实
+    文本。这里按 ``DIST_INFO_LICENSE_SOURCES`` 显式补入（文本取自
+    ``packaging/licenses/``，与随包 ``licenses/`` 目录同一份），不放宽任何校验。
+    """
+    site_packages = app_dir / "runtime" / "Lib" / "site-packages"
+    seeded = 0
+    for dist_info in sorted(site_packages.glob("*.dist-info")):
+        metadata = dist_info / "METADATA"
+        if not metadata.is_file():
+            continue
+        name = ""
+        for line in metadata.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("Name: "):
+                name = line[len("Name: "):].strip()
+                break
+        source = DIST_INFO_LICENSE_SOURCES.get(name.lower())
+        if not source:
+            continue
+        file_name, _url = source
+        target = dist_info / "licenses" / file_name
+        if target.is_file():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(LICENSES_DIR / file_name, target)
+        seeded += 1
+    return seeded
 
 
 def _copy_notices(app_dir: Path) -> int:
@@ -1082,7 +1149,11 @@ def _write_start_here(app_dir: Path, version: str) -> None:
           D 盘不可用、或升级时读不到/写不进原来的数据目录时，安装器**不会**
           悄悄改回 C 盘，而是说明原因并要求你选择；没选可写目录就不继续安装。
           实际位置见程序目录下的 data-dir.txt；卸载默认保留，连续两次确认才会删除。
-          备份：退出后复制整个目录，必须同时带上 data\\model_config.key 与
+          备份目录：默认 D:\\LiuHaoBackups（安装器按数据目录所在盘显式下发，
+          不落 C 盘、也不会退回数据目录）。
+          注意：备份与数据在同一块盘。磁盘损坏、分区丢失或勒索加密时备份会一起丢，
+          无法用来恢复——这不是异地备份；要防灾请自己再复制到移动硬盘或另一台电脑。
+          手动备份：退出后复制整个数据目录，必须同时带上 data\\model_config.key 与
           data\\model_registry.sqlite3，缺一个已存 Key 就解不开。
           已装在 C 盘的老用户覆盖安装时默认沿用原数据目录（保留数据），
           但可以在向导的「数据目录」页显式改到 D:\\LiuHaoData（旧数据不会自动搬过去）。
@@ -1092,13 +1163,14 @@ def _write_start_here(app_dir: Path, version: str) -> None:
 联网说明：默认不主动联网。只有你自己配置云端模型后，对话内容与检索到的知识片段
           才会发到你填的 base_url；本机 Ollama 只连 127.0.0.1，完全不出网；
           不收集使用统计、不做遥测上报。
-程序未做代码签名，Windows 可能提示“未知发布者”，
-点「更多信息 → 仍要运行」即可继续。
+程序使用项目自签名证书（签名者 CN=鎏灏智能中枢）：导入安装器附带的信任脚本后
+属性里签名状态为「有效」并能看到签名者，但按微软口径自签名在 SmartScreen 上
+等同未签名，仍可能提示“未知发布者”，点「更多信息 → 仍要运行」即可继续。
 数据与隐私：登录后点左侧导航底部的「关于与隐私」，可看到版本、数据目录、许可证、
           第三方组件声明与联网说明。
 第三方软件许可证：优先在控制台「关于与隐私」查看（0.1.1 起）；
 程序目录里另有三份离线材料，断网也能打开：
-  licenses\\                 第三方许可证全文（16 项）
+  licenses\\                 第三方许可证全文（18 项）
   THIRD-PARTY-NOTICES.txt    逐项索引（含 LGPL 组件与源码要约位置）
   sbom-cyclonedx.json        软件物料清单（本安装包实际随包组件）
 LICENSE 是本产品自身的许可证（若本版本未附带，说明产品许可条款尚未定稿，可向发布方索取）。
@@ -1469,6 +1541,9 @@ def build(out_dir: Path, version: str, prune: bool = True) -> int:
     }
     prune_report = _prune_payload(app_dir, enabled=prune_enabled, version=version)
     _validate_runtime(app_dir)
+    seeded = _seed_missing_dist_licenses(app_dir)
+    if seeded:
+        print(f"      许可证补齐 -> {seeded} 个发行包缺随包文本，已按上游 LICENSE 补入 dist-info")
 
     print("[5/5] 写入入口脚本与清单")
     _write_start_bat(app_dir)
@@ -1543,17 +1618,25 @@ def build(out_dir: Path, version: str, prune: bool = True) -> int:
 
 
 def _project_version() -> str:
-    try:
-        with open(REPO_ROOT / "pyproject.toml", "rb") as handle:
-            return tomllib.load(handle)["project"]["version"]
-    except Exception:
-        return "0.1.1"
+    """版本号唯一可编辑真源：``src/version.py`` 的 ``APP_VERSION``。
+
+    ``pyproject.toml`` 只是构建元数据的镜像。此前这里与
+    ``build_windows_installer.ps1`` 各兜底一个 ``"0.1.1"`` 字面量，改版本时
+    两处会悄悄漂移；现在只认真源，读不到就明确失败，不再静默用旧值。
+    """
+    source = (REPO_ROOT / "src" / "version.py").read_text(encoding="utf-8")
+    match = re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']', source, re.M)
+    if not match:
+        raise RuntimeError(
+            "src/version.py 中找不到 APP_VERSION（版本号唯一真源缺失）"
+        )
+    return match.group(1)
 
 
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="组装 Windows 安装包 payload")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help=f"输出目录（默认 {DEFAULT_OUT}）")
-    parser.add_argument("--version", default="", help="版本号（默认读 pyproject.toml）")
+    parser.add_argument("--version", default="", help="版本号（默认读 src/version.py 的 APP_VERSION）")
     parser.add_argument(
         "--no-prune",
         action="store_true",

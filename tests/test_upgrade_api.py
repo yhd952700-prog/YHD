@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -87,6 +88,58 @@ def _manager(app_root: Path, release_dir: Path | None) -> UpgradeManager:
     return UpgradeManager(UpgradeConfig(app_root=app_root, source=source))
 
 
+#: 成员响应里**不允许**出现的本机基础设施信息：盘符（``C:\`` / ``C:/``）
+#: 与常见 POSIX 绝对路径根。成员只看结论，任何路径都不该出现在 JSON 里。
+_LOCAL_PATH_RE = re.compile(
+    r"(?i)(?:[A-Za-z]:[\\/]|/(?:Users|home|app|var|tmp|opt|etc|root|usr|mnt|srv)/)"
+)
+#: 成员状态响应的字段白名单：结论（版本 / 有无更新 / 备份是否启用 / 一句话原因）。
+_MEMBER_STATUS_FIELDS = {
+    "ok",
+    "source_configured",
+    "state",
+    "message",
+    "current_version",
+    "latest_version",
+    "update_available",
+    "last_check",
+    "last_operation",
+    "last_apply",
+    "last_rollback",
+    "backup",
+    "error",
+    "updated_at",
+}
+_MEMBER_BACKUP_FIELDS = {
+    "enabled",
+    "available",
+    "configured",
+    "cross_disk",
+    "same_volume",
+    "label",
+    "warning",
+    "backup_count",
+    "last_backup_at",
+    "last_backup_id",
+}
+
+
+def _assert_member_status_is_conclusion_only(body: dict) -> None:
+    """成员契约：字段白名单 + 整体不含绝对路径/盘符。
+
+    ``_status_payload`` 的完整诊断含 ``source``、``backup.root``、
+    ``backup.data_dir``、``backup.data_drive``、``backup.backup_drive``、
+    ``backup.migration``、``error.technical_detail`` 与原始 ``reason``，这些都是
+    本机文件系统信息；成员响应必须由 ``_member_status_payload`` 裁剪。
+    只断言状态码 200 证明不了这件事，所以这里同时锁字段与内容。
+    """
+    assert set(body) == _MEMBER_STATUS_FIELDS
+    assert set(body["backup"]) == _MEMBER_BACKUP_FIELDS
+    assert "source" not in body
+    leaked = _LOCAL_PATH_RE.search(json.dumps(body, ensure_ascii=False))
+    assert leaked is None, f"成员响应泄露本机路径：{leaked.group(0)!r}"
+
+
 def _headers(scope: str = "L0", *, roles: list[str] | None = None, kind: str = "human"):
     from src.security import get_jwt_handler
 
@@ -155,33 +208,43 @@ def test_all_endpoints_require_a_bearer_token(client) -> None:
         assert response.status_code == 401, (path, response.text)
 
 
-def test_all_endpoints_reject_low_privilege_human(client) -> None:
+def test_status_is_readable_by_members_but_writes_are_admin_only(client) -> None:
     test_client, *_ = client
     headers = _headers(scope="L1")
-    for method, path, body in (
-        ("get", "/v1/upgrade/status", None),
-        ("post", "/v1/upgrade/check", {}),
-        ("post", "/v1/upgrade/apply", {"confirm": True, "version": "0.2.0"}),
-        ("post", "/v1/upgrade/rollback", {"confirm": True}),
+    # Read-only status is health-like information: members must not get a
+    # permission-looking 403 here.
+    assert test_client.get("/v1/upgrade/status", headers=headers).status_code == 200
+    for path, body in (
+        ("check", {}),
+        ("apply", {"confirm": True, "version": "0.2.0"}),
+        ("rollback", {"confirm": True}),
     ):
-        kwargs = {"json": body} if method == "post" else {}
-        response = getattr(test_client, method)(path, headers=headers, **kwargs)
+        response = test_client.post(f"/v1/upgrade/{path}", headers=headers, json=body)
         assert response.status_code == 403, (path, response.text)
 
 
-def test_l7_sovereignty_and_admin_role_both_work(client) -> None:
+def test_l7_is_lowest_privilege_and_cannot_write(client) -> None:
     test_client, *_ = client
+    l7 = _headers(scope="L7")
+    # L7 may read the status...
+    assert test_client.get("/v1/upgrade/status", headers=l7).status_code == 200
+    # ...but is the lowest privilege scope, never an administrator: no writes.
+    for path, body in (
+        ("check", {}),
+        ("apply", {"confirm": True, "version": "0.2.0"}),
+        ("rollback", {"confirm": True}),
+    ):
+        response = test_client.post(f"/v1/upgrade/{path}", headers=l7, json=body)
+        assert response.status_code == 403, (path, response.text)
+
+    # An explicit admin role remains sufficient regardless of numeric scope.
     assert (
-        test_client.get("/v1/upgrade/status", headers=_headers(scope="L7")).status_code
-        == 200
-    )
-    assert (
-        test_client.get(
-            "/v1/upgrade/status",
-            headers=_headers(scope="L1", roles=["admin"]),
+        test_client.post(
+            "/v1/upgrade/check", headers=_headers(scope="L1", roles=["admin"])
         ).status_code
         == 200
     )
+    assert test_client.get("/v1/upgrade/status", headers=_headers(scope="L0")).status_code == 200
     service = test_client.get(
         "/v1/upgrade/status",
         headers=_headers(scope="L0", kind="service"),
@@ -349,9 +412,30 @@ def test_failure_is_queryable_from_status_with_category_and_readable_text(
     assert manager.current_version()[0] == "0.1.0"
 
 
-def test_gateway_mounts_upgrade_router_behind_the_human_gate() -> None:
-    """The production app really exposes the four endpoints, human-gated."""
+def test_gateway_mounts_upgrade_router_behind_the_human_gate(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The production app really exposes the four endpoints, human-gated.
+
+    契约依据（改前为成员 ``403``，改后为成员 ``200`` + 裁剪响应）：
+    * 未登录仍是 ``401``（bearer 校验在路由前）；
+    * 写操作 ``check`` / ``apply`` / ``rollback`` 各自带 ``require_upgrade_admin``，
+      成员仍是 ``403``——只读开放没有把写权限一起放开；
+    * 只读 ``/status`` 对已登录人类开放，但成员只拿结论：响应里不得出现
+      ``source``、``backup.root``、``backup.data_dir``、盘符与迁移记录。
+    这条用例原来只断言 ``403``，等于把"最小暴露"绑死在"成员完全不可读"上；
+    真实契约是"可读但裁剪"，所以这里直接断言裁剪后的字段与内容。
+    """
     from src.gateway.main import get_app
+
+    # 生产 manager 从环境变量构建；把安装根/状态/备份都指到临时目录，
+    # 避免用例在仓库 ``data/`` 里留下真实升级状态。
+    monkeypatch.setenv("LIUHAO_APP_ROOT", str(tmp_path / "app"))
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LIUHAO_UPGRADE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("LIUHAO_UPGRADE_BACKUP_ROOT", str(tmp_path / "backups"))
+    monkeypatch.delenv("LIUHAO_UPGRADE_RELEASE_DIR", raising=False)
+    monkeypatch.delenv("LIUHAO_UPGRADE_MANIFEST_URL", raising=False)
 
     app = get_app()
     paths = app.openapi().get("paths", {})
@@ -364,14 +448,64 @@ def test_gateway_mounts_upgrade_router_behind_the_human_gate() -> None:
         assert path in paths, f"{path} 未出现在 /openapi.json"
 
     client = TestClient(app)
-    # 闸门先于 manager 构建执行：未登录/非管理员都不会碰真实升级状态文件。
     assert client.get("/v1/upgrade/status").status_code == 401
-    assert (
-        client.get(
-            "/v1/upgrade/status", headers=_headers(scope="L1", kind="human")
-        ).status_code
-        == 403
-    )
+
+    member_headers = _headers(scope="L1", kind="human")
+    member = client.get("/v1/upgrade/status", headers=member_headers)
+    assert member.status_code == 200, member.text
+    _assert_member_status_is_conclusion_only(member.json())
+
+    # 读开放不等于写开放：成员点写操作仍在权限层被拒。
+    for path, body in (
+        ("check", {}),
+        ("apply", {"confirm": True, "version": "0.2.0"}),
+        ("rollback", {"confirm": True}),
+    ):
+        response = client.post(
+            f"/v1/upgrade/{path}", headers=member_headers, json=body
+        )
+        assert response.status_code == 403, (path, response.text)
+
+
+def test_member_status_hides_local_paths_but_admin_sees_diagnostics(client) -> None:
+    """同一台机器、同一次检查：成员只拿结论，管理员拿完整诊断。
+
+    真实数据依据（``UpgradeManager.backup_summary`` 的返回体）：
+    * 本机基础设施：``backup.root``、``backup.data_dir``、``backup.data_drive``、
+      ``backup.backup_drive``、``backup.migration``、顶层 ``source``；
+    * 用户需要知道：``current_version``、``latest_version``、
+      ``update_available``、``state``、``backup.available/label/warning``。
+    所以按"最小暴露"裁剪，而不是把完整诊断交给普通成员。
+    """
+    test_client, manager, *_ = client
+    admin_headers = _headers(scope="L0")
+    member_headers = _headers(scope="L1")
+
+    checked = test_client.post("/v1/upgrade/check", headers=admin_headers)
+    assert checked.status_code == 200, checked.text
+
+    member = test_client.get("/v1/upgrade/status", headers=member_headers).json()
+    admin = test_client.get("/v1/upgrade/status", headers=admin_headers).json()
+
+    # 成员拿到的"结论"必须是真实的，不是空壳：
+    assert member["current_version"] == "0.1.0"
+    assert member["latest_version"] == "0.2.0"
+    assert member["update_available"] is True
+    assert member["source_configured"] is True
+    assert member["backup"]["enabled"] is True
+    assert member["backup"]["available"] is True
+    assert member["backup"]["label"]
+    _assert_member_status_is_conclusion_only(member)
+
+    # 管理员拿到完整诊断：路径、盘符、来源与迁移记录都在。
+    assert admin["backup"]["root"] == str(manager.config.backup_root)
+    assert admin["backup"]["data_dir"] == str(manager.config.data_dir)
+    assert admin["backup"]["data_drive"] == manager.backup_summary()["data_drive"]
+    assert admin["backup"]["backup_drive"] == manager.backup_summary()["backup_drive"]
+    assert "migration" in admin["backup"]
+    assert admin["source"]
+    # 反向验证：管理员响应里确实有路径（否则上面"成员没路径"就没有对照意义）。
+    assert _LOCAL_PATH_RE.search(json.dumps(admin, ensure_ascii=False)) is not None
 
 
 def test_rollback_without_source_is_local_but_explicitly_labelled(tmp_path: Path) -> None:

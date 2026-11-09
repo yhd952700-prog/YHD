@@ -41,6 +41,11 @@ python scripts/verify_openapi_contract.py
 
 未动 `dist\`、`D:\LiuHao`、`D:\LiuHaoData`、`%LOCALAPPDATA%\LiuHao`；冻结仍等指令。
 
+> 注（后续）：上表第 1 行记录的是当时的安装器命令串。`--open-browser` 现为**历史兼容
+> 参数**——即便快捷方式命令行里出现它，桌面入口也照常创建原生 WebView2 窗口、不会切换到
+> 浏览器模式；网页模式一律用 `--web`。现行快捷方式语义以
+> [operations/WINDOWS-DESKTOP.md](operations/WINDOWS-DESKTOP.md) §2.7 / §8.2 为准。
+
 ## 0. 结论
 
 **当前不具备冻结条件。** 5 条不满足，其中 3 条是阻塞项：

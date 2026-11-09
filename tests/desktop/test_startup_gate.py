@@ -101,6 +101,9 @@ class _Tray:
         self.notices.append((title, message, warning))
         return True
 
+    def set_disabled_actions(self, actions: set[str] | frozenset[str] | None) -> None:
+        self.disabled_actions = set(actions or ())
+
 
 def _app_with_stubs() -> tuple[desktop_app.DesktopApp, _Tray]:
     app = desktop_app.DesktopApp(open_browser=True)
@@ -108,6 +111,9 @@ def _app_with_stubs() -> tuple[desktop_app.DesktopApp, _Tray]:
     tray = _Tray()
     app._tray = tray
     app.service.port = 8080
+    # 打开动作现在先做进程+健康身份校验：单元测试里不真起网关，直接放行。
+    app.service.is_running = lambda: True
+    app._service_healthy = lambda url: True
     app._stop_event.set()  # 不启动健康轮询循环
     return app, tray
 
@@ -216,12 +222,32 @@ def test_gate_falls_back_to_health_on_old_gateway(monkeypatch: pytest.MonkeyPatc
     def fake_http(url: str, timeout: float = 2.0) -> dict[str, Any]:
         if url.endswith(startup.STARTUP_PATH):
             return {"ok": False, "status": 404, "body": None, "error": "HTTP 404"}
-        return {"ok": True, "status": 200, "body": {"status": "ok"}, "error": None}
+        return {
+            "ok": True,
+            "status": 200,
+            "body": {"status": "ok", "service": "liuhao-gateway"},
+            "error": None,
+        }
 
     monkeypatch.setattr(startup, "http_json", fake_http)
     probe = startup.probe_startup("http://127.0.0.1:8080")
     assert probe["state"] == "ready"
     assert probe["legacy"] is True
+
+
+def test_gate_rejects_foreign_service_on_legacy_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1：/v1/health 回 2xx 但不是鎏灏的服务，不能算就绪。"""
+    def fake_http(url: str, timeout: float = 2.0) -> dict[str, Any]:
+        if url.endswith(startup.STARTUP_PATH):
+            return {"ok": False, "status": 404, "body": None, "error": "HTTP 404"}
+        return {"ok": True, "status": 200, "body": {"status": "ok"}, "error": None}
+
+    monkeypatch.setattr(startup, "http_json", fake_http)
+    probe = startup.probe_startup("http://127.0.0.1:8080")
+
+    assert probe["state"] != "ready"
 
 
 # --------------------------------------------------------------------------- #
@@ -310,7 +336,7 @@ def test_desktop_boot_pipeline_reports_gate_through_event_queue(
         assert payload["started"] is True
         assert payload["gate"]["state"] == "degraded"
         app._apply_boot_result(payload)
-        assert opened == [f"http://127.0.0.1:{port}/"]
+        assert opened == [f"http://127.0.0.1:{port}/?mode=web"]
         assert tray.notices[-1][0] == "鎏灏已启动（部分组件未就绪）"
         assert "SMTP 未配置" in tray.notices[-1][1]
     finally:
@@ -356,7 +382,8 @@ def test_desktop_opens_console_only_when_gate_allows(
     app._apply_boot_result({"started": state != "failed", "gate": gate})
 
     if state in {"ready", "degraded"}:
-        assert opened == ["http://127.0.0.1:8080/"]
+        # 浏览器模式必须带 mode=web：前端据此显示「· 浏览器模式」。
+        assert opened == ["http://127.0.0.1:8080/?mode=web"]
     else:
         assert opened == []
     assert tray.notices, "托盘必须给出可见结论"

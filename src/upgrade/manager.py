@@ -35,6 +35,7 @@ from src.common.instance_lock import (
     InstanceLock,
     InstanceLockBusy,
 )
+from src.common.redaction import redact_log_text
 
 from .archive import (
     extract_zip_members,
@@ -71,11 +72,20 @@ from .errors import (
     PreflightError,
     RollbackError,
     SelfCheckError,
+    SignatureError,
     UpdateUnreachableError,
     UpgradeError,
     VersionReadError,
 )
 from .filemanifest import verify_file_manifest
+from .manifest_trust import (
+    ManifestTrustState,
+    ManifestTrustStore,
+    canonical_manifest_sha256,
+    manifest_sequence,
+    verify_manifest_signature,
+    TRUST_STATE_FILENAME,
+)
 from .ledger import UpgradeLedger
 from .selfcheck import SelfCheckConfig, run_self_check
 from .models import (
@@ -142,6 +152,14 @@ _STALE_SKIP_SUFFIX = (".pyc", ".pyo", ".lock", ".pem", ".key", ".crt")
 _STRICT_PRUNE_ROOTS = ("console",)
 
 logger = logging.getLogger(__name__)
+
+#: 升级失败对外的唯一主文案。路径、异常原文、内部命令只进 ``technical_detail``，
+#: 由界面"技术详情"折叠展示，且写入前统一过 ``redact_log_text``。
+UPGRADE_FAILED_ROLLED_BACK = "升级失败，已回滚。请重试，或导出诊断包。"
+UPGRADE_FAILED_NOT_ROLLED_BACK = "升级失败，未能回滚。请重试回滚，或导出诊断包。"
+UPGRADE_FAILED_NOT_APPLIED = "升级失败，未修改任何文件。请重试，或导出诊断包。"
+UPGRADE_FAILED_DOWNLOAD = "升级失败，新版本没有安装。请检查网络后重试，或导出诊断包。"
+ROLLBACK_FAILED = "回滚失败。请重试，或导出诊断包。"
 
 #: 安装树标志。``installer/liuhao.iss`` 把解释器装进 ``<app>/runtime``，
 #: 源码仓库与便携版没有这个目录。
@@ -238,13 +256,13 @@ def resolve_data_dir(
 #: 运行期状态目录名。历史版本写在程序目录，卸载器不认这些运行期文件，
 #: 会残留在 ``<app>/upgrade-state``；现在统一落数据目录。
 STATE_DIRNAME = "upgrade-state"
-#: 升级备份目录名。便携/开发形态沿用 ``<data>/upgrade-backups``；安装版的新
-#: 默认位置见 ``default_backup_root``（数据目录之外）。
+#: 升级备份目录名。未显式配置 ``LIUHAO_UPGRADE_BACKUP_ROOT`` 时落在
+#: ``<data>/upgrade-backups``（与数据同盘），状态接口会明确提示同盘风险。
 BACKUP_DIRNAME = "upgrade-backups"
-#: 安装版备份默认落点：另一块固定盘上的 ``<X>:\LiuHaoBackups``。
-BACKUP_ROOT_DIRNAME = "LiuHaoBackups"
-#: 没有第二块盘时的退路：数据目录同级的 ``<data 名>-backups``。
-BACKUP_SIBLING_SUFFIX = "-backups"
+#: 备份前剩余空间的最低倍数：备份要同时容纳代码包与数据副本，按 2 倍估算，
+#: 避免"备份写到一半把目标盘写满"。
+BACKUP_SPACE_HEADROOM = 2.0
+
 #: 旧备份迁移记录（写在状态目录，供设置页提示"旧备份已搬到新位置"）。
 BACKUP_MIGRATION_RECORD = "backup-migration.json"
 
@@ -267,83 +285,21 @@ def _is_within(path: Path, parent: Path) -> bool:
         return False
 
 
-def _probe_writable_dir(path: Path) -> bool:
-    """真写探针：建目录 + 写一个文件 + 删掉。
+def _probe_explicit_backup_root(root: Path) -> bool:
+    """对**显式配置**的备份根做真写探针：建目录 + 写文件 + 删掉。
 
     ``os.access`` 在 Windows 上对 ACL/组策略/漫游重定向不可靠；只有真写才能
-    在选备份位置时就排除掉"以后备份写不进去"的盘。
+    排除"以后备份写不进去"的盘。显式配置（``LIUHAO_UPGRADE_BACKUP_ROOT``）是
+    用户的明确意图，探针必须落在该根内，失败就如实报"该盘不可写"，绝不改道。
     """
     try:
-        path.mkdir(parents=True, exist_ok=True)
-        probe = path / ".liuhao-write-probe"
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".liuhao-write-probe"
         probe.write_text("probe", encoding="utf-8")
         probe.unlink()
         return True
     except OSError:
         return False
-
-
-def _fixed_drive_roots() -> List[Path]:
-    """本机固定磁盘根（``GetDriveTypeW == DRIVE_FIXED``），不含可移动/网络盘。"""
-    if os.name != "nt":
-        return []
-    try:
-        import ctypes
-
-        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
-    except (AttributeError, OSError):
-        return []
-    roots: List[Path] = []
-    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
-        root = f"{letter}:\\"
-        try:
-            if get_drive_type(root) != 3:  # DRIVE_FIXED
-                continue
-        except OSError:
-            continue
-        candidate = Path(root)
-        if candidate.is_dir():
-            roots.append(candidate)
-    return roots
-
-
-def _pick_external_backup_root(data_dir: Path) -> tuple[Path, str]:
-    """在数据目录之外挑一个可写的备份落点，返回 ``(路径, 来源说明)``。"""
-    data_anchor = _volume_anchor(data_dir)
-    drive_choices: list[tuple[int, str, Path, str]] = []
-    for drive in _fixed_drive_roots():
-        if _volume_anchor(drive) == data_anchor:
-            continue
-        target = drive / BACKUP_ROOT_DIRNAME
-        if not _probe_writable_dir(target):
-            continue
-        try:
-            free = shutil.disk_usage(str(target)).free
-        except OSError:
-            free = 0
-        drive_choices.append((free, str(target).lower(), target, f"另一块固定盘 {target.drive}"))
-    if drive_choices:
-        # 剩余空间最大的那块，避免备份把某块盘先写满；同分时按路径排序保证可复现。
-        drive_choices.sort(key=lambda item: (-item[0], item[1]))
-        return drive_choices[0][2], drive_choices[0][3]
-
-    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    user_dir = local / "LiuHao" / "backups"
-    if _probe_writable_dir(user_dir):
-        label = (
-            "用户目录（与数据同一块盘）"
-            if same_volume(user_dir, data_dir)
-            else "用户目录（与数据不同盘）"
-        )
-        return user_dir, label
-
-    sibling = data_dir.parent / f"{data_dir.name}{BACKUP_SIBLING_SUFFIX}"
-    if _probe_writable_dir(sibling):
-        return sibling, "数据目录同级（与数据同一块盘）"
-
-    # 所有外部位置都写不了：退回数据目录内。至少让升级能完成备份，界面会
-    # 如实显示"同盘"风险，而不是等到第一次升级时才失败。
-    return data_dir / BACKUP_DIRNAME, "数据目录内（外部位置均不可写）"
 
 
 def default_state_dir(
@@ -356,27 +312,20 @@ def default_state_dir(
 def default_backup_root(
     app_root: str | Path, data_dir: str | Path | None = None
 ) -> Path:
-    """升级备份目录：默认放在数据目录**之外**。
+    """未显式配置备份根时的默认值：``<data>/upgrade-backups``（同盘）。
 
-    出货的安装版（数据目录由安装器指向程序目录之外）按下面顺序选址：
-
-    1. 另一块固定本地盘 ``<X>:\\LiuHaoBackups``——一块盘坏了不会同时丢数据
-       和备份，这是首选；
-    2. 用户目录 ``%LOCALAPPDATA%\\LiuHao\\backups``——没有第二块盘时的退路，
-       界面必须如实说明是否与数据同盘；
-    3. 数据目录同级 ``<data 名>-backups``——用户目录也写不了时的最后退路。
-
-    便携/开发形态（数据目录在程序目录内）保持 ``<data>/upgrade-backups``：
-    该形态的语义是整目录自包含，且开发和测试不得往用户目录或其他盘写数据。
+    **不再静默挑选其他盘**：跨盘备份必须由 ``LIUHAO_UPGRADE_BACKUP_ROOT`` 显式
+    指定。没有配置就按"未启用跨盘备份"处理，备份留在数据目录内，并由
+    ``/v1/upgrade/status`` 明确提示同盘风险。便携/开发形态同样自包含，测试与
+    开发不得往用户目录或其他盘写数据。
     """
     data = resolve_data_dir(app_root, data_dir)
-    if _is_within(data, Path(app_root)):
-        fallback = data / BACKUP_DIRNAME
-        logger.info("升级备份目录来源：便携/开发形态 <data>/%s -> %s", BACKUP_DIRNAME, fallback)
-        return fallback
-    chosen, reason = _pick_external_backup_root(data)
-    logger.info("升级备份目录来源：%s -> %s", reason, chosen)
-    return chosen
+    fallback = data / BACKUP_DIRNAME
+    logger.info(
+        "升级备份目录来源：未配置 LIUHAO_UPGRADE_BACKUP_ROOT -> %s（与数据同盘，未启用跨盘备份）",
+        fallback,
+    )
+    return fallback
 
 
 @dataclass
@@ -396,15 +345,36 @@ class UpgradeConfig:
     #: 数据已被更高 schema 版本写过时，是否允许继续安装更低版本。
     allow_data_downgrade: bool = False
     self_check: SelfCheckConfig = field(default_factory=SelfCheckConfig)
+    #: 备份根来源：``configured``（显式配置） / ``data_dir``（未配置，与数据同盘） /
+    #: ``portable``（便携/开发形态，数据目录在程序目录内）。
+    backup_root_source: str = field(init=False, default="")
+    #: 显式配置的备份根是否真写通过；未配置时恒为 True。
+    backup_root_available: bool = field(init=False, default=True)
+    #: 备份根不可用时的中文原因（直接给状态接口展示）。
+    backup_root_error: str = field(init=False, default="")
 
     def __post_init__(self) -> None:
         self.app_root = Path(self.app_root).resolve()
         self.data_dir = resolve_data_dir(self.app_root, self.data_dir)
-        self.backup_root = (
-            Path(self.backup_root).resolve()
-            if self.backup_root
-            else default_backup_root(self.app_root, self.data_dir)
-        )
+        if self.backup_root:
+            candidate = Path(self.backup_root).expanduser().resolve()
+            self.backup_root = candidate
+            self.backup_root_source = "configured"
+            # 显式配置是用户的明确意图：探针与备份都必须落在这个根里，
+            # 失败就如实报不可写，绝不改道到数据目录。
+            self.backup_root_available = _probe_explicit_backup_root(candidate)
+            if not self.backup_root_available:
+                self.backup_root_error = (
+                    f"配置的备份盘不可写：{candidate}。备份未启用，升级将被拒绝；"
+                    "请检查 LIUHAO_UPGRADE_BACKUP_ROOT 指向的磁盘是否存在、"
+                    "是否有写权限、空间是否已满。"
+                )
+                logger.error("upgrade: %s", self.backup_root_error)
+        else:
+            self.backup_root = default_backup_root(self.app_root, self.data_dir)
+            self.backup_root_source = (
+                "portable" if _is_within(self.backup_root, self.app_root) else "data_dir"
+            )
         self.state_dir = (
             Path(self.state_dir).resolve()
             if self.state_dir
@@ -428,7 +398,8 @@ class UpgradeManager:
         self.config = config
         self._migrate_legacy_dirs()
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
-        self.config.backup_root.mkdir(parents=True, exist_ok=True)
+        if self.config.backup_root_available:
+            self.config.backup_root.mkdir(parents=True, exist_ok=True)
         # 旧默认位置 ``<data>/upgrade-backups`` 里已经有的备份必须搬出数据目录：
         # 数据目录一删，备份跟着没，正是这次要修的问题。放在 mkdir 之后，迁移
         # 记录才能写进状态目录。
@@ -436,6 +407,10 @@ class UpgradeManager:
         self.ledger = UpgradeLedger(self.config.state_dir / "upgrade-ledger.db")
         self.status_path = self.config.state_dir / "status.json"
         self.check_state_path = self.config.state_dir / "last-check.json"
+        # 签名清单的防重放水位线（sequence / 最高可信版本 / 清单摘要）。
+        self.manifest_trust_store = ManifestTrustStore(
+            self.config.state_dir / TRUST_STATE_FILENAME
+        )
         self._current_version: Optional[str] = None
         self._check_trigger = "manual"
         # A process that was killed mid-apply leaves status at 应用中/自检中 and
@@ -456,6 +431,8 @@ class UpgradeManager:
         )
         for legacy, target in legacy_pairs:
             try:
+                if target == self.config.backup_root and not self.config.backup_root_available:
+                    continue
                 if not legacy.is_dir() or legacy == target or target.exists():
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -490,6 +467,9 @@ class UpgradeManager:
         """
         legacy = self.config.data_dir / BACKUP_DIRNAME
         target_root = self.config.backup_root
+        if not self.config.backup_root_available:
+            # 显式配置的备份盘不可写：不要在旧备份上做任何搬运/删除。
+            return
         if legacy == target_root or not legacy.is_dir():
             return
         try:
@@ -570,10 +550,34 @@ class UpgradeManager:
         """备份位置 + 是否与数据同盘 + 最近一次备份（设置页三行信息的唯一来源）。"""
         backups = self.list_backups(limit=500)
         latest = backups[0] if backups else {}
+        same = same_volume(self.config.data_dir, self.config.backup_root)
+        configured = self.config.backup_root_source == "configured"
+        available = self.config.backup_root_available
+        if not available:
+            label = "备份盘不可写，备份未启用"
+            warning = self.config.backup_root_error
+        elif same:
+            label = "备份与数据在同一磁盘"
+            warning = "备份与数据在同一磁盘，磁盘损坏时无法恢复。"
+            if not configured:
+                warning += (
+                    "当前未配置 LIUHAO_UPGRADE_BACKUP_ROOT（未启用跨盘备份）；"
+                    "如需跨盘备份，请把它指向另一块磁盘。"
+                )
+        else:
+            label = "跨盘备份已启用"
+            warning = ""
         return {
             "root": str(self.config.backup_root),
             "data_dir": str(self.config.data_dir),
-            "same_volume": same_volume(self.config.data_dir, self.config.backup_root),
+            "source": self.config.backup_root_source,
+            "configured": configured,
+            "available": available,
+            "error": self.config.backup_root_error,
+            "label": label,
+            "warning": warning,
+            "same_volume": same,
+            "cross_disk": available and not same,
             "data_drive": _volume_anchor(self.config.data_dir).upper(),
             "backup_drive": _volume_anchor(self.config.backup_root).upper(),
             "backup_count": len(backups),
@@ -715,7 +719,8 @@ class UpgradeManager:
                 "失败："
                 + reason
                 + f"。请执行：python -m src.upgrade status --app-root {self.config.app_root}",
-                error=reason,
+                error=UPGRADE_FAILED_NOT_ROLLED_BACK,
+                technical_detail=reason,
             )
             return
 
@@ -759,7 +764,8 @@ class UpgradeManager:
                 Phase.FAILED,
                 "失败：" + reason,
                 backup_id=backup_id,
-                error=reason,
+                error=UPGRADE_FAILED_NOT_ROLLED_BACK,
+                technical_detail=reason,
                 record_id=record_id or None,
             )
             return
@@ -788,7 +794,8 @@ class UpgradeManager:
                 Phase.FAILED,
                 "失败：" + reason,
                 backup_id=backup_id,
-                error=reason,
+                error=UPGRADE_FAILED_NOT_ROLLED_BACK,
+                technical_detail=reason,
                 record_id=record_id or None,
             )
             return
@@ -934,6 +941,7 @@ class UpgradeManager:
         target_version: Optional[str] = None,
         backup_id: Optional[str] = None,
         error: Optional[str] = None,
+        technical_detail: Optional[str] = None,
         record_id: Optional[str] = None,
     ) -> None:
         previous = self.status()
@@ -953,6 +961,11 @@ class UpgradeManager:
                 previous.get("backup_id") if backup_id is None else backup_id
             ),
             "last_error": error,
+            # 路径 / 异常原文只进这里（且过脱敏），由前端"技术详情"折叠展示；
+            # 主文案（message / last_error）只放中文分类结论。
+            "technical_detail": (
+                redact_log_text(technical_detail) if technical_detail else None
+            ),
             "record_id": record_id or previous.get("record_id"),
         }
         atomic_write_text(
@@ -1000,7 +1013,39 @@ class UpgradeManager:
         # slack; it is deliberately conservative so we stop early.
         return install_bytes + code_bytes + data_bytes + 8 * 1024 * 1024
 
+    def _backup_space_requirement(self) -> int:
+        """备份盘的独立空间要求：代码 + 数据副本按 ``BACKUP_SPACE_HEADROOM`` 倍估算。"""
+        install_roots = [self.config.app_root / root for root in self.config.install_roots]
+        code_bytes = self._tree_bytes(install_roots)
+        data_bytes = self._tree_bytes(self._data_guard_paths())
+        return int((code_bytes + data_bytes) * BACKUP_SPACE_HEADROOM) + 8 * 1024 * 1024
+
     def _check_disk_space(self, install_bytes: int) -> None:
+        current = self._current_version or "原版本"
+        if not self.config.backup_root_available:
+            raise DiskSpaceError(
+                self.config.backup_root_error
+                or f"备份盘不可写，备份未启用，升级将被拒绝。备份根：{self.config.backup_root}"
+            )
+        # 备份前先单独检查备份盘：按"备份体积 × 2 倍余量"拒绝，避免写到一半
+        # 把目标盘写满，留下半截备份。
+        backup_required = self._backup_space_requirement()
+        try:
+            backup_usage = shutil.disk_usage(str(self.config.backup_root))
+        except OSError as exc:
+            raise DiskSpaceError(
+                f"备份盘空间检查失败：无法读取 {self.config.backup_root} 的剩余空间（{exc}）。"
+                f"备份未启用，升级将被拒绝；尚未修改任何文件，当前版本 {current} 仍完整。"
+                f"请检查 LIUHAO_UPGRADE_BACKUP_ROOT 指向的磁盘后重试。"
+            ) from exc
+        if backup_usage.free < backup_required:
+            raise DiskSpaceError(
+                f"磁盘空间不足：备份盘（{self.config.backup_root}）备份代码与数据"
+                f"按 {BACKUP_SPACE_HEADROOM:g} 倍余量至少需要约 {self._mb(backup_required)}，"
+                f"{self.config.backup_root} 仅剩 {self._mb(backup_usage.free)}。"
+                f"备份未启用，升级已被拒绝；尚未修改任何文件，当前版本 {current} 仍完整。"
+                f"请清理备份盘，或把 LIUHAO_UPGRADE_BACKUP_ROOT 指向空间充足的磁盘后重试。"
+            )
         required = self._disk_space_requirement(install_bytes)
         volumes = (
             ("应用目录", self.config.app_root),
@@ -1103,6 +1148,25 @@ class UpgradeManager:
             self._finish_check(result)
             return result
 
+        # 来源可信性：远端清单必须能验证 Ed25519 清单签名（或在首次引导时
+        # 配置了固定清单哈希）；签名清单还要过防重放/防降级水位线。任何失败
+        # 都**拒绝检查**，绝不降级成“已是最新”。
+        try:
+            self._establish_manifest_trust(
+                load.manifest, latest, source=source
+            )
+        except UpgradeError as exc:
+            result = CheckResult(
+                status=CheckStatus.INVALID_MANIFEST,
+                message=f"发布清单未通过可信校验，已拒绝检查更新：{exc}",
+                current_version=current,
+                latest_version=latest.version,
+                source=source.description,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self._finish_check(result)
+            return result
+
         if is_newer(latest.version, current):
             result = CheckResult(
                 status=CheckStatus.UPDATE_AVAILABLE,
@@ -1152,6 +1216,84 @@ class UpgradeManager:
             )
         self._finish_check(result)
         return result
+
+    def _establish_manifest_trust(
+        self,
+        manifest: Dict[str, Any],
+        latest: ReleaseInfo,
+        *,
+        source: ReleaseSource,
+    ) -> None:
+        """验证清单来源，并推进防重放/防降级水位线。
+
+        * 远端源且未配置固定哈希：必须有清单签名且能验签（``require=True``）；
+        * 远端源且配置了固定哈希：保留旧引导模式，签名可选（验不了就不装懂）；
+        * 本地源：签名可选；若带了签名且配置了公钥，同样真验签并拒绝坏签名。
+
+        只有"签名真验证通过"的清单才写水位线；固定哈希引导模式每次发布都要
+        换哈希，不产生持久状态。
+        """
+        remote = bool(getattr(source, "is_remote", False))
+        pinned = bool(getattr(source, "manifest_sha256", None))
+        verified = verify_manifest_signature(
+            manifest, self.config.public_key, require=remote and not pinned
+        )
+        if not verified:
+            return
+
+        sequence = manifest_sequence(manifest)
+        if sequence is None:
+            raise ManifestError(
+                "清单签名有效但缺少 sequence（防重放序号）；"
+                "请用 scripts/ops/sign_release_manifest.py 重新签名。"
+            )
+        digest = canonical_manifest_sha256(manifest)
+        prior = self.manifest_trust_store.load()
+        if prior is not None:
+            if sequence < prior.sequence:
+                raise ManifestError(
+                    f"清单 sequence 回退（本次 {sequence}，已记录 {prior.sequence}）："
+                    "疑似旧清单重放，已拒绝。"
+                )
+            if sequence == prior.sequence and digest != prior.manifest_sha256:
+                raise ManifestError(
+                    f"清单 sequence {sequence} 与已记录值相同但内容不一致"
+                    "（疑似分叉/重放），已拒绝。"
+                )
+            if Version(latest.version) < Version(prior.version):
+                raise ManifestError(
+                    f"清单最高版本 {latest.version} 低于已记录的可信版本 "
+                    f"{prior.version}：拒绝降级清单。"
+                )
+
+        highest = str(
+            max(Version(latest.version), Version(prior.version))
+            if prior is not None
+            else Version(latest.version)
+        )
+        if prior is None or sequence > prior.sequence or digest != prior.manifest_sha256:
+            self.manifest_trust_store.save(
+                ManifestTrustState(
+                    sequence=sequence,
+                    version=highest,
+                    manifest_sha256=digest,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+
+    def _assert_not_replayed_release(self, release: ReleaseInfo, *, phase: str) -> None:
+        """远端源：低于水位线的发布包一律拒绝（防重放旧包）。"""
+        source = self.config.source
+        if source is None or not getattr(source, "is_remote", False):
+            return
+        prior = self.manifest_trust_store.load()
+        if prior is None:
+            return
+        if Version(release.version) < Version(prior.version):
+            raise SignatureError(
+                f"拒绝重放旧版本发布包：{release.version} 低于已记录的可信版本 "
+                f"{prior.version}（{phase}阶段）。"
+            )
 
     def _finish_check(self, result: CheckResult) -> None:
         record = self.ledger.record(
@@ -1208,6 +1350,7 @@ class UpgradeManager:
             target_version=release.version,
         )
         try:
+            self._assert_not_replayed_release(release, phase="下载")
             result = download_release(
                 source,
                 release,
@@ -1226,7 +1369,8 @@ class UpgradeManager:
                 Phase.FAILED,
                 f"失败：{exc}",
                 target_version=release.version,
-                error=str(exc),
+                error=UPGRADE_FAILED_DOWNLOAD,
+                technical_detail=str(exc),
             )
             raise
 
@@ -1261,6 +1405,11 @@ class UpgradeManager:
             return self._apply(Path(artifact_path), release)
 
     def _apply(self, artifact: Path, release: ReleaseInfo) -> ApplyResult:
+        try:
+            self._assert_not_replayed_release(release, phase="应用")
+        except UpgradeError as exc:
+            self._fail_before_mutation(release, str(exc))
+            raise
         self._set_status(
             Phase.VERIFYING,
             f"校验中：正在复核 {release.version} 发布包",
@@ -1336,7 +1485,8 @@ class UpgradeManager:
                 Phase.FAILED,
                 f"失败：升级前数据校验未通过（{details}）",
                 target_version=release.version,
-                error=details,
+                error=UPGRADE_FAILED_NOT_APPLIED,
+                technical_detail=details,
             )
             raise PreflightError(f"升级前数据校验未通过：{details}")
 
@@ -1406,7 +1556,9 @@ class UpgradeManager:
                 self._check_disk_space(
                     sum(int(info.file_size) for _, info in members)
                 )
-                staging = Path(tempfile.mkdtemp(prefix="liuhao-upgrade-stage-"))
+                staging = Path(
+                    tempfile.mkdtemp(prefix=f"liuhao-upgrade-stage-{os.getpid()}-")
+                )
                 try:
                     installed = extract_zip_members(archive, members, staging)
                 except OSError as exc:
@@ -1628,7 +1780,8 @@ class UpgradeManager:
                     f"已回滚：升级失败，已恢复到 {current_version}（原因：{exc}）",
                     target_version=release.version,
                     backup_id=backup_id,
-                    error=str(exc),
+                    error=UPGRADE_FAILED_ROLLED_BACK,
+                    technical_detail=str(exc),
                     record_id=record.get("id"),
                 )
                 raise ApplyError(f"应用失败，已自动回滚到 {current_version}：{exc}") from exc
@@ -1638,7 +1791,8 @@ class UpgradeManager:
                     f"失败：应用失败且回滚失败（{rollback_error}）",
                     target_version=release.version,
                     backup_id=backup_id,
-                    error=reason,
+                    error=UPGRADE_FAILED_NOT_ROLLED_BACK,
+                    technical_detail=reason,
                     record_id=record.get("id"),
                 )
                 raise ApplyError(
@@ -1649,7 +1803,8 @@ class UpgradeManager:
                 Phase.FAILED,
                 f"失败：应用未开始（{message}）",
                 target_version=release.version,
-                error=message,
+                error=UPGRADE_FAILED_NOT_APPLIED,
+                technical_detail=message,
                 record_id=record.get("id"),
             )
             raise ApplyError(f"应用失败（未修改任何文件）：{message}") from exc
@@ -1748,7 +1903,8 @@ class UpgradeManager:
             Phase.FAILED,
             f"失败：{message}",
             target_version=release.version,
-            error=message,
+            error=UPGRADE_FAILED_NOT_APPLIED,
+            technical_detail=message,
         )
 
     def _write_selfcheck_log(self, report: Any) -> Optional[Path]:
@@ -1779,6 +1935,11 @@ class UpgradeManager:
         preflight_detail: Dict[str, Any],
         key_tables: Optional[Dict[str, List[str]]] = None,
     ) -> str:
+        if not self.config.backup_root_available:
+            raise DiskSpaceError(
+                self.config.backup_root_error
+                or f"备份盘不可写，备份未启用，升级已被拒绝。备份根：{self.config.backup_root}"
+            )
         backup_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
         backup_dir = self.config.backup_root / backup_id
         backup_dir.mkdir(parents=True, exist_ok=False)
@@ -1967,7 +2128,8 @@ class UpgradeManager:
                 Phase.FAILED,
                 message,
                 backup_id=backup_id,
-                error=message,
+                error=ROLLBACK_FAILED,
+                technical_detail=message,
                 record_id=record.get("id"),
             )
             if isinstance(exc, RollbackError):

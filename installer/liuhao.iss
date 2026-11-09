@@ -22,7 +22,7 @@
 ; ==========================================================================
 
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.2"
 #endif
 
 #ifndef PayloadDir
@@ -76,8 +76,18 @@ DefaultGroupName=LiuHao
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
 UsePreviousAppDir=yes
-UsePreviousGroup=yes
-DisableProgramGroupPage=yes
+; 必须保持 no：升级时组名恒为 DefaultGroupName（或命令行 /GROUP=），
+; 不沿用上一次安装记录的组名，避免旧记录把组名带偏。
+; 注意：2026-11-08「验收安装改坏真实用户开始菜单」的**真正根因**是下一行
+; 的程序组页被禁用（实测：DisableProgramGroupPage=yes 时 Inno 无视 /GROUP=），
+; 这条 directive 只是防御，光改它并不足够。
+UsePreviousGroup=no
+; 不能用 yes。实测（Inno 6.7，最小脚本复现）：程序组页被禁用时，Inno 直接采用
+; DefaultGroupName，命令行 /GROUP= 形同虚设；于是 /DIR=<临时目录> 的验收安装
+; 也写进真实用户的 LiuHao 组，卸载时整组被删（用户看到「开始菜单没了」）。
+; 改成「页存在但永远跳过」（见 [Code] 里的 ShouldSkipPage）：真实安装的向导
+; 与以前一样不出现该页，同时 /GROUP= 能生效，验收安装落在独立组里。
+DisableProgramGroupPage=no
 DisableWelcomePage=no
 AllowNoIcons=yes
 OutputDir={#SetupOutputDir}
@@ -103,6 +113,10 @@ RestartApplications=no
 SetupLogging=yes
 ; 产品界面是中文，安装/卸载主体文案也必须中文，默认不弹语言选择。
 ShowLanguageDialog=no
+; 升级信任配置（公钥/清单地址）与备份根都要写进 HKCU\Environment，写完必须
+; 广播环境变更，否则已在运行的 Explorer 不会刷新环境块，新启动的进程
+; （含开始菜单拉起的托盘壳）拿不到刚写入的值，等于白写。
+ChangesEnvironment=yes
 
 [VersionInfo]
 ; 安装包 exe 自身的版本资源。不设时资源管理器里「文件版本/版权/原始文件名」
@@ -159,6 +173,10 @@ Type: filesandordirs; Name: "{app}\config\external_anchor"
 ; 这里在复制新文件前整目录清空 {app}\console\assets —— 只清程序目录里的前端
 ; 构建产物；用户数据目录是 {code:GetDataDir}（与 {app} 分离），不在此范围内。
 Type: filesandordirs; Name: "{app}\console\assets"
+; 开始菜单组是**固定名字**：上一次安装（包括用 /DIR= 指向临时目录的验收安装）
+; 留下的快捷方式会原样指向旧目录，点开始菜单就拉起另一份副本、另一个数据目录。
+; 安装/升级前整组清掉，随后由 [Icons] 按当前 {app} 重新创建。
+Type: filesandordirs; Name: "{group}"
 
 [Dirs]
 ; 数据目录由安装器创建，但卸载器永不删除（删除只在 [Code] 里二次确认后按 marker 执行）。
@@ -168,6 +186,27 @@ Name: "{code:GetDataDir}\config"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\workspace"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\data"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\logs"; Flags: uninsneveruninstall
+; 备份根由安装器显式下发（默认取数据目录所在盘 + \LiuHaoBackups），
+; 不占系统盘、也不允许升级器静默退回数据目录。卸载永不删除已有备份。
+Name: "{code:GetBackupRoot}"; Flags: uninsneveruninstall
+
+; 开箱自动升级的信任锚。客户端只认两样东西即可自举：Ed25519 公钥
+; （LIUHAO_UPGRADE_PUBLIC_KEY，base64）与清单地址（LIUHAO_UPGRADE_MANIFEST_URL）。
+; 清单自带 manifest_signature + 单调 sequence，因此同一份配置可跨版本一直用，
+; 不再需要每次发布下发清单哈希（LIUHAO_UPGRADE_MANIFEST_SHA256 已降级为可选
+; 首次引导）。取值由构建脚本参数 -UpgradePublicKey / -UpgradeManifestUrl 注入；
+; 没有注入时这两项被预处理剔除，安装后 source_configured=false、检查更新如实
+; 返回 409——绝不写一个必然过期的占位值。
+; 备份根（LIUHAO_UPGRADE_BACKUP_ROOT）始终下发：装完不需要用户手工设任何环境变量。
+; 卸载时只删这几个值（uninsdeletevalue），不动用户其它环境变量。
+[Registry]
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "LIUHAO_UPGRADE_BACKUP_ROOT"; ValueData: "{code:GetBackupRoot}"; Flags: uninsdeletevalue
+#ifdef UpgradePublicKey
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "LIUHAO_UPGRADE_PUBLIC_KEY"; ValueData: "{#UpgradePublicKey}"; Flags: uninsdeletevalue
+#endif
+#ifdef UpgradeManifestUrl
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "LIUHAO_UPGRADE_MANIFEST_URL"; ValueData: "{#UpgradeManifestUrl}"; Flags: uninsdeletevalue
+#endif
 
 [Icons]
 ; 正常入口一律接「托盘壳」（scripts\liuhao_desktop.py app）：
@@ -179,18 +218,18 @@ Name: "{code:GetDataDir}\logs"; Flags: uninsneveruninstall
 ; 首启向导已由 liuhao_desktop.py 在拉起网关前完成（没有账号不会硬启动）。
 ; LiuHao.bat 只保留为 --console 排障入口，不作为快捷方式目标。
 ; 三处入口统一引用安装目录里的 liuhao.ico。
-Name: "{group}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app --open-browser"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "启动鎏灏（关窗后驻留托盘，服务继续运行）"
+Name: "{group}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "启动鎏灏（关窗后驻留托盘，服务继续运行）"
 Name: "{group}\使用说明"; Filename: "{app}\START-HERE.txt"
 ; 离线合规入口：不联网也能看许可证全文与声明。打开程序根目录——licenses\、
 ; THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE 都在这一层。
-Name: "{group}\许可证与合规材料（离线）"; Filename: "{sys}\explorer.exe"; Parameters: """{app}"""; Comment: "断网查看 licenses\（16 项全文）、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE"
+Name: "{group}\许可证与合规材料（离线）"; Filename: "{sys}\explorer.exe"; Parameters: """{app}"""; Comment: "断网查看 licenses\（18 项全文）、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE"
 ; 离线诊断入口：不启动网关也能出包，服务起不来时用户可直接双击。
 Name: "{group}\收集诊断信息（离线）"; Filename: "{app}\scripts\collect_diagnostics.bat"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "服务未启动也能采集脱敏诊断包到桌面"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\assets\liuhao.ico"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app --open-browser"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app --open-browser"; WorkingDir: "{app}"; Description: "立即启动鎏灏（首次启动会进入向导）"; Flags: postinstall nowait skipifsilent; Tasks: launchnow
+Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app"; WorkingDir: "{app}"; Description: "立即启动鎏灏（首次启动会进入向导）"; Flags: postinstall nowait skipifsilent; Tasks: launchnow
 ; 覆盖升级清理：按 packaging/stage_payload.py 的同一份排除清单，删除程序目录
 ; config/ 下“新版已不随包”的旧文件（production.yaml 等）。用 payload 自带运行时
 ; 执行，静默等待完成；失败不阻断安装（最坏情况只是残留一个已排除文件）。
@@ -210,6 +249,23 @@ Type: dirifempty; Name: "{app}\data"
 Type: dirifempty; Name: "{app}\plugins"
 ; 安装时由 [Code] 写下的数据目录 marker（不在安装清单里，卸载器不会自动删）。
 Type: files; Name: "{app}\data-dir.txt"
+; ── 卸载不留「能直接登录的残迹」（无条件的运行痕迹，不问用户）──────────────
+; run\instance.json 含进程 pid 与地址；config\current_url.txt 记录本次控制台地址；
+; .liuhao-startup-probe-* 是启动探针临时文件；bootstrap.log 可能含异常堆栈与
+; 路径；desktop.json 记录上次选中的数据目录。留着它们等于把「上次怎么登录、
+; 数据在哪」写在磁盘上，卸载后照原样点两下就能连回账号。
+Type: files; Name: "{app}\run\instance.json"
+Type: files; Name: "{app}\bootstrap.log"
+Type: files; Name: "{app}\安装位置说明.txt"
+Type: files; Name: "{app}\.liuhao-startup-probe-*"
+Type: files; Name: "{code:GetDataDir}\run\instance.json"
+Type: files; Name: "{code:GetDataDir}\config\current_url.txt"
+Type: files; Name: "{code:GetDataDir}\.liuhao-startup-probe-*"
+; 旧数据目录（0.1.0 及更早的默认位置）里的同类探针：机器上可能同时存在新旧两个
+; 数据目录，只按 {code:GetDataDir} 删会漏掉旧目录里的占位文件（本机实测 42 个）。
+Type: files; Name: "{#LegacyDataDir}\.liuhao-startup-probe-*"
+Type: files; Name: "{localappdata}\LiuHao\logs\bootstrap.log"
+Type: files; Name: "{localappdata}\LiuHao\desktop.json"
 
 [UninstallRun]
 ; 顺序必须是：先停进程 → 再关自启 → 最后清缓存/删文件。托盘或网关还在跑时，
@@ -219,7 +275,7 @@ Type: files; Name: "{app}\data-dir.txt"
 Filename: "{app}\runtime\python.exe"; Parameters: "-m src.desktop stop --root ""{app}"" --timeout 10"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; RunOnceId: "StopLiuHao"
 ; 自启项必须走产品自己的幂等入口（src/desktop/autostart.py:disable），
 ; 与设置页/CLI 共用同一实现；不在这里手写注册表删键。
-Filename: "{app}\runtime\python.exe"; Parameters: "-m src.desktop autostart disable"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; RunOnceId: "DisableAutostart"
+Filename: "{app}\runtime\python.exe"; Parameters: "-m src.desktop autostart disable --root ""{app}"""; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; RunOnceId: "DisableAutostart"
 ; 运行期生成的字节码缓存不在安装清单内，卸载前先递归清掉，
 ; 否则 runtime/ 下会残留大量 .pyc。runhidden + waituntilterminated 保证
 ; 清理完成后再进入文件删除阶段。
@@ -264,6 +320,8 @@ var
   DataDirPage: TInputDirWizardPage;
   NeedDataDirChoice: Boolean;
   DataDirProblem: String;
+  { 数据目录页的「沿用了旧账号」提示只弹一次，别每点一次下一步就弹。 }
+  ReuseNoticeShown: Boolean;
 
 { 卸载键名。AppId 含花括号，而 Pascal 里花括号是注释，所以用 Chr 拼出来。
   花括号必须**左右成对**（123 与 125）：Inno 用 AppId 原样加 "_is1" 做键名。
@@ -521,9 +579,13 @@ end;
   只看"目录存在"或"目录非空"不够：D:\LiuHaoData 可能是上一次安装刚建的空壳
   （config/、logs/ 都在，但没有账号）。判断真实数据的锚点是随包代码实际落盘的
   文件名（见 scripts/launch_installed.py 的环境变量与 src/upgrade/backups.py）：
-  * config\human_identities.json / auth_secrets.json / integrity.key —— 账号与登录凭据；
+  * config\human_identities.json / auth_secrets.json —— 账号与登录凭据；
   * workspace\liuhao_employees.json —— 员工；
-  * memory_store.db / conversation_store.db / audit_store.db —— 记忆、对话、审计。 }
+  * memory_store.db / conversation_store.db / audit_store.db —— 记忆、对话、审计。
+
+  注意：单独一个 config\integrity.key **不算**用户数据。它只是完整性校验材料，
+  骨架目录（上一次安装建了 config\ 但没登录过）里也可能有；把它当"有用户数据"
+  会让重装选中空骨架、连不上真实账号，旧凭据变孤儿。 }
 function DataDirHasUserData(const Dir: String): Boolean;
 begin
   Result := False;
@@ -532,7 +594,6 @@ begin
   Result :=
     FileExists(Dir + '\config\human_identities.json') or
     FileExists(Dir + '\config\auth_secrets.json') or
-    FileExists(Dir + '\config\integrity.key') or
     FileExists(Dir + '\workspace\liuhao_employees.json') or
     FileExists(Dir + '\memory_store.db') or
     FileExists(Dir + '\conversation_store.db') or
@@ -610,6 +671,15 @@ begin
   end;
 end;
 
+{ 程序组页永远不显示：组名固定（真实安装 = DefaultGroupName=LiuHao），用户没有可
+  选择的内容。但页必须「存在」——一旦用 DisableProgramGroupPage=yes 把页关掉，
+  Inno 就会无视命令行 /GROUP=，验收安装会写进真实用户的 LiuHao 组并在卸载时把
+  整组删掉。ShouldSkipPage 只是跳过展示，/GROUP= 仍照常生效。 }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = wpSelectProgramGroup);
+end;
+
 function InitializeSetup: Boolean;
 var
   Marker: String;
@@ -617,6 +687,7 @@ var
   LegacyData: String;
   CmdDir: String;
   CmdData: String;
+  SideBySide: Boolean;
   Picked: String;
   Source: String;
 begin
@@ -680,6 +751,14 @@ begin
     5. 记录到的目录都不存在/不可用时让用户选择，**绝不**在空路径上新建空库冒充
        老目录 —— 那就是「升级完东西全没了」。 }
   CmdData := CmdParamValue('/DATA');
+  { 显式 /DIR 指向**另一个**程序目录 = 并装（side-by-side）或验收安装，不是升级。
+    此时不能沿用本机已登记的老数据目录：那会让「装到新目录」的实例去读旧目录，
+    现场表现为「新装的程序里账号/数据全不是自己的」，验收也永远拿不到干净的
+    数据目录。只有 /DATA 明确指向已有用户数据的目录时才尊重它。 }
+  SideBySide := HasPrevInstall and (CmdDir <> '') and
+    (CompareText(RemoveBackslashUnlessRoot(CmdDir), RemoveBackslashUnlessRoot(PrevInstallDir)) <> 0);
+  if SideBySide then
+    Log('并装模式：/DIR=' + CmdDir + '，与已安装的程序目录 ' + PrevInstallDir + ' 不同，不沿用旧数据目录。');
   DataFallback := False;
   NeedDataDirChoice := False;
   DataDirProblem := '';
@@ -701,7 +780,7 @@ begin
     begin
       Picked := '';
       Source := '';
-      if HasPrevInstall then
+      if HasPrevInstall and (not SideBySide) then
         Picked := PickRecordedDataDir(RegData, Marker, LegacyData, Source);
       if Picked <> '' then
       begin
@@ -809,6 +888,29 @@ end;
 function SameDir(const Left, Right: String): Boolean;
 begin
   Result := CompareText(TrimTrailingSlash(Left), TrimTrailingSlash(Right)) = 0;
+end;
+
+{ 备份根：升级线明确要求由安装器下发，不允许默认落 C 盘，也不允许升级器
+  静默退回数据目录。取值优先级：
+    1) 命令行 /BACKUPS=目录；
+    2) 构建参数 -UpgradeBackupRoot 注入的预处理宏；
+    3) 数据目录所在盘 + \LiuHaoBackups（本项目即 D:\LiuHaoBackups）。
+  这里只负责选路径；「默认推导结果落系统盘」的拒绝在 PrepareToInstall 里做。 }
+function GetBackupRoot(Param: String): String;
+var
+  CliPath: String;
+begin
+  CliPath := Trim(ExpandConstant('{param:BACKUPS|}'));
+  if CliPath <> '' then
+  begin
+    Result := TrimTrailingSlash(CliPath);
+    Exit;
+  end;
+#ifdef UpgradeBackupRoot
+  Result := TrimTrailingSlash(ExpandConstant('{#UpgradeBackupRoot}'));
+#else
+  Result := TrimTrailingSlash(ExtractFileDrive(ResolvedDataDir) + '\LiuHaoBackups');
+#endif
 end;
 
 { 检查 Windows 目录名本身的合法性：保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）
@@ -935,7 +1037,7 @@ begin
     解析不出可用目录时预填旧默认位置（%LOCALAPPDATA%\LiuHao\data），而不是留空
     —— 留空会让很多人卡在这一页；路径必须显示出来，用户仍可自行改选。 }
   DataDirPage := CreateInputDirPage(wpSelectDir,
-    '数据目录（账号、模型配置与 API Key）',
+    '数据目录（账号与聊天记录）',
     '数据目录与程序目录分开保存；卸载默认保留，升级/重装不会覆盖你的数据。',
     '默认 D:\LiuHaoData。请选择一个当前 Windows 账户可写的目录，然后点「下一步」。',
     False, '');
@@ -952,7 +1054,7 @@ begin
       '本安装包未做代码签名，Windows 可能提示「未知发布者」或「Windows 已保护你的电脑」。' + #13#10 +
       '这是预期行为：点「更多信息」→「仍要运行」即可继续。' + #13#10#13#10 +
       '程序装到：' + DirForDisplay(ResolvedAppDir) + #13#10 +
-      '数据放在：' + DirForDisplay(ResolvedDataDir) + '（账号、模型配置与 API Key；卸载默认保留）'
+      '数据放在：' + DirForDisplay(ResolvedDataDir) + '（账号与聊天记录；卸载默认保留）'
   else
     Welcome :=
       '本安装包未做代码签名，Windows 可能提示「未知发布者」或「Windows 已保护你的电脑」。' + #13#10 +
@@ -984,6 +1086,7 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Dir: String;
+  Prev: String;
 begin
   Result := True;
   if CurPageID = wpSelectDir then
@@ -999,7 +1102,7 @@ begin
   if Dir = '' then
   begin
     SuppressibleMsgBox('请先选择数据目录。' + #13#10#13#10 +
-      '账号、模型配置与 API Key 都保存在这里；它不能为空，也默认不放 C 盘。',
+      '账号与聊天记录都保存在这里；它不能为空，也默认不放 C 盘。',
       mbError, MB_OK, IDOK);
     Result := False;
     Exit;
@@ -1058,6 +1161,26 @@ begin
       Exit;
     end;
   end;
+  { 换目录的后果必须说清楚：旧目录**不会搬走也不会删除**，新目录是全新空环境。 }
+  Prev := RegisteredDataDir;
+  if (Prev <> '') and (not SameDir(Prev, Dir)) and DataDirHasUserData(Prev) then
+  begin
+    if MsgBox('你换了一个新的数据目录：' + #13#10 + Dir + #13#10#13#10 +
+              '原来的数据目录：' + #13#10 + Prev + #13#10#13#10 +
+              '旧目录里的账号与数据**不会搬走，也不会被删除**；新目录是一个全新的空环境，' +
+              '需要重新登录/配置。要继续吗？',
+              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end
+  else if (not ReuseNoticeShown) and DataDirHasUserData(Dir) then
+  begin
+    ReuseNoticeShown := True;
+    SuppressibleMsgBox('将沿用这个目录里已有的账号：' + #13#10 + Dir + #13#10#13#10 +
+      '重装后可直接用原账号登录，数据与历史都在原处。', mbInformation, MB_OK, IDOK);
+  end;
   ResolvedDataDir := Dir;
 end;
 
@@ -1069,11 +1192,28 @@ var
   FreeMB: Int64;
   Deepest: Integer;
   Issue: String;
+  BackupRoot, BackupOverride: String;
 begin
   Result := '';
   Dir := WizardForm.DirEdit.Text;
   if Dir = '' then
     Exit;
+
+  { 备份根不能默认落在系统盘：D 盘不可用、数据目录回退到 C 盘时，默认推导会
+    得到 C:\LiuHaoBackups，等于把「不占 C 盘」的要求落空。此时明确拒绝并给出
+    可行动的处置，而不是装完才让用户发现备份在 C 盘。 }
+  BackupOverride := Trim(ExpandConstant('{param:BACKUPS|}'));
+  BackupRoot := GetBackupRoot('');
+  if (BackupOverride = '') and
+     (CompareText(ExtractFileDrive(BackupRoot), ExtractFileDrive(ExpandConstant('{sd}'))) = 0) then
+  begin
+    Result := '备份目录默认会落在系统盘：' + BackupRoot + #13#10#13#10 +
+      '数据目录当前是 ' + ResolvedDataDir + '，安装器按「数据目录所在盘」推导备份根，' +
+      '结果落在系统盘（' + ExpandConstant('{sd}') + '）。本产品要求备份不占 C 盘。' + #13#10 +
+      '请改选 D 盘的数据目录，或显式指定备份目录：' + #13#10 +
+      '  安装包命令行加 /BACKUPS=D:\LiuHaoBackups';
+    Exit;
+  end;
 
   { MAX_PATH 预检必须在复制文件之前：安装包内最深的文件路径 = 目录 + 相对路径，
     一旦超过 259，安装会在中途失败（用户看到的是半装状态）。
@@ -1149,7 +1289,7 @@ begin
   if not DirCreatable(ResolvedDataDir) then
   begin
     Result := '数据目录不可写：' + ResolvedDataDir + #13#10#13#10 +
-      '数据目录不在程序目录里（账号、模型配置与 API Key 都在这里）。' + #13#10 +
+      '数据目录不在程序目录里（账号与聊天记录都在这里）。' + #13#10 +
       '请返回上一步，在「数据目录」页改选一个你能写入的位置（默认 D:\LiuHaoData）；' +
       '静默安装时用 /DATA="D:\LiuHaoData" 指定。' + #13#10 +
       '如果必须写到受保护位置，请右键安装包选择「以管理员身份运行」。';
@@ -1215,7 +1355,7 @@ begin
         '（在「数据目录」页确认/选择）')
     else
       Lines.Insert(0, '数据目录：' + DirForDisplay(ResolvedDataDir) +
-        '（账号、模型配置与 API Key 都在这里；卸载默认保留）');
+        '（账号与聊天记录都在这里；卸载默认保留）');
     if ProgramFallback then
       Lines.Insert(0, '程序目录：' + DirForDisplay(ResolvedAppDir) +
         '（因为 D 盘不可用，已改到不需要管理员权限的位置）')
@@ -1291,9 +1431,27 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Parent: String;
+  Candidates: TArrayOfString;
+  Listing: String;
+  Dir: String;
+  ExistingCount: Integer;
+  I, J: Integer;
+  Duplicate: Boolean;
+  StopCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { 先停进程并**校验结果**：stop 会在超时后强杀，然后检查安装根下是否还有
+      匹配进程、已知端口是否仍在 LISTEN；仍占用时退出码为 1。这里不能静默
+      继续 —— 文件删不掉会留下能直接登录的残骸，至少要让用户知道。 }
+    if (not UninstallSilent) and
+       Exec(ExpandConstant('{app}\runtime\python.exe'),
+            '-m src.desktop stop --root "' + ExpandConstant('{app}') + '" --timeout 10',
+            ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, StopCode) and
+       (StopCode <> 0) then
+      MsgBox('警告：仍有鎏灏进程或端口占用未释放。' + #13#10#13#10 +
+             '卸载会继续，但部分文件可能删不掉（下次登录仍可能连回旧服务）。' + #13#10 +
+             '建议先手动退出托盘图标，再重新运行卸载。', mbInformation, MB_OK);
     { 许可证/第三方声明默认保留（[Files] 里带 uninsneveruninstall），这里只做告知：
       静默卸载不弹窗；没有合规材料的老版本也不打扰。 }
     if (not UninstallSilent) and
@@ -1314,29 +1472,83 @@ begin
     if UninstallSilent then
       Exit;
 
-    if DirExists(UninstallDataDir) and DataDirHasContent(UninstallDataDir) then
-    begin
-      { 第一次确认：默认「否」，保留数据是安全默认值。 }
-      if MsgBox('是否同时删除你的数据？' + #13#10 + #13#10 +
-                '数据目录：' + UninstallDataDir + #13#10 +
-                '包含：账号、模型配置与 API Key、对话历史、审计记录。' + #13#10 + #13#10 +
-                '选择「否」= 保留数据，以后重装可直接继续使用。' + #13#10 +
-                '选择「是」= 继续进入二次确认。',
-                mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    { 数据可能不止一个：主数据目录（marker/注册表）之外，本机还可能有
+      上一次安装留下的骨架目录（D:\LiuHaoData）与桌面壳目录（%LOCALAPPDATA%\LiuHao，
+      含 desktop.json、logs、diagnostics）。只问主目录会让其余目录里的
+      JWT 签名密钥与账号材料静默留存。 }
+    SetArrayLength(Candidates, 3);
+    Candidates[0] := UninstallDataDir;
+    Candidates[1] := 'D:\LiuHaoData';
+    Candidates[2] := ExpandConstant('{localappdata}\LiuHao');
+
+    Listing := '';
+    ExistingCount := 0;
+    for I := 0 to 2 do
+      if DirExists(Candidates[I]) and DataDirHasContent(Candidates[I]) then
       begin
-        { 第二次确认：不可逆，必须再点一次「是」。 }
-        if MsgBox('二次确认：将永久删除数据目录，且无法恢复。' + #13#10 + #13#10 +
-                  UninstallDataDir + #13#10 + #13#10 +
-                  '确定要删除吗？',
-                  mbError, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+        { 去重：同一个目录只列一次（UninstallDataDir 常常就是 D:\LiuHaoData）。 }
+        Duplicate := False;
+        for J := 0 to I - 1 do
+          if DirExists(Candidates[J]) and SameDir(Candidates[J], Candidates[I]) then
+            Duplicate := True;
+        if not Duplicate then
         begin
-          DelTree(UninstallDataDir, True, True, True);
+          ExistingCount := ExistingCount + 1;
+          Listing := Listing + Candidates[I] + #13#10;
+          if SameDir(Candidates[I], ExpandConstant('{localappdata}\LiuHao')) then
+            Listing := Listing +
+              '    · desktop.json（上次选中的数据目录）、logs\bootstrap.log、' +
+              'diagnostics\（诊断包，含配置快照）' + #13#10
+          else if ExtractFileName(TrimTrailingSlash(Candidates[I])) = 'LiuHaoData' then
+            Listing := Listing +
+              '    · 账号库/会话库/模型库；JWT 签名密钥、模型主密钥、' +
+              '账号口令校验材料、模型 Key 密文（如该目录确实登录过）' + #13#10
+          else
+            Listing := Listing +
+              '    · 账号库/会话库/模型库；JWT 签名密钥、模型主密钥、' +
+              '账号口令校验材料、模型 Key 密文' + #13#10;
+        end;
+      end;
+
+    if ExistingCount = 0 then
+      Exit;
+
+    { 第一次确认：默认「否」，保留数据是安全默认值。文案必须点名敏感物：
+      只说"账号、模型配置与 API Key"会严重低估后果（删掉后无法恢复登录与历史）。 }
+    if MsgBox('是否同时删除下面这些数据目录？' + #13#10 + #13#10 + Listing + #13#10 +
+              '这些目录里可能有：JWT 签名密钥、模型主密钥、账号口令校验材料、' +
+              '模型 Key 密文、对话历史与审计记录。' + #13#10 + #13#10 +
+              '选择「否」= 全部保留，以后重装可直接继续使用（仍需重装后重新登录）。' + #13#10 +
+              '选择「是」= 进入二次确认，确认后**永久删除，无法恢复**。',
+              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    begin
+      { 第二次确认：不可逆，必须再点一次「是」。 }
+      if MsgBox('二次确认：将永久删除以上 ' + IntToStr(ExistingCount) + ' 个目录，且无法恢复。' + #13#10 + #13#10 +
+                Listing + #13#10 +
+                '确定要删除吗？',
+                mbError, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+      begin
+        for I := 0 to 2 do
+        begin
+          Dir := Candidates[I];
+          if not DirExists(Dir) then
+            Continue;
+          { 去重后逐个删：先删 children 再删父目录。 }
+          Duplicate := False;
+          for J := 0 to I - 1 do
+            if DirExists(Candidates[J]) and SameDir(Candidates[J], Dir) and (Candidates[J] <> '') then
+              Duplicate := True;
+          if Duplicate then
+            Continue;
+          DelTree(Dir, True, True, True);
           { 只清理 LiuHao 自己的数据根，绝不碰盘符根目录或别的目录。 }
-          Parent := ExtractFileDir(UninstallDataDir);
-          if (ExtractFileName(UninstallDataDir) = 'data') and
-             (ExtractFileName(Parent) = 'LiuHao') then
-            RemoveDir(Parent)
-          else if ExtractFileName(UninstallDataDir) = 'LiuHaoData' then
+          Parent := ExtractFileDir(TrimTrailingSlash(Dir));
+          { 护栏：父目录不是盘符根（'D:\' 只有 3 个字符）。D:\LiuHaoData 的父目录
+            是 'D:\'，RemoveDir 会对整盘调用 —— 必须挡住。 }
+          if (Length(Parent) > 3) and
+             ((ExtractFileName(TrimTrailingSlash(Dir)) = 'LiuHaoData') or
+              ((ExtractFileName(TrimTrailingSlash(Dir)) = 'data') and
+               (ExtractFileName(Parent) = 'LiuHao'))) then
             RemoveDir(Parent);
         end;
       end;

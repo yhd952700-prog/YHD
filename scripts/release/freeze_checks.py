@@ -63,6 +63,13 @@ REQUIRED_MODULE_IMPORTS: Tuple[str, ...] = (
     "uvicorn",
     "dotenv",
     "aiosqlite",
+    # 桌面壳（pywebview）整条运行栈：窗口后端在 native_window.py 的函数体里
+    # 才导入，启动图看不到；缺任何一条，安装版双击就是 ImportError 或开不出窗。
+    "webview",
+    "bottle",
+    "proxy_tools",
+    "clr_loader",
+    "clr",
 )
 
 #: 必须由 **真实 import 图** 带上的发行包。只写进 ``EXPLICIT_DISTS`` 是不够的：
@@ -90,6 +97,14 @@ REQUIRED_MEASURED_DISTS: Tuple[str, ...] = (
     "jiter",
     "h11",
     "click",
+    # 桌面壳运行栈必须由真实 import 图带上（不是 EXPLICIT_DISTS 兜底）：
+    # pywebview 的 WinForms 后端开窗时才真正用到 pythonnet/clr_loader/bottle/
+    # proxy_tools，漏一个都表现为窗口起不来。
+    "pywebview",
+    "pythonnet",
+    "clr-loader",
+    "bottle",
+    "proxy-tools",
 )
 
 #: 由 ``EXPLICIT_DISTS`` 兜底、不进 import 图的发行包（子进程入口/条件导入）。
@@ -121,6 +136,14 @@ PYWIN32_MODULES: frozenset = frozenset({
     "win32event", "win32clipboard", "win32com", "win32ts", "win32job",
     "ntsecuritycon", "pythoncom", "pywintypes", "winerror", "servicemanager",
 })
+
+#: 由 ``.pth`` 提供顶层导入名、``packages_distributions()`` 映射不到的模块，
+#: 值指明它属于哪个发行包（该发行包整体随包，不属于「漏包」）。
+#: ``pythonnet`` 安装的 ``pythonnet.pth`` 会把 ``CLR`` 顶层名指到它的运行时，
+#: 因此 ``import CLR`` 在 import 图里没有任何 dist-info 映射。
+PTH_PROVIDED_MODULES: Dict[str, str] = {
+    "CLR": "pythonnet",
+}
 
 #: ``smoke_payload`` 必须剥离的变量样板。少一个就会出现「注册写仓库、登录读
 #: 数据目录」的 403 假失败。
@@ -278,10 +301,15 @@ def check_deps(repo: Path, python: str, stage: Optional[Path] = None) -> int:
     print(f"[{tag}] import 图解析发行包：{len(dists)} 个")
 
     if unmapped:
-        unexpected = [name for name in unmapped if name.split("->")[0] not in PYWIN32_MODULES]
+        unexpected = [
+            name for name in unmapped
+            if name.split("->")[0] not in PYWIN32_MODULES
+            and name.split("->")[0] not in PTH_PROVIDED_MODULES
+        ]
         if unexpected:
             return _fail(tag, f"有模块无法映射到发行包（离线运行时会缺文件）：{unexpected}")
         print(f"[{tag}] pywin32 子模块无发行包映射（整个 pywin32 由 EXPLICIT_DISTS 兜底）：{unmapped}")
+        print(f"[{tag}] .pth 提供的顶层名已按发行包归位：{PTH_PROVIDED_MODULES}")
 
     missing = [name for name in REQUIRED_MEASURED_DISTS if _normalise_dist(name) not in dists]
     missing += [name for name in REQUIRED_TRANSITIVE if _normalise_dist(name) not in dists]
@@ -519,6 +547,11 @@ def check_frontend_source(repo: Path, module_count: Optional[int], capture: bool
     return _ok(tag, "前端源码与基线一致")
 
 
+# 打包期由 stage_payload 注入的签章文件，是 console/ 下唯一允许的「清单外」文件。
+# 白名单只到这一个具体文件名；除此之外多出任何文件都必须判红。
+CONSOLE_CONTRACT_REL = "console/console-contract.json"
+
+
 def _dir_console_files(app_dir: Path) -> Dict[str, Tuple[str, int]]:
     console = app_dir / "console"
     if not console.is_dir():
@@ -528,7 +561,7 @@ def _dir_console_files(app_dir: Path) -> Dict[str, Tuple[str, int]]:
         if not path.is_file():
             continue
         rel = path.relative_to(app_dir).as_posix()
-        if rel.endswith("/console-contract.json"):
+        if rel == CONSOLE_CONTRACT_REL:
             continue
         files[rel] = (_sha256_file(path), path.stat().st_size)
     return files
@@ -558,7 +591,10 @@ def check_frontend_payload(repo: Path, app_dir: Path, version: str) -> int:
         return _fail(tag, f"当前工作树没有驾驶舱构建产物 {build_dist}/index.html（未构建就被打包。）")
 
     dist_pairs = [
-        (path.relative_to(build_dist).as_posix(), _sha256_file(path))
+        # 键必须与签章里的键同构：console_contract.console_files_under() 用的是
+        # 「console/…」这种 app 相对路径。少了这个前缀，指纹永远对不上，
+        # 门禁会把每一份正常 payload 都判成「不同源」。
+        ("console/" + path.relative_to(build_dist).as_posix(), _sha256_file(path))
         for path in build_dist.rglob("*") if path.is_file()
     ]
     dist_fp = _set_fingerprint(dist_pairs)
@@ -573,11 +609,21 @@ def check_frontend_payload(repo: Path, app_dir: Path, version: str) -> int:
         )
 
     payload_files = _dir_console_files(app_dir)
-    if len(payload_files) != len(dist_pairs):
+    # 逐文件比对清单，不做「数量相等就算过」——数量相同但换了一个文件（多一个、少一个）
+    # 同样会让界面跑到旧代码上，而计数发现不了。
+    expected = {rel for rel, _ in dist_pairs}
+    extra = sorted(set(payload_files) - expected)
+    missing = sorted(expected - set(payload_files))
+    if extra or missing:
+        detail = []
+        if extra:
+            detail.append("多出 " + "、".join(extra))
+        if missing:
+            detail.append("缺少 " + "、".join(missing))
         return _fail(
             tag,
-            f"payload 控制台文件数 {len(payload_files)} ≠ 构建产物 {len(dist_pairs)}："
-            "有旧前端文件混进了包里（或被漏拷）。",
+            "payload 控制台文件与构建产物清单不一致：" + "；".join(detail)
+            + f"（清单外只允许打包期注入的 {CONSOLE_CONTRACT_REL}）。",
         )
     return _ok(tag, f"payload 控制台与当前构建产物同源（{len(dist_pairs)} 个文件，指纹 {dist_fp[:16]}…）")
 

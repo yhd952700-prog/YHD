@@ -30,7 +30,11 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from .errors import ChecksumMismatch, ManifestError, SignatureError
 from .models import DownloadResult, ReleaseInfo
-from .sources import ReleaseSource
+from .sources import (
+    ReleaseSource,
+    open_no_redirect,
+    validate_remote_url,
+)
 
 _USER_AGENT = "LiuHao-AI-OS-Updater/1.0"
 _CHUNK = 1024 * 1024
@@ -77,10 +81,12 @@ def _copy_local(source: Path, target: Path, max_bytes: int) -> int:
 
 
 def _download_http(url: str, target: Path, timeout: float, max_bytes: int) -> int:
+    # 建连前再校验一次：强制 https、拒绝私网/回环，且不跟随 30x。
+    validate_remote_url(url, context="发布包", resolve=True)
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     written = 0
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_no_redirect(request, timeout=timeout) as response:
             status = getattr(response, "status", 200)
             if status != 200:
                 raise ManifestError(f"下载发布包返回 HTTP {status}")
@@ -176,8 +182,26 @@ def download_release(
 ) -> DownloadResult:
     """Download ``release`` and verify size, SHA256 and (if configured) signature."""
     location = source.resolve_artifact(release)
+    remote = _is_http(location)
+    if remote:
+        # 远端发布包是供应链边界：https + 私网拒绝 + 清单签名 + 可信公钥，
+        # 缺一项就拒绝下载，不再允许“无签名只做哈希就继续”。
+        validate_remote_url(location, context="发布包", resolve=False)
+        if not release.signature:
+            raise SignatureError(
+                "远端发布包必须带 Ed25519 签名；清单未提供 signature，已拒绝下载。"
+            )
+        if not public_key:
+            raise SignatureError(
+                "远端发布包必须配置可信 Ed25519 公钥（LIUHAO_UPGRADE_PUBLIC_KEY），"
+                "否则无法验证来源，已拒绝下载。"
+            )
     if target_dir is None:
-        temp_root = Path(tempfile.mkdtemp(prefix="liuhao-upgrade-download-"))
+        # 名字带 pid：进程被强杀时留下的目录可被启动清扫判定归属
+        # （见 ``src/common/temp_sweep.py``）。
+        temp_root = Path(
+            tempfile.mkdtemp(prefix=f"liuhao-upgrade-download-{os.getpid()}-")
+        )
     else:
         temp_root = Path(target_dir)
         temp_root.mkdir(parents=True, exist_ok=True)

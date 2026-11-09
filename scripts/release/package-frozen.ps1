@@ -17,7 +17,7 @@
 
   产物命名：
     <OutRoot>\installer\LiuHao-Setup-<Version>.exe
-    <OutRoot>\release\liuhao-<Version>.zip
+    <OutRoot>\release\liuhao-<Version>-upgrade.zip
     <OutRoot>\installer\SHA256SUMS.txt
     <OutRoot>\FREEZE-RECORD.json      ← 版本/提交/解释器/ISCC/模块数/指纹/哈希
 
@@ -293,7 +293,10 @@ Invoke-PyGate "日志明文凭据" @("log-leak", "--repo", $RepoRoot)
 #      先按根文件重新生成副本（只写这一个生成物），再校验内容一致——手改副本
 #      会在这一步被抹掉，避免两份清单说法不一致。
 Write-Step "Runbook 同源（唯一事实源 → dist 生成物）"
-Invoke-PyGate "Runbook 同源" @("runbook", "--repo", $RepoRoot, "--sync")
+# DryRun 必须真正只读：不带 --sync 只校验，不会生成/覆盖 dist\release-gate 里的副本。
+$runbookArgs = @("runbook", "--repo", $RepoRoot)
+if (-not $script:DryRun) { $runbookArgs += "--sync" }
+Invoke-PyGate "Runbook 同源" $runbookArgs
 
 # 1.9 本机攻击面回归闸：P0/P1 与本机证明、备份导出的可重复探针。
 #     这是「本机攻击面」的回归闸——任何一条 FAIL 都阻塞出包（Add-Check 抛错）。
@@ -304,8 +307,18 @@ $attackSurfaceScript = Join-Path $RepoRoot "scripts\acceptance\local_attack_surf
 if (-not (Test-Path $attackSurfaceScript)) {
     Add-Check "本机攻击面回归" "FAIL" "找不到 scripts\acceptance\local_attack_surface_e2e.py"
 } else {
-    $attackSurfaceOut = & $PythonExe $attackSurfaceScript --allow-missing-installed 2>&1 | Out-String
-    $attackSurfaceCode = $LASTEXITCODE
+    # 与 Invoke-RepoGate 同一个 PS 5.1 陷阱：验收脚本拉起的隔离子进程会把启动
+    # 日志（如“未找到控制台构建产物”）写到 stderr，EAP=Stop 下会被当成
+    # NativeCommandError 终止整个脚本——那样连真实读数都打不出来。这里只放行
+    # stderr，判定仍严格看退出码。
+    $prevAttackEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $attackSurfaceOut = & $PythonExe $attackSurfaceScript --allow-missing-installed 2>&1 | Out-String
+        $attackSurfaceCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevAttackEap
+    }
     $attackSurfaceLines = @($attackSurfaceOut.Trim() -split "`r?`n" | Where-Object { $_ -ne "" })
     $attackSurfaceLast = if ($attackSurfaceLines.Count -gt 0) { $attackSurfaceLines[-1] } else { "（无输出）" }
     if ($attackSurfaceCode -eq 0) {
@@ -376,11 +389,16 @@ if ($DryRun) {
 
 # ------------------------------------------------------------ 6. 真实构建
 $sourceCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
+# 只记 commit 不够：同一个 commit 在不同 index/工作树状态下能打出不同字节的包。
+# 树 ID 是"这次构建实际用的目录内容"的可比对指纹；前置门禁已要求工作树干净，
+# 因此 HEAD^{tree} 与实际打包内容一致。
+$sourceTree = (& git -C $RepoRoot rev-parse "HEAD^{tree}").Trim()
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 $buildLog = Join-Path $OutRoot "build.log"
 
 Write-Step "清理 tsc 增量缓存并构建前端 + payload + 冒烟 + 编译"
 Write-Host "  SOURCE-COMMIT $sourceCommit"
+Write-Host "  SOURCE-TREE   $sourceTree"
 
 # 历史坑：tsbuildinfo 缓存过时会跳过真实检查并报假诊断。每次冻结构建前删干净。
 $tsCache = Join-Path $consoleDir "node_modules\.tmp"
@@ -452,7 +470,7 @@ if (-not (Test-Path $setupExe)) { throw "编译结束但找不到 LiuHao-Setup-$
 
 $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupExe).Hash
 $exeSizeMb = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
-$releaseZip = Join-Path $OutRoot ("release\liuhao-$Version.zip")
+$releaseZip = Join-Path $OutRoot ("release\liuhao-$Version-upgrade.zip")
 $zipHash = if (Test-Path $releaseZip) { (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseZip).Hash } else { "" }
 $zipSizeMb = if (Test-Path $releaseZip) { [math]::Round((Get-Item $releaseZip).Length / 1MB, 1) } else { 0 }
 if (-not (Test-Path $releaseZip)) { Add-Check "升级包" "FAIL" "缺少 $releaseZip" } else { Add-Check "升级包" "PASS" "$releaseZip（$zipSizeMb MB）" }
@@ -542,6 +560,7 @@ Set-Content -Path $sums -Value $sumLines -Encoding ASCII
 $record = [ordered]@{
     version = $Version
     source_commit = $sourceCommit
+    source_tree = $sourceTree
     built_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     repo_root = $RepoRoot
     python = $PythonExe
@@ -573,8 +592,17 @@ Write-Host "  体积    $exeSizeMb MB（payload 见 manifest.json）"
 Write-Host "  SHA256  $exeHash"
 if ($zipHash) { Write-Host "升级包  $releaseZip（$zipSizeMb MB，SHA256 $zipHash）" }
 Write-Host "  提交    $sourceCommit"
+Write-Host "  树      $sourceTree"
 Write-Host "  合规    PASS（$complianceJson）"
 Write-Host "  升级包  PASS（$zipComplianceJson）"
 Write-Host "  记录    $recordPath"
-Write-Host "说明：安装包不含模型权重、不含密钥；安装器未签名，Windows 会提示「未知发布者」。" -ForegroundColor Yellow
+# 签名说法必须与真实状态一致：历史上这里写死「安装器未签名」，签名之后仍在打印，
+# 造成「哈希/说法打架」。这里改成读 Authenticode 真实读数再措辞。
+$finalSig = Get-AuthenticodeSignature -LiteralPath $setupExe
+if ($finalSig.Status -eq "Valid") {
+    $sigNote = "安装器已签名（Status=Valid，$($finalSig.SignerCertificate.Subject)）；项目使用自签名证书，未导入信任的机器在 SmartScreen 上仍等同未签名。"
+} else {
+    $sigNote = "安装器签名 Status=$($finalSig.Status)（未通过 Authenticode 校验），Windows 会提示「未知发布者」。"
+}
+Write-Host ("说明：安装包不含模型权重、不含密钥；" + $sigNote) -ForegroundColor Yellow
 exit 0
