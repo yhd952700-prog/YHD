@@ -30,6 +30,7 @@ import os
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
@@ -470,11 +471,17 @@ def get_audit_kernel() -> AuditKernel:
     if _global_audit_kernel is None:
         from src.common.data_paths import resolve_store_path
 
-        hwm_path = resolve_store_path(
-            "audit_kernel_hwm.json",
-            os.path.join(os.path.expanduser("~"), ".liuhao", "audit_kernel_hwm.json"),
-            env_var="AUDIT_KERNEL_HWM_PATH",
-        )
+        # AUDIT_KERNEL_HWM_PATH takes priority (same logic as resolve_store_path's
+        # env_var branch); read it directly so the deployment-gate scanner can see
+        # the literal env read and verify the ALLOWLIST classification.
+        _hwm_override = (os.environ.get("AUDIT_KERNEL_HWM_PATH") or "").strip()
+        if _hwm_override:
+            hwm_path = str(Path(_hwm_override).expanduser())
+        else:
+            hwm_path = resolve_store_path(
+                "audit_kernel_hwm.json",
+                os.path.join(os.path.expanduser("~"), ".liuhao", "audit_kernel_hwm.json"),
+            )
         try:
             os.makedirs(os.path.dirname(hwm_path), exist_ok=True)
         except OSError:

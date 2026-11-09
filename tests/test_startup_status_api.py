@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -136,6 +137,28 @@ def test_background_failure_is_visible_not_swallowed(monkeypatch):
         # 核心功能依然可用：失败的是可选组件，不应把整个网关判死。
         assert body["core_ready"] is True
         assert test_client.get("/v1/health").status_code == 200
+
+
+def test_master_key_acl_failure_is_visible_in_startup(monkeypatch):
+    """主密钥 ACL 收紧失败必须出现在 /v1/startup.degraded，而不是静默 pass。"""
+    from src.security import encryption
+
+    monkeypatch.setattr(
+        encryption,
+        "ensure_master_key_permissions",
+        lambda: (False, "still-exposed", Path("C:/test/master.key")),
+    )
+
+    with TestClient(get_app()) as test_client:
+        body = test_client.get("/v1/startup").json()
+
+    assert body["state"] == "degraded"
+    assert body["core_ready"] is True, "ACL 失败是降级，不是整个网关不可用"
+    entries = [item for item in body["degraded"] if item["subsystem"] == "master_key_acl"]
+    assert entries, body["degraded"]
+    assert "still-exposed" in entries[0]["sqlite_msg"]
+    # /v1/startup 会把本机绝对路径脱敏成 <本地路径>，这里只断言文件名。
+    assert entries[0]["path"].endswith("master.key")
 
 
 def test_scheduler_start_failure_is_visible_in_startup_errors(monkeypatch):

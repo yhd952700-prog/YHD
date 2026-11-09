@@ -1059,6 +1059,52 @@ async def lifespan(app: FastAPI):
 
     _startup_mark("密钥 / JWT / RBAC 初始化完成")
 
+    # 主密钥文件 ACL 强校验（启动期，失败必须可见）：老装机留下的 master.key
+    # 可能仍是继承 ACL（Users / CodexSandboxUsers 可读）。这里在密钥初始化之后
+    # 做一次读检查，需要时自愈；失败登记 degraded，/v1/startup 与
+    # evt=startup.degraded 同源可见，绝不静默 pass。
+    try:
+        from ..observability.boot_report import add_degraded as _add_degraded
+        from ..security.encryption import ensure_master_key_permissions
+
+        _acl_ok, _acl_state, _acl_path = ensure_master_key_permissions()
+        if _acl_ok:
+            if _acl_state == "tightened":
+                logger.warning(
+                    "主密钥文件 ACL 过宽，已自动收紧为仅当前用户：%s", _acl_path
+                )
+            else:
+                logger.info("主密钥文件 ACL 校验通过（%s）：%s", _acl_state, _acl_path)
+        else:
+            _add_degraded(
+                "master_key_acl",
+                str(_acl_path or ""),
+                f"master.key ACL 收紧后复核仍不通过（{_acl_state}），"
+                "其他主体仍可读取",
+                "degraded: 检查数据目录/文件是否只读或 ACL 不可写，"
+                "以当前用户身份修复后重启；详见 /v1/startup.degraded",
+            )
+            logger.error(
+                "MASTER KEY ACL CHECK FAILED -- %s 仍可被其他主体读取（%s）",
+                _acl_path,
+                _acl_state,
+            )
+    except Exception as _acl_exc:  # noqa: BLE001 - 校验失败必须登记，不能静默
+        try:
+            from ..observability.boot_report import add_degraded as _add_degraded
+
+            _add_degraded(
+                "master_key_acl",
+                "",
+                f"{type(_acl_exc).__name__}: {_acl_exc}",
+                "degraded: 主密钥 ACL 无法校验；检查 pywin32 安装与"
+                "数据目录可读性后重启",
+            )
+        except Exception:  # noqa: BLE001 - 登记失败也不能阻断启动
+            pass
+        logger.error("MASTER KEY ACL CHECK FAILED: %s", _acl_exc, exc_info=True)
+
+
     # 旧 .env 里的 AI_PROVIDER_* 配置迁移成一条可编辑模型记录（只做一次）。
     # 迁移不覆盖任何已有数据；失败只记日志，绝不阻断启动。
     try:
@@ -2276,6 +2322,17 @@ def get_app() -> FastAPI:
         # add a label set to every HTTP histogram (measured in the 22-minute
         # soak). Instrumentation must never break the request itself, hence the
         # guard.
+        #
+        # ``_ensure_http_metrics`` is normally deferred to the background
+        # warmup (to avoid paying the prometheus_client import cost before the
+        # first screen). If a request arrives before that warmup has run, we
+        # trigger it inline here so the first real request is still counted
+        # rather than silently dropped. The call is idempotent.
+        if _RECORD_HTTP_REQUEST is None:
+            try:
+                _ensure_http_metrics()
+            except Exception:  # pragma: no cover - never fail a request
+                pass
         if _RECORD_HTTP_REQUEST is not None:
             try:
                 _RECORD_HTTP_REQUEST(

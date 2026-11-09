@@ -33,7 +33,10 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from src.common.atomic_write import exclusive_file_lock
-from src.common.fs_permissions import ensure_restricted_to_current_user
+from src.common.fs_permissions import (
+    ensure_restricted_to_current_user,
+    is_restricted_to_current_user,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1016,6 +1019,30 @@ def resolve_master_key_file() -> Path:
             )
             return legacy
     return target
+
+
+def ensure_master_key_permissions() -> tuple[bool, str, Optional[Path]]:
+    """启动期强校验主密钥文件 ACL，需要时收紧；返回 ``(ok, 状态, 路径)``。
+
+    这是「不静默 pass」的入口：调用方必须把 ``ok=False`` 登记到启动降级清单
+    （``/v1/startup.degraded``），让用户看得见，而不是只写一行日志。
+
+    状态含义：
+
+    * ``missing``：文件不存在。首次启动由写入路径按受保护方式创建，这里不
+      凭空生成密钥（生成就可能让旧数据永久解不开）。
+    * ``already-restricted``：只读检查通过（微秒级），不写盘。
+    * ``tightened``：原 ACL 过宽，已收紧并通过读回复核。
+    * ``still-exposed``：收紧后复核仍不通过，调用方必须登记降级。
+    """
+    path = resolve_master_key_file()
+    if not path.exists():
+        return True, "missing", path
+    if is_restricted_to_current_user(path):
+        return True, "already-restricted", path
+    if ensure_restricted_to_current_user(path):
+        return True, "tightened", path
+    return False, "still-exposed", path
 
 
 class EncryptionManager:

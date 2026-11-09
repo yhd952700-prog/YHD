@@ -18,6 +18,14 @@ staging、提醒脚本都不会走到 ``finally`` 清理，于是永久留在 ``
 * **单次有上限**：最多处理 ``MAX_CANDIDATES`` 个匹配项，异常目录不会拖慢启动。
 * **只记日志**：单个删除记 ``debug``，汇总记 ``info``；任何异常都吞掉，启动
   流程不受影响。
+* **取证沙箱是唯一例外（没有 pid）**：``liuhao-maintenance-evidence`` 由人工/
+  取证脚本创建，不是 ``mkdtemp``，因此用更严的判据——名字必须**完全一致**、
+  目录里必须有本产品的内容指纹（``data/master.key`` + 至少一个取证脚本/密文
+  条目）、默认保留 30 天、出现 ``KEEP`` / ``.keep`` / ``DO_NOT_DELETE`` /
+  ``keep-evidence*`` 永不删除、删除前先原子改名隔离（Windows 上被占用的目录
+  改名会失败 → 按"仍在用"保留）。保留期内也会把其中已知的密钥文件收紧到
+  当前用户，避免"等 30 天期间一直裸露"。候选根只有当前用户自己的临时目录
+  （``tempfile.gettempdir()`` 与 ``%LOCALAPPDATA%\\Temp``），且只认直接子项。
 
 启动开销（为什么需要缓存）
 ------------------------
@@ -30,7 +38,8 @@ staging、提醒脚本都不会走到 ``finally`` 清理，于是永久留在 ``
 * 缓存落在**数据根**（``<data>/temp-sweep.stamp.json``），不写临时目录本身，
   避免"写缓存又改了临时目录 mtime"的自我失效。
 * 缓存最长有效 24h：即使目录没动静，每天也至少完整扫一次，避免"上次扫描时
-  pid 还活着、随后退出的残留"被无限期跳过。
+  pid 还活着、随后退出的残留"被无限期跳过。取证沙箱的判定不受缓存影响
+  （每次启动都跑，成本约 1ms）。
 * 拿不到数据根、读缓存失败、时钟回拨等异常一律退回完整扫描（宁可慢，不可漏
   的根本保障是判据本身，不是缓存）。
 
@@ -76,6 +85,34 @@ DEFAULT_MIN_AGE_SECONDS = 7 * 24 * 3600
 
 #: 覆盖保留期的环境变量（秒，必须为正数；非法值回落默认并记 warning）。
 MIN_AGE_ENV = "LIUHAO_TEMP_SWEEP_MIN_AGE_SECONDS"
+
+#: 取证/维护沙箱目录名：人工创建，没有 pid，只有**完全同名**才考虑。
+EVIDENCE_DIR_NAME = "liuhao-maintenance-evidence"
+
+#: 取证沙箱默认保留期 30 天（审计留痕按月归档；比 pid 残留长得多）。
+DEFAULT_EVIDENCE_MIN_AGE_SECONDS = 30 * 24 * 3600
+
+#: 覆盖取证沙箱保留期的环境变量（秒，必须为正数）。
+EVIDENCE_MIN_AGE_ENV = "LIUHAO_EVIDENCE_SWEEP_MIN_AGE_SECONDS"
+
+#: 置 0/off/false/no 可关闭取证沙箱清扫（只影响这一条规则）。
+EVIDENCE_SWEEP_ENV = "LIUHAO_EVIDENCE_SWEEP"
+
+#: 目录里出现任一标记 → 永不自动删除（人工保留意愿优先）。
+_EVIDENCE_KEEP_MARKERS = ("KEEP", ".keep", "DO_NOT_DELETE", "keep-evidence")
+
+#: 内容指纹：必须先证明这是**本产品**的取证沙箱，而不是同名目录。
+_EVIDENCE_ANCHOR = os.path.join("data", "master.key")
+_EVIDENCE_MARKERS = (
+    "capture_evidence.js",
+    "serve_console.js",
+    "auth_secrets.json",
+    "identities.json",
+)
+
+#: 有界遍历：最多看 512 个条目、4 层（避免异常目录拖慢启动）。
+_EVIDENCE_MAX_ENTRIES = 512
+_EVIDENCE_MAX_DEPTH = 4
 
 #: 本程序所有自产名称的公共前缀（快速过滤用，见 ``_match_pid``）。
 _FAST_PREFIX = "liuhao"
@@ -130,6 +167,229 @@ def min_age_seconds() -> float:
         )
         return DEFAULT_MIN_AGE_SECONDS
     return value
+
+
+def evidence_min_age_seconds() -> float:
+    """取证沙箱保留期（秒）：非法值回落 30 天并告警一次。"""
+    raw = (os.environ.get(EVIDENCE_MIN_AGE_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_EVIDENCE_MIN_AGE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r 不是合法秒数，使用默认 %.0fs", EVIDENCE_MIN_AGE_ENV, raw,
+            DEFAULT_EVIDENCE_MIN_AGE_SECONDS,
+        )
+        return DEFAULT_EVIDENCE_MIN_AGE_SECONDS
+    if value <= 0:
+        logger.warning(
+            "%s=%r 必须为正数，使用默认 %.0fs", EVIDENCE_MIN_AGE_ENV, raw,
+            DEFAULT_EVIDENCE_MIN_AGE_SECONDS,
+        )
+        return DEFAULT_EVIDENCE_MIN_AGE_SECONDS
+    return value
+
+
+def evidence_sweep_enabled() -> bool:
+    """默认开启；``LIUHAO_EVIDENCE_SWEEP=0/off/false/no`` 可显式关闭。"""
+    raw = (os.environ.get(EVIDENCE_SWEEP_ENV) or "").strip().lower()
+    return raw not in {"0", "off", "false", "no"}
+
+
+def _looks_like_product_evidence_sandbox(path: str) -> bool:
+    """内容指纹：``data/master.key`` + 至少一个取证脚本/密文条目。
+
+    同名目录不算数——只有本产品真正跑过、留下这些文件的目录才会被处理。
+    """
+    if not os.path.isfile(os.path.join(path, _EVIDENCE_ANCHOR)):
+        return False
+    return any(
+        os.path.exists(os.path.join(path, marker))
+        for marker in _EVIDENCE_MARKERS
+    )
+
+
+def _has_keep_marker(path: str) -> bool:
+    """人工保留标记：任一命中就永不自动删；读失败也按"要保留"处理。"""
+    for name in _EVIDENCE_KEEP_MARKERS:
+        if os.path.exists(os.path.join(path, name)):
+            return True
+    try:
+        with os.scandir(path) as scanner:
+            return any(
+                entry.name.lower().startswith("keep-evidence")
+                for entry in scanner
+            )
+    except OSError:
+        return True
+
+
+def _newest_mtime_bounded(path: str) -> Tuple[Optional[float], bool]:
+    """有界返回 ``(目录树最新 mtime, 是否因预算截断)``。
+
+    目录自身 mtime 只反映"顶层条目增删"，文件内容重写不会改它；取证沙箱
+    可能被重新生成，所以取整棵树（预算内）的最新时间。截断即视为"无法证明
+    够旧"，调用方保留，避免误删正在写的证据。
+    """
+    try:
+        newest = os.stat(path).st_mtime
+    except OSError:
+        return None, False
+    seen = 0
+    truncated = False
+    stack: list[Tuple[str, int]] = [(path, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            scanner = os.scandir(current)
+        except OSError:
+            continue
+        with scanner:
+            for entry in scanner:
+                seen += 1
+                if seen > _EVIDENCE_MAX_ENTRIES:
+                    truncated = True
+                    break
+                try:
+                    if entry.is_symlink():
+                        continue
+                    stat_result = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat_result.st_mtime > newest:
+                    newest = stat_result.st_mtime
+                if (
+                    depth + 1 < _EVIDENCE_MAX_DEPTH
+                    and entry.is_dir(follow_symlinks=False)
+                ):
+                    stack.append((entry.path, depth + 1))
+        if truncated:
+            break
+    return newest, truncated
+
+
+def _tighten_evidence_secrets(path: str) -> None:
+    """保留期内也把已知密钥文件收紧到当前用户（失败只记 debug）。"""
+    from src.common.fs_permissions import ensure_restricted_to_current_user
+
+    for relative in (_EVIDENCE_ANCHOR, "auth_secrets.json"):
+        candidate = os.path.join(path, relative)
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            if not ensure_restricted_to_current_user(candidate):
+                logger.warning("取证沙箱密钥文件 ACL 未能收紧：%s", candidate)
+        except Exception as exc:  # noqa: BLE001 - 启动路径不得抛出
+            logger.debug("取证沙箱密钥文件 ACL 收紧失败（%s）：%s", candidate, exc)
+
+
+def _remove_quarantined(path: str) -> bool:
+    """先原子改名隔离再删除；改名失败=仍被占用，按存活保留。"""
+    quarantine = f"{path}.deleting-{os.getpid()}-{os.urandom(3).hex()}"
+    try:
+        os.rename(path, quarantine)
+    except OSError as exc:
+        logger.debug("取证沙箱可能仍在使用，保留：%s（%s）", path, exc)
+        return False
+    try:
+        shutil.rmtree(quarantine)
+    except OSError as exc:
+        logger.warning("删除取证沙箱失败，尝试改名回滚：%s（%s）", quarantine, exc)
+        with contextlib.suppress(OSError):
+            os.rename(quarantine, path)
+        return False
+    return not os.path.exists(quarantine)
+
+
+def _evidence_roots(directory: Optional[str]) -> Tuple[str, ...]:
+    """取证沙箱的候选根目录（只含**当前用户自己的**临时目录）。
+
+    显式传入 ``directory`` 时只用它（测试与调用方可控）。否则取两个：
+
+    * ``tempfile.gettempdir()``：本进程实际使用的临时目录；
+    * ``%LOCALAPPDATA%\\Temp``：Windows 默认的当前用户临时目录。二者可能因
+      ``TEMP`` 被重定向而不一致（本机实测 TEMP=D:\\cache\\temp，而残留落在
+      ``C:\\Users\\<user>\\AppData\\Local\\Temp``），只看前者会漏掉历史残留。
+
+    仍然只认「完全同名 + 内容指纹」的直接子项，绝不递归或扫描别人的目录。
+    """
+    if directory:
+        return (directory,)
+    roots = [tempfile.gettempdir()]
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        roots.append(os.path.join(local, "Temp"))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for root in roots:
+        key = os.path.normcase(os.path.abspath(root))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return tuple(unique)
+
+
+def _sweep_one_evidence_sandbox(
+    path: str, *, age_limit: Optional[float], now: Optional[float]
+) -> dict[str, int]:
+    empty = {"matched": 0, "removed": 0, "kept": 0}
+    if not os.path.isdir(path) or os.path.islink(path):
+        return empty
+    if not _looks_like_product_evidence_sandbox(path):
+        logger.debug("跳过同名但非本产品取证沙箱的目录：%s", path)
+        return empty
+
+    stats = {"matched": 1, "removed": 0, "kept": 0}
+    _tighten_evidence_secrets(path)
+    if _has_keep_marker(path):
+        stats["kept"] = 1
+        logger.debug("取证沙箱存在保留标记，跳过：%s", path)
+        return stats
+    newest, truncated = _newest_mtime_bounded(path)
+    if truncated or newest is None:
+        stats["kept"] = 1
+        logger.debug("取证沙箱内容超出扫描预算，按保留处理：%s", path)
+        return stats
+    cutoff = (now if now is not None else time.time()) - (
+        evidence_min_age_seconds() if age_limit is None else age_limit
+    )
+    if newest > cutoff:
+        stats["kept"] = 1
+        return stats
+    if _remove_quarantined(path):
+        stats["removed"] = 1
+        logger.info("启动清扫：删除过期取证沙箱 %s（最新内容早于保留期）", path)
+    else:
+        stats["kept"] = 1
+    return stats
+
+
+def sweep_stale_evidence_sandboxes(
+    *,
+    directory: Optional[str] = None,
+    age_limit: Optional[float] = None,
+    now: Optional[float] = None,
+) -> dict[str, int]:
+    """清扫过期的 ``liuhao-maintenance-evidence``（判据见模块 docstring）。
+
+    不论是否删除，都会先尝试把沙箱里的 ``data/master.key`` 与
+    ``auth_secrets.json`` 收紧到当前用户：保留期不是"继续裸露"的借口。
+    不传 ``directory`` 时按 :func:`_evidence_roots` 覆盖当前用户的两个临时根。
+    """
+    stats = {"matched": 0, "removed": 0, "kept": 0}
+    if not evidence_sweep_enabled():
+        return stats
+    for root in _evidence_roots(directory):
+        part = _sweep_one_evidence_sandbox(
+            os.path.join(root, EVIDENCE_DIR_NAME),
+            age_limit=age_limit,
+            now=now,
+        )
+        for key in stats:
+            stats[key] += part[key]
+    return stats
 
 
 def _match_pid(name: str, patterns: Tuple[re.Pattern[str], ...]) -> Optional[int]:
@@ -288,11 +548,13 @@ def sweep_stale_temp_artifacts(
         ``kept`` 包含"pid 仍存活"和"未到保留期"两类。
     """
     target_dir = directory or tempfile.gettempdir()
-    # 临时目录自上次清扫后没有任何变化 → 本轮不必遍历（见模块 docstring）。
+    # 临时目录自上次清扫后没有任何变化 → pid 残留不必再遍历（见模块 docstring）。
+    # 取证沙箱仍然处理：它只需要对固定路径做几次 stat（实测 ~1ms），而且是
+    # "保留期内也要收紧密钥 ACL"的唯一时机，不能跟着 24h 缓存一起延后。
     before_mtime = _dir_mtime_ns(target_dir)
     if _sweep_is_redundant(target_dir, before_mtime):
         logger.debug("临时目录自上次清扫后无变化，跳过本轮扫描：%s", target_dir)
-        return {"matched": 0, "removed": 0, "kept": 0}
+        return sweep_stale_evidence_sandboxes(directory=directory, now=now)
     cutoff = (now if now is not None else time.time()) - (
         min_age_seconds() if age_limit is None else age_limit
     )
@@ -330,6 +592,10 @@ def sweep_stale_temp_artifacts(
             stats["removed"],
             min_age_seconds() if age_limit is None else age_limit,
         )
+    # 唯一没有 pid 的自产目录：人工/取证沙箱，判据与保留期见模块 docstring。
+    evidence = sweep_stale_evidence_sandboxes(directory=directory, now=now)
+    for key in stats:
+        stats[key] += evidence[key]
     # 记录本次清扫后的目录状态（包括删除造成的 mtime 变化），供下次启动判断
     # 能否整轮跳过。写缓存失败不影响返回结果。
     _remember_sweep(target_dir)
@@ -356,10 +622,17 @@ def run_startup_temp_sweep() -> dict[str, int]:
 
 
 __all__ = [
+    "DEFAULT_EVIDENCE_MIN_AGE_SECONDS",
     "DEFAULT_MIN_AGE_SECONDS",
+    "EVIDENCE_DIR_NAME",
+    "EVIDENCE_MIN_AGE_ENV",
+    "EVIDENCE_SWEEP_ENV",
     "MAX_CANDIDATES",
     "MIN_AGE_ENV",
+    "evidence_min_age_seconds",
+    "evidence_sweep_enabled",
     "min_age_seconds",
     "run_startup_temp_sweep",
+    "sweep_stale_evidence_sandboxes",
     "sweep_stale_temp_artifacts",
 ]

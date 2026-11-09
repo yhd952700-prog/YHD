@@ -389,3 +389,51 @@ class TestMasterKeyFilePermissions:
 
         assert key_env.target.read_bytes() == first, "重复收紧不得改写内容"
         _assert_restricted(key_env.target)
+
+
+class TestStartupMasterKeyAclCheck:
+    """启动期 ACL 自检：不创建密钥、已受保护时不写盘、失败必须可上报。"""
+
+    def test_missing_file_reports_missing_without_creating_one(self, key_env):
+        ok, state, path = encryption.ensure_master_key_permissions()
+
+        assert (ok, state, path) == (True, "missing", key_env.target)
+        assert not key_env.target.exists(), "自检不得凭空生成密钥"
+
+    def test_already_restricted_is_read_only(self, key_env):
+        manager = EncryptionManager()
+        before = key_env.target.read_bytes()
+        before_stat = key_env.target.stat()
+
+        ok, state, path = encryption.ensure_master_key_permissions()
+
+        assert (ok, state, path) == (True, "already-restricted", key_env.target)
+        assert key_env.target.read_bytes() == before
+        assert key_env.target.stat().st_mtime_ns == before_stat.st_mtime_ns
+        assert base64.urlsafe_b64decode(before) == manager.master_key
+
+    def test_inherited_legacy_file_is_tightened_at_startup(self, key_env):
+        key = _write_key(key_env.target, os.urandom(32))
+        _loosen_to_inherited(key_env.target)
+
+        ok, state, path = encryption.ensure_master_key_permissions()
+
+        assert (ok, state, path) == (True, "tightened", key_env.target)
+        assert base64.urlsafe_b64decode(key_env.target.read_bytes()) == key
+        _assert_restricted(key_env.target)
+
+    def test_tighten_failure_is_reported_not_silently_passed(
+        self, key_env, monkeypatch
+    ):
+        _write_key(key_env.target, os.urandom(32))
+        _loosen_to_inherited(key_env.target)
+        monkeypatch.setattr(
+            encryption, "is_restricted_to_current_user", lambda _path: False
+        )
+        monkeypatch.setattr(
+            encryption, "ensure_restricted_to_current_user", lambda _path: False
+        )
+
+        ok, state, path = encryption.ensure_master_key_permissions()
+
+        assert (ok, state, path) == (False, "still-exposed", key_env.target)

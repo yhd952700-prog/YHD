@@ -394,6 +394,29 @@ def test_degraded_state_self_heals_without_restart(monkeypatch):
     assert future.result(timeout=2.0) == ("ip:127.0.0.1", None)
 
 
+def test_degraded_probes_immediately_instead_of_waiting_a_full_cycle(monkeypatch):
+    """降级后的**第一次**探针必须立刻执行，不能先等一个完整退避周期。
+
+    真实故障：冷启动瞬时卡顿触发 degraded 后，旧实现循环顶部先 ``sleep(30)``，
+    即使撤销库早就好了，整片 503 也要再扛满 30 秒（用户侧就是白屏 30 秒）。
+    这里把三个退避参数都设成 30 秒（等价旧参数），只保留"首次不等待"：
+    旧代码 1 秒内不可能恢复，本断言必红。
+    """
+    monkeypatch.setattr(rl, "_IDENTITY_PROBE_INTERVAL_SECONDS", 30.0)
+    monkeypatch.setattr(rl, "_IDENTITY_PROBE_FIRST_GAP_SECONDS", 30.0)
+    monkeypatch.setattr(rl, "_IDENTITY_PROBE_MAX_GAP_SECONDS", 30.0)
+    monkeypatch.setattr(rl, "_probe_identity_store", lambda: True)
+
+    for _ in range(3):
+        rl._record_identity_timeout()
+    assert rl._identity_degraded is True
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and rl._identity_degraded:
+        time.sleep(0.01)
+    assert rl._identity_degraded is False, "首次探针仍等满退避周期（30 秒白屏回归）"
+
+
 def test_identity_store_unavailable_maps_to_503_not_401(monkeypatch):
     """读不出 -> 503（IDENTITY_UNAVAILABLE），绝不伪装成 401 密码问题。"""
     import src.gateway.policy as policy

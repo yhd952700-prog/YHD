@@ -95,7 +95,7 @@ _IDENTITY_LANE_MAX = 32
 
 
 def _configured_identity_lane_count() -> int:
-    """读取 lane 数量；非法/越界值退回默认 8，并钳在 [1, 32]。"""
+    """读取 lane 数量；非法/越界值退回默认 16，并钳在 [1, 32]。"""
     raw = os.environ.get("LIUHAO_IDENTITY_LANES")
     if raw:
         try:
@@ -115,8 +115,12 @@ _IDENTITY_MAX_ABANDONED = 4
 #: 连续超时达到该值即降级：新请求不再排队，直接 503。
 _IDENTITY_DEGRADE_THRESHOLD = 3
 
-#: 降级后的自愈探针：每 30 秒做一次 ``SELECT 1``（1 秒超时），成功即恢复。
+#: 降级后的自愈探针：``SELECT 1``（1 秒超时）。第一次**立即**探，之后按
+#: 1→2→4→8→10 秒指数退避；``_IDENTITY_PROBE_INTERVAL_SECONDS`` 是退避上限，
+#: 保留原名是因为回归用例通过它把退避压到 50ms。
 _IDENTITY_PROBE_INTERVAL_SECONDS = 30.0
+_IDENTITY_PROBE_FIRST_GAP_SECONDS = 1.0
+_IDENTITY_PROBE_MAX_GAP_SECONDS = 10.0
 _IDENTITY_PROBE_TIMEOUT_SECONDS = 1.0
 
 #: 每条 lane 的就绪标记。**只认 Event**：``_thread.start_new_thread`` 下
@@ -199,6 +203,7 @@ _consecutive_identity_timeouts = 0
 _identity_degraded = False
 _probe_thread_started = False
 _identity_check_degraded_total = 0
+_identity_check_recovered_total = 0
 _identity_check_rejected_total = 0
 
 #: 同一请求里 Global 与业务限流各解析一次身份：用 scope 缓存把 DB 读降为一次。
@@ -826,17 +831,28 @@ def _restore_identity_lanes() -> None:
 
 
 def _identity_probe_loop() -> None:
-    """每 30 秒探一次撤销库；成功即 ``evt=identity.check.recovered``。"""
+    """降级后自愈：**立刻**探第一次，之后 1→2→4→8→10 秒指数退避。
+
+    旧实现在循环顶部先 ``sleep(30)``，等于降级后至少 30 秒整片 503，即使
+    撤销库在这 30 秒里一直是好的（冷启动瞬时卡顿就会造成这种"白屏 30 秒"）。
+    现在第一次探测不等待，最坏恢复延迟 = 退避间隔上限（10 秒）。
+    这只改变"多快发现库已恢复"，不改变放行条件：探针仍必须真读到一行，
+    探测失败期间照旧全部 503（fail-closed 不动）。
+    """
     global _identity_degraded, _consecutive_identity_timeouts, _probe_thread_started
+    global _identity_check_recovered_total
+    gap = 0.0
     try:
         while _identity_degraded:
-            time.sleep(_IDENTITY_PROBE_INTERVAL_SECONDS)
-            if not _identity_degraded:
-                return
+            if gap:
+                time.sleep(gap)
+                if not _identity_degraded:
+                    return
             if _probe_identity_store():
                 with _lane_state_lock:
                     _identity_degraded = False
                     _consecutive_identity_timeouts = 0
+                    _identity_check_recovered_total += 1
                 logger.info(
                     "evt=identity.check.recovered probe=select1 lanes_active=%d",
                     len(_active_lanes),
@@ -844,6 +860,11 @@ def _identity_probe_loop() -> None:
                 _restore_identity_lanes()
                 return
             logger.warning("evt=identity.check.probe_failed probe=select1")
+            gap = min(
+                max(_IDENTITY_PROBE_FIRST_GAP_SECONDS, gap * 2),
+                _IDENTITY_PROBE_MAX_GAP_SECONDS,
+                _IDENTITY_PROBE_INTERVAL_SECONDS,
+            )
     finally:
         with _lane_state_lock:
             _probe_thread_started = False
@@ -871,6 +892,7 @@ def identity_check_metrics() -> Dict[str, any]:
     with _lane_state_lock:
         return {
             "identity_check_degraded_total": _identity_check_degraded_total,
+            "identity_check_recovered_total": _identity_check_recovered_total,
             "identity_check_rejected_total": _identity_check_rejected_total,
             "degraded": _identity_degraded,
             "ready": identity_pool_ready(),
@@ -902,7 +924,10 @@ def identity_unavailable_payload(reason: str = "unavailable") -> Dict[str, any]:
         retry_after = 2
     else:
         code = "IDENTITY_UNAVAILABLE"
-        message = "本机身份校验暂时不可用，请 30 秒后重试；这次不是你密码的问题"
+        message = (
+            "本机身份校验暂时不可用（通常几秒内自动恢复），请稍后重试；"
+            "这次不是你密码的问题"
+        )
     return {
         "code": code,
         "message": message,
