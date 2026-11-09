@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.selfmod import (
-    FileEdit,
     build_evidence,
     diff_stat,
     evidence_path,

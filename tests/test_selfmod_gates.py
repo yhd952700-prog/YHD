@@ -69,7 +69,8 @@ def test_g0_blocks_permanent_zones(tmp_path: Path, path: str) -> None:
     report = _run(root, [FileEdit(path, "changed\n")], _diff(path))
 
     g0 = report.gate("G0")
-    assert g0 is not None and g0.status == "fail", path
+    assert g0 is not None, path
+    assert g0.status == "fail", path
     assert report.result == "FAIL"
     # 硬拦截之后不许有门禁"通过"到可以合入——其余门禁必须是 skip。
     assert all(g.status == "skip" for g in report.gates[1:])
@@ -85,7 +86,8 @@ def test_g0_blocks_ddl_and_test_weakening_in_new_lines(tmp_path: Path) -> None:
     )
     report = _run(root, [FileEdit(path, "x\n")], diff)
     g0 = report.gate("G0")
-    assert g0 is not None and g0.status == "fail"
+    assert g0 is not None
+    assert g0.status == "fail"
     assert "数据库结构变更" in g0.reason
 
 
@@ -97,7 +99,8 @@ def test_g4_doc_link_gate_runs_and_fails_on_broken_link(tmp_path: Path) -> None:
     report = _run(root, [FileEdit("docs/guide.md", "# 指南\n")], _diff("docs/guide.md"))
 
     g4 = report.gate("G4")
-    assert g4 is not None and g4.status == "fail"
+    assert g4 is not None
+    assert g4.status == "fail"
     link_cmd = [
         c for c in g4.commands if c.command and c.command[-1].endswith("verify_doc_links.py")
     ]
@@ -112,7 +115,8 @@ def test_g8_rejects_diff_over_per_file_limit(tmp_path: Path) -> None:
     report = _run(root, [FileEdit(path, "new line\n" * 500)], _diff(path, added=500))
 
     g8 = report.gate("G8")
-    assert g8 is not None and g8.status == "fail"
+    assert g8 is not None
+    assert g8.status == "fail"
     assert "单文件上限" in g8.reason
     assert report.gate("G0").status == "pass"
 
