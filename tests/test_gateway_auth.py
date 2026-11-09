@@ -192,6 +192,22 @@ class TestSecretStore:
         assert set(document) == {"version", "credentials"}
         assert "a.b" in document["credentials"]
 
+    def test_new_file_is_created_with_current_user_only_acl(self, tmp_path):
+        """新建凭据库之后立刻断言 ACL 受保护（**不允许 skip**）。
+
+        0.1.1 装出来的 ``auth_secrets.json`` 继承了 ``CodexSandboxUsers`` /
+        ``Administrators``：根因是创建点没有收紧 DACL。这里读回真实 DACL，
+        而不是相信“收紧函数没报错”。
+        """
+        from src.common.windows_acl import acl_is_current_user_only
+
+        path = tmp_path / "auth.json"
+        assert SecretStore(str(path)).set_credential(
+            "a.b", PASSWORD, iterations=1000
+        )
+        assert path.exists()
+        assert acl_is_current_user_only(path) is True
+
     def test_non_object_document_is_refused(self, tmp_path):
         path = tmp_path / "auth.json"
         path.write_text("[1, 2, 3]", encoding="utf-8")
@@ -473,9 +489,10 @@ class TestTokenIsReal:
         )
         assert response.status_code == 400, response.text
         detail = response.json()["detail"]
-        # The refusal must name the PRINCIPAL. If it named the action instead,
-        # this test would still pass while the real guard stayed open.
-        assert "svc.forged" in detail
+        # 产品已改为统一的中文拒绝文案：明确说"账号没有登记"，但不再点名令牌里
+        # 的主体。仍然必须证明拒绝原因是主体而不是动作 —— 若报文说的是动作，
+        # 这个测试就会在真正的守卫敞开时也通过。
+        assert "还没有登记" in detail
         assert _enforced_action() not in detail
 
     def test_a_real_human_does_obtain_a_grant_for_the_same_action(

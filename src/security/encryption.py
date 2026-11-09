@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 from abc import ABC, abstractmethod
@@ -30,6 +31,14 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+from src.common.atomic_write import exclusive_file_lock
+from src.common.fs_permissions import ensure_restricted_to_current_user
+
+logger = logging.getLogger(__name__)
+
+#: 显式指定主密钥文件，优先级最高（安装版启动器会设置）。
+_MASTER_KEY_ENV = "LIUHAO_MASTER_KEY_FILE"
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +924,100 @@ class EncryptionConfig:
     argon2_parallelism: int = 4
 
 
+def _legacy_master_key_file() -> Path:
+    """历史默认位置：``~/.liuhao/master.key``。"""
+    return Path.home() / ".liuhao" / "master.key"
+
+
+def _data_root_master_key_file() -> Optional[Path]:
+    """数据根下的主密钥位置；未设置 ``LIUHAO_DATA_DIR`` 时返回 ``None``。"""
+    from src.common.data_paths import data_root
+
+    root = data_root()
+    return (root / "master.key") if root is not None else None
+
+
+def _cleanup_orphan_key_staging(target: Path) -> None:
+    """清理上次迁移被强杀留下的临时密钥文件（只能在持锁时调用）。"""
+    for orphan in target.parent.glob(target.name + ".migrating.*"):
+        try:
+            orphan.unlink()
+            logger.info("已清理上次中断留下的主密钥迁移临时文件：%s", orphan)
+        except OSError:
+            logger.warning("无法清理主密钥迁移临时文件 %s，下次迁移时再试", orphan)
+
+
+def _copy_with_verification(source: Path, target: Path) -> None:
+    """把旧密钥原子复制到新位置并逐字节校验，失败不留半截文件。
+
+    调用方必须已持有 ``<target>.lock``。staging 带 pid + 随机后缀；写完后
+    fsync，再在锁内**重新读一次旧密钥**与已复制内容逐字节比对——等锁期间
+    旧版本进程（不认这把锁）可能改写过旧密钥，不能把过期快照当成最新值。
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = source.read_bytes()
+    staging = target.with_name(
+        f"{target.name}.migrating.{os.getpid()}.{secrets.token_hex(4)}"
+    )
+    try:
+        with open(staging, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Windows 的 chmod 不等于访问控制：必须显式去掉继承、只授予当前用户，
+        # 否则 %TEMP%/数据目录的 Users:RX 会原样继承到迁移出的密钥上。
+        ensure_restricted_to_current_user(staging)
+        copied = staging.read_bytes()
+        if copied != payload or source.read_bytes() != payload:
+            raise OSError(f"master key verification failed for {target}")
+        os.replace(staging, target)
+        # os.replace 在同卷内保留 DACL；再复核一次，跨卷/复制语义变化也不会漏掉。
+        ensure_restricted_to_current_user(target)
+        # 旧位置的文件不删（迁移失败可回退），同样不应长期裸露。
+        ensure_restricted_to_current_user(source)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def resolve_master_key_file() -> Path:
+    """主密钥读取顺序：显式变量 → 数据根 → 旧 ``~/.liuhao``。
+
+    只设数据根、密钥仍在旧位置时，做一次原子迁移（复制并校验内容一致），
+    **旧文件保留不删**；迁移失败则继续使用旧位置。任何情况下都不会因为
+    新路径没有文件而生成一把新密钥——那会让旧数据永久解不开。
+
+    check-then-act 与复制校验整段放在 ``<target>.lock`` 里，并用锁内双重
+    检查 ``target.exists()``，避免两个进程同时各迁一次。
+    """
+    explicit = (os.environ.get(_MASTER_KEY_ENV) or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    legacy = _legacy_master_key_file()
+    target = _data_root_master_key_file()
+    if target is None:
+        return legacy
+    if target.exists():
+        return target
+    if legacy.exists():
+        try:
+            with exclusive_file_lock(
+                f"{target}.lock", description="主密钥迁移"
+            ):
+                if target.exists():
+                    logger.info("主密钥已由其他进程迁移到 %s", target)
+                else:
+                    _cleanup_orphan_key_staging(target)
+                    _copy_with_verification(legacy, target)
+                    logger.info("主密钥已迁移到 %s；旧文件 %s 已保留。", target, legacy)
+        except OSError:
+            logger.warning(
+                "主密钥迁移失败，继续使用旧位置 %s（旧文件保留）", legacy, exc_info=True
+            )
+            return legacy
+    return target
+
+
 class EncryptionManager:
     """
     Unified encryption manager supporting multiple algorithms.
@@ -949,12 +1052,7 @@ class EncryptionManager:
         elif key_file:
             self._master_key = self._load_key_file(key_file)
         else:
-            default_key_file = Path(
-                os.environ.get(
-                    "LIUHAO_MASTER_KEY_FILE",
-                    str(Path.home() / ".liuhao" / "master.key"),
-                )
-            )
+            default_key_file = resolve_master_key_file()
             if default_key_file.exists():
                 # Real persistence: load the previously generated master key so
                 # it is NOT regenerated on every boot.
@@ -965,8 +1063,12 @@ class EncryptionManager:
                 # never reach this branch.
                 self._master_key = self.generate_key()
             else:
-                # Production: generate a real master key and PERSIST it (chmod
-                # 600) so it survives restarts instead of being regenerated.
+                # Production: generate a real master key and PERSIST it so it
+                # survives restarts instead of being regenerated. The file is
+                # written as plaintext (portable for cross-machine/offline
+                # backup restore) and immediately restricted to the current
+                # user via an explicit DACL (chmod alone is not access control
+                # on Windows).
                 self._master_key = self.generate_key()
                 self._save_key_file(str(default_key_file), self._master_key)
 
@@ -977,7 +1079,14 @@ class EncryptionManager:
         self._aesgcm = AESGCM(self._master_key[:32])
 
     def _load_key_file(self, path: str) -> bytes:
-        """Load master key from file"""
+        """Load master key from file.
+
+        读取路径同时承担**历史文件的权限自愈**：老装机用户的 ``master.key`` 可能
+        仍是 ``chmod(0o600)`` 时代留下的「继承父目录 ACL」状态。这里先读回实际
+        ACL（已受保护时只做一次只读检查，微秒级），未受保护才收紧，避免为了新
+        写入路径而让存量文件继续裸露。
+        """
+        ensure_restricted_to_current_user(Path(path))
         key_data = Path(path).read_bytes()
         # Support both raw 32-byte and base64 encoded
         if len(key_data) == 32:
@@ -989,26 +1098,21 @@ class EncryptionManager:
             return self.derive_key_from_password(key_data.decode())
 
     def _save_key_file(self, path: str, key: bytes) -> None:
-        """Save master key to file (chmod 0600)."""
+        """Save master key to file and restrict it to the current user."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(base64.urlsafe_b64encode(key))
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        # 明文格式保持不变（跨机/跨用户备份恢复要能直接读），只收紧访问权限。
+        ensure_restricted_to_current_user(Path(path))
 
     def save(self, path: Optional[str] = None) -> None:
-        """Persist the master key (chmod 0600).
+        """Persist the master key, restricted to the current user.
 
         Useful after rotation so the new key survives restart instead of being
         silently lost. Falls back to ``LIUHAO_MASTER_KEY_FILE`` / the default
         location when ``path`` is not given.
         """
         if path is None:
-            path = os.environ.get(
-                "LIUHAO_MASTER_KEY_FILE",
-                str(Path.home() / ".liuhao" / "master.key"),
-            )
+            path = str(resolve_master_key_file())
         self._save_key_file(path, self._master_key)
 
     @property
@@ -1259,3 +1363,198 @@ def decrypt_data(token: str, return_metadata: bool = False) -> Union[bytes, Tupl
 def generate_key(length: int = 32) -> bytes:
     """Generate random key"""
     return EncryptionManager.generate_key(length)
+
+
+# ---------------------------------------------------------------------------
+# Machine-bound key material (Windows DPAPI)
+# ---------------------------------------------------------------------------
+#
+# 为什么用「用户级」而不是「机器级」DPAPI：
+# * 用户级（CryptProtectData 默认作用域 / CurrentUser）只有**同一台机器上的
+#   同一个 Windows 用户**能解封。把整个数据目录拷到别的机器、或在本机换一个
+#   Windows 用户登录，都解不开。
+# * 机器级（CRYPTPROTECT_LOCAL_MACHINE）允许**本机任何账户**解封；对"拷走
+#   数据目录"只能挡住换机器，挡不住同机其它用户，保护强度明显更弱。
+# 因此这里统一使用用户级 DPAPI，并用 ``purpose`` 作为熵，避免不同用途的密文
+# 被互相挪用。
+
+#: 落盘版本头：看到它才知道后面是 DPAPI 密文，而不是历史明文/裸字节。
+DPAPI_PREFIX = "LIUHAO-DPAPI-1:"
+#: 非 Windows（开发/CI）或 DPAPI 不可用时的显式降级头；绝不写裸字节。
+RAW_PREFIX = "LIUHAO-RAW-1:"
+
+_CROSS_MACHINE_STEPS = (
+    "可执行步骤：\n"
+    "  1. 回到原电脑，在「设置 → 账号与备份」导出带口令的账号备份包；\n"
+    "  2. 若新电脑上已带着从旧电脑拷来的 data\\model_config.key，"
+    "先把它改名保存（例如 model_config.key.unreadable），不要直接删除；\n"
+    "  3. 在新电脑首次启动后导入该备份包（模型 Key 会用新电脑的主密钥重新加密）；\n"
+    "  4. 若原电脑已不可用：请先按第 2 步把旧密钥文件改名，"
+    "再在「模型管理」逐个重新填写 API Key；"
+    "身份/登录凭据请重新注册或用账号备份包恢复。\n"
+    "注意：不要直接删除密钥文件后再导入旧数据库，否则旧密文将永久无法解密。"
+)
+
+
+class MachineBoundKeyError(RuntimeError):
+    """密钥无法在本机解封（换机 / 换 Windows 用户 / DPAPI 不可用）。
+
+    ``reason`` 便于调用方区分「跨机」与「本机缺 DPAPI」，但给用户看的
+    ``message`` 始终是中文可执行步骤，不暴露底层异常。
+    """
+
+    def __init__(self, reason: str, message: str = "") -> None:
+        self.reason = reason
+        super().__init__(
+            message
+            or (
+                "本机密钥无法在此机器解密，请用账号备份包恢复或重新生成。\n"
+                + _CROSS_MACHINE_STEPS
+            )
+        )
+
+
+class MachineBoundProtectionUnavailable(MachineBoundKeyError):
+    """Windows 上缺少 DPAPI（pywin32），无法生成/迁移机器绑定密钥。"""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(
+            "dpapi-unavailable",
+            message
+            or (
+                "本机缺少 Windows DPAPI 组件（pywin32），无法生成机器绑定密钥。\n"
+                "请重新安装完整安装包（不要手工删除 dist 内的 pywin32），"
+                "或联系维护者恢复运行环境；已保存的模型 Key 不会被自动覆盖。"
+            ),
+        )
+
+
+def dpapi_available() -> bool:
+    """当前进程是否能用 Windows DPAPI。"""
+    if os.name != "nt":
+        return False
+    try:
+        import win32crypt  # noqa: F401
+    except Exception:  # noqa: BLE001 - 环境缺 pywin32
+        return False
+    return True
+
+
+def _entropy(purpose: Union[str, bytes]) -> bytes:
+    value = purpose.encode("utf-8") if isinstance(purpose, str) else purpose
+    return b"liuhao-machine-bound-v1:" + value
+
+
+def dpapi_protect(data: bytes, *, purpose: Union[str, bytes] = "generic") -> Optional[bytes]:
+    """用用户级 DPAPI 包裹字节；不可用时返回 ``None``。"""
+    if not dpapi_available():
+        return None
+    try:
+        import win32crypt
+
+        # flags=CRYPTPROTECT_UI_FORBIDDEN(0x1)：后台启动时不弹任何 UI。
+        # prompt/description 只是调试提示，不承载秘密。
+        return win32crypt.CryptProtectData(
+            data,
+            "LiuHao AI OS machine-bound key",
+            _entropy(purpose),
+            None,
+            None,
+            0x1,
+        )
+    except Exception:  # noqa: BLE001 - DPAPI 失败按不可用处理
+        return None
+
+
+def dpapi_unprotect(blob: bytes, *, purpose: Union[str, bytes] = "generic") -> Optional[bytes]:
+    """解开用户级 DPAPI 密文；换机/换用户/密文损坏时返回 ``None``。"""
+    if not dpapi_available():
+        return None
+    try:
+        import win32crypt
+
+        return win32crypt.CryptUnprotectData(
+            blob, _entropy(purpose), None, None, 0x1
+        )[1]
+    except Exception:  # noqa: BLE001 - 解不开就是解不开，不抛底层异常
+        return None
+
+
+def is_machine_bound_payload(payload: Union[bytes, str]) -> bool:
+    """是否带明确版本头（DPAPI 或显式 RAW 降级）。"""
+    if isinstance(payload, str):
+        return payload.startswith((DPAPI_PREFIX, RAW_PREFIX))
+    return payload.startswith(
+        (DPAPI_PREFIX.encode("ascii"), RAW_PREFIX.encode("ascii"))
+    )
+
+
+def wrap_machine_bound(data: bytes, *, purpose: Union[str, bytes] = "generic") -> bytes:
+    """把字节包成带版本头的落盘形态。
+
+    * Windows + DPAPI 可用 → ``LIUHAO-DPAPI-1:<base64(DPAPI 密文)>``
+    * 非 Windows（开发/CI）→ ``LIUHAO-RAW-1:<base64(原文)>``，仍是显式格式
+    * Windows 但 DPAPI 不可用 → 抛 ``MachineBoundProtectionUnavailable``，
+      **不退化成裸文件**，避免"以为绑定了机器其实没有"。
+    """
+    blob = dpapi_protect(data, purpose=purpose)
+    if blob is not None:
+        return (DPAPI_PREFIX + base64.b64encode(blob).decode("ascii")).encode("ascii")
+    if os.name == "nt":
+        raise MachineBoundProtectionUnavailable()
+    return (RAW_PREFIX + base64.b64encode(data).decode("ascii")).encode("ascii")
+
+
+def unwrap_machine_bound(
+    payload: Union[bytes, str], *, purpose: Union[str, bytes] = "generic"
+) -> Tuple[bytes, str]:
+    """解封带版本头的密钥；返回 ``(原文, 保护方式)``。
+
+    ``保护方式`` 是 ``"dpapi"`` 或 ``"raw"``（仅非 Windows 开发环境）。
+    跨机/换用户/DPAPI 不可用时抛 :class:`MachineBoundKeyError`，不抛底层
+    ``pywintypes.error``，避免把 traceback 直接甩给用户。
+    """
+    text = payload.decode("utf-8", "ignore") if isinstance(payload, bytes) else payload
+    if text.startswith(DPAPI_PREFIX):
+        try:
+            blob = base64.b64decode(text[len(DPAPI_PREFIX):], validate=True)
+        except Exception as exc:  # noqa: BLE001 - 文件损坏
+            raise MachineBoundKeyError(
+                "corrupt", "密钥文件已损坏（版本头正确但密文无法解析），请用账号备份包恢复。"
+            ) from exc
+        if not dpapi_available():
+            raise MachineBoundKeyError("dpapi-unavailable")
+        plain = dpapi_unprotect(blob, purpose=purpose)
+        if plain is None:
+            raise MachineBoundKeyError("cross-machine")
+        return plain, "dpapi"
+    if text.startswith(RAW_PREFIX):
+        try:
+            return base64.b64decode(text[len(RAW_PREFIX):], validate=True), "raw"
+        except Exception as exc:  # noqa: BLE001
+            raise MachineBoundKeyError(
+                "corrupt", "密钥文件已损坏（版本头正确但内容无法解析），请用账号备份包恢复。"
+            ) from exc
+    raise ValueError("not a machine-bound payload")
+
+
+def read_machine_bound_text(
+    path: Union[str, Path], *, purpose: Union[str, bytes] = "generic"
+) -> Tuple[str, str]:
+    """读取文本型密钥文件的 ``(文本, 状态)``。
+
+    状态：``ok``（带版本头且解封成功）、``legacy``（历史明文）、
+    ``undecryptable``（带版本头但本机解不开）、``missing``（文件不存在）。
+    读取失败统一转成中文提示，绝不把 DPAPI 底层异常冒到上层。
+    """
+    target = Path(path)
+    if not target.is_file():
+        return "", "missing"
+    raw = target.read_bytes()
+    if is_machine_bound_payload(raw):
+        try:
+            data, _mode = unwrap_machine_bound(raw, purpose=purpose)
+        except MachineBoundKeyError:
+            return "", "undecryptable"
+        return data.decode("utf-8", "ignore").strip(), "ok"
+    return raw.decode("utf-8", "ignore").strip(), "legacy"

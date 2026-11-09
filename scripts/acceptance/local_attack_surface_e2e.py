@@ -55,6 +55,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -170,12 +171,98 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
     do_POST = _handle
 
 
+# --------------------------------------------------------------------------- #
+# 白名单端口分配：假上游必须站在产品允许的回环端口上
+# --------------------------------------------------------------------------- #
+
+#: 产品策略（``src/ai/net_guard.py::LOCAL_INFERENCE_PORTS``）：带 Key 的 http
+#: 只允许回环 + 11434/1234/8000/8080。假上游若绑随机端口，用例证明的只是
+#: "产品会正确拒绝随机端口"，而不是"白名单内的回环地址被放行"——两者结论相反。
+#: 因此这里只在白名单里挑端口，产品策略一字不动。
+AUDIT_PORTS: Tuple[int, ...] = (11434, 1234, 8000, 8080)
+
+#: 已被本脚本占用的白名单端口 -> 占用者 label（报错时用来定位）。
+_LEASED_PORTS: Dict[int, str] = {}
+_PORT_LOCK = threading.Lock()
+
+
+def _port_is_listening(port: int) -> bool:
+    """端口上已经有进程在监听吗（例如本机真开着 Ollama / LM Studio）。"""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def _port_listener_hint(port: int) -> str:
+    """尽力找出监听该端口的进程，仅用于报错线索。"""
+    try:
+        proc = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"], capture_output=True, timeout=15
+        )
+    except Exception:  # noqa: BLE001 - 只是线索，拿不到就不写
+        return ""
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
+        if f":{port} " in line and "LISTENING" in line.upper():
+            return line.strip()
+    return ""
+
+
+def _bind_audit_port(label: str) -> ThreadingHTTPServer:
+    """在 11434/1234/8000/8080 里挑一个空闲端口起假上游。
+
+    端口占用时的处理：
+
+    * 本脚本自己已占用（用例并发建多个假上游）→ 换下一个，占用表由
+      ``_PORT_LOCK`` 保护；
+    * 被本机其它进程占用（真的有 Ollama / LM Studio 在跑）→ 先探测连通性，
+      能连上就换下一个，绝不抢占；
+    * 四个都不可用 → 抛 ``RuntimeError`` 并带 ``netstat`` 线索，让验收明确失败。
+      绝不静默退回随机端口——那会把这条验收变成"永远绿"的假证。
+    """
+    problems: List[str] = []
+    with _PORT_LOCK:
+        for port in AUDIT_PORTS:
+            holder = _LEASED_PORTS.get(port)
+            if holder:
+                problems.append(f"{port}：被本脚本的 {holder} 占用")
+                continue
+            if _port_is_listening(port):
+                listener = _port_listener_hint(port)
+                problems.append(
+                    f"{port}：已被本机其它进程监听"
+                    + (f"（{listener}）" if listener else "")
+                )
+                continue
+            try:
+                httpd = ThreadingHTTPServer(("127.0.0.1", port), _UpstreamHandler)
+            except OSError as exc:
+                reason = getattr(exc, "strerror", None) or str(exc)
+                problems.append(f"{port}：绑定失败 {reason}")
+                continue
+            _LEASED_PORTS[port] = label
+            return httpd
+    raise RuntimeError(
+        "白名单端口 11434/1234/8000/8080 全部不可用，无法在不动产品策略的前提下"
+        "验证回环放行：" + "；".join(problems) + "。请释放端口后重跑"
+        "（`netstat -ano | findstr \":11434\"` 可查 PID）。"
+    )
+
+
+def _release_audit_port(port: int, label: str) -> None:
+    with _PORT_LOCK:
+        if _LEASED_PORTS.get(port) == label:
+            del _LEASED_PORTS[port]
+
+
 class MockUpstream:
     """回环上的假模型服务；``records`` 保留每次请求（含 Authorization）。"""
 
     def __init__(self, label: str, model: str = MODEL_NAME) -> None:
         self.label = label
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+        self._httpd = _bind_audit_port(label)
+        self._port = int(self._httpd.server_address[1])
         self._httpd.daemon_threads = True
         self._httpd.records = []  # type: ignore[attr-defined]
         self._httpd.lock = threading.Lock()  # type: ignore[attr-defined]
@@ -195,7 +282,7 @@ class MockUpstream:
 
     @property
     def port(self) -> int:
-        return int(self._httpd.server_address[1])
+        return self._port
 
     @property
     def base_url(self) -> str:
@@ -222,6 +309,7 @@ class MockUpstream:
             self._httpd.shutdown()
         finally:
             self._httpd.server_close()
+            _release_audit_port(self._port, self.label)
 
 
 # --------------------------------------------------------------------------- #
@@ -540,8 +628,17 @@ def case_loopback_ports(report: Report, inst: Instance, token: str) -> None:
         ("vLLM", LOCAL_KEY_B),
     )
     ports: List[int] = []
-    for index, (label, key) in enumerate(cases, start=1):
-        with MockUpstream(f"local-{index}") as local:
+    # 两个本地推理服务同时在线（LM Studio 与 vLLM 并存的真实形态），因此两个
+    # 假上游必须同时持有端口；顺序建-关-建会复用同一个白名单端口，
+    # "两个本地端口都被接受"这条断言就退化成只验证了一个端口。
+    with contextlib.ExitStack() as stack:
+        local_upstreams = [
+            stack.enter_context(MockUpstream(f"local-{index}"))
+            for index in range(1, len(cases) + 1)
+        ]
+        for index, ((label, key), local) in enumerate(
+            zip(cases, local_upstreams), start=1
+        ):
             ports.append(local.port)
             status, created = create_model(
                 inst,
@@ -1780,6 +1877,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     other: Optional[MockUpstream] = None
     try:
         token = bootstrap(inst)
+        # ④⑦ 最多同时用两个假上游；先跑完再建 ①②③ 的三个，峰值并发 = 3，
+        # 不超过白名单的 4 个端口（脚本里任何时刻都不应需要第 5 个端口）。
+        case_loopback_ports(report, inst, token)
+        case_backup_no_secrets(report, inst, token)
+
         legit = MockUpstream("legit")
         attacker = MockUpstream("attacker")
         other = MockUpstream("other-port")
@@ -1789,9 +1891,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         model_id = case_egress(report, inst, token, legit, attacker)
         case_port_is_target(report, inst, token, model_id, other)
         case_rekey_and_confirm(report, inst, token, model_id, attacker, other)
-        case_loopback_ports(report, inst, token)
         case_local_proof(report, inst, token)
-        case_backup_no_secrets(report, inst, token)
     finally:
         for mock in (legit, attacker, other):
             if mock is not None:

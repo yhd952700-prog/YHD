@@ -346,6 +346,25 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         default_state="仅占位符", disclosed_in=_INTEGRATION_DISCLOSURE,
         egress=False,
     ),
+    # 调用链（为什么本进程不会请求它）：
+    #   ``src/desktop/native_window.py`` 定义 ``WEBVIEW2_BOOTSTRAPPER_URL``
+    #   （微软 Evergreen Bootstrapper 官方短链，约 1.6 MB 的联网安装器）；
+    #   ``src/desktop/app.py::_run_native_window`` 在 ``webview2_version()``
+    #   检测不到运行时时弹提示，用户选「去安装 WebView2」后执行
+    #   ``webbrowser.open(WEBVIEW2_BOOTSTRAPPER_URL)`` —— 把 URL 交给**系统
+    #   默认浏览器**打开，不经过本项目的 HTTP 客户端、``src/ai/net_guard.py``
+    #   的运行时校验或任何出口拦截；``EGRESS_REGISTRY`` 本身只做登记与展示
+    #   （``src/gateway/networks.py`` 读取），不拦截请求。
+    #   登记依据：这是给用户安装缺失依赖用的微软官方地址，不是数据回传；
+    #   ``egress=False`` 只说明"本进程不发请求"，不代表放宽任意域名。
+    "go.microsoft.com": EgressEntry(
+        feature="WebView2 Runtime 官方下载页（缺失提示里的「去安装 WebView2」按钮）",
+        trigger="仅在检测不到 WebView2 时，用户点击「去安装 WebView2」；链接由系统默认浏览器打开",
+        fields="无（本进程不发起请求，URL 交给系统浏览器）",
+        personal_data="否",
+        default_state="仅链接",
+        egress=False,
+    ),
 }
 
 #: 「关于与隐私」页的功能分组：组名 -> 主机清单（主机名仍是登记表的键，

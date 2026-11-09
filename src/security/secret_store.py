@@ -25,16 +25,19 @@ from __future__ import annotations
 
 import abc
 import base64
+import hashlib
 import json
 import logging
 import os
 import secrets
+import shutil
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
 from src.common.atomic_write import atomic_write_bytes, exclusive_file_lock
+from src.common.data_paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +77,170 @@ def _env_secret_passphrase() -> Optional[str]:
     return os.environ.get("LIUHAO_SECRET_MASTER_PASSPHRASE") or None
 
 
-def _default_store_dir() -> str:
-    return os.environ.get("LIUHAO_SECRET_STORE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".liuhao", "secrets"
+_STORE_DIR_ENV = "LIUHAO_SECRET_STORE_DIR"
+
+
+def _platform_default_store_dir() -> Path:
+    """所有覆盖变量都未配置时的默认密钥库目录。
+
+    与 ``src.security.rbac`` 保持同一口径：Windows 为
+    ``%LOCALAPPDATA%\\LiuHao\\data\\secrets``，其它平台为
+    ``$XDG_DATA_HOME/liuhao/secrets``。不回落到 ``~/.liuhao``。
+    """
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        return (base / "LiuHao" / "data" / "secrets").resolve()
+    base = Path(
+        os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")
     )
+    return (base / "liuhao" / "secrets").resolve()
+
+
+def _legacy_store_dir() -> Path:
+    """历史默认落点（只作为迁移来源与失败回退）：``~/.liuhao/secrets``。"""
+    return Path.home() / ".liuhao" / "secrets"
+
+
+def resolve_secret_store_dir() -> str:
+    """解析本地加密密钥库目录，必要时把旧目录整体迁移过来。
+
+    解析顺序：显式 ``LIUHAO_SECRET_STORE_DIR``（完全信任、不迁移）→
+    ``LIUHAO_DATA_DIR``/平台默认数据根 → 旧 ``~/.liuhao/secrets``。
+
+    迁移规则与 RBAC/主密钥一致：新目录已有 → 用新目录、旧目录保留；新目录缺失、
+    旧目录存在 → 锁内双重检查 → 复制到带 pid+随机后缀的同目录 staging →
+    逐文件 SHA256 + 文件集合校验 → ``os.replace`` 原子落位；任何失败 → 记
+    ``ERROR`` 并继续使用旧目录（绝不以空密钥库启动）。
+
+    注意：本模块 2026-11 时还没有运行时调用方，但一旦接线就会成为持久密钥落点；
+    先把位置收进统一数据根，避免"以后接上就悄悄写 C 盘"。
+    """
+    explicit = (os.environ.get(_STORE_DIR_ENV) or "").strip()
+    if explicit:
+        return explicit
+    target = Path(resolve_store_path("secrets", _platform_default_store_dir()))
+    return str(_migrate_store_dir_if_needed(target, _legacy_store_dir()))
+
+
+def _default_store_dir() -> str:
+    """本地加密密钥库目录（保留旧函数名供既有调用方使用）。"""
+    return resolve_secret_store_dir()
+
+
+def _migrate_store_dir_if_needed(target: Path, legacy: Path) -> Path:
+    if target == legacy:
+        return target
+    if target.exists():
+        if legacy.exists():
+            logger.info(
+                "密钥库同时存在于新旧位置，使用新位置 %s（旧目录 %s 保留未删）",
+                target,
+                legacy,
+            )
+        return target
+    if not legacy.exists():
+        # 两边都没有：正常初始化，由首次写入创建目录。
+        return target
+
+    try:
+        with exclusive_file_lock(
+            f"{target}.lock", description="密钥库迁移"
+        ):
+            # 锁内双重检查：等锁期间另一个进程可能已经迁移完成。
+            if target.exists():
+                return target
+            if not legacy.exists():
+                return target
+            _cleanup_orphan_store_staging(target)
+            _copy_store_dir_and_verify(legacy, target)
+    except Exception as exc:  # noqa: BLE001 - 任何失败都要退回旧目录，不能空库启动
+        logger.error(
+            "密钥库迁移失败（%s → %s）：%s: %s；继续使用旧位置 %s，"
+            "不会以空密钥库启动。请检查磁盘空间/权限后重试。",
+            legacy,
+            target,
+            type(exc).__name__,
+            exc,
+            legacy,
+        )
+        return legacy
+    logger.info("密钥库已迁移到 %s；旧目录 %s 已保留未删。", target, legacy)
+    return target
+
+
+def _cleanup_orphan_store_staging(target: Path) -> None:
+    """清理上次迁移被强杀留下的 staging 目录（只能在持有迁移锁时调用）。"""
+    for orphan in target.parent.glob(target.name + ".migrating.*"):
+        try:
+            shutil.rmtree(orphan)
+            logger.info("已清理上次中断留下的密钥库迁移临时目录：%s", orphan)
+        except OSError as exc:
+            logger.warning(
+                "无法清理密钥库迁移临时目录 %s，下次迁移时会再试：%s", orphan, exc
+            )
+
+
+def _tree_digest(root: Path) -> Dict[str, str]:
+    """目录内所有普通文件的相对路径 → SHA256。"""
+    digests: Dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            digests[path.relative_to(root).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+    return digests
+
+
+def _copy_store_dir_and_verify(source: Path, target: Path) -> None:
+    """复制旧密钥库到同目录 staging，逐文件校验后原子替换目录。
+
+    调用方必须已持有 ``<target>.lock``。staging 名带 pid + 随机后缀，与目标同
+    目录（保证 ``os.replace`` 不跨卷）；成功后 fsync 内容再原子落位。
+    任何失败都在 ``finally`` 清掉**自己的** staging。
+    """
+    expected = _tree_digest(source)
+    if not expected:
+        raise OSError(f"旧密钥库目录为空，拒绝用空库覆盖：{source}")
+    staging = target.with_name(
+        f"{target.name}.migrating.{os.getpid()}.{secrets.token_hex(4)}"
+    )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir()
+        for rel, digest in expected.items():
+            src = source / rel
+            dst = staging / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            payload = src.read_bytes()
+            with open(dst, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _secure_chmod(str(dst))
+            if hashlib.sha256(dst.read_bytes()).hexdigest() != digest:
+                raise OSError(f"密钥库迁移副本内容不一致：{rel}")
+        # 锁内再校验一次源目录：等锁期间旧版本进程可能增删过文件。
+        if _tree_digest(source) != expected:
+            raise OSError(f"旧密钥库在迁移期间被修改，放弃本次迁移：{source}")
+        os.replace(staging, target)
+        _fsync_store_directory(target.parent)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _fsync_store_directory(directory: Path) -> None:
+    """让目录 rename 本身尽量落盘（POSIX 有效；Windows 打不开目录，忽略）。"""
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 # --------------------------------------------------------------------------- #

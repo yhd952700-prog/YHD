@@ -95,6 +95,35 @@ def test_registry_entry_is_complete(host: str) -> None:
             assert (REPO / rel).exists(), f"{host} 的披露文件不存在：{rel}"
 
 
+def test_webview2_install_link_is_registered_without_egress() -> None:
+    """钉住 WebView2 官方下载页：只交给系统浏览器，本进程不请求。
+
+    ``go.microsoft.com`` 曾因"看起来像出站"而让本文件变红。结论是它不经过
+    本进程的网络栈：``native_window.WEBVIEW2_BOOTSTRAPPER_URL`` 由
+    ``app.py::_run_native_window`` 的 ``webbrowser.open(...)`` 交给系统默认
+    浏览器。这里同时钉住"主机名"和"调用链"——哪一边改了都必须回来改登记。
+    """
+    from urllib.parse import urlparse
+
+    from src.desktop.native_window import WEBVIEW2_BOOTSTRAPPER_URL
+    from src.security.egress_registry import lookup
+
+    host = urlparse(WEBVIEW2_BOOTSTRAPPER_URL).hostname
+    assert host == "go.microsoft.com", f"下载页主机已变化：{host}，登记表需同步更新"
+    entry = lookup(host)
+    assert entry is not None, f"{host} 必须登记（这是给用户装 WebView2 的官方地址）"
+    assert entry.egress is False, "下载页由系统浏览器打开，本进程不发起请求"
+    assert "仅链接" in entry.default_state
+    assert "系统" in entry.trigger, "必须写明由系统浏览器打开"
+
+    app_source = (REPO / "src" / "desktop" / "app.py").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    assert "webbrowser.open(WEBVIEW2_BOOTSTRAPPER_URL)" in app_source, (
+        "调用链变了：下载页必须仍交给系统浏览器，而不是由本进程直接请求"
+    )
+
+
 def test_research_hosts_are_registered_off_by_default() -> None:
     for name, host in web_research.PROVIDER_HOSTS.items():
         entry = EGRESS_REGISTRY.get(host)

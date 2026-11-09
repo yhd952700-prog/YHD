@@ -23,8 +23,8 @@ def _load_module():
     return module
 
 
-def _write_fake(tmp_path: Path, body: str) -> str:
-    path = tmp_path / "fake_gate.py"
+def _write_fake(tmp_path: Path, body: str, name: str = "fake_gate.py") -> str:
+    path = tmp_path / name
     path.write_text(body, encoding="utf-8")
     return str(path)
 
@@ -71,3 +71,46 @@ def test_skip_note_detection(tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     assert "PASS (NOTE)" in out
     assert "OVERALL=PASS" in out
+
+
+def test_skip_gate_is_not_pass_and_exits_three(tmp_path, capsys) -> None:
+    """A gate that ran nothing (rc 0 + skip marker) must not look green."""
+    vai = _load_module()
+    vai.GATES = [
+        ("T1", "fake real pass", _write_fake(tmp_path, "import sys\nprint('ok')\nsys.exit(0)\n", "pass.py")),
+        ("T2", "fake skip", _write_fake(tmp_path, "import sys\nprint('GATE SKIP: nothing to verify')\nsys.exit(0)\n", "skip.py")),
+    ]
+    with pytest.raises(SystemExit) as exc:
+        vai.main()
+    assert exc.value.code == 3
+    out = capsys.readouterr().out
+    assert "OVERALL=SKIP" in out
+    assert "PASS=1 FAIL=0 SKIP=1" in out
+
+
+def test_child_gate_exit_three_is_skip_not_fail(tmp_path, capsys) -> None:
+    """rc=3 is the child gates' explicit SKIP contract, not FAIL."""
+    vai = _load_module()
+    vai.GATES = [
+        ("T1", "fake real pass", _write_fake(tmp_path, "import sys\nprint('ok')\nsys.exit(0)\n", "pass.py")),
+        ("T2", "fake skip rc3", _write_fake(tmp_path, "import sys\nprint('NOT VERIFIED')\nsys.exit(3)\n", "skip3.py")),
+    ]
+    with pytest.raises(SystemExit) as exc:
+        vai.main()
+    assert exc.value.code == 3
+    out = capsys.readouterr().out
+    assert "OVERALL=SKIP" in out
+    assert "SKIP=1" in out
+
+
+def test_fail_dominates_skip(tmp_path, capsys) -> None:
+    vai = _load_module()
+    vai.GATES = [
+        ("T1", "fake skip", _write_fake(tmp_path, "import sys\nprint('GATE SKIP')\nsys.exit(0)\n", "skip.py")),
+        ("T2", "fake fail", _write_fake(tmp_path, "import sys\nprint('boom')\nsys.exit(1)\n", "fail.py")),
+    ]
+    with pytest.raises(SystemExit) as exc:
+        vai.main()
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "OVERALL=FAIL" in out

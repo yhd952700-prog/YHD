@@ -262,3 +262,72 @@ def test_secret_store_is_abstract_contract():
     # ABC cannot be instantiated.
     with pytest.raises(TypeError):
         SecretStore()
+
+
+# --------------------------------------------------------------------------- #
+# 数据根迁移：旧 ~/.liuhao/secrets 不得继续作为默认落点
+# --------------------------------------------------------------------------- #
+def test_legacy_store_dir_migrates_to_data_root(monkeypatch, tmp_path):
+    import src.security.secret_store as ss
+    from pathlib import Path
+
+    _clear_env(monkeypatch)
+    data = tmp_path / "data"
+    legacy = tmp_path / "home" / ".liuhao" / "secrets"
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(data))
+    monkeypatch.setattr(ss, "_legacy_store_dir", lambda: legacy)
+
+    original = LocalEncryptedSecretStore(str(legacy), passphrase="migrate-pass")
+    original.set("alpha", "one")
+
+    resolved = ss.resolve_secret_store_dir()
+    assert Path(resolved) == data / "secrets"
+    migrated = LocalEncryptedSecretStore(resolved, passphrase="migrate-pass")
+    assert migrated.get("alpha") == "one"
+
+    # 旧目录保留未删，staging 清理干净。
+    assert legacy.exists()
+    assert not list(data.glob("secrets.migrating.*"))
+
+
+def test_store_dir_migration_failure_keeps_legacy(monkeypatch, tmp_path):
+    import src.security.secret_store as ss
+    from pathlib import Path
+
+    _clear_env(monkeypatch)
+    data = tmp_path / "data"
+    legacy = tmp_path / "home" / ".liuhao" / "secrets"
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(data))
+    monkeypatch.setattr(ss, "_legacy_store_dir", lambda: legacy)
+
+    original = LocalEncryptedSecretStore(str(legacy), passphrase="migrate-pass")
+    original.set("alpha", "one")
+
+    def _boom(source, target):
+        raise OSError("模拟磁盘写入失败")
+
+    monkeypatch.setattr(ss, "_copy_store_dir_and_verify", _boom)
+
+    # 失败必须退回旧目录，并且**不能**在新位置建出空密钥库。
+    assert Path(ss.resolve_secret_store_dir()) == legacy
+    assert not (data / "secrets").exists()
+    assert LocalEncryptedSecretStore(str(legacy), passphrase="migrate-pass").get(
+        "alpha"
+    ) == "one"
+
+
+def test_explicit_store_dir_skips_migration(monkeypatch, tmp_path):
+    import src.security.secret_store as ss
+    from pathlib import Path
+
+    _clear_env(monkeypatch)
+    explicit = tmp_path / "explicit-store"
+    legacy = tmp_path / "home" / ".liuhao" / "secrets"
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LIUHAO_SECRET_STORE_DIR", str(explicit))
+    monkeypatch.setattr(ss, "_legacy_store_dir", lambda: legacy)
+
+    LocalEncryptedSecretStore(str(legacy), passphrase="migrate-pass").set("a", "b")
+
+    assert Path(ss.resolve_secret_store_dir()) == explicit
+    assert not explicit.exists()  # 解析不建目录，也不做迁移

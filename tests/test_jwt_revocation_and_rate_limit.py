@@ -217,7 +217,13 @@ def test_bearer_api_key_is_looked_up_once_per_request(tmp_path, monkeypatch):
 
 
 def test_rate_limit_middleware_returns_429_with_headers(monkeypatch):
-    """限流命中时返回 429 + Retry-After/X-Rate-Limit-*，而不是放行。"""
+    """限流命中时返回 429 + Retry-After/X-Rate-Limit-*，而不是放行。
+
+    补丁点说明：中间件重构后（身份解析移到 ``resolve_identity_off_loop``），
+    决策入口是 ``get_rate_limiter().check_rate_limit(..., identity=...)``；
+    旧的模块级 ``rate_limiter.check_rate_limit`` 已不再被中间件调用。继续
+    patch 旧入口会让请求穿到认证依赖才回 401，把"补丁失效"误判成"限流失效"。
+    """
     from fastapi.testclient import TestClient
 
     from src.gateway import rate_limiter
@@ -229,10 +235,11 @@ def test_rate_limit_middleware_returns_429_with_headers(monkeypatch):
         "reset": time.time() + 30,
         "key_id": "sub:alice|chat",
     }
+    limiter = rate_limiter.get_rate_limiter()
     monkeypatch.setattr(
-        rate_limiter,
+        limiter,
         "check_rate_limit",
-        lambda request, trusted_proxies=(): (False, info),
+        lambda request, trusted_proxies=(), identity=None: (False, info),
     )
     client = TestClient(get_app())
     response = client.post("/v1/chat", json={"message": "hi"})
@@ -251,3 +258,36 @@ def test_rate_limit_middleware_returns_429_with_headers(monkeypatch):
 
     # 未列入限流面的路由不受影响。
     assert client.get("/v1/health").status_code == 200
+
+
+def test_rate_limit_middleware_real_bucket_returns_429_before_auth(monkeypatch):
+    """真实触发一次 429：不替换决策函数，只把真实桶容量压到 1。
+
+    可见的请求顺序契约：``RateLimitMiddleware`` 在路由认证依赖之前执行 ——
+    同一 IP 的第 1 个请求放行（随后被认证依赖回 401），第 2 个请求直接被
+    限流中间件回 429，因此"401 而不是 429"不是限流失效，而是旧用例补丁点
+    失效。
+    """
+    from fastapi.testclient import TestClient
+
+    from src.gateway import rate_limiter
+    from src.gateway.main import get_app
+
+    # 只压容量，不换判定逻辑：TokenBucket/RateLimiter.check_rate_limit 真跑。
+    monkeypatch.setattr(
+        rate_limiter,
+        "_default_limiter",
+        rate_limiter.RateLimiter(default_capacity=1, default_rate=0.001),
+    )
+    client = TestClient(get_app())
+
+    first = client.post("/v1/chat", json={"message": "hi"})
+    assert first.status_code == 401, first.text  # 限流已放行，认证依赖拒绝
+
+    second = client.post("/v1/chat", json={"message": "hi"})
+    assert second.status_code == 429, second.text
+    assert second.headers.get("Retry-After")
+    assert second.headers.get("X-Rate-Limit-Limit") == "1"
+    assert second.headers.get("X-Rate-Limit-Remaining") == "0"
+    assert second.json()["code"] == "RATE_LIMITED_IP"
+

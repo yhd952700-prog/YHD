@@ -306,7 +306,23 @@
   避免文案再次与行为漂移。
 - 未再发现"默认开启但文案没写"的外发域名。
 
-### 10.6 仍未完成（需后续单独处理）
+### 10.6 登记表新增的非出站主机：`go.microsoft.com`（`egress=False`）
+
+- **登记位置**：`src/security/egress_registry.py` 的 `EGRESS_REGISTRY["go.microsoft.com"]`
+  （`default_state="仅链接"`、`egress=False`）。
+- **用途**：WebView2 Runtime 的官方安装短链。`src/desktop/native_window.py`
+  定义 `WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"`。
+- **谁发请求**：**本进程不发起请求**。`src/desktop/app.py::_run_native_window`
+  在检测不到 WebView2 Runtime 时提示用户；用户选择「去安装 WebView2」后调用
+  `webbrowser.open(WEBVIEW2_BOOTSTRAPPER_URL)`，把 URL 交给**系统默认浏览器**打开。
+  不经过本项目的 HTTP 客户端、`net_guard` 或出口拦截。
+- **登记表的作用**：`EGRESS_REGISTRY` 只做登记与展示（`src/gateway/networks.py` 读取，
+  用于关于页/诊断），**不拦截**请求。
+- **`egress=False` 的含义**：仅表示「本进程不向该主机发起请求」，**不代表放宽任意域名**。
+  新增任何会发请求或仅作链接展示的主机，仍然必须先在表里登记；漏登记会让
+  `tests/security/test_egress_registry.py` 的主机扫描断言失败。
+
+### 10.7 仍未完成（需后续单独处理）
 
 1. `langgraph_workflow.py` 默认构造 OpenAI 客户端（网关未使用，CLI/工作流若被手动运行会直连 `api.openai.com`）。
 2. Google/Moonshot/DeepSeek 未接入 `net_guard`（需本机改配置，远程不可利用）。

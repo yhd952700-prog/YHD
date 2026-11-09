@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -33,26 +33,58 @@ from src.ai import audit as _audit
 from src.ai import web_research
 from src.kernels.network import get_network_bus
 from src.security.egress_registry import grouped_egress
-from .policy import require_human_principal
+from .policy import require_bearer_payload, require_human_principal
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/network", tags=["network"])
 
 
+def _message_scope(payload) -> Tuple[Optional[List[str]], str]:
+    """消息可读主体集合（自己或子树），与 audit.py 的账号树口径一致。
+
+    非经核验令牌（进程内直接调用）返回不设限；HTTP 上不可达。
+    """
+    if payload is None or not hasattr(payload, "sub"):
+        return None, "all"
+    from .audit import _account_scope, _scope_filter
+
+    context, sovereign = _account_scope(payload)
+    principals, mode = _scope_filter(context, sovereign, None)
+    return principals, mode
+
+
 @router.get("/messages")
-def get_network_messages() -> Dict[str, Any]:
-    """读取网络总线真实状态（只读）。
+def get_network_messages(
+    payload=Depends(require_bearer_payload),
+) -> Dict[str, Any]:
+    """读取网络总线真实状态（只读，账号作用域=自己或子树）。
 
     数据全部来自网络内核进程单例，绝不另建一份可能分叉 / 造假的副本。
+    消息按 ``source`` / ``destination`` 与可读主体集合求交：成员看不到他人
+    账号的消息，根看到整棵子树的消息。
     """
+    principals, mode = _message_scope(payload)
     bus = get_network_bus()
     stats = bus.stats()
     # get_message_history() 默认返回最近 100 条；这里拉满总线实际容量，避免静默截断。
     history: List[Dict[str, Any]] = [m.to_dict() for m in bus.get_message_history(limit=10_000)]
+    if principals is not None:
+        visible = set(principals)
+        history = [
+            message
+            for message in history
+            if str(message.get("source") or "") in visible
+            or str(message.get("destination") or "") in visible
+        ]
     return {
         "stats": stats,
         "history": history,
+        "read_scope": {
+            "mode": mode,
+            "principals": principals if principals is not None else "all",
+            "root_view": bool(mode == "subtree"),
+        },
     }
 
 

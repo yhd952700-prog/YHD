@@ -480,10 +480,9 @@ def get_event(
         raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
     if event is None:
-        raise HTTPException(
-            status_code=404,
-            detail="没有找到这条审计事件，可能已被清理。请刷新审计链后重试。",
-        )
+        # 与"存在但无权看"同一个响应：两种文案能互相区分，等于告诉调用方
+        # 这个 seq 到底有没有事件。
+        raise _neutral_not_found()
     fake = str(event.get("principal_id") or "")
     visible = (
         (context.is_root and fake in context.subtree)
@@ -929,6 +928,14 @@ def summary(
                 "SELECT COUNT(DISTINCT correlation_id) FROM audit_events"
                 + where, args
             ).fetchone()[0]
+            # 全库口径：与 /v1/ready、/v1/dashboard/summary 的 total_events 对齐。
+            # 本页此前只显示子树计数（root 24 条），与就绪探针的 372 条看起来像
+            # 两个世界；其实只是口径不同。把两个数字和"业务事件"一起摆出来。
+            store_total = conn.execute(
+                "SELECT COUNT(*) FROM audit_events").fetchone()[0]
+            noise = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'state_change'"
+            ).fetchone()[0]
             return {
                 "total_events": int(total),
                 "tail_seq": int(tail),
@@ -938,6 +945,18 @@ def summary(
                 "principal_scope": mode,
                 "principals": principals if principals is not None else "all",
                 "root_view": context.is_root and mode == "subtree",
+                # 同一时刻三处读数（全库 / 本页可读 / 业务事件）口径显式化：
+                #   total_events = 当前账号子树可读；store_total_events = 全库；
+                #   business_events = 全库 - state_change 噪声。
+                "visible_events": int(total),
+                "store_total_events": int(store_total),
+                "noise_events": int(noise),
+                "business_events": int(store_total) - int(noise),
+                "definition": {
+                    "total_events": "当前账号子树可读的审计事件（本页列表上限内展示）",
+                    "store_total_events": "全库存储的审计事件（与 /v1/ready 同源）",
+                    "business_events": "store_total_events - state_change 噪声（事件页可读的业务事件）",
+                },
             }
 
         data = _store()._read_only(_run)

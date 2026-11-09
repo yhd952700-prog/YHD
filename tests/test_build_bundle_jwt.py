@@ -42,7 +42,10 @@ def _render(builder) -> str:
     src = builder._LAUNCHER.replace(
         builder.LLM_PLACEHOLDER, builder._render_llm_block()
     )
-    return src.replace(builder.JWT_PLACEHOLDER, builder._render_jwt_block())
+    # DEMO_PLACEHOLDER 是后加的第三个占位符；测试渲染必须一并消费，否则
+    # 残留的 ``{{DEMO_BLOCK}}`` 会在 exec 时变成未定义名字。
+    src = src.replace(builder.JWT_PLACEHOLDER, builder._render_jwt_block())
+    return src.replace(builder.DEMO_PLACEHOLDER, "")
 
 
 @pytest.fixture(autouse=True)

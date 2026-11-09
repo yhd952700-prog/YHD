@@ -19,6 +19,8 @@ import json
 import re
 from typing import Any, Dict, List, Mapping, Tuple
 
+from fastapi import HTTPException
+
 #: 用户可见的账号文案禁用词：任何 ``detail`` / ``notice`` / 提示里都不应出现
 #: 这些层级或角色结构词（主账号自己的管理页除外，见产品约定）。
 ACCOUNT_HIERARCHY_WORDS: Tuple[str, ...] = (
@@ -531,6 +533,139 @@ _SCRIPT_PATH_RE = re.compile(
 )
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
+#: 用户可见文案里不应出现的绝对路径（Windows 盘符 / 常见系统目录）。
+#: 只认真正的文件系统绝对路径；``/v1/...`` 这类接口路径不在此列。
+#:
+#: 路径的终止字符里必须包含收尾标点（``，。；：`` 等全角符号、``）)``、
+#: ``」』”’`` 等收尾引号）：否则 ``「…/conversation.db」`` 的右引号会被
+#: 当成路径的一部分整段替换掉，用户看到的就成了半截引号
+#: （"…「相关位置：磁盘已满…"）。排除这些字符只是**紧贴路径的边界**，
+#: 路径本身仍被完整识别与替换，不是放宽敏感片段识别。
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:"
+    r"[A-Za-z]:[\\/][^\s，。；;：:'\"）)」』”’]*"
+    r"|/(?:Users|home|app|var|tmp|opt|etc|root|usr|mnt|srv)/"
+    r"[^\s，。；;：:'\"）)」』”’]*"
+    r")"
+)
+
+#: 所有 5xx 对外的唯一文案。异常原文、堆栈、路径、表名只进服务端日志与诊断包。
+INTERNAL_ERROR_MESSAGE = (
+    "服务端处理这个请求时遇到意外问题，本次操作没有完成。"
+    "请稍后重试；如果反复出现，请导出诊断包，"
+    "并把下面的追踪编号一起提供给技术支持。"
+)
+
+
+def internal_error_body(trace_id: Any = None) -> Dict[str, Any]:
+    """5xx 通用错误体：中文兜底 + ``trace_id``，绝不含异常原文。"""
+    body: Dict[str, Any] = {
+        "error": "internal_server_error",
+        "detail": INTERNAL_ERROR_MESSAGE,
+    }
+    if trace_id:
+        body["trace_id"] = str(trace_id)
+    return body
+
+
+# --------------------------------------------------------------------------- #
+# 5xx 文案的显式透传标记
+# --------------------------------------------------------------------------- #
+# 统一掩码把 5xx 的字符串 ``detail`` 一律换成通用文案。这对内部错误是必要的，
+# 但也会吃掉**本来就能让用户照做**的运维文案（例如"知识库未启用：请执行
+# ollama pull …"）。这里用**显式类型标记**而不是猜字符串：
+#
+# * 只有主动继承 :class:`UserReadableHTTPException` 的端点才算"可透传"；
+# * 透传前仍过一次安全闸 :func:`is_public_5xx_detail_safe`：含绝对路径、
+#   脚本路径、堆栈、SQL、数据库名的一律回落掩码；
+# * 透传与掩码两条路径都把异常原文写进日志（掩码用 error，透传用 warning）。
+
+
+class UserReadableHTTPException(HTTPException):
+    """显式声明："这条 5xx 的 detail 是给用户看、且可照做的中文文案"。
+
+    继承本类型的端点必须保证 ``detail`` 不含内部路径 / 堆栈 / SQL / 主机名 /
+    密钥；安全闸会再检查一次，命中内部特征时仍按通用掩码返回。
+    """
+
+
+#: 可透传文案里绝不能出现的内部分子：堆栈、脚本/绝对路径、SQL、数据库名。
+_FORBIDDEN_PUBLIC_5XX_RE: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?i)\btraceback\b"),
+    re.compile(r"(?i)\bfile\s+\"[^\"]+\""),
+    re.compile(r"(?i)\bselect\b[\s\S]{0,200}\bfrom\b"),
+    re.compile(r"(?i)\b(?:sqlite3?|postgres(?:ql)?|mysql|redis)\b"),
+    _ABSOLUTE_PATH_RE,
+    _SCRIPT_PATH_RE,
+)
+
+
+def is_public_5xx_detail_safe(text: Any) -> bool:
+    """透传前的安全闸：文案里是否有内部路径 / 堆栈 / SQL / 数据库名。"""
+    raw = str(text or "")
+    if not raw:
+        return False
+    return not any(pattern.search(raw) for pattern in _FORBIDDEN_PUBLIC_5XX_RE)
+
+
+
+#: 每个分类的"发生了什么 + 下一步"。英文原文（``Max retries`` /
+#: ``Execution timeout`` / ``Blocked:``）只作为 ``technical_detail`` 折叠展示。
+_TASK_ERROR_COPY: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (
+        ("max retries", "max retry", "重试次数"),
+        "任务多次重试后仍未完成，已停止。请检查任务输入后重试；"
+        "如果反复出现，请导出诊断包。",
+    ),
+    (
+        ("execution timeout", "timed out", "timeout", "超时"),
+        "任务执行超时，已停止。请稍后重试；如果反复出现，请导出诊断包。",
+    ),
+    (
+        ("blocked", "dependenc", "dependency", "依赖"),
+        "依赖的任务没有完成，本任务已跳过。请先完成依赖任务后重试。",
+    ),
+    (
+        ("task not found", "goal not found", "not found", "不存在"),
+        "任务不存在，可能已被取消或删除。请刷新后重新提交。",
+    ),
+    (
+        ("cancelled", "canceled", "取消"),
+        "任务已取消，没有继续执行。需要时可重新提交。",
+    ),
+)
+
+_DEFAULT_TASK_ERROR_COPY = (
+    "任务执行失败，本次没有完成。请稍后重试；如果反复出现，请导出诊断包。"
+)
+
+_TIMEOUT_SECONDS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\b", re.IGNORECASE)
+
+
+def _task_technical_copy(raw: str) -> str:
+    """技术详情：英文原文照留；超时类补一行中文说明，让支持人员一眼看懂。"""
+    if "timeout" in raw.lower() or "超时" in raw:
+        match = _TIMEOUT_SECONDS_RE.search(raw)
+        if match:
+            return (
+                f"中文说明：执行超时，任务在 {match.group(1)} 秒内没有完成。\n"
+                f"原始错误：{raw}"
+            )
+        return f"中文说明：执行超时，任务在限定时间内没有完成。\n原始错误：{raw}"
+    return raw
+
+
+def task_error_copy(error: Any) -> Dict[str, str]:
+    """任务失败文案：``message`` 上屏，``technical_detail`` 折叠展示。"""
+    raw = str(error or "").strip()
+    if not raw:
+        return {"message": "", "technical_detail": ""}
+    lowered = raw.lower()
+    for tokens, message in _TASK_ERROR_COPY:
+        if any(token in lowered for token in tokens):
+            return {"message": message, "technical_detail": _task_technical_copy(raw)}
+    return {"message": _DEFAULT_TASK_ERROR_COPY, "technical_detail": _task_technical_copy(raw)}
+
 
 def _neutral_fallback(status_code: int) -> str:
     """没有可读中文时的按状态码兜底：说清"发生了什么 + 下一步"。"""
@@ -566,6 +701,7 @@ def sanitize_user_copy(text: Any) -> str:
     if not raw:
         return ""
     out = _SCRIPT_PATH_RE.sub("相关说明", raw)
+    out = _ABSOLUTE_PATH_RE.sub("相关位置", out)
     out = _SECTION_ID_RE.sub("", out)
     out = _POLICY_ID_RE.sub("", out)
     for pattern, replacement in GOVERNANCE_TERM_REPLACEMENTS:
@@ -578,7 +714,9 @@ def sanitize_user_copy(text: Any) -> str:
 
 
 def _sanitize_string(text: str, status_code: int) -> str:
-    if not contains_internal_copy(text):
+    # 绝对路径与内部术语一样，是"用户不该看到"的东西：即便句子里有中文，
+    # 也不能因为它读起来通顺就把 ``C:\\Users\\...`` 原样带上屏。
+    if not contains_internal_copy(text) and not _ABSOLUTE_PATH_RE.search(text):
         return text
     if _CJK_RE.search(text):
         cleaned = sanitize_user_copy(text)

@@ -60,7 +60,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.common.atomic_write import (
@@ -117,10 +117,11 @@ _failures_lock = threading.Lock()
 class AuthError(Exception):
     """A login failure carrying the HTTP status the endpoint should report."""
 
-    def __init__(self, status_code: int, detail: Any):
+    def __init__(self, status_code: int, detail: Any, headers: Optional[Dict[str, str]] = None):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.headers = headers
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +322,38 @@ class SecretStore:
                 f"凭据库写入失败（{self.path}）：{type(exc).__name__}: {exc}；"
                 "已重试仍无法原子替换，本次修改未落盘"
             ) from exc
+        self._restrict_permissions()
+
+    def _restrict_permissions(self) -> None:
+        """创建/覆盖后立即把凭据库收紧为“仅当前用户 + 去继承”。
+
+        为什么必须在写入之后就做，而不是等启动器事后补：``atomic_write_text``
+        是“同目录临时文件 + 原子替换”，新文件的 ACE 继承自父目录。安装副本的
+        ``%LOCALAPPDATA%\\LiuHao\\data\\config`` 会继承 ``CodexSandboxUsers`` /
+        ``Administrators``，凭据库（口令 PBKDF2 材料）因此对同机其它沙箱用户
+        可读——0.1.1 装出来的 ``auth_secrets.json`` 正是这个状态。
+
+        收紧失败只告警、不打断注册/改密（可用性优先），但告警必须带路径，
+        不允许静默放过。
+        """
+        from ..common.windows_acl import (
+            acl_is_current_user_only,
+            tighten_current_user_only,
+        )
+
+        path = Path(self.path)
+        try:
+            tightened = tighten_current_user_only(path)
+            protected = acl_is_current_user_only(path)
+        except Exception:  # noqa: BLE001 - ACL 是加固步骤，不能反过来阻断登录
+            logger.warning("凭据库 ACL 收紧异常：%s", path, exc_info=True)
+            return
+        if not (tightened and protected):
+            logger.warning(
+                "凭据库 ACL 未达「仅当前用户」：%s（tightened=%s protected=%s）；"
+                "请检查 %s 的继承权限",
+                path, tightened, protected, path.parent,
+            )
 
     def set_credential(
         self, principal: str, secret: str, *, iterations: int = PBKDF2_ITERATIONS
@@ -374,8 +407,16 @@ class SecretStore:
 
 
 def resolve_secret_store() -> SecretStore:
-    """Locate the credential file: explicit env var, else the config default."""
-    return SecretStore(os.environ.get(AUTH_SECRETS_FILE_ENV) or str(DEFAULT_SECRETS_PATH))
+    """Locate the credential file: explicit env var > 数据根 > 配置目录默认值。"""
+    from src.common.data_paths import resolve_store_path
+
+    return SecretStore(
+        resolve_store_path(
+            "auth_secrets.json",
+            DEFAULT_SECRETS_PATH,
+            env_var=AUTH_SECRETS_FILE_ENV,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -394,9 +435,16 @@ def _assert_not_throttled(key: str) -> None:
         _failures[key] = recent
         if len(recent) >= MAX_FAILURES:
             wait = FAILURE_WINDOW_SECONDS - (time.monotonic() - recent[0])
+            retry_after = max(1, int(wait))
             raise AuthError(
                 429,
-                f"登录失败次数过多，请在 {max(1, int(wait))} 秒后重试",
+                f"登录失败次数过多，请在 {retry_after} 秒后重试",
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": str(MAX_FAILURES),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(retry_after),
+                },
             )
 
 
@@ -421,11 +469,56 @@ def reset_throttle() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> None:
+#: 审计写入失败时对调用方的可读提示（与恢复端点同一口径）：操作照常完成，
+#: 但必须让用户知道"本次没有留下审计记录"。只追加到成功响应，不改既有契约。
+AUDIT_NOT_WRITTEN_MESSAGE = (
+    "审计未写入：本次操作已完成，但审计记录未能落盘；请联系管理员检查审计库"
+    "（数据目录写权限、磁盘空间或 AUDIT_DB_PATH 配置）。"
+)
+
+
+def audit_failure_snapshot() -> int:
+    """记录进程级审计失败累计值，用于判断"本次请求内是否发生写失败"。
+
+    返回 ``-1`` 表示计数不可用；此时不声称"审计未写入"，避免误报。
+    """
+    try:
+        from ..kernels.audit import get_audit_failure_count
+
+        return int(get_audit_failure_count())
+    except Exception:  # noqa: BLE001 - 取不到计数就不声称失败
+        return -1
+
+
+def audit_notice_after(snapshot: int, operation: str) -> Dict[str, Any]:
+    """若本次请求期间审计写入失败，返回可追加到成功响应的字段。
+
+    语义与恢复端点一致：**不阻断操作**，只让结果"可见"——成功响应多出
+    ``audit_written=false`` 与一段中文 ``audit_warning``，并留一行明确日志。
+    """
+    try:
+        from ..kernels.audit import get_audit_failure_count
+
+        current = int(get_audit_failure_count())
+    except Exception:  # noqa: BLE001
+        return {}
+    if snapshot < 0 or current <= snapshot:
+        return {}
+    logger.warning("审计未写入：%s 已完成但未留下审计记录", operation)
+    return {
+        "audit_written": False,
+        "audit_warning": AUDIT_NOT_WRITTEN_MESSAGE,
+    }
+
+
+def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> bool:
     """Record a login outcome. Audit failure must never break authentication.
 
     ``details`` must never carry secret material -- callers only ever pass a
     reason code and the client class.
+
+    返回是否真正写入审计：登录成功但审计写失败时，调用方据此在响应里
+    显式告知“审计未写入”，同时照常发放令牌（不阻断登录）。
     """
     try:
         from ..kernels.audit import AuditEventType, AuditScope, log_event
@@ -447,8 +540,10 @@ def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> None:
             outcome=outcome,
             details=audit_details,
         )
+        return True
     except Exception as exc:  # noqa: BLE001 - defensive, and never fatal
         logger.warning("auth audit failed (%s): %s", outcome, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -545,12 +640,12 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
     scope = _effective_scope(identity)
     token, payload = _issue_token(pid, identity, client_value, permissions, ttl, scope)
     _clear_failures(throttle_key)
-    _audit(
+    written = _audit(
         "login_success",
         pid,
         {"client": client_value, "scope": scope, "jti": payload.jti},
     )
-    return {
+    response = {
         "access_token": token,
         "token_type": "bearer",
         "expires_in": ttl,
@@ -565,6 +660,12 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
         "recovery_rotate_recommended": _recovery_rotate_recommended(),
         **_account_is_root(pid),
     }
+    if not written:
+        # 登录照常成功（令牌已签发）；审计写失败只追加可读提示，不改契约。
+        logger.warning("审计未写入：登录已完成但未留下审计记录 principal=%s", pid)
+        response["audit_written"] = False
+        response["audit_warning"] = AUDIT_NOT_WRITTEN_MESSAGE
+    return response
 
 
 def _effective_scope(identity) -> str:
@@ -663,15 +764,23 @@ def _account_is_root(principal: str) -> Dict[str, Any]:
     只回答"是不是根"这一个布尔值：前端做入口裁剪够用，但不返回
     ``parent_account_id`` / ``path`` / ``depth`` —— 子账号不应从任何接口
     得知自己是被谁创建的、自己在第几层。
+
+    只有**完全没有账号树**的老部署 / 单机令牌才按独立根处理。账号树一旦
+    存在，树外主体的令牌（例如内部工具直接签出的服务/测试令牌、或账号树
+    被回滚后残留的旧令牌）一律按非根回答：``is_root`` 是控制台渲染主账号
+    入口的开关，fail-open 会让这类令牌被当成 boss 渲染。
     """
     try:
         from ..kernels.identity import get_identity_manager
 
-        node = get_identity_manager().get_account(principal)
-    except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述
-        return {"is_root": True}
-    # 没有账号节点的老部署 / 单机令牌按独立根处理（与 account_context 一致）。
-    return {"is_root": bool(node is None or node.is_root)}
+        manager = get_identity_manager()
+        node = manager.get_account(principal)
+        tree_exists = bool(manager.account_nodes())
+    except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述，且须 fail-closed
+        return {"is_root": False}
+    if node is not None:
+        return {"is_root": bool(node.is_root)}
+    return {"is_root": not tree_exists}
 
 
 def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
@@ -723,7 +832,9 @@ def auth_login(req: LoginRequest) -> Dict[str, Any]:
     try:
         return authenticate(req.principal, req.secret, client=req.client)
     except AuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        raise HTTPException(
+            status_code=exc.status_code, detail=exc.detail, headers=exc.headers
+        ) from exc
 
 
 @router.get("/auth/me", response_model=Dict[str, Any])
@@ -805,8 +916,28 @@ def _recovery_rotate_recommended() -> bool:
         return False
 
 
+def _request_is_local(request: Request) -> bool:
+    """请求是否来自本机回环（已配对的手机中继也在此列）。"""
+    try:
+        from .accounts import request_is_local
+
+        return bool(request_is_local(request))
+    except Exception:  # noqa: BLE001 - 判定失败按"非本机"处理，宁严不宽
+        return False
+
+
+def _remote_recovery_enabled() -> bool:
+    """远程恢复码重置是否被显式开启。"""
+    try:
+        from .recovery_handoff import remote_recovery_enabled
+
+        return bool(remote_recovery_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @router.get("/auth/config", response_model=Dict[str, Any])
-def auth_config() -> Dict[str, Any]:
+def auth_config(request: Request) -> Dict[str, Any]:
     """What the login page needs to describe the current auth state.
 
     Public by necessity. It therefore reports *counts and booleans* about the
@@ -909,6 +1040,12 @@ def auth_config() -> Dict[str, Any]:
             "self_service": root_exists and not recovery_configured,
             # 旧明文交接文件迁移过且用户还没换新：登录后应提示重新生成。
             "rotate_recommended": _recovery_rotate_recommended(),
+            # 本请求是否来自本机（浏览器/已配对的手机中继）：决定登录页能否
+            # 直接展示“在本机生成恢复码”。手机直连局域网时为 false。
+            "local": _request_is_local(request),
+            # 远程重置是否被运维显式开启（LIUHAO_ALLOW_REMOTE_RECOVERY）。
+            # 登录页据此给出**真实可用**的自助路径，而不是承诺做不到的事。
+            "remote_allowed": _remote_recovery_enabled(),
         },
         "migration": {"allowed": not root_exists},
         "client_modes": list(CLIENT_MODES),

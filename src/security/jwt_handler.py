@@ -32,7 +32,14 @@ except ImportError:
     PyJWKSet = None
     RSAAlgorithm = None
 
-from .encryption import EncryptionManager, get_encryption_manager
+from .encryption import (
+    EncryptionManager,
+    MachineBoundKeyError,
+    get_encryption_manager,
+    is_machine_bound_payload,
+    unwrap_machine_bound,
+    wrap_machine_bound,
+)
 from .secret_store import SecretBackendUnavailable
 from .posture import is_production  # unified posture source of truth
 from .._time import stable_now_epoch
@@ -63,13 +70,19 @@ def _record_revocation_check_failure() -> None:
         pass
 
 
-class IdentityStoreUnavailable(Exception):
+class IdentityStoreUnavailable(jwt.InvalidTokenError):
     """撤销库/身份库读不出来 —— **基础设施故障，不是令牌无效**。
 
-    故意**不继承** ``jwt.InvalidTokenError``（与它平级）：两者若同族，上游任何
-    一个 ``except jwt.InvalidTokenError`` 都会把"读不出"重新说成"令牌无效"，
-    前端于是让用户改密码 —— 而真正的问题在本机数据库。调用方必须显式区分：
-    令牌无效 -> 401；读不出 -> 503（并明确告诉用户"这次不是你密码的问题"）。
+    仍然继承 ``jwt.InvalidTokenError``：验证函数一旦读不出吊销状态就必须
+    **拒绝**，而调用方普遍按 ``jwt.InvalidTokenError`` 这一族捕获"令牌不可用"。
+    若这里不属该族，异常会从那些 ``except`` 旁边逃逸出去 —— 轻则 500，
+    重则被某个"未捕获即放行"的分支当成没事，这正是 fail-closed 名不副实的
+    来源。
+
+    但它保持**独立类型**：本进程的网关层（``policy.require_bearer_payload``、
+    ``rate_limiter`` 中间件）先按本类型捕获，映射成 503 + 中文可操作文案，
+    而不是 401"密码/令牌无效"—— 那会把数据库故障误导成用户凭据问题。
+    捕获顺序必须是"先本类型、后 ``InvalidTokenError``"。
     """
 
 
@@ -175,13 +188,16 @@ JWT_REVOCATION_DB_ENV = "LIUHAO_JWT_REVOCATION_DB"
 
 
 def _default_revocation_path() -> str:
-    root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-    if root:
-        return os.path.join(root, "liuhao_jwt_revocation.db")
+    from src.common.data_paths import resolve_store_path
+
     repo_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
-    return os.path.join(repo_root, ".liuhao_jwt_revocation.db")
+    return resolve_store_path(
+        "liuhao_jwt_revocation.db",
+        os.path.join(repo_root, ".liuhao_jwt_revocation.db"),
+        workspace=True,
+    )
 
 
 class RevocationStore:
@@ -266,10 +282,14 @@ class RevocationStore:
     def interrupt_and_close(self, thread_ident: Optional[int]) -> bool:
         """从**另一个线程**掐断某条 lane 上正在执行的语句（④ 超时处置）。
 
-        ``interrupt()`` 是 SQLite 官方支持的跨线程调用；``close()`` 只是尽力
-        而为，关不掉（未完成语句/已关闭）就忽略，交给那条 lane 自己在下一次
-        异常时 ``_drop_read_conn``。返回是否拿到了连接句柄 —— 拿不到说明卡在
-        ``connect()`` 阶段（那里还没有 conn 对象），只能弃置该 lane。
+        ``interrupt()`` 是 SQLite 官方支持的跨线程调用；``close()`` **不能**在这里
+        调用：实测当目标连接正卡在 busy-wait 的语句上时，``close()`` 会一直等到
+        该语句结束（持 EXCLUSIVE 锁时 6.3s），而本函数是在**事件循环线程**上执行
+        的 —— 那等于把 D-1 的冻结搬到超时处置路径，2 秒预算变成 7 秒。
+        这里只做 ``interrupt()`` + 从注册表摘掉；连接由那条 lane 线程在拿到
+        ``sqlite3.Error`` 后自己 ``_drop_read_conn()``（它阻塞在自己的线程里）。
+        返回是否拿到了连接句柄 —— 拿不到说明卡在 ``connect()`` 阶段（那里还没有
+        conn 对象），只能弃置该 lane。
         """
         if thread_ident is None:
             return False
@@ -280,10 +300,6 @@ class RevocationStore:
         try:
             conn.interrupt()
         except Exception:  # pragma: no cover - 尽力而为
-            pass
-        try:
-            conn.close()
-        except Exception:  # pragma: no cover - 关不掉就交给 lane 自己
             pass
         return True
 
@@ -703,13 +719,16 @@ class JWTHandler:
             jti = unverified.get("jti")
             if jti and self._revocations.contains(jti, "access"):
                 raise jwt.InvalidTokenError("Token has been revoked")
-        except jwt.InvalidTokenError:
-            raise  # Re-raise revocation check result
         except IdentityStoreUnavailable:
             # 基础设施故障必须原样上抛，让上层回 503；绝不能在这里改口说
             # "令牌无效"（那会引导用户去改密码，而问题在本机数据库）。
+            # 必须排在 ``except jwt.InvalidTokenError`` **之前**：本类现在
+            # 属于该族（保证按"令牌不可用"捕获的调用方也会拒绝），但这里
+            # 要保留独立语义与失败指标。
             _record_revocation_check_failure()
             raise
+        except jwt.InvalidTokenError:
+            raise  # Re-raise revocation check result
         except Exception as exc:
             logger.error(
                 "token revocation check failed; rejecting token (fail-closed): %s",
@@ -733,6 +752,10 @@ class JWTHandler:
             options={
                 "verify_exp": False,
                 "verify_iat": False,
+                # nbf 也不交给 PyJWT：它用**系统墙钟**判断"尚未生效"。用户把
+                # 时间往回拨超过 leeway 时，所有已签发令牌的 nbf 都会落到
+                # "未来"，已登录会话立刻 401、新登录令牌永远进不来。
+                "verify_nbf": False,
                 "verify_iss": True,
                 "verify_aud": verify_aud,
                 "require_exp": True,
@@ -745,6 +768,14 @@ class JWTHandler:
         payload = TokenPayload.from_dict(payload_data)
         if verify_exp and payload.exp and stable_now_epoch() >= payload.exp + self.leeway:
             raise jwt.ExpiredSignatureError("Signature has expired")
+
+        # nbf 用与 exp 同一套口径：抗跳变时钟 + leeway 的时钟偏差容忍。
+        # 语义：``nbf`` 最多可以比当前稳定时间"快" ``leeway`` 秒；超过才算未来
+        # 令牌。这样时间回拨不会把已登录用户锁在门外，也不会放宽真正的伪造。
+        if payload.nbf and stable_now_epoch() + self.leeway < payload.nbf:
+            raise jwt.InvalidTokenError(
+                "Token is not yet valid (nbf is in the future)"
+            )
 
         # Check token type
         if expected_type and payload.token_type != expected_type:
@@ -776,6 +807,7 @@ class JWTHandler:
             options={
                 "verify_exp": False,
                 "verify_iat": False,
+                "verify_nbf": False,
                 "verify_iss": True,
                 "verify_aud": True,
                 "require_exp": True,
@@ -787,6 +819,10 @@ class JWTHandler:
         payload = TokenPayload.from_dict(payload_data)
         if verify_exp and payload.exp and stable_now_epoch() >= payload.exp + self.leeway:
             raise jwt.ExpiredSignatureError("Signature has expired")
+        if payload.nbf and stable_now_epoch() + self.leeway < payload.nbf:
+            raise jwt.InvalidTokenError(
+                "Token is not yet valid (nbf is in the future)"
+            )
         return payload
 
     def validate_refresh_token(self, token: str) -> TokenPayload:
@@ -959,6 +995,12 @@ JWT_PRIVATE_KEY_ENV = "LIUHAO_JWT_PRIVATE_KEY"
 JWT_PUBLIC_KEY_ENV = "LIUHAO_JWT_PUBLIC_KEY"
 JWT_ALGORITHM_ENV = "LIUHAO_JWT_ALGORITHM"
 
+#: JWT 签名密钥的 DPAPI 熵；与模型/身份密钥不可互换。
+JWT_SECRET_DPAPI_PURPOSE = b"jwt-signing-secret-v1"
+
+#: 允许显式指定 app.env 路径（安装器/测试用）。未设置时按数据目录发现。
+APP_ENV_FILE_ENV = "LIUHAO_APP_ENV_FILE"
+
 #: Values that are plainly not secrets. A *known* signing key is worse than a
 #: random one -- anyone who has read this repository could mint tokens -- so a
 #: placeholder is treated as "not configured" rather than trusted. Compared
@@ -969,24 +1011,142 @@ _PLACEHOLDER_SECRETS = frozenset({
 })
 
 
+class _UnreadableJwtSecret(Exception):
+    """app.env 里的密钥带机器绑定版本头，但本机解不开。
+
+    不向外抛 ``pywintypes.error``，由 :func:`get_jwt_handler` 转成中文告警 +
+    本次进程临时密钥（不覆盖磁盘上的旧密文）。
+    """
+
+    def __init__(self, name: str, message: str) -> None:
+        self.name = name
+        super().__init__(message)
+
+
+def _app_env_candidates() -> List[Path]:
+    """可能承载 ``LIUHAO_JWT_SECRET`` 的 app.env 路径（去重、保持优先级）。"""
+    explicit = (os.environ.get(APP_ENV_FILE_ENV) or "").strip()
+    if explicit:
+        return [Path(explicit)]
+    candidates: List[Path] = []
+    data_dir = (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
+    if data_dir:
+        candidates.append(Path(data_dir) / "config" / "app.env")
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        candidates.append(Path(local) / "LiuHao" / "data" / "config" / "app.env")
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates.append(repo_root / "config" / "app.env")
+    seen: Set[str] = set()
+    unique: List[Path] = []
+    for item in candidates:
+        key = str(item)
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def _migrate_app_env_secret(name: str, plain: str) -> bool:
+    """把 app.env 里的明文 JWT 密钥原子替换成 DPAPI 包裹形态。
+
+    只改**值恰好等于**当前环境变量值的那一行，避免误改运维手工注入的
+    其它配置；文件不存在或没匹配时不写盘（容器/测试用环境变量直连）。
+    失败只告警，本次仍用明文密钥正常启动。
+    """
+    if os.name != "nt":
+        return False
+    for path in _app_env_candidates():
+        if not path.is_file():
+            continue
+        try:
+            original = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        newline = "\r\n" if "\r\n" in original else "\n"
+        prefix = f"{name}="
+        lines = original.splitlines(keepends=True)
+        target = None
+        for index, line in enumerate(lines):
+            body = line.rstrip("\r\n")
+            if not body.startswith(prefix):
+                continue
+            value = body[len(prefix):].strip().strip('"').strip("'")
+            if value == plain:
+                target = index
+                break
+        if target is None:
+            continue
+        tmp = None
+        try:
+            wrapped = wrap_machine_bound(
+                plain.encode("utf-8"), purpose=JWT_SECRET_DPAPI_PURPOSE
+            ).decode("ascii")
+            lines[target] = prefix + wrapped + newline
+            tmp = path.with_name(
+                f".{path.name}.migrate-{os.getpid()}-{secrets.token_hex(4)}.tmp"
+            )
+            tmp.write_text("".join(lines), encoding="utf-8", newline="")
+            try:
+                from ..common.windows_acl import tighten_current_user_only
+
+                tighten_current_user_only(tmp)
+            except Exception:  # noqa: BLE001 - ACL 加固失败不阻断迁移
+                pass
+            os.replace(tmp, path)
+            tmp = None
+            logger.info("JWT 签名密钥已迁移为 DPAPI 机器绑定格式：%s", path)
+            return True
+        except Exception as exc:  # noqa: BLE001 - 迁移失败不得阻断启动
+            logger.warning(
+                "JWT 签名密钥自动迁移失败（%s）：%s；本次继续使用明文密钥运行，"
+                "原文件未被覆盖。下次启动会再次尝试。",
+                path,
+                exc,
+            )
+            return False
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    return False
+
+
 def _configured_secret() -> Optional[tuple]:
     """Return ``(name, value)`` for the first usable secret in the environment.
 
     Skips empty values and known placeholders (loudly -- a placeholder that is
     quietly ignored is how the deployment got here). Returns ``None`` when no
     variable supplies a usable secret.
+
+    值可以带 ``LIUHAO-DPAPI-1:`` 版本头（第一启动时由本函数把明文迁移成
+    这种形态）。带版本头但本机解不开时抛 :class:`_UnreadableJwtSecret`，
+    调用方据此给中文提示，而不是把底层 traceback 甩给用户。
     """
     for name in (JWT_SECRET_ENV, *JWT_SECRET_ENV_ALIASES):
         raw = os.environ.get(name, "").strip()
         if not raw:
             continue
-        if raw.lower() in _PLACEHOLDER_SECRETS:
+        if is_machine_bound_payload(raw):
+            try:
+                secret_bytes, _mode = unwrap_machine_bound(
+                    raw, purpose=JWT_SECRET_DPAPI_PURPOSE
+                )
+            except MachineBoundKeyError as exc:
+                raise _UnreadableJwtSecret(name, str(exc)) from None
+            secret = secret_bytes.decode("utf-8", "ignore")
+        else:
+            secret = raw
+            _migrate_app_env_secret(name, raw)
+        if secret.lower() in _PLACEHOLDER_SECRETS:
             logger.warning(
                 "%s=%r is a placeholder, not a secret; ignoring it. A known "
-                "signing key would let anyone forge tokens.", name, raw,
+                "signing key would let anyone forge tokens.", name, secret,
             )
             continue
-        return name, raw
+        return name, secret
     return None
 
 
@@ -1038,7 +1198,27 @@ def get_jwt_handler() -> JWTHandler:
     """
     global _default_handler
     if _default_handler is None:
-        handler = _handler_from_env()
+        unreadable: Optional[_UnreadableJwtSecret] = None
+        try:
+            handler = _handler_from_env()
+        except _UnreadableJwtSecret as exc:
+            unreadable = exc
+            handler = None
+        if unreadable is not None:
+            # 换机器/换 Windows 用户：app.env 里的密文本机解不开。这里用
+            # 本次进程的临时随机密钥继续启动（不写盘、不覆盖旧密文），并把
+            # 恢复步骤用中文说清楚；绝不能静默生成新密钥覆盖旧值。
+            logger.warning(
+                "本机密钥无法在此机器解密，请用账号备份包恢复或重新生成。\n"
+                "       变量：%s\n"
+                "       可执行步骤：\n"
+                "         1) 回到原电脑，在「设置 → 账号与备份」导出带口令的账号备份包；\n"
+                "         2) 在新电脑导入该备份包后重启；\n"
+                "         3) 若原电脑不可用，请重新注册管理员账号，系统会用新电脑的密钥重新签发令牌。\n"
+                "       注意：本次不会覆盖 app.env 里的旧密文，但所有旧登录令牌已失效，需要重新登录。",
+                unreadable.name,
+            )
+            handler = JWTHandler()
         if handler is None:
             if is_production():
                 # Fail-CLOSED: an ephemeral, per-process signing key silently

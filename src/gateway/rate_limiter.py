@@ -11,6 +11,7 @@ Token Bucket algorithm implementation with:
 import asyncio
 import ipaddress
 import logging
+import math
 import os
 import queue
 import threading
@@ -70,8 +71,8 @@ PROBE_EXEMPT_PATHS: Tuple[str, ...] = (
 #: ---------------------------------------------------------------------------
 #: ``_identity`` 会读 API Key 表与 JWT 撤销库（``sqlite3.connect``），属于
 #: **阻塞 I/O**，绝不能跑在事件循环线程上；但线程池的 ``submit`` 在满载时
-#: 又会卡在 ``Thread.start``（``_started.wait()`` 无超时）。现在改成 4 条
-#: **专职 lane**：
+#: 又会卡在 ``Thread.start``（``_started.wait()`` 无超时）。现在改成固定数量
+#: 的**专属 lane**（默认 16 条）：
 #:
 #: * 用 ``_thread.start_new_thread`` 非阻塞启动（不等 ``_started``），
 #:   ``daemon=True`` 不拖住进程退出；
@@ -79,10 +80,36 @@ PROBE_EXEMPT_PATHS: Tuple[str, ...] = (
 #:   会抛错 —— 就绪只能由线程自己第一行 ``ready_flags[i].set()``。**全仓库
 #:   禁止对这几条 lane 调 ``is_alive()/join()``**，也不复用依赖 ``Thread``
 #:   语义的封装（``ThreadPoolExecutor.submit`` 之类）。
-#: * 每条 lane 一个 1 格收件箱：4 条都在忙时**立即拒绝**，不排队。
-_IDENTITY_LANE_COUNT = 4
+#: * 每条 lane 一个 1 格收件箱。全部都在忙时先做**有界异步等待**
+#:   （默认 200ms，见 ``identity_queue_wait_seconds``）：控制台首屏一次
+#:   并发 6~9 个请求属于常态，旧实现"立即 503"把这种微突发误报成身份服务
+#:   故障；等待只让出事件循环（不占线程、不排队堆积），预算耗尽仍 503。
+#:
+#: lane 数量可配：``LIUHAO_IDENTITY_LANES``（**启动前**设置，导入期起线程）。
+#: 默认 16 是按真实场景留的余量：单成员首屏约 6 路并发，2~3 个成员
+#: （桌面端 + 网页端 + 手机端）同时刷新约 12~18 路；解析本身毫秒级，
+#: 槽位数才是并发上限。实测 16 lane 下 16 路同时解析 96/96 全部成功。
+_DEFAULT_IDENTITY_LANE_COUNT = 16
+_IDENTITY_LANE_MIN = 1
+_IDENTITY_LANE_MAX = 32
 
-#: 弃置上限：超时但线程还没退出的 lane 最多 4 条 → 总线程 ≤ 4 + 4。
+
+def _configured_identity_lane_count() -> int:
+    """读取 lane 数量；非法/越界值退回默认 8，并钳在 [1, 32]。"""
+    raw = os.environ.get("LIUHAO_IDENTITY_LANES")
+    if raw:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return max(_IDENTITY_LANE_MIN, min(_IDENTITY_LANE_MAX, value))
+    return _DEFAULT_IDENTITY_LANE_COUNT
+
+
+_IDENTITY_LANE_COUNT = _configured_identity_lane_count()
+
+#: 弃置上限：超时但线程还没退出的 lane 最多 4 条 → 总线程 ≤ lane 数 + 4。
 _IDENTITY_MAX_ABANDONED = 4
 
 #: 连续超时达到该值即降级：新请求不再排队，直接 503。
@@ -99,6 +126,15 @@ _READY_FLAGS = [threading.Event() for _ in range(_IDENTITY_LANE_COUNT)]
 #: 请求级身份解析预算（默认 2 秒），运维可用环境变量覆盖。
 _DEFAULT_IDENTITY_TIMEOUT_SECONDS = 2.0
 
+#: 池满时的**有界等待**预算（默认 0.2 秒）：微突发（控制台首屏并发刷新）
+#: 在这个窗口内能拿到 lane 并一次成功；超过预算才 503。必须小于
+#: ``test_identity_pool_full_fails_fast`` 的 0.5 秒上限，保持 fail-fast 语义。
+_DEFAULT_IDENTITY_QUEUE_WAIT_SECONDS = 0.2
+
+#: 等待期间让出事件循环的粒度。身份解析实测 0.03~2ms，4ms 足够细，
+#: 又不会把事件循环变成忙轮询。
+_IDENTITY_QUEUE_POLL_SECONDS = 0.004
+
 
 def identity_timeout_seconds() -> float:
     """读取请求级身份解析超时；非法值退回默认 2 秒。"""
@@ -113,12 +149,25 @@ def identity_timeout_seconds() -> float:
     return _DEFAULT_IDENTITY_TIMEOUT_SECONDS
 
 
+def identity_queue_wait_seconds() -> float:
+    """读取池满时的有界等待预算；0 表示退回旧的"立即 503"。"""
+    raw = os.environ.get("LIUHAO_IDENTITY_QUEUE_WAIT_SECONDS")
+    if raw:
+        try:
+            value = float(raw)
+            if value >= 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_IDENTITY_QUEUE_WAIT_SECONDS
+
+
 class IdentityCheckTimeout(RuntimeError):
     """身份解析超过请求级预算：lane 被弃置，并已尝试 ``interrupt()``。"""
 
 
 class IdentityPoolFull(RuntimeError):
-    """4 条 lane 都在忙：立即拒绝，不排队。"""
+    """有界等待预算耗尽仍没有空闲 lane：503，但不无限排队。"""
 
 
 class IdentityCheckDegraded(RuntimeError):
@@ -239,7 +288,8 @@ class TokenBucket:
         capacity: Maximum tokens (burst size)
         refill_rate: Tokens per second refill rate
         tokens: Current token count
-        last_refill: Last refill timestamp
+        last_refill: 单调时钟锚点（只用来算"过了多久"）
+        last_refill_epoch: 墙钟锚点（只用来对外报 reset）
         lock: Thread safety lock
     """
 
@@ -247,15 +297,21 @@ class TokenBucket:
         self.capacity = capacity
         self.refill_rate = refill_rate  # tokens per second
         self.tokens = float(capacity)
-        self.last_refill = time.time()
-        self.last_used = self.last_refill
+        # 用单调时钟算 elapsed：系统时间被往回拨时 elapsed 不会变成负数
+        # （旧实现用墙钟，回拨 1 小时直接把 tokens 加成 -3550，登录 429 约 59 分钟）。
+        self.last_refill = time.monotonic()
+        # reset 是给客户端看的 epoch 秒，必须用墙钟；与 elapsed 用的钟分开存。
+        self.last_refill_epoch = time.time()
+        self.last_used = self.last_refill_epoch
         self.lock = threading.Lock()
 
     def _refill(self, now: float) -> None:
-        """Refill tokens based on elapsed time."""
+        """按单调时钟的 elapsed 补充令牌；永不让桶变成负数。"""
         elapsed = now - self.last_refill
-        add_tokens = elapsed * self.refill_rate
-        self.tokens = min(self.capacity, self.tokens + add_tokens)
+        if elapsed > 0:
+            self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+        # 防御：无论 elapsed 因何种原因非正，tokens 都钳在 [0, capacity]。
+        self.tokens = max(0.0, self.tokens)
         self.last_refill = now
 
     def try_consume(self, n: int = 1) -> Tuple[bool, Dict[str, any]]:
@@ -267,19 +323,24 @@ class TokenBucket:
             info_dict contains: remaining, reset, limit
         """
         with self.lock:
-            now = time.time()
-            self._refill(now)
-            self.last_used = now
+            self._refill(time.monotonic())
+            wall_now = time.time()
+            self.last_used = wall_now
 
             allowed = self.tokens >= n
 
             if allowed:
                 self.tokens -= n
 
+            # reset = 真实恢复时刻（epoch 秒），不再固定写 now+1：
+            #  * 允许：桶重新装满的时间；
+            #  * 拒绝：攒够这次请求所需令牌的时间。
+            deficit = (self.capacity if allowed else n) - self.tokens
+            wait_s = max(0.0, deficit) / self.refill_rate if self.refill_rate > 0 else 0.0
             info = {
                 "limit": self.capacity,
                 "remaining": int(self.tokens) if allowed else 0,
-                "reset": int(self.last_refill + (self.capacity - self.tokens) / self.refill_rate) if allowed else int(now + 1),
+                "reset": int(math.ceil(wall_now + wait_s)),
             }
 
             return allowed, info
@@ -814,17 +875,31 @@ def identity_check_metrics() -> Dict[str, any]:
             "degraded": _identity_degraded,
             "ready": identity_pool_ready(),
             "consecutive_timeouts": _consecutive_identity_timeouts,
+            "lanes_total": _IDENTITY_LANE_COUNT,
             "lanes_active": len(_active_lanes),
             "lanes_abandoned": _abandoned_running,
         }
 
 
 def identity_unavailable_payload(reason: str = "unavailable") -> Dict[str, any]:
-    """503 的**结构化**响应体（四字段 + 可追踪 id）。"""
+    """503 的**结构化**响应体（四字段 + 可追踪 id）。
+
+    ``reason="busy"``：已短暂排队但所有 lane 仍被占满 —— 这是**并发过高**，
+    不是身份库坏了，恢复时间是秒级（``retry_after=2``），所以文案必须和
+    "撤销库读不出/降级"（30 秒、探测自愈）区分开，否则用户会被建议白等。
+    """
     correlation_id = uuid.uuid4().hex[:16]
+    retry_after = 30
     if reason == "thread_start_failed":
         code = "IDENTITY_THREAD_START_FAILED"
         message = "本机无法创建身份校验线程，请重启鎏灏；这次不是你密码的问题"
+    elif reason == "busy":
+        code = "IDENTITY_UNAVAILABLE"
+        message = (
+            "本机身份校验并发已满（本次已短暂排队），请 2 秒后重试；"
+            "这次不是你密码的问题"
+        )
+        retry_after = 2
     else:
         code = "IDENTITY_UNAVAILABLE"
         message = "本机身份校验暂时不可用，请 30 秒后重试；这次不是你密码的问题"
@@ -832,7 +907,7 @@ def identity_unavailable_payload(reason: str = "unavailable") -> Dict[str, any]:
         "code": code,
         "message": message,
         "correlation_id": correlation_id,
-        "retry_after": 30,
+        "retry_after": retry_after,
     }
 
 
@@ -849,7 +924,10 @@ def identity_unavailable_response(reason: str = "unavailable") -> JSONResponse:
     return JSONResponse(
         status_code=503,
         content=payload,
-        headers={"Retry-After": "30", "X-Correlation-ID": payload["correlation_id"]},
+        headers={
+            "Retry-After": str(payload["retry_after"]),
+            "X-Correlation-ID": payload["correlation_id"],
+        },
     )
 
 
@@ -867,8 +945,33 @@ def identity_unavailable_exception(reason: str = "unavailable"):
     return HTTPException(
         status_code=503,
         detail=payload,
-        headers={"Retry-After": "30", "X-Correlation-ID": payload["correlation_id"]},
+        headers={
+            "Retry-After": str(payload["retry_after"]),
+            "X-Correlation-ID": payload["correlation_id"],
+        },
     )
+
+
+async def _acquire_identity_lane(limiter: RateLimiter, request: Request,
+                                 trusted_proxies: Iterable[str]):
+    """拿一条空闲 lane；满载时做**有界异步等待**，绝不阻塞事件循环。
+
+    D-1 的教训是"不能在事件循环线程上等阻塞 I/O"；这里等的是 lane 释放，
+    每次只 ``await asyncio.sleep(4ms)`` 让出控制权，最多等
+    ``identity_queue_wait_seconds()``（默认 0.2 秒）。超预算仍没有 lane
+    才抛 :class:`IdentityPoolFull` —— 控制台首屏 6~9 个并发请求这类微突发
+    不再被误报成"身份服务不可用"，同时保留 fail-fast：不会无限排队。
+    """
+    budget = identity_queue_wait_seconds()
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            return _submit_identity_job(limiter._identity, request, trusted_proxies)
+        except IdentityPoolFull:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            await asyncio.sleep(min(_IDENTITY_QUEUE_POLL_SECONDS, remaining))
 
 
 async def resolve_identity_off_loop(
@@ -890,7 +993,7 @@ async def resolve_identity_off_loop(
     cached = scope.get(_IDENTITY_SCOPE_KEY)
     if cached is not None:
         return cached
-    lane, future = _submit_identity_job(limiter._identity, request, trusted_proxies)
+    lane, future = await _acquire_identity_lane(limiter, request, trusted_proxies)
     timeout = identity_timeout_seconds()
     try:
         identity = await asyncio.wait_for(asyncio.wrap_future(future), timeout)
@@ -959,6 +1062,13 @@ class RateLimitMiddleware:
             await identity_unavailable_response("thread_start_failed")(
                 scope, receive, send
             )
+            return
+        except IdentityPoolFull:
+            # 已短暂排队仍拿不到 lane：并发过高，秒级可恢复（Retry-After=2）。
+            logger.warning(
+                "evt=identity.check.rejected reason=IdentityPoolFull path=%s", path
+            )
+            await identity_unavailable_response("busy")(scope, receive, send)
             return
         except Exception as exc:  # noqa: BLE001 - 身份基础设施故障统一 503
             logger.warning(
@@ -1047,6 +1157,14 @@ class GlobalRateLimitMiddleware:
             await identity_unavailable_response("thread_start_failed")(
                 scope, receive, send
             )
+            return
+        except IdentityPoolFull:
+            # 已短暂排队仍拿不到 lane：并发过高，秒级可恢复（Retry-After=2）。
+            logger.warning(
+                "evt=identity.check.rejected reason=IdentityPoolFull path=%s",
+                scope.get("path", ""),
+            )
+            await identity_unavailable_response("busy")(scope, receive, send)
             return
         except Exception as exc:  # noqa: BLE001 - 身份基础设施故障统一 503
             logger.warning(

@@ -44,7 +44,8 @@ def test_fresh_install_generates_key_in_data_dir(tmp_path, capsys, monkeypatch):
     assert len(key) == 64 and key.isalnum()
     key_file = tmp_path / "config" / "integrity.key"
     assert key_file.is_file()
-    assert key_file.read_text(encoding="utf-8").strip() == key
+    assert ik.read_key_file(key_file) == key
+    assert key_file.read_bytes().startswith(b"LIUHAO-DPAPI-1:")
     # 密钥值本身绝不打印到控制台。
     captured = capsys.readouterr()
     assert key not in captured.out and key not in captured.err
@@ -63,9 +64,7 @@ def test_env_key_is_persisted_so_it_survives_env_loss(tmp_path, monkeypatch):
     monkeypatch.setenv(ik.INTEGRITY_KEY_ENV, "operator-provided-key")
     key = ik.ensure_integrity_key(data_dir=tmp_path)
     assert key == "operator-provided-key"
-    assert (tmp_path / "config" / "integrity.key").read_text(
-        encoding="utf-8"
-    ).strip() == key
+    assert ik.read_key_file(tmp_path / "config" / "integrity.key") == key
 
 
 def test_env_and_file_conflict_uses_env_and_warns(tmp_path, capsys, monkeypatch):
@@ -160,16 +159,30 @@ def test_installed_launcher_helper_delegates(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL 断言仅在 Windows 生效")
 def test_windows_key_acl_is_restricted(tmp_path, monkeypatch):
-    """Windows 用 icacls 去掉继承、只授予当前用户（mode 位不构成访问控制）。"""
-    calls = []
-    real_run = ik.subprocess.run
+    """Windows 必须把密钥文件收紧成受保护的 DACL（仅当前用户、无继承）。
 
-    def _record(args, **kwargs):
-        calls.append(args)
-        return real_run(args, **kwargs)
+    ``chmod`` 的 mode 位在 Windows 不构成访问控制，所以这里直接读回 DACL：
+    既要求 ``SE_DACL_PROTECTED`` 置位，也要求唯一 ACE 属于当前用户。
+    """
+    import win32security
 
-    monkeypatch.setattr(ik.subprocess, "run", _record)
+    from src.common.fs_permissions import is_restricted_to_current_user
+    from src.common.windows_acl import current_user_sid_string
+
+    monkeypatch.delenv(ik.INTEGRITY_KEY_ENV, raising=False)
     key = ik.ensure_integrity_key(data_dir=tmp_path)
     assert len(key) == 64
-    assert calls, "Windows 下必须调用 icacls 收紧密钥文件权限"
-    assert "/inheritance:r" in calls[0]
+
+    key_file = tmp_path / "config" / "integrity.key"
+    assert is_restricted_to_current_user(key_file)
+
+    descriptor = win32security.GetFileSecurity(
+        str(key_file), win32security.DACL_SECURITY_INFORMATION
+    )
+    control = descriptor.GetSecurityDescriptorControl()[0]
+    assert control & win32security.SE_DACL_PROTECTED, hex(control)
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    assert dacl.GetAceCount() == 1, "密钥文件只允许当前用户一条 ACE"
+    (_type, flags), _mask, sid = dacl.GetAce(0)
+    assert not flags & win32security.INHERITED_ACE
+    assert win32security.ConvertSidToStringSid(sid) == current_user_sid_string()

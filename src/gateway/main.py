@@ -42,6 +42,12 @@ from fastapi.exceptions import RequestValidationError  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
 from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
+from ..common.input_guard import (  # noqa: E402
+    body_model_from_field,
+    field_label_from_info,
+    translate_validation_error,
+    trim_for_error,
+)
 from ..brand import BRAND_LOCKUP  # noqa: E402
 from ..version import APP_VERSION  # noqa: E402
 # 注意：``..observability.tracing``（OpenTelemetry SDK，实测约 0.3s）**不在**
@@ -271,6 +277,62 @@ def _lan_ipv4_addresses() -> list:
     return found
 
 
+def resolve_listen_host() -> str:
+    """本次进程真正绑定的地址（``__main__._run`` 会写 ``LIUHAO_LISTEN_HOST``）。"""
+    return (
+        os.environ.get("LIUHAO_LISTEN_HOST") or os.environ.get("HOST") or ""
+    ).strip().lower()
+
+
+def external_bind_enabled() -> bool:
+    """是否显式绑了非回环地址（``0.0.0.0`` / ``::`` / 指定网卡 IP）。
+
+    只有对外绑定才需要放行局域网来源的写请求：默认的 ``127.0.0.1`` 根本
+    收不到局域网连接，给 LAN Origin 开口只会扩大攻击面。
+    """
+    listen = resolve_listen_host()
+    if not listen:
+        return False
+    if listen in ("0.0.0.0", "::", "*"):
+        return True
+    return not _is_loopback_address(listen)
+
+
+def _is_ip_literal(value: str) -> bool:
+    """``Host`` / Origin 里的主机名是否为 IP 字面量（而非域名）。"""
+    raw = (value or "").strip().strip("[]").split("%", 1)[0]
+    if not raw:
+        return False
+    try:
+        import ipaddress
+
+        ipaddress.ip_address(raw)
+        return True
+    except ValueError:
+        return False
+
+
+def lan_write_origins(listen_port: int | None) -> frozenset:
+    """对外绑定时自动放行的局域网写来源：「本机 LAN IP + 实际监听端口」。
+
+    手机/平板访问的是 ``http://<本机局域网 IP>:<端口>``，浏览器随后带着
+    同源的 ``Origin`` 发写请求（登录、发消息、改设置）。这些来源不可能
+    提前写进配置白名单，而要求用户手改配置正是「手机端不可用」的根因。
+    这里按**完整来源**（协议 + 主机 + 端口）精确生成，不会退化成 ``*``。
+
+    地址枚举是尽力而为（多网卡/主机名解析不全时可能缺项）；同源比对由
+    ``HostGuardMiddleware._lan_origin_allowed`` 用请求自身的 ``Host`` 兜底。
+    """
+    if not listen_port or not external_bind_enabled():
+        return frozenset()
+    origins = set()
+    for ip in _lan_ipv4_addresses():
+        value = canonical_origin(f"http://{ip}:{listen_port}")
+        if value:
+            origins.add(value)
+    return frozenset(origins)
+
+
 def resolve_trusted_hosts(allow_origins: list, production: bool) -> list:
     """推导 Host 白名单：回环 + 实际绑定地址 + 已配置的 CORS 域名。
 
@@ -378,6 +440,23 @@ def load_runtime_config() -> Dict[str, Any]:
             if str(item).strip()
         ]
     production = environment == "production"
+
+    # 接口文档（/docs、/redoc、/openapi.json）是完整的路由与参数侦察面。
+    # 默认按生产处理：没有**显式**开发开关时一律关闭。显式开关有两种：
+    #   * APP_ENV=development / testing（环境变量显式声明）；
+    #   * LIUHAO_HTTP_DOCS=1（单独临时打开，不改变其他运行配置）。
+    # 未设置 APP_ENV 时即使 config/default.yaml 写着 development，也不开会话
+    # —— 安装版与源码直跑都默认关闭。
+    explicit_env = (os.environ.get("APP_ENV") or "").strip().lower()
+    raw_docs = (os.environ.get("LIUHAO_HTTP_DOCS") or "").strip().lower()
+    if raw_docs in {"1", "true", "yes", "on"}:
+        http_docs = True
+    elif raw_docs in {"0", "false", "no", "off"}:
+        http_docs = False
+    else:
+        http_docs = explicit_env in {"development", "testing"}
+    http_docs = bool(http_docs and not production)
+
     if not allow_origins:
         if production:
             # 生产不注入 localhost 开发来源：同源部署根本不需要 CORS，
@@ -407,6 +486,7 @@ def load_runtime_config() -> Dict[str, Any]:
     return {
         "environment": environment,
         "production": production,
+        "http_docs": http_docs,
         # Host 头白名单（防 DNS rebinding）；不含 ``*``。
         "trusted_hosts": resolve_trusted_hosts(allow_origins, production),
         # 显式对外绑 0.0.0.0 时无法枚举"所有可达域名"，但 IP 字面量访问必须
@@ -758,6 +838,8 @@ class HostGuardMiddleware:
         allowed_origins=(),
         allow_ip_literals=False,
         loopback_port=None,
+        lan_bind=False,
+        lan_port=None,
     ):
         self.app = app
         self.allowed_hosts = {str(h).lower() for h in allowed_hosts if h}
@@ -770,6 +852,10 @@ class HostGuardMiddleware:
         self.allow_ip_literals = bool(allow_ip_literals)
         # 本次实际监听端口：仅用于"本机回环 + 同端口"这一条放行依据。
         self.loopback_port = loopback_port
+        # 对外绑定时的 LAN 来源：本机 IP + 实际端口（精确来源，不含 ``*``）。
+        self.lan_bind = bool(lan_bind)
+        self.lan_port = lan_port if lan_bind else None
+        self.lan_origins = lan_write_origins(self.lan_port)
 
     def _host_allowed(self, host: str) -> bool:
         if host in self.allowed_hosts:
@@ -790,6 +876,32 @@ class HostGuardMiddleware:
         if value and value in self.allowed_origins:
             return True
         return loopback_origin_allowed(origin, self.loopback_port, client_host)
+
+    def _lan_origin_allowed(self, origin: str, raw_host: str) -> bool:
+        """对外绑定时，放行「本机 LAN IP + 实际端口」的同源写请求。
+
+        两条依据，都是**完整来源**精确比对：
+
+        1. 命中启动时枚举的本机局域网地址（``lan_write_origins``）；
+        2. Origin 的主机与本次请求的 ``Host`` 完全一致、且是 IP 字面量、端口
+           等于实际监听端口 —— 覆盖主机名解析枚举不到的多网卡/虚拟网卡。
+
+        浏览器无法凭空伪造 ``Origin``（它就等于页面来源）；跨站页面带来的
+        ``Origin`` 与 ``Host`` 必然不同，所以第 2 条不会把 ``*`` 放开。
+        """
+        if not self.lan_bind or not self.lan_port:
+            return False
+        value = canonical_origin(origin)
+        if not value:
+            return False
+        if value in self.lan_origins:
+            return True
+        host = hostname_of(raw_host)
+        if not host or not _is_ip_literal(host):
+            return False
+        if _origin_hostname(origin) != host:
+            return False
+        return value == canonical_origin(f"http://{host}:{self.lan_port}")
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -814,8 +926,13 @@ class HostGuardMiddleware:
 
         method = (scope.get("method") or "GET").upper()
         origin = headers.get("origin")
-        if method in _WRITE_METHODS and origin and not self._origin_allowed(
-            origin, client[0]
+        if (
+            method in _WRITE_METHODS
+            and origin
+            and not (
+                self._origin_allowed(origin, client[0])
+                or self._lan_origin_allowed(origin, raw_host)
+            )
         ):
             logger.warning(
                 "SECURITY_REJECTED reason=cross_site_write method=%s path=%s "
@@ -1742,20 +1859,118 @@ _SENSITIVE_VALIDATION_FIELDS = frozenset({
     "bundle",
 })
 
+#: 长度类校验错误：``input`` 是整段超长原文，必须改写成"上限/当前"的中文，
+#: 绝不回显 input。覆盖 Pydantic v2 的 string/list 版本与旧命名。
+_LENGTH_ERROR_TYPES = frozenset({
+    "string_too_long",
+    "string_too_short",
+    "list_too_long",
+    "list_too_short",
+    "too_long",
+    "too_short",
+})
 
-def public_validation_errors(errors) -> list:
-    """把 Pydantic 校验错误脱敏后再回给客户端。
 
-    Pydantic 默认把 ``input`` 原样带出：短口令会以
-    ``{"loc": ["body","password"], "input": "S3cret"}`` 直接回显。敏感字段
-    （口令 / 恢复码 / 口令短语 / 令牌 / 凭据包）以及整个请求体一律不返回
-    ``input``/``ctx``；其余字段保持默认形状，便于前端定位。
+def _validation_label_for_loc(loc, field_labels) -> str:
+    """按 loc 的最长前缀取用户可读字段名；找不到时返回「该字段」。"""
+
+    parts = [str(part) for part in loc]
+    if field_labels:
+        for size in range(len(parts), 0, -1):
+            key = tuple(parts[:size])
+            label = field_labels.get(key)
+            if label:
+                return label
+    return "该字段"
+
+
+def _collect_validation_labels(request: Request) -> dict:
+    """从当前路由的 body / query / path 模型收集「字段 -> 中文名」映射。
+
+    Pydantic 的 ``title``/``description`` 才是给用户看的；内部 snake_case 字段名
+    只用于定位，不进入响应文案。
     """
+
+    labels: dict = {}
+    route = request.scope.get("route")
+    if route is None:
+        return labels
+    body_field = getattr(route, "body_field", None)
+    model = body_model_from_field(body_field)
+    model_fields = getattr(model, "model_fields", None)
+    if model_fields:
+        for name, info in model_fields.items():
+            label = field_label_from_info(info, fallback="该字段")
+            labels[("body", str(name))] = label
+            alias = getattr(info, "alias", None)
+            if alias:
+                labels[("body", str(alias))] = label
+    dependant = getattr(route, "dependant", None)
+    for attribute, kind in (
+        ("query_params", "query"),
+        ("path_params", "path"),
+        ("header_params", "header"),
+        ("cookie_params", "cookie"),
+    ):
+        for field in getattr(dependant, attribute, []) or ():
+            name = getattr(field, "name", None)
+            if not name:
+                continue
+            labels[(kind, str(name))] = field_label_from_info(
+                getattr(field, "field_info", None), fallback="该字段"
+            )
+    return labels
+
+
+def public_validation_errors(errors, field_labels=None) -> list:
+    """把 Pydantic 校验错误脱敏 + **中文化**后再回给客户端。
+
+    规则（与模糊测试的红线一致）：
+
+    * 禁止透传英文 ``msg``：一律按 ``type`` 映射成中文；
+    * 字段名取 schema 的 ``title``/``description``，不暴露 snake_case 内部名；
+    * 敏感字段（口令 / 恢复码 / 口令短语 / 令牌 / 凭据包）与整个请求体
+      不返回 ``input``/``ctx``；
+    * 其余错误的 ``input`` 一律截断（超长原文会随输入线性放大响应体）。
+    """
+
     cleaned = []
     for err in errors or ():
         loc = list(err.get("loc") or ())
         names = [str(part).lower() for part in loc]
-        item = {"loc": loc, "msg": err.get("msg"), "type": err.get("type")}
+        err_type = str(err.get("type") or "")
+        label = _validation_label_for_loc(loc, field_labels)
+        item = {"loc": loc}
+        if err_type in _LENGTH_ERROR_TYPES:
+            # 原始输入只用来算长度，绝不回显；中文文案 + 字段名即可行动。
+            ctx = err.get("ctx") or {}
+            raw_input = err.get("input")
+            actual = len(raw_input) if isinstance(raw_input, (str, list, dict)) else None
+            field = ".".join(
+                str(part) for part in loc
+                if str(part).lower() not in ("body", "query", "path", "header", "cookie")
+            )
+            max_length = ctx.get("max_length") if isinstance(ctx, dict) else None
+            min_length = ctx.get("min_length") if isinstance(ctx, dict) else None
+            item["field"] = field or None
+            if err_type in ("string_too_long", "list_too_long", "too_long") and max_length is not None:
+                if field == "message":
+                    item["msg"] = f"单条消息上限 {max_length} 字，当前 {actual} 字"
+                    item["code"] = "message_too_long"
+                else:
+                    item["msg"] = f"{label}上限 {max_length} 字，当前 {actual} 字"
+                    item["code"] = "value_too_long"
+            elif err_type in ("string_too_short", "list_too_short", "too_short") and min_length is not None:
+                item["msg"] = f"{label}至少需要 {min_length} 个字，当前 {actual} 个。"
+                item["code"] = "value_too_short"
+            else:
+                item["msg"] = "内容长度不符合要求，请调整后重试。"
+                item["code"] = "value_length_invalid"
+            cleaned.append(item)
+            continue
+
+        item["type"] = err.get("type")
+        item["msg"] = translate_validation_error(err_type, label, err.get("msg"))
         exposes_secret = (
             not names
             # ``loc == ["body"]`` 时 input 是整个请求体，可能同时含口令。
@@ -1764,9 +1979,9 @@ def public_validation_errors(errors) -> list:
         )
         if not exposes_secret:
             if "input" in err:
-                item["input"] = err["input"]
+                item["input"] = trim_for_error(err["input"])
             if "ctx" in err:
-                item["ctx"] = err["ctx"]
+                item["ctx"] = trim_for_error(err["ctx"])
         cleaned.append(item)
     return cleaned
 
@@ -1798,6 +2013,7 @@ def get_app() -> FastAPI:
     _startup_mark("get_app 开始")
     runtime = load_runtime_config()
     production = bool(runtime["production"])
+    docs_enabled = bool(runtime.get("http_docs"))
     _startup_mark("运行配置加载完成（config/default.yaml + APP_ENV）")
 
     # Policy Controlled: an enforced kernel action raises these. Map them to
@@ -1811,22 +2027,24 @@ def get_app() -> FastAPI:
         description=f"Unified API Gateway for {BRAND_LOCKUP}",
         lifespan=lifespan,
         # OpenAPI/docs are a broad reconnaissance surface (every route, every
-        # schema, every query parameter). Development keeps them; production
-        # turns them off regardless of what the legacy config key says.
-        docs_url=None if production else "/docs",
-        redoc_url=None if production else "/redoc",
-        openapi_url=None if production else "/openapi.json",
+        # schema, every query parameter). Only an explicit development switch
+        # opens them; production and the no-APP_ENV default stay closed.
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
     )
-    if production:
+    if not docs_enabled:
         logger.info(
-            "Debug API surface DISABLED (APP_ENV=production): "
-            "/docs, /redoc, /openapi.json return 404"
+            "Debug API surface DISABLED (APP_ENV=%s, http_docs=%s): "
+            "/docs, /redoc, /openapi.json return 404",
+            runtime["environment"],
+            runtime.get("http_docs"),
         )
     else:
         logger.warning(
             "Debug API surface ENABLED (APP_ENV=%s): /docs, /redoc, "
             "/openapi.json are readable on this listener -- set "
-            "APP_ENV=production to turn them off",
+            "LIUHAO_HTTP_DOCS=0 or APP_ENV=production to turn them off",
             runtime["environment"],
         )
 
@@ -1850,7 +2068,16 @@ def get_app() -> FastAPI:
 
     # 请求体上限（server.limits.max_body_bytes / max_upload_bytes）。
     limits = runtime.get("limits") or {}
-    from .http_limits import BodyLimitMiddleware
+    from .http_limits import (
+        BodyLimitMiddleware,
+        BodyPreflightMiddleware,
+        JsonBodyGuardMiddleware,
+    )
+
+    # 解析阶段的结构闸：深嵌套 / 超大容器 / 非法 UTF-8 在进 Pydantic 之前拒绝。
+    # 注册在 BodyLimit **之前**，构建中间件栈时它会落在 BodyLimit 内层，
+    # 因而读到的是已被大小上限约束的字节流。
+    app.add_middleware(JsonBodyGuardMiddleware)
 
     app.add_middleware(
         BodyLimitMiddleware,
@@ -1858,6 +2085,10 @@ def get_app() -> FastAPI:
         max_upload_bytes=int(limits.get("max_upload_bytes") or 0),
         max_backup_bytes=int(limits.get("max_backup_bytes") or 0),
     )
+
+    # 必填字段预检：注册在速率限制之后 => 位于其外层，422 才能抢在
+    # RateLimitMiddleware 的 503 IDENTITY_UNAVAILABLE 之前返回。
+    app.add_middleware(BodyPreflightMiddleware, fastapi_app=app)
 
     # 全局单客户端每分钟预算（server.limits.rate_limit_per_minute）。
     if int(limits.get("rate_limit_per_minute") or 0) > 0:
@@ -1910,16 +2141,22 @@ def get_app() -> FastAPI:
     # 开发：回环来源仍按显式端口列表注入，行为不变。
     guard_origins = list(cors["allow_origins"])
     loopback_port = None
+    listen_port = resolve_listen_port()
+    # 显式对外绑定时，手机/局域网访问的写来源按「本机 LAN IP + 实际端口」
+    # 自动放行（精确来源，不退化成 ``*``）。见 ``lan_write_origins``。
+    lan_bind = external_bind_enabled()
     if not production:
         guard_origins.extend(development_loopback_origins())
     else:
-        loopback_port = resolve_listen_port()
+        loopback_port = listen_port
     app.add_middleware(
         HostGuardMiddleware,
         allowed_hosts=runtime["trusted_hosts"],
         allowed_origins=guard_origins,
         allow_ip_literals=runtime["host_guard_allow_ip_literals"],
         loopback_port=loopback_port,
+        lan_bind=lan_bind,
+        lan_port=listen_port if lan_bind else None,
     )
     logger.info(
         "Host allow-list (DNS-rebinding guard): %s",
@@ -1932,8 +2169,17 @@ def get_app() -> FastAPI:
     async def logging_middleware(request: Request, call_next):
         start_time = time.time()
 
-        # Trace ID from headers or generate new
+        # Trace ID from headers or generate new. Only a well-formed UUID is
+        # accepted: the value goes into every log line, so an arbitrary string
+        # (newlines, control chars) would be a log-injection vector.
         trace_id = request.headers.get("X-Trace-ID", "")
+        if trace_id:
+            try:
+                import uuid
+
+                trace_id = str(uuid.UUID(trace_id))
+            except (ValueError, AttributeError, TypeError):
+                trace_id = ""
         if not trace_id:
             import uuid
             trace_id = str(uuid.uuid4())
@@ -1947,7 +2193,6 @@ def get_app() -> FastAPI:
         response = await call_next(request)
 
         process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = str(process_time)
         response.headers["X-Trace-ID"] = trace_id
 
         # Feed the HTTP request metrics so a scrape carries real per-request
@@ -2010,14 +2255,69 @@ def get_app() -> FastAPI:
     # 结构化错误**同时**摊到顶层（``code`` / ``message`` / ``detail``），非结构化
     # detail（普通字符串）完全沿用默认行为，不影响既有端点。
     from .account_context import structured_error_body
-    from .display import user_facing_detail
+    from .display import (
+        UserReadableHTTPException,
+        internal_error_body,
+        is_public_5xx_detail_safe,
+        sanitize_user_copy,
+        user_facing_detail,
+    )
 
     @app.exception_handler(StarletteHTTPException)
     async def structured_http_error_handler(request: Request, exc: StarletteHTTPException):
-        # 边界翻译：内部治理术语 / 政策编号 / 脚本路径不上屏。原始英文只进日志，
-        # 面向用户的 detail 一律是"发生了什么 + 下一步"的中性中文。
-        detail = user_facing_detail(exc.detail, exc.status_code)
-        if detail != exc.detail:
+        # 唯一的 HTTPException 处理器。console 的"前端路由 404 回退"不再注册
+        # 第二个 handler（那会以同一个 key 覆盖本函数，让所有 HTTPException
+        # 绕过脱敏），而是挂在 ``app.state.console_fallback``，在这里先问一句。
+        navigation = getattr(request.app.state, "console_fallback", None)
+        if navigation is not None:
+            rendered = await navigation(request, exc)
+            if rendered is not None:
+                return rendered
+
+        raw_detail = exc.detail
+        # 5xx 且 detail 是普通字符串：默认换成中文兜底 + trace_id。异常原文
+        # （路径、表名、堆栈）只进服务端日志；任何端点都不再能靠一条
+        # HTTPException 把内部细节带上屏。
+        #
+        # 例外是**显式标记**的 UserReadableHTTPException：它声明该文案是给用户
+        # 看、可照做的（如"知识库未启用：请执行 ollama pull …"）。标记不等于免检，
+        # 仍要过 is_public_5xx_detail_safe；命中路径/堆栈/SQL 时照旧掩码。
+        if exc.status_code >= 500 and isinstance(raw_detail, str):
+            trace_id = getattr(request.state, "trace_id", None) or "unknown"
+            original = describe_exception(exc, limit=2000)
+            if isinstance(exc, UserReadableHTTPException) and is_public_5xx_detail_safe(
+                raw_detail
+            ):
+                logger.warning(
+                    "http error public status=%s path=%s trace_id=%s original=%s",
+                    exc.status_code,
+                    request.url.path,
+                    trace_id,
+                    original,
+                )
+                detail = sanitize_user_copy(raw_detail).strip() or raw_detail
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": detail},
+                    headers=getattr(exc, "headers", None),
+                )
+            logger.error(
+                "http error masked status=%s path=%s trace_id=%s original=%s",
+                exc.status_code,
+                request.url.path,
+                trace_id,
+                original,
+            )
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=internal_error_body(trace_id),
+                headers=getattr(exc, "headers", None),
+            )
+
+        # 边界翻译：内部治理术语 / 政策编号 / 脚本路径 / 绝对路径不上屏。
+        # 原始英文只进日志，面向用户的 detail 一律是"发生了什么 + 下一步"。
+        detail = user_facing_detail(raw_detail, exc.status_code)
+        if detail != raw_detail:
             logger.warning(
                 "http error copy sanitized status=%s path=%s original=%s",
                 exc.status_code,
@@ -2044,10 +2344,11 @@ def get_app() -> FastAPI:
     async def request_validation_handler(
         request: Request, exc: RequestValidationError
     ):
+        labels = _collect_validation_labels(request)
         return JSONResponse(
             status_code=422,
             content=jsonable_encoder(
-                {"detail": public_validation_errors(exc.errors())}
+                {"detail": public_validation_errors(exc.errors(), labels)}
             ),
         )
 
@@ -2074,15 +2375,7 @@ def get_app() -> FastAPI:
         # the full exception and stack go to the server log only.
         return JSONResponse(
             status_code=500,
-            content={
-                "error": "internal_server_error",
-                "detail": (
-                    "服务端处理这个请求时遇到意外问题，本次操作没有完成。"
-                    "请稍后重试；如果反复出现，请导出诊断包，"
-                    "并把下面的追踪编号一起提供给技术支持。"
-                ),
-                "trace_id": trace_id,
-            },
+            content=internal_error_body(trace_id),
             # The logging middleware only decorates responses that return
             # normally; an exception response must still carry the same
             # breadcrumb the body names, otherwise the two disagree.

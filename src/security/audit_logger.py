@@ -521,13 +521,16 @@ def get_crypto_audit_logger() -> CryptoAuditLogger:
     """
     global _default_logger
     if _default_logger is None:
-        hwm_path = os.environ.get("AUDIT_HWM_PATH")
-        if not hwm_path:
-            data_dir = os.path.join(os.path.expanduser("~"), ".liuhao")
-            try:
-                os.makedirs(data_dir, exist_ok=True)
-            except OSError:
-                data_dir = None
-            hwm_path = os.path.join(data_dir, "audit_hwm.json") if data_dir else None
+        from src.common.data_paths import resolve_store_path
+
+        hwm_path = resolve_store_path(
+            "audit_hwm.json",
+            os.path.join(os.path.expanduser("~"), ".liuhao", "audit_hwm.json"),
+            env_var="AUDIT_HWM_PATH",
+        )
+        try:
+            os.makedirs(os.path.dirname(hwm_path), exist_ok=True)
+        except OSError:
+            hwm_path = None
         _default_logger = CryptoAuditLogger(hwm_path=hwm_path)
     return _default_logger
