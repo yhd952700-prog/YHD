@@ -7,6 +7,11 @@
 > 出包末尾有一条硬自检：`FREEZE-RECORD.json` 的 `installer.size`/`installer.sha256`
 > 必须与 `SHA256SUMS.txt` 首行、实际 exe 三处一致，否则拒绝出包。
 > 文案与 `installer/assets/BEFORE-INSTALL.txt` 必须保持一致。
+>
+> **历史产物例外（2026-11-09 核实）**：`dist\installer` 里的 0.1.1 安装包由旧流程构建，
+> **没有** `FREEZE-RECORD.json`，也**没有** `DELIVERY.txt`（只有 `README-DELIVERY.txt`）。
+> 因此 0.1.1 页面数值只能取自 `SHA256SUMS.txt` + 实测 exe，**不得声称来自 `FREEZE-RECORD.json`**。
+> 0.1.2 起：缺 `FREEZE-RECORD.json`、或两份记录不一致，即视为不可发布。
 
 ---
 
@@ -43,25 +48,28 @@ Get-FileHash .\LiuHao-Setup-0.1.2.exe -Algorithm SHA256 | Select-Object Hash
 
 ---
 
-## 3. 未签名说明（请先读）
+## 3. 自签名说明（请先读）
 
-本安装包**尚未做代码签名**，这是当前版本的已知事实，不是病毒提示：
+本安装包**使用项目自签名证书**（2026-11-09 实测 `Get-AuthenticodeSignature` = `Valid`，
+主体 `CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`，SHA-1 指纹以 `AE398F09` 开头），
+**不是公开权威 CA 签发**。这不是病毒提示：
 
-- 双击安装包时，Windows 可能弹出「Windows 已保护你的电脑」或「未知发布者」；
+- 双击安装包时，Windows 可能弹出「Windows 已保护你的电脑」或「未知发布者」——这是自签名证书的正常现象；
 - 从网盘、U 盘或聊天工具转存后打开，也可能出现同样提示；
-- 没有购买代码签名证书，不代表文件被篡改；但请务必核对本页的 SHA256。
+- 未导入信任的机器上 `Status` 可能显示 `UnknownError`（根证书不受信任），运行随包「信任签名证书.cmd」后应为 `Valid`；
+- 签名有效不代表来源可信：请务必核对本页的 SHA256。
 
 SmartScreen 绕过步骤（Windows 10 / 11 相同）：
 
 1. 看到「Windows 已保护你的电脑」蓝色窗口时，点左侧的**「更多信息」**；
-2. 窗口下方会出现「应用：LiuHao-Setup-0.1.2.exe」和**「仍要运行」**按钮，点它；
+2. 窗口下方会出现「应用：`LiuHao-Setup-<版本号>.exe`」和**「仍要运行」**按钮，点它；
 3. 若弹出 UAC（只在回退安装到 `C:\Program Files` 时才会出现），点「是」；
 4. 进入安装向导后按提示操作；默认安装路径不需要管理员权限，也不会弹 UAC。
 
 如果点「更多信息」后没有「仍要运行」，或提示「已被组织阻止」：
 说明文件可能被改动或来源不可信，请停止安装，重新从本页下载并核对 SHA256。
 
-后续版本会提供已签名的安装包；签名会改变文件字节与 SHA256，
+包已做项目自签名；若后续改用公开 CA 签名，文件字节与 SHA256 会变，
 届时请以新发布页给出的值为准，旧校验值自然失效。
 
 ---
@@ -155,13 +163,71 @@ MCP Server）默认全部关闭，需要显式配置或主动连接才会访问�
 
 ---
 
-## 8. 发布前自检清单
+## 8. 交付目录与归档语义
+
+**唯一可发布目录**：`dist\installer\` 顶层（exe、`liuhao-<版本>-upgrade.zip`、`SHA256SUMS.txt`、`README-DELIVERY.txt`；0.1.2 起还有 `FREEZE-RECORD.json`）。
+
+- `dist\_archive\**`：历史追溯，**不得分发、不得作为页面数值来源**；归档目录的 `README.txt` 写明原位置与原因。
+- 其他 `dist\<快照名>\installer\**`：历史构建快照，同样不得作为交付依据。
+- 判定「哪个是线上包」只认发布页 SHA256 与 `dist\installer\SHA256SUMS.txt`，**不认**目录名、时间戳或文件大小。
+
+已归档实例（0.1.1 同名不同文件）：
+
+| 目录 | 字节 | SHA256 前缀/后缀 |
+| --- | --- | --- |
+| `dist\installer\`（线上口径） | 29,567,136 | `49BC50C8…B4DF` |
+| `dist\_archive\brand-verify-installer\` | 35,089,104 | `222160D4…DDD9` |
+| `dist\encpath\installer\` | 37,856,638 | `172363C9…935C` |
+| `dist\installer\_archive\20261107-mixed-0.1.0-and-0.1.1\` | 34,830,483 | `0BF400D6…BF45` |
+
+> 2026-11-09 实测：`dist` 下共 16 个 `LiuHao-Setup-*.exe` 快照，其中 4 个是 0.1.1（上表），
+> 其余 12 个是 0.1.0。完整清单（含字节与 SHA256 前后缀）见 `docs-gap-sweep` 证据 `dist-snapshot-inventory.txt`。
+> `dist\encpath` 与 `dist\installer\_archive\...` 尚未移入 `dist\_archive\`，建议发布主线一并归档。
+
+---
+
+## 9. 换版核对（发布页手写值，无自动生成）
+
+线上发布页 HTML 不在本仓库（独立 GitHub Pages 仓库），页面里的版本、哈希、字节全部手写，没有构建注入。2026-11-09 对线上页面实测，可机检的手写值共 **25 处**：
+
+| 类别 | 处数 | 说明 |
+| --- | --- | --- |
+| 版本号 `0.1.1` | **15** | meta description、版本徽章、下载卡、FAQ、命令示例（第 482 行有 2 处） |
+| 完整 SHA256 | **4** | 同一个值重复：下载卡 ×2、校验区 ×2 |
+| 体积表述 | **6** | `29,567,136 字节` ×2、裸 `29567136` ×1、`28.20 MB` ×3（第 388/404/487 行） |
+
+> 「23 处」的口径差异：需求方记的是「版本 15 + 哈希 4 + 字节 4」；实测脚本按文本出现次数扫描为 25
+> （体积 6 处）。差异来自 `28.20 MB` 实际出现 3 次、且「字节 4」把近似值按 1 类去重了。
+> 核对时以脚本扫描结果为准，不以任一人工口径为准。
+> 另外 `28.20 MB` 实际是 **MiB**（29,567,136 / 1024² = 28.197）；按十进制应为 29.57 MB，页面单位标注有误。
+
+最容易漏的三类，换版时逐处核对：
+
+1. **下载按钮 `href` 文件名**（`LiuHao-Setup-<版本>.exe`）：改名后忘改 href，按钮直接 404；
+2. **`data-copy` 属性**：复制按钮里存的是旧哈希 / 旧文件名，页面显示对了但复制出去是错的；
+3. **裸字节数**：页面同时出现 `29,567,136`（千分位）与 `29567136`（裸写），只改一种会自相矛盾。
+
+可复用核对脚本（本补丁新增）：
+
+```powershell
+python scripts\verify_release_page_values.py --page <index.html> --record <FREEZE-RECORD.json>
+```
+
+它会检查：所有版本号一致；所有 64 位 SHA256 等于记录值；所有 `LiuHao-Setup-*.exe` 文件名版本一致；
+`data-copy` 只允许记录中的哈希 / 文件名；所有千分位与裸字节数等于记录 `installer.size`；
+近似体积与 `size/1024²` 相差 ≤0.05。退出码 `0`=通过，`1`=有差异，`2`=参数或文件错误。
+
+---
+
+## 10. 发布前自检清单
 
 - [ ] 安装包文件名与版本号一致，且 `dist\installer` 顶层只有一个候选 exe
-- [ ] 文件大小、SHA256 已从 `FREEZE-RECORD.json` / `SHA256SUMS.txt` 抄入第 1 节
+- [ ] 文件大小、SHA256 从 `FREEZE-RECORD.json` 读取（0.1.1 无该文件时只能取 `SHA256SUMS.txt` + 实测 exe，并在交付记录注明），逐处核对用 `scripts\verify_release_page_values.py`
 - [ ] 支持系统写的是 Win10 22H2+ / Win11 24H2+
-- [ ] 未签名说明与 SmartScreen 步骤与本文一致
+- [ ] 自签名说明与 SmartScreen 步骤与本文一致
 - [ ] 安装位置、权限、回退规则与 `BEFORE-INSTALL.txt` 逐条一致
 - [ ] 联网与隐私表述与 `BEFORE-INSTALL.txt` 第 4 条一致
 - [ ] 诊断包入口在开始菜单里可见、可双击
 - [ ] 本页不含旧版本号、旧哈希、旧网盘地址
+- [ ] 发布页 25 处手写值已用 `scripts\verify_release_page_values.py` 核对，退出码 0
+- [ ] 页面数值只取 `dist\installer\` 顶层 / `FREEZE-RECORD.json`，不取 `dist\_archive\` 或快照目录
