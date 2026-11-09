@@ -2896,7 +2896,7 @@ class GoogleProvider(BaseProvider):
         """Generate response via Google Gemini API (``google-genai`` SDK)."""
         try:
             from google.genai import types  # noqa: F401 - 提前暴露依赖缺失
-        except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
+        except ImportError as exc:  # pragma: no cover - environment guard
             raise RuntimeError(
                 "GoogleProvider requires the 'google-genai' package "
                 "(pip install 'google-genai'); the legacy "

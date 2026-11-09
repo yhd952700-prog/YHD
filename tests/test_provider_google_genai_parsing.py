@@ -59,6 +59,13 @@ class _Response:
         return "".join(texts) if texts else None
 
 
+class _HttpOptions:
+    """Mimics ``google.genai.types.HttpOptions``（测试只用到 ``base_url``）。"""
+
+    def __init__(self, base_url=None, **kwargs):
+        self.base_url = base_url
+
+
 class _Models:
     def __init__(self, handler):
         self._handler = handler
@@ -81,11 +88,18 @@ def _install_fake_genai(monkeypatch, handler):
 
     module = types.ModuleType("google.genai")
     module.Client = FakeClient
+    # 真实 ``google/genai/__init__.py`` 无条件执行 ``from . import types``，
+    # ``__all__`` 里也是 ``['Client', 'interactions', 'types']``：``types`` 与
+    # ``Client`` 同属公开面。桩只给 ``Client`` 就不是真实包的形状了。
+    types_module = types.ModuleType("google.genai.types")
+    types_module.HttpOptions = _HttpOptions
+    module.types = types_module
     package = types.ModuleType("google")
     package.__path__ = []  # 让它表现得像一个已安装的包
     package.genai = module
     monkeypatch.setitem(sys.modules, "google", package)
     monkeypatch.setitem(sys.modules, "google.genai", module)
+    monkeypatch.setitem(sys.modules, "google.genai.types", types_module)
     return clients
 
 
@@ -159,6 +173,21 @@ def test_generate_reports_missing_google_genai_sdk(monkeypatch):
     monkeypatch.delitem(sys.modules, "google", raising=False)
     monkeypatch.delitem(sys.modules, "google.genai", raising=False)
     monkeypatch.setattr(sys, "meta_path", [_BlockGoogle()] + sys.meta_path)
+
+    with pytest.raises(RuntimeError, match="google-genai"):
+        _provider().generate("ping")
+
+
+def test_partial_genai_install_reports_an_actionable_error(monkeypatch):
+    """包已装但没导出 ``types``（残缺/冻结安装）也不能裸抛 ``ImportError``。
+
+    此时 ``from google.genai import types`` 抛的是普通 ``ImportError``，而不是
+    ``ModuleNotFoundError``；产品契约是"缺 SDK 报可操作的错"，所以两条路必须
+    汇到同一个 ``RuntimeError``。
+    """
+    _install_fake_genai(monkeypatch, lambda model, contents: _Response([_Part("ok")]))
+    monkeypatch.delattr(sys.modules["google.genai"], "types", raising=False)
+    monkeypatch.delitem(sys.modules, "google.genai.types", raising=False)
 
     with pytest.raises(RuntimeError, match="google-genai"):
         _provider().generate("ping")
