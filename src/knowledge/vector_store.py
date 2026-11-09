@@ -612,6 +612,19 @@ def default_db_path() -> Path:
     )
 
 
+def _like_prefix_pattern(prefix: str) -> str:
+    """把 ``prefix`` 变成"只匹配它自己开头"的 LIKE 模式。
+
+    document id 里允许出现 ``_``（``inspect_a_zone.md``）和 ``%``，而 SQL 的
+    ``LIKE`` 把这两个字符当通配符：``'inspect_a_zone.md#%'`` 会匹配到
+    ``inspectxa_zone.md#0``。删除时这是**静默数据损坏**——被误删的那份文档
+    向量还在，只有词法行消失，检索质量下降却没有任何报错。所以这里逐个转义
+    ``\\`` / ``%`` / ``_``，并在调用处显式声明 ``ESCAPE '\\'``。
+    """
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
 class PersistentVectorStore(VectorStore):
     """SQLite-backed vector store: same interface, survives restarts.
 
@@ -685,9 +698,13 @@ class PersistentVectorStore(VectorStore):
     def _fts_delete_prefix(self, prefix: str) -> None:
         if not self._fts_available:
             return
-        # chunk ids only contain [A-Za-z0-9_.:-] + '#', so LIKE is unambiguous.
+        # chunk id 形如 ``<document_id>#<index>``，而 document id 里可以有 ``_``
+        # 和 ``%``；它们同时是 LIKE 的通配符。这里必须转义并显式 ESCAPE，
+        # 让语义真的是"精确前缀"，否则删 ``inspect_a_zone.md`` 会连
+        # ``inspectxa_zone.md`` 的词法行一起删掉（见 _like_prefix_pattern）。
         self._conn.execute(
-            "DELETE FROM knowledge_fts WHERE chunk_id LIKE ?", (f"{prefix}%",)
+            "DELETE FROM knowledge_fts WHERE chunk_id LIKE ? ESCAPE '\\'",
+            (_like_prefix_pattern(prefix),),
         )
 
     def _fts_upsert(self, doc_id: str, metadata: Dict[str, Any]) -> None:

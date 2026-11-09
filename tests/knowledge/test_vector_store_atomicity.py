@@ -130,6 +130,54 @@ class TestAtomicReplace:
         store.close()
 
 
+class TestFtsPrefixDelete:
+    """删除一份文档，不能连带删掉"名字只差一个下划线"的另一份的词法行。"""
+
+    @staticmethod
+    def _count(store, table: str, chunk_id: str) -> int:
+        column = "doc_id" if table == "knowledge_vectors" else "chunk_id"
+        row = store._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (chunk_id,)
+        ).fetchone()
+        return int(row[0])
+
+    def test_underscore_sibling_keeps_fts_rows_and_vectors(self, tmp_path):
+        store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))
+        if not store._fts_available:
+            pytest.skip("当前 SQLite 未编译 FTS5，词法索引不可用")
+
+        for name, vector in (
+            ("inspect_a_zone.md", [1.0, 0.0]),
+            ("inspectxa_zone.md", [0.0, 1.0]),
+        ):
+            store.upsert_document(
+                f"{name}#",
+                [
+                    (
+                        f"{name}#0",
+                        vector,
+                        {"text": "同名前缀文档", "document_id": name},
+                    )
+                ],
+                content_hash=f"hash-{name}",
+                document_id=name,
+            )
+
+        assert self._count(store, "knowledge_vectors", "inspectxa_zone.md#0") == 1
+        assert self._count(store, "knowledge_fts", "inspectxa_zone.md#0") == 1
+
+        removed = store.delete_document("inspect_a_zone.md")
+        assert removed["chunks_removed"] == 1
+
+        # 被删的文档必须干净移除
+        assert self._count(store, "knowledge_vectors", "inspect_a_zone.md#0") == 0
+        assert self._count(store, "knowledge_fts", "inspect_a_zone.md#0") == 0
+        # 关键断言：只差一个下划线的邻居，向量与词法行都原样保留
+        assert self._count(store, "knowledge_vectors", "inspectxa_zone.md#0") == 1
+        assert self._count(store, "knowledge_fts", "inspectxa_zone.md#0") == 1
+        store.close()
+
+
 class TestConcurrentSearchAndInsert:
     def test_search_survives_concurrent_inserts(self):
         store = VectorStore()
