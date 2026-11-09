@@ -1583,6 +1583,12 @@ def build(out_dir: Path, version: str, prune: bool = True) -> int:
     size_mb = sum(
         entry.stat().st_size for entry in app_dir.rglob("*") if entry.is_file()
     ) / (1024 * 1024)
+    # 入口文件存在性写进清单，供出包自检核对（升级按「新版缺失就删」处理，
+    # 缺一个入口文件，装完的桌面快捷方式就会断）。
+    entry_files = {
+        rel: (app_dir / rel).is_file()
+        for rel in ("LiuHao.bat", "START-HERE.txt", "assets/liuhao.ico")
+    }
 
     manifest = {
         "version": version,
@@ -1592,6 +1598,7 @@ def build(out_dir: Path, version: str, prune: bool = True) -> int:
         "skipped_modules": unmapped,
         "file_count": total,
         "size_mb": round(size_mb, 1),
+        "entry_files": entry_files,
         "contains_model_weights": False,
         "contains_secrets": False,
         "desktop_entry": "scripts/liuhao_desktop.py",

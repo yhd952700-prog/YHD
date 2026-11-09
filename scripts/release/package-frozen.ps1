@@ -557,6 +557,127 @@ if ($zipComplianceCode -eq 0) {
     Add-Check "升级包合规（zip）" "FAIL" $zipHint
 }
 
+# ------------------------------- 9.2 包内自检（入口 / 关键文件 / 清单计数）
+# 三条历史缺口都在这里钉死：
+#   * 0.1.2 早期包缺 LiuHao.bat / START-HERE.txt / assets\liuhao.ico → 升级会删掉旧版对应文件；
+#   * 0.1.1 包内 rate_limiter.py 还是 11-05 旧版 → 修了没进包，等于没修；
+#   * 包内文件数与 LIUHAO_RELEASE.json 的 files 条数不一致 → 升级误删或多装。
+Write-Step "包内自检：入口文件、关键文件内容哈希、文件清单计数"
+$innounp = if ($ReleaseGateDir) { Join-Path $ReleaseGateDir "tools\innounp-2\innounp.exe" } else { "" }
+$extractDir = Join-Path $OutRoot "installer-extract"
+$appRoot = Join-Path $extractDir "{app}"
+$unpackOk = $false
+if (-not $innounp -or -not (Test-Path $innounp)) {
+    Add-Check "包内解包" "FAIL" "找不到 innounp：$innounp"
+} else {
+    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $innounp -x -b -q -y "-d$extractDir" $setupExe | Out-Null; $unpackCode = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($unpackCode -ne 0 -or -not (Test-Path $appRoot)) {
+        Add-Check "包内解包" "FAIL" ("innounp 解包失败（exit {0}）：{1}" -f $unpackCode, $extractDir)
+    } else {
+        $unpackOk = $true
+        Add-Check "包内解包" "PASS" $extractDir
+    }
+}
+
+if ($unpackOk) {
+    # 9.2.1 入口文件：缺一个都会让升级删掉用户还能用的文件。
+    $appTreeRootFiles = @(
+        "capability-registry.yaml", "pyproject.toml", "requirements.txt",
+        "oss-registry.yaml", "LiuHao.bat", "START-HERE.txt", "assets\liuhao.ico"
+    )
+    $missingEntries = @()
+    foreach ($rel in $appTreeRootFiles) {
+        if (-not (Test-Path (Join-Path $appRoot $rel) -PathType Leaf)) { $missingEntries += $rel }
+    }
+    if ($missingEntries.Count -gt 0) {
+        $missingEntries | ForEach-Object { Write-Host "  !! 包内缺失 $_" -ForegroundColor Red }
+        Add-Check "包内入口文件" "FAIL" ("缺：" + ($missingEntries -join "、"))
+    } else {
+        Add-Check "包内入口文件" "PASS" ("{0} 项齐全（含 assets\liuhao.ico）" -f $appTreeRootFiles.Count)
+    }
+
+    # 9.2.2 关键文件内容哈希：包内文件必须与源码 HEAD 内容一致，不看日期/大小。
+    $keyFiles = @(
+        "src/gateway/rate_limiter.py",
+        "src/gateway/health.py",
+        "src/gateway/main.py",
+        "src/ai/personal_context.py",
+        "src/upgrade/manager.py",
+        "src/common/data_paths.py"
+    )
+    $keyProblems = @()
+    foreach ($rel in $keyFiles) {
+        $winRel = $rel -replace '/', '\'
+        $srcPath = Join-Path $RepoRoot $winRel
+        $packedPath = Join-Path $appRoot $winRel
+        if (-not (Test-Path $srcPath -PathType Leaf)) {
+            $keyProblems += "$rel（源码缺失）"
+            continue
+        }
+        if (-not (Test-Path $packedPath -PathType Leaf)) {
+            $keyProblems += "$rel（包内缺失）"
+            continue
+        }
+        # 源码侧再确认与 HEAD 一致，避免拿未提交的工作区文件当基线。
+        & git -C $RepoRoot diff --quiet HEAD -- $rel
+        if ($LASTEXITCODE -ne 0) {
+            $keyProblems += "$rel（工作区与 HEAD 不一致）"
+            continue
+        }
+        $srcHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $srcPath).Hash
+        $packedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packedPath).Hash
+        if ($srcHash -ne $packedHash) {
+            $keyProblems += ("{0}（源码 {1}… / 包内 {2}…）" -f $rel, $srcHash.Substring(0, 12), $packedHash.Substring(0, 12))
+        }
+    }
+    if ($keyProblems.Count -gt 0) {
+        $keyProblems | ForEach-Object { Write-Host "  !! 包内旧文件 $_" -ForegroundColor Red }
+        Add-Check "关键文件内容一致" "FAIL" (($keyProblems -join "；") + " → 拒绝出包")
+    } else {
+        Add-Check "关键文件内容一致" "PASS" ("{0} 个关键文件与源码 HEAD 内容哈希一致" -f $keyFiles.Count)
+    }
+
+    # 9.2.3 payload 清单里的入口文件存在性（供“装完能启动”追溯）。
+    $payloadManifest = Join-Path $OutRoot "payload\manifest.json"
+    if (-not (Test-Path $payloadManifest)) {
+        Add-Check "payload 清单入口" "FAIL" "缺少 $payloadManifest"
+    } else {
+        $pm = Get-Content -Raw -LiteralPath $payloadManifest | ConvertFrom-Json
+        $entryBad = @()
+        foreach ($name in @("LiuHao.bat", "START-HERE.txt", "assets/liuhao.ico")) {
+            if (-not $pm.entry_files -or $pm.entry_files.$name -ne $true) { $entryBad += $name }
+        }
+        if ($entryBad.Count -gt 0) {
+            Add-Check "payload 清单入口" "FAIL" ("manifest.json 标注缺失：" + ($entryBad -join "、"))
+        } else {
+            Add-Check "payload 清单入口" "PASS" ("entry_files 三项均为 true（file_count={0}）" -f $pm.file_count)
+        }
+    }
+
+    # 9.2.4 升级包文件数必须等于 LIUHAO_RELEASE.json 的 files 清单条数。
+    $releaseManifestPath = Join-Path $OutRoot "release\LIUHAO_RELEASE.json"
+    if (-not (Test-Path $releaseManifestPath)) {
+        Add-Check "升级包清单计数" "FAIL" "缺少 $releaseManifestPath"
+    } elseif (-not (Test-Path $releaseZip)) {
+        Add-Check "升级包清单计数" "FAIL" "缺少 $releaseZip"
+    } else {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $rm = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
+        $listedCount = @($rm.files).Count
+        $zipHandle = [System.IO.Compression.ZipFile]::OpenRead($releaseZip)
+        try { $zipEntryCount = $zipHandle.Entries.Count } finally { $zipHandle.Dispose() }
+        if ($zipEntryCount -ne $listedCount) {
+            Add-Check "升级包清单计数" "FAIL" ("包内 {0} 个文件 ≠ 清单 files {1} 条" -f $zipEntryCount, $listedCount)
+        } else {
+            Add-Check "升级包清单计数" "PASS" ("{0} 个文件与清单 files 条数一致" -f $zipEntryCount)
+        }
+    }
+}
+
 $sums = Join-Path $OutRoot "installer\SHA256SUMS.txt"
 $sumLines = @("$exeHash  $(Split-Path -Leaf $setupExe)")
 if ($zipHash) { $sumLines += "$zipHash  $(Split-Path -Leaf $releaseZip)" }
@@ -583,16 +704,17 @@ $record = [ordered]@{
     installer = [ordered]@{
         filename = (Split-Path -Leaf $setupExe)
         size = $exeBytes
-        size_mb = $exeSizeMb
+        # PowerShell 的 1MB = 1048576 字节，实际是 MiB；单位必须写对。
+        size_mib = $exeSizeMb
         sha256 = $exeHash
     }
     setup_exe = $setupExe
     setup_bytes = $exeBytes
-    setup_size_mb = $exeSizeMb
+    setup_size_mib = $exeSizeMb
     setup_sha256 = $exeHash
     release_zip = $(if ($zipHash) { $releaseZip } else { $null })
     release_bytes = $(if ($zipHash) { $zipBytes } else { $null })
-    release_size_mb = $zipSizeMb
+    release_size_mib = $zipSizeMb
     release_sha256 = $(if ($zipHash) { $zipHash } else { $null })
     compliance_status = "PASS"
     compliance_installer_json = $complianceJson
@@ -643,13 +765,54 @@ $record.checks = @($script:Checks | ForEach-Object {
 $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
 Copy-Item -LiteralPath $recordPath -Destination $recordDeliveryPath -Force
 
+# ------------------------- 11. 归档到 dist（唯一可发布位置）
+# 约定：最终产物只认 dist\installer\ 顶层与 dist\release\；OutRoot 允许是临时目录，
+# 但构建成功后必须归档，且临时目录里的证据不删（失败时留给排障）。
+$distRoot = Join-Path $RepoRoot "dist"
+$distInstaller = Join-Path $distRoot "installer"
+$distRelease = Join-Path $distRoot "release"
+if ((Resolve-Path $OutRoot).Path -ne (Resolve-Path $distRoot).Path) {
+    Write-Step "归档最终产物到 dist\installer 与 dist\release"
+    New-Item -ItemType Directory -Force -Path $distInstaller, $distRelease | Out-Null
+    $distSums = Join-Path $distInstaller "SHA256SUMS.txt"
+    if (Test-Path $distSums) {
+        $prevCandidates = Get-Content -LiteralPath $distSums -ErrorAction SilentlyContinue |
+            ForEach-Object { ($_ -split '\s+')[-1] } |
+            Where-Object { $_ -match '^LiuHao-Setup-(?<v>\d+\.\d+\.\d+)\.exe$' }
+        foreach ($name in $prevCandidates) {
+            $v = [regex]::Match($name, '^LiuHao-Setup-(?<v>\d+\.\d+\.\d+)\.exe$').Groups['v'].Value
+            $keep = Join-Path $distInstaller "SHA256SUMS-$v.txt"
+            if ($v -ne $Version -and -not (Test-Path $keep)) { Copy-Item -LiteralPath $distSums -Destination $keep -Force }
+        }
+    }
+    Copy-Item -LiteralPath $setupExe -Destination $distInstaller -Force
+    Copy-Item -LiteralPath $sums -Destination $distSums -Force
+    Copy-Item -LiteralPath $sums -Destination (Join-Path $distInstaller "SHA256SUMS-$Version.txt") -Force
+    Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD.json") -Force
+    Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD-$Version.json") -Force
+    if ($zipHash) {
+        Copy-Item -LiteralPath $releaseZip -Destination $distRelease -Force
+        foreach ($doc in @("LIUHAO_RELEASE.json", "dev-path-report.txt")) {
+            $srcDoc = Join-Path $OutRoot "release\$doc"
+            if (Test-Path $srcDoc) { Copy-Item -LiteralPath $srcDoc -Destination $distRelease -Force }
+        }
+    }
+    Add-Check "产物归档到 dist" "PASS" ("{0} / {1}" -f $distInstaller, $distRelease)
+    $record.checks = @($script:Checks | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Name; Status = $_.Status; Detail = $_.Detail }
+    })
+    $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
+    Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD.json") -Force
+    Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD-$Version.json") -Force
+}
+
 Write-Host ""
 Write-Host "================ 冻结打包完成 ================" -ForegroundColor Green
 Write-Host "三要素"
 Write-Host "  版本    $Version"
-Write-Host "  体积    $exeSizeMb MB（payload 见 manifest.json）"
+Write-Host "  体积    $exeSizeMb MiB（payload 见 manifest.json）"
 Write-Host "  SHA256  $exeHash"
-if ($zipHash) { Write-Host "升级包  $releaseZip（$zipSizeMb MB，SHA256 $zipHash）" }
+if ($zipHash) { Write-Host "升级包  $releaseZip（$zipSizeMb MiB，SHA256 $zipHash）" }
 Write-Host "  提交    $sourceCommit"
 Write-Host "  树      $sourceTree"
 Write-Host "  合规    PASS（$complianceJson）"
