@@ -168,6 +168,10 @@ class StartupCheckConfig:
     #     ``health_fallback_after_missing_rounds`` consecutive rounds in which
     #     *all* preferred paths explicitly answered 404/405.  A timeout,
     #     connection failure or 5xx means "not ready yet", never "missing".
+    #     The fallback attempt itself does not latch either: a cold first
+    #     ``/openapi.json`` can exceed the per-request timeout (FastAPI builds
+    #     the schema lazily), so it is retried on later qualifying rounds
+    #     instead of turning into a spurious startup timeout.
     health_probe_budget_seconds: float = 90.0
     health_probe_interval_seconds: float = 0.25
     health_fallback_after_missing_rounds: int = 2
@@ -631,7 +635,6 @@ def run_startup_check(
             timed_out = False
             probe_rounds = 0
             missing_rounds = 0
-            fallback_attempted = False
             while time.monotonic() < probe_deadline:
                 if process.poll() is not None:
                     break
@@ -646,14 +649,16 @@ def run_startup_check(
                     missing_rounds += 1
                     # Only an explicitly absent endpoint may trigger the
                     # fallback.  A timeout or 5xx keeps retrying the real
-                    # health paths until the budget runs out.
+                    # health paths until the budget runs out.  The fallback
+                    # probe is retried on every qualifying round as well: a
+                    # cold first ``/openapi.json`` can exceed the per-request
+                    # timeout, and latching that single attempt would turn a
+                    # slow-but-healthy service into a spurious timeout.
                     if (
-                        not fallback_attempted
-                        and fallback_path
+                        fallback_path
                         and missing_rounds
                         >= max(1, int(config.health_fallback_after_missing_rounds))
                     ):
-                        fallback_attempted = True
                         path, status, body, _ = _probe_health(
                             config.host, port, (fallback_path,), request_timeout
                         )

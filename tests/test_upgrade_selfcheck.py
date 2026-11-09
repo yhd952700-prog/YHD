@@ -171,6 +171,32 @@ from fastapi import FastAPI
 app = FastAPI()
 """
 
+# A cold-start twist on the fallback: the service has no health endpoint at
+# all, and its first /openapi.json answers exceed the per-request timeout (a
+# cold FastAPI builds the schema lazily).  A probe that latches its first
+# fallback attempt would report a spurious startup timeout; it must instead
+# keep retrying the fallback and, once it answers, flag it as a fallback.
+SLOW_OPENAPI_FALLBACK_SERVICE = """
+import threading
+import time
+
+from fastapi import FastAPI
+
+app = FastAPI(openapi_url=None)
+_lock = threading.Lock()
+_calls = [0]
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi():
+    with _lock:
+        _calls[0] += 1
+        attempt = _calls[0]
+    if attempt <= 2:
+        time.sleep(1.5)
+    return {"openapi": "3.1.0"}
+"""
+
 # 控制台 SPA 的兜底路由：任何未注册路径都返回 index.html 的 200。旧探针把
 # 这种 200 当健康，于是正在运行旧服务时的自检报“通过”，升级后却拿不到真实
 # /v1/health。这里必须只有 /v1/health 的 JSON 才算健康。
@@ -410,6 +436,39 @@ def test_fallback_is_only_used_when_primary_paths_are_absent_and_is_flagged(
     startup = report.startup
     assert startup is not None
     assert report.ok, report.to_dict()
+    assert startup.health_path == "/openapi.json"
+    assert startup.http_status == 200
+    assert startup.health_path_is_fallback is True
+    assert "兜底路径" in report.service_detail
+    assert "fallback" in startup.log_tail
+
+
+def test_slow_openapi_fallback_is_retried_and_still_flagged(tmp_path: Path) -> None:
+    """A cold, slow /openapi.json must be retried, then accepted *and* flagged.
+
+    The first two fallback answers exceed the 1.0s per-request timeout; a
+    probe that latches its first fallback attempt would turn this
+    slow-but-healthy service into a spurious startup timeout.  When the
+    fallback finally answers it is still only static JSON, so the report must
+    carry the fallback flag rather than present it as ordinary health.
+    """
+    app_root = _make_app(tmp_path / "app", service=SLOW_OPENAPI_FALLBACK_SERVICE)
+
+    report = run_self_check(
+        app_root,
+        [app_root / "data"],
+        config=SelfCheckConfig(
+            startup=StartupCheckConfig(
+                startup_timeout_seconds=30.0,
+                health_probe_budget_seconds=30.0,
+            )
+        ),
+    )
+
+    startup = report.startup
+    assert startup is not None
+    assert report.ok, report.to_dict()
+    assert startup.ok
     assert startup.health_path == "/openapi.json"
     assert startup.http_status == 200
     assert startup.health_path_is_fallback is True
