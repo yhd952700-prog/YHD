@@ -50,9 +50,12 @@ def test_ensure_integrity_key_writes_data_dir_file(tmp_path, monkeypatch):
 
     key_file = tmp_path / "data" / "config" / "integrity.key"
     assert key_file.is_file()
-    assert key_file.read_text(encoding="utf-8").strip() == os.environ.get(
+    from src.common import integrity_key as _ik
+
+    assert _ik.read_key_file(key_file) == os.environ.get(
         HUMAN_IDENTITIES_INTEGRITY_KEY_ENV
     )
+    assert key_file.read_bytes().startswith(b"LIUHAO-DPAPI-1:")
     # 不再写进程序目录。
     assert not (tmp_path / ".env").exists()
 

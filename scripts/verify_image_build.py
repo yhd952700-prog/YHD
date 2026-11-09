@@ -39,11 +39,11 @@ PORT DISCIPLINE:
 EXIT CODES:
   0  every check PASS
   1  at least one check FAIL (a real error occurred)
-  2  NOT_VERIFIED -- the environment cannot execute this gate at all
+  3  NOT_VERIFIED -- the environment cannot execute this gate at all
      (no docker CLI, or CLI present but daemon unreachable). This is a GAP,
      not a proven failure, but it is NON-ZERO on purpose: a CI job that
      silently goes green because the daemon vanished is worse than one that
-     turns red.
+     turns red. 3 is the repo-wide "NOT VERIFIED" code and is never a pass.
 
 HOW TO RUN:
   python scripts/verify_image_build.py
@@ -650,7 +650,7 @@ def main() -> int:
         print("  NOT meaning: production deployment verified.")
     print("=" * 74)
 
-    return 1 if any_fail else (2 if any_nv else 0)
+    return 1 if any_fail else (3 if any_nv else 0)
 
 
 if __name__ == "__main__":

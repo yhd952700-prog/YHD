@@ -24,8 +24,9 @@ RESULT CONTRACT:
   Each check returns exactly one of: PASS | FAIL | NOT_VERIFIED.
   * FAIL  == the thing is broken / a real error occurred  -> process exits 1.
   * NOT_VERIFIED == we could not prove it in THIS environment (a gap is
-    recorded honestly), but it is not proven broken -> process exits 0 with a
-    warning. This is deliberately distinct from FAIL.
+    recorded honestly), but it is not proven broken -> process exits 3
+    (NOT VERIFIED) and prints an explicit warning. Never confuses "gap" with
+    "pass": exit 3 is not a green result.
   * PASS  == the check executed and succeeded with evidence.
 
 HOW TO RUN:
@@ -521,6 +522,7 @@ def main() -> int:
     # Report
     print()
     any_fail = False
+    any_nv = False
     for ch in checks:
         print(f"[{ch.status:>12}] {ch.name}")
         print(f"    evidence: {ch.evidence}")
@@ -528,6 +530,8 @@ def main() -> int:
             print(f"      - {d}")
         if ch.status == "FAIL":
             any_fail = True
+        elif ch.status == "NOT_VERIFIED":
+            any_nv = True
     print("=" * 72)
 
     summary = {
@@ -545,10 +549,19 @@ def main() -> int:
     except Exception as e:  # pragma: no cover
         print(f"(could not write JSON report: {e})")
 
-    print("RESULT:", "FAIL" if any_fail else "OK (no hard failures; NOT_VERIFIED gaps recorded)")
+    if any_fail:
+        print("RESULT: FAIL (hard failures present)")
+    elif any_nv:
+        print("RESULT: NOT VERIFIED (no hard failures, but NOT_VERIFIED gaps recorded; "
+              "exit 3 = not a pass)")
+    else:
+        print("RESULT: PASS (every check produced evidence)")
     print("=" * 72)
-    # FAIL is a hard gate. NOT_VERIFIED is a recorded gap, not a hard failure.
-    return 1 if any_fail else 0
+    # FAIL is a hard gate (1). NOT_VERIFIED is an explicit non-pass (3), never
+    # a green tick: "we could not prove it here" must stay visible in CI.
+    if any_fail:
+        return 1
+    return 3 if any_nv else 0
 
 
 if __name__ == "__main__":

@@ -158,6 +158,8 @@ ui-evidence/
 # 由 src/upgrade 在 --app-root . 时写进仓库根；含本机发布目录绝对路径。
 upgrade-state/
 upgrade-backups/
+# 自改闭环的运行期状态（selfmod.db 证据账本 + backups/）；同样随每次运行变化。
+.selfmod-state/
 
 # ===== 本机验收/运行时证据（不是交付物）=====
 # 下面五类都是「本机跑一遍才有、换台机器就重来」的证据或运行态：
@@ -183,3 +185,25 @@ upgrade-backups/
 # 它不是源码也不是测试基线，提交它只会把仓库撑爆；权重应由 `ollama pull`
 # 或外部缓存目录管理。`*.gguf` 因此一律忽略。
 *.gguf
+
+# ===== 代码签名私钥（绝不入库）=====
+# 私钥与口令密文只应留在构建机；仓库里只提交公钥 .cer 与指纹配置 signing.json。
+signing/private/
+*.pfx
+*.p12
+*.pvk
+# DPAPI 包裹的口令/私钥密文同样属于机密：即使被误解包也不应进入版本库。
+*.dpapi
+
+# ===== 运行/测试产物（可再生，绝不入库）=====
+# outputs/ 由 selfmod 扫描与前端 a11y 审计写入（pytest JUnit、日志、截图）。
+# 这些是运行时产物，重新跑对应命令即可再生；提交只会带来噪声与仓库体积。
+/outputs/
+
+# ===== 证据类截图（本机证据，不入库）=====
+# 约定：证据类截图（Playwright 截图、审计现场图）随分辨率与机器变化，属「本机跑一遍才有」
+# 的证据，一律不入库；确需留痕请存到仓库外的证据库，不要靠 git 保存二进制截图。
+# artifacts/client-split/ —— 客户端拆分验收截图 + DOM 断言结果。
+# docs/audit/evidence/    —— 审计现场截图（maintenance-root-visible.png 等）。
+/artifacts/client-split/
+/docs/audit/evidence/

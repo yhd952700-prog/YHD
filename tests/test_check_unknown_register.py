@@ -7,10 +7,15 @@ to ``tmp_path`` -- the real register is never mutated.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# CI 上不允许 skip：本文件的每条用例都依赖 git 历史，skip 等于整道门禁静默
+# 停止工作。CI 单独跑 -m gate_contract 并断言 skipped == 0。
+pytestmark = pytest.mark.gate_contract
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "check_unknown_register.py"
@@ -44,10 +49,19 @@ def _write(tmp_path: Path, name: str, content: str) -> Path:
     return p
 
 
+def _skip_or_fail(reason: str) -> None:
+    """本地可以 skip 并写明原因；CI（``CI`` 环境变量存在）必须红。"""
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 @pytest.fixture(autouse=True)
 def _require_git():
     if not ROOT_COMMIT or not HEAD_COMMIT:
-        pytest.skip("git history unavailable")
+        _skip_or_fail(
+            f"git history unavailable (root={ROOT_COMMIT!r}, head={HEAD_COMMIT!r})"
+        )
 
 
 # --- GREEN: the real register must pass -------------------------------------

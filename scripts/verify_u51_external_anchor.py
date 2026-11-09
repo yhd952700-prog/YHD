@@ -158,6 +158,9 @@ def main() -> int:
         "reference log is reported honestly as SELF-ATTESTED (not independently "
         "verified)."
     )
+    # 退出码 0 是刻意的，不是"伪装通过"：密码学断言（Merkle 包含证明、STH 签名、
+    # 篡改拒绝）在本环境**全部真跑并通过**；SELF-ATTESTED 只是说明参考日志的来源
+    # （由本仓库之外的一方提供），不是"本门禁没验证"。
     return 0
 
 

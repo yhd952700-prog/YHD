@@ -61,9 +61,11 @@ Scope and honesty rules
 
 Exit codes
 ==========
-0  all checks passed
+0  all checks passed (every check produced evidence and found no violation)
 1  at least one check found a violation (details on stdout)
-2  the gate could not obtain the evidence it needs (NOT VERIFIED)
+3  NOT VERIFIED -- the gate could not obtain the evidence it needs for at
+   least one scope (e.g. a pytest target that is not a local path). A gap is
+   non-zero: it must never be rendered as a pass. 3 is never a real failure.
 """
 
 from __future__ import annotations
@@ -203,6 +205,16 @@ def first_party_modules() -> Set[str]:
 
 # ─────────────────── check A: declaration completeness ───────────────────
 
+#: 本次扫描中 ``ast.parse`` 失败的文件（``<surface>/<path>: <exc>``）。
+#: 非空即代表"有文件根本没被扫到"，check A 必须据此判 FAIL。
+PARSE_FAILURES: List[str] = []
+
+
+def parse_failures() -> List[str]:
+    """Return the parse failures collected by the most recent scan."""
+    return list(PARSE_FAILURES)
+
+
 def collect_imports(
     roots: Iterable[Tuple[str, Path]] = SCAN_ROOTS,
 ) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[str]]]:
@@ -219,6 +231,7 @@ def collect_imports(
     Paths are reported as ``<surface>/<relative path>`` so a finding names the
     surface it came from: ``src/...`` or ``scripts/...``.
     """
+    PARSE_FAILURES.clear()
     stdlib = set(sys.stdlib_module_names)
     first_party = first_party_modules()
     top: Dict[str, Set[str]] = {}
@@ -231,6 +244,21 @@ def collect_imports(
         for path in sorted(base.rglob("*.py")):
             _collect_one_file(path, base, surface, top, inside, full, stdlib, first_party)
     return _third_party_split(top, inside, full, stdlib, first_party)
+
+
+def _is_sibling_module(path: Path, root: str) -> bool:
+    """``import <root>`` resolves to a module next to the importing file.
+
+    ``scripts/acceptance/*.py`` 和 ``scripts/self_improve/*.py`` 是被
+    ``python scripts/xxx.py`` 直接执行的：Python 会把**脚本所在目录**放进
+    ``sys.path[0]``，于是 ``from account_tree_e2e import ...`` /
+    ``from collectors import ...`` 这些同目录兄弟模块是地道的本仓库代码，
+    不是缺声明的第三方依赖。``first_party_modules()`` 只 harvest 了
+    ``scripts/`` 的直接子项（子目录名），看不到子目录里的裸模块同名文件，
+    不补这条判断就会把自家脚本报成 "UNDECLARED"。
+    """
+    parent = path.parent
+    return (parent / f"{root}.py").is_file() or (parent / root / "__init__.py").is_file()
 
 
 def _collect_one_file(
@@ -246,8 +274,13 @@ def _collect_one_file(
     rel = f"{surface}/" + str(path.relative_to(base)).replace("\\", "/")
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except SyntaxError as exc:  # pragma: no cover - defensive
-        print(f"  [BLOCKED] cannot parse {rel}: {exc}")
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        # 解析失败 = 该文件的依赖面无法判定。跳过它再报 PASS 是"被藏起来的
+        # 漏扫"：一个 UTF-8 BOM（ast.parse 会报 U+FEFF）就能让整个文件的所有
+        # import 从门禁视野里消失。这里必须落成 FAIL，而不是 [BLOCKED]。
+        message = f"{rel}: {exc}"
+        PARSE_FAILURES.append(message)
+        print(f"  [FAIL] cannot parse {message}")
         return
 
     def record(nodes: Iterable[ast.stmt], store: Dict[str, Set[str]]) -> None:
@@ -255,6 +288,8 @@ def _collect_one_file(
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
+                    if _is_sibling_module(path, root):
+                        continue
                     store.setdefault(root, set()).add(rel)
                     # `import a.b.c` requires the whole dotted path.
                     full.setdefault(root, set()).add(alias.name)
@@ -263,6 +298,8 @@ def _collect_one_file(
                     continue
                 if node.module:
                     root = node.module.split(".")[0]
+                    if _is_sibling_module(path, root):
+                        continue
                     store.setdefault(root, set()).add(rel)
                     # `from a.b import c` requires the module `a.b`; the
                     # name `c` may be a submodule OR an attribute of it
@@ -351,6 +388,8 @@ IMPORT_ROOT_ALIASES: Dict[str, str] = {
     # 与分发名不同；且 `packages_distributions()` 在未安装 pywin32 的 Linux
     # 门禁环境里给不出映射（`win32con` 甚至不会登记为顶层包）。没有这些别名
     # 会把**正确的** pywin32 声明误判为未声明。
+    # ntsecuritycon 也由 pywin32 分发提供（同属 Win32 子模块族）。
+    "ntsecuritycon": "pywin32",
     "win32api": "pywin32",
     "win32con": "pywin32",
     "win32gui": "pywin32",
@@ -407,6 +446,11 @@ def check_a() -> List[str]:
     top, lazy_only, full = collect_imports()
     declared = declared_packages()
     problems: List[str] = []
+
+    for failure in parse_failures():
+        msg = f"cannot parse {failure}; dependency surface cannot be verified"
+        _fail(msg)
+        problems.append(msg)
 
     for label, store in (("top-level", top), ("lazy", lazy_only)):
         for root in sorted(store):
@@ -577,8 +621,13 @@ def job_installs_test_surface(installs: List[str]) -> Tuple[bool, str]:
     return False, "no install command requests the test surface"
 
 
-def pytest_scope_needs_extra(commands: List[str]) -> Tuple[bool, str]:
+def pytest_scope_needs_extra(commands: List[str]) -> Tuple[bool, bool, str]:
     """Does this pytest invocation actually reach tests gated on the extra?
+
+    Returns ``(needs_extra, verified, why)``. ``verified`` is False when the
+    command's target paths cannot be resolved inside this repo: the scope was
+    then NOT measured, which must surface as NOT VERIFIED, not as "nothing to
+    require".
 
     Scope matters, and getting it wrong in either direction is bad: a gate
     that demands the extra for ``tests/integration/`` (which contains no
@@ -588,7 +637,7 @@ def pytest_scope_needs_extra(commands: List[str]) -> Tuple[bool, str]:
     """
     extra_pkgs = test_extra_packages()
     if not extra_pkgs:
-        return True, "no [tests] extra declared; nothing to require"
+        return True, True, "no [tests] extra declared; nothing to require"
     # A distribution is usually imported with underscores (``pydantic_monty``)
     # even when it is written with hyphens, so match both spellings.
     tokens = sorted({p for p in extra_pkgs} | {p.replace("-", "_") for p in extra_pkgs})
@@ -613,7 +662,12 @@ def pytest_scope_needs_extra(commands: List[str]) -> Tuple[bool, str]:
         elif (REPO / target).exists():
             roots.append(REPO / target)
     if not roots:
-        return True, f"pytest target(s) {targets} are not local test paths; not asserting"
+        return (
+            True,
+            False,
+            f"pytest target(s) {targets} are not local test paths; "
+            "test-surface requirement NOT VERIFIED",
+        )
 
     gated: List[str] = []
     for root in roots:
@@ -626,18 +680,20 @@ def pytest_scope_needs_extra(commands: List[str]) -> Tuple[bool, str]:
                 gated.append(str(path.relative_to(REPO)).replace("\\", "/"))
 
     if not gated:
-        return False, (f"no test under {'/'.join(t.name for t in roots)} references "
-                       f"{'/'.join(extra_pkgs)}")
-    return True, f"{len(gated)} gated test file(s), e.g. {gated[0]}"
+        return False, True, (f"no test under {'/'.join(t.name for t in roots)} references "
+                             f"{'/'.join(extra_pkgs)}")
+    return True, True, f"{len(gated)} gated test file(s), e.g. {gated[0]}"
 
 
-def check_b_c() -> List[str]:
+def check_b_c() -> Tuple[List[str], List[str]]:
+    """Return ``(problems, not_verified)`` for checks B and C."""
     print("\n=== B/C. every CI job that runs pytest installs the test surface ===")
     if not WORKFLOWS.is_dir():
         print("  [BLOCKED] .github/workflows not found")
-        return ["workflows dir missing"]
+        return ["workflows dir missing"], []
 
     problems: List[str] = []
+    not_verified: List[str] = []
     seen_jobs = 0
     for wf in sorted(WORKFLOWS.glob("*.yml")):
         for name, bucket in parse_jobs(wf).items():
@@ -648,7 +704,12 @@ def check_b_c() -> List[str]:
             seen_jobs += 1
             label = f"{wf.name}:{name}"
 
-            needs_extra, scope_why = pytest_scope_needs_extra(pytests)
+            needs_extra, scope_verified, scope_why = pytest_scope_needs_extra(pytests)
+            if not scope_verified:
+                msg = f"{label}: {scope_why}"
+                print(f"  [NOT VERIFIED] {msg}")
+                not_verified.append(msg)
+                continue
             if not installs:
                 msg = (f"{label} runs pytest but installs nothing -- collection aborts on "
                        f"a bare interpreter (pytest cmd: {pytests[0][:60]!r})")
@@ -683,7 +744,7 @@ def check_b_c() -> List[str]:
     if not seen_jobs:
         print("  [BLOCKED] no workflow job runs pytest; nothing was verified")
         problems.append("no pytest job found -- cannot verify the install surface")
-    return problems
+    return problems, not_verified
 
 
 # ─────────────────────────────── driver ───────────────────────────────
@@ -694,7 +755,9 @@ def main() -> int:
     print("=" * 78)
     print(f"repo: {REPO}")
 
-    problems = check_a() + check_b_c()
+    problems = check_a()
+    bc_problems, not_verified = check_b_c()
+    problems += bc_problems
 
     print("\n" + "=" * 78)
     if problems:
@@ -703,6 +766,14 @@ def main() -> int:
             print(f"  {i}. {p}")
         print("=" * 78)
         return 1
+    if not_verified:
+        # Nothing is proven wrong, but at least one scope was not measured.
+        # That is NOT VERIFIED (3), never a pass.
+        print(f"RESULT: NOT VERIFIED -- {len(not_verified)} scope(s) could not be measured")
+        for i, p in enumerate(not_verified, 1):
+            print(f"  {i}. {p}")
+        print("=" * 78)
+        return 3
     print("RESULT: PASS -- src/ imports are declared and every pytest job installs them")
     print("=" * 78)
     return 0

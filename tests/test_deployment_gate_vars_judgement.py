@@ -53,6 +53,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import subprocess
 
 import pytest
 
@@ -313,11 +314,26 @@ class TestEvidenceIsVersionControlled:
     invisible: nothing about the run looks different.
     """
 
-    def test_env_is_excluded_from_the_evidence_set(self, gate):
-        labels = {gate._label(p) for p in gate.collect_artifacts()}
-        if ".env" not in labels:
-            pytest.skip("no untracked .env on this machine")
-        untracked = {gate._label(p) for p in gate.untracked_artifacts(gate.collect_artifacts())}
+    @pytest.mark.gate_contract
+    def test_env_is_excluded_from_the_evidence_set(self, gate, tmp_path, monkeypatch):
+        """Scenario is built in tmp_path: no dependence on this machine's files.
+
+        Previously this skipped when the developer happened to have no
+        untracked ``.env`` -- so the one machine that could reproduce the
+        defect was the only one that checked it.
+        """
+        (tmp_path / ".env").write_text("SECRET_KEY=probe\n", encoding="utf-8")
+        # A real (empty) git repo makes ``git ls-files`` answer "not tracked"
+        # for .env instead of "not a repository" (which would be None).
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path),
+                       capture_output=True, check=False)
+        monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(gate, "WORKFLOWS_DIR", tmp_path / ".github" / "workflows")
+
+        artifacts = gate.collect_artifacts()
+        assert {gate._label(p) for p in artifacts} == {".env"}, (
+            "the tmp scenario must contain exactly the .env artifact")
+        untracked = {gate._label(p) for p in gate.untracked_artifacts(artifacts)}
         assert ".env" in untracked, (
             ".env is gitignored and holds secrets; it must never count as "
             "deployment evidence")
@@ -413,11 +429,14 @@ class TestIgnoredPathsAreDeterministic:
         assert [p.name for p in ignored] == ["ignored_one"]
         assert [p.name for p in real] == ["real_one"]
 
+    @pytest.mark.slow
     def test_real_run_reports_ignored_artifacts_as_info_not_findings(self, gate):
+        # 真实跑部署门禁子进程，实测远超普通单测预算；只在发版门禁显式开启。
         import subprocess
         import sys
+        # 仓库增长后这次端到端运行实测已超过 180s；原值会把"慢"误报成"挂"。
         proc = subprocess.run([sys.executable, str(SCRIPT)], cwd=str(REPO_ROOT),
-                              capture_output=True, text=True, timeout=180)
+                              capture_output=True, text=True, timeout=420)
         findings_part, sep, info_part = proc.stdout.partition("INFO --")
         assert "ARTIFACT:.env" not in findings_part, (
             "a gitignored artifact must not be a finding -- that made the exit "

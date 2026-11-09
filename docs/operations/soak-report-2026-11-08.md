@@ -42,12 +42,33 @@
 
 | 编号 | 改前 | 修复 | 判定 |
 |---|---|---|---|
-| D-1 满载整站僵死 | CPU 85–100% 时 6–12 分钟后全站无响应，≥26 分钟不自愈 | ①探针独立池 + 硬超时 503（中文原因）+ 纯 ASGI 快速失败闸 + 循环停滞看门狗；②**根因修复**：anyio/默认线程池不再在事件循环里 `Thread.start().wait()`（§12.8） | **达标**：最终代码（`rss8h4`）CPU 82–87% 连续 30 分钟、**591 次探活**，health/metrics/ready 各 **0 次非 200**、看门狗 0 告警（§12.10；前一窗口 35 分钟 653 次见 §12.9） |
+| D-1 满载整站僵死 | CPU 85–100% 时 6–12 分钟后全站无响应，≥26 分钟不自愈 | ①探针独立池 + 硬超时 503（中文原因）+ 纯 ASGI 快速失败闸 + 循环停滞看门狗；②**根因修复**：anyio/默认线程池不再在事件循环里 `Thread.start().wait()`（§12.8）；③探针池预热改栅栏法，真建 4 条（§12.11）；④身份解析移出事件循环、探针端点精确豁免限流（§12.12）；⑤goal 线程非阻塞启动（§12.12） | **未达标（第三次复现）**：`rss8h5` 跑到 22 分钟（19:40:06）再次僵死，到 19:46:46 终止仍无响应（6 分 41 秒不自愈）；446 次探活中 **25 次非 200**；**8 小时数据不存在，22 分钟窗口作废**（§12.11）。④⑤落地前不再声称"已修复" |
 | D-2 慢调用堵 metrics | 95 秒调用期间 metrics 连续超时 | 指标/健康/就绪/预检全部移出事件循环，与业务临界区分离 | **达标**：105 秒慢调用窗口 34 次探活全绿；复测 43.5 s / 39.4 s 窗口 14 / 13 次全绿（§12.7、§12.10） |
 | D-3 缺 `src.brand` 起不来 | `ModuleNotFoundError` | 后续提交已补 `src/brand.py` | **关闭**：当前 tip 启动 + health/ready 均 200（§12.3） |
 | D-4 verify 随行数劣化 | 5,063 行 74–142 ms；13,053 行 ~390 ms | 单次硬预算 600 行 + `rooted_through_verified` 接受截断段 | **达标**：24,039 行 p95 **67.1 ms**，且与总行数解耦（§12.4；满载 2.3k 行复测 p95 138 ms 为调度抖动） |
 | 审计库 +20.5MB/h | 默认策略（30 天/500k/256MB）短窗口不触发 | 默认 90 天 / 100k 行 / **100MB**，`enabled` 默认开 | **预期内**：20.5MB/h 是触顶前真实写入速率；触顶后每 pass 裁 5 千行、WAL 归零；改后同负载 **+4.5 MB/h**（§12.5、§12.10） |
-| RSS +24.5MB/h | 相关性索引/死信/黑板/路由历史只增不删 | 四处加上限并同步回收索引 | **已修，泄漏判据达标**：句柄/gc 对象**无趋势**（14/9 次回落）；RSS 非单调，**8 小时终值累积中**（§12.6、§12.10） |
+| RSS +24.5MB/h | 相关性索引/死信/黑板/路由历史只增不删 | 四处加上限并同步回收索引 | **句柄/gc 无趋势**（前 35 分钟分别 14/9 次回落）；RSS 前 30 分钟 +14.3 MB/h 但 **9 次回落**；**8 小时曲线不存在**（`rss8h5` 22 分钟即僵死），只能写"22 分钟内未见单调增长，4 次回落"，不外推（§12.6、§12.11） |
+
+#### 0.4.1 D-1 第三次复现（`rss8h5`）的分档明细
+
+| 项 | 观测 | 分档 |
+|---|---|---|
+| 8 小时 RSS 完整曲线 | **不存在**：只有 22 个样本（22 分钟） | **未完成** |
+| 探活失败次数 | **446 次探活，25 次非 200**（19:40:06–19:46:46，全部 `hung`，每次 3.00–3.04 s） | **未达标** |
+| 最差窗口 p50/p95 | 该窗口 25/25 全失败，p50 = p95 = 3.00–3.04 s | **未达标** |
+| 正常期探活 p50/p95（health） | 12.6 ms / 42.0 ms（446 次中前 421 次） | — |
+| 看门狗 | 19:41:09 报「事件循环已停滞 84.5 秒」；至 19:46:46 未再恢复 | **未达标** |
+| 栈转储 | 2 次（`probe_stacks.py` 的 `/stacks` 请求超时，服务端无响应） | **未达标** |
+| 22 分钟 RSS | 110.8 → 峰值 117.9 → 116.1 MB，+18.56 MB/h，**4 次回落**，非单调 | 不外推 |
+| verify | 29 次 0 失败，p50 37.5 / p95 58.5 / max 219.8 ms | 窗口作废 |
+| 审计库 | 0.25 → 1.87 MB（22 分钟，+4.8 MB/h） | 不外推 |
+
+> 现场：19:44 两次 py-spy 同栈 —— 事件循环停在 `RevocationStore._connect`
+> （`sqlite3.connect`）← `JWTHandler.validate_token` ← `RateLimiter._identity`
+> ← `RateLimitMiddleware.__call__`；同一时刻一个 anyio worker 停在
+> `Thread.start (threading.py:999)` ← `AIStateManager.create_and_execute_goal`
+> （`ai_management.py:1592`，应用自己 new 的普通线程）。进程 5 秒 CPU 只涨
+> **0.02 秒**：不是忙死，是阻塞调用占住了事件循环。
 
 ---
 
@@ -67,6 +88,7 @@
 - `p36short`：`p36tipsrc` 快照（30 分钟，完整），含三项修复：指标端点归一化（2948e69e）、审计库回收（110b5ccd）、指标基数修复。**注意**：该 run 的进程环境沿用了上一轮遗留的 `LIUHAO_AUDIT_RETENTION_MAX_ROWS≈6000`，因此审计库在最后一刻（10:54:11）触发过一次裁剪（floor 7042、rows 6011）。
 - `wt30p` / `wt30p2`：`p36tipsrc` + **默认保留策略**（显式清除 `LIUHAO_AUDIT_RETENTION_*`）的 30 分钟复测两次；两次都在 6-8 分钟僵死（D-1），未产出可用窗口。
 - 启动方式：`pythonw.exe`、`Start-Process`、`schtasks` 在本环境都会被终端管理器在命令结束时连带杀掉（`schtasks` Last Result=`-1073741510` = `STATUS_CONTROL_C_EXIT`）。**唯一可跨命令存活的宿主是 WMI `Win32_Process.Create`**，全部长跑均以该方式拉起。
+- **隔离快照的取法（踩坑记录）**：用 `LIUHAO_HARNESS_REPO` 指向隔离目录时，只拷 `src/` + `config/` 不够——`src/knowledge/embedding.py` 直接 `from error_types import ProviderError`，漏掉仓库根的 `error_types.py` 会在 import 期 `ModuleNotFoundError` 退出（`fix30` 第一次启动即如此）。**复制仓库做快照必须带上根目录的 `*.py`**（以及 `core/libs/plugins/skills/configs`），拷完先跑一次 `import src.gateway.main` 冒烟再开窗口。
 
 ### 1.3 宿主状态（必须随数字一起读）
 
@@ -348,8 +370,9 @@ D:\LiuHao-AI-OS\.venv\Scripts\python.exe D:\cache\temp\liuhao-fix\hdelta.py wt30
 
 1. **探针隔离池**：`ThreadPoolExecutor(max_workers=4, thread_name_prefix="liuhao-probe")`，
    采集一律 `run_in_executor` + `asyncio.wait_for(asyncio.shield(...), 2.0s)`。
-   超时返回 `503`（`status:"busy"`、`reason:"probe_timeout"`、中文 `user_message`、
-   `Retry-After: 1`），不再挂住。
+   超时返回 `503` + **四字段**（`code:"PROBE_BUSY"` / 中文 `message`（含"探针繁忙"）/
+   `correlation_id` / `retry_after:1`）+ `Retry-After: 1` + `X-Correlation-ID`，与业务
+   503 同一套形状（改前是另一种 `status:"busy"` 形状，见 §12.12），不再挂住。
 2. **`/v1/health` 纯内存路径**：模型配置快照 5 秒 TTL、只在探针池里刷新；读不到时
    `ai_provider.type="unknown"` 仍返回 200。存活语义 = "进程还能响应"。
 3. **子系统/生产预检**移入同一探针池（10 s / 8 s 预算），不再在循环上 import 内核。
@@ -535,7 +558,13 @@ Thread (idle) liuhao-diag
 - 回归护栏：`tests/test_gateway_health_wiring.py::TestThreadPoolStartDoesNotStallLoop`
   用"线程创建成功但永不 bootstrap"复现卡点，断言 `WorkerThread.start()` 必须 <0.5 s 返回
   且不阻塞调用线程；另断言探针池 4 条线程、默认线程池 4 条线程在启动时已建满
-  （整文件 19 passed）。
+  （整文件 20 passed）。
+- **反证（护栏可证伪）**：`test_the_warm_guard_goes_red_without_prewarming` 走"不预热"的
+  旧行为（`before=0`、`after=1`），用**同一条**不变量断言跑它并断言其抛 `AssertionError`。
+  把 `warm_default_executor()` 换成空操作后，正例
+  `test_default_executor_threads_are_created_before_first_to_thread` 现场变红，
+  错误信息正是"默认线程池没有被预热：运行期第一次 submit 会在事件循环里建线程（D-1）"，
+  说明这条护栏不是空转。
 - 探针池预热（[health.py](file:///d:/LiuHao-AI-OS/src/gateway/health.py) 的
   `warm_probe_pool()`）：`ThreadPoolExecutor` 是"第一次 submit 才建线程"，而
   `_run_probe` 走 `loop.run_in_executor(_PROBE_POOL, ...)`，所以**第一个** `/v1/health`
@@ -587,15 +616,20 @@ Thread (idle) liuhao-diag
 | --- | --- | --- | --- |
 | RSS | 109.1 MB | 118.9 MB | 斜率 +15.8 MB/h，但**非单调**（8 次回落，如 18:03 116.3→112.5、18:19 117.6→113.2） |
 | 句柄 | 713 | 752（峰值 776） | **无趋势**：全程在 748–776 之间震荡，10 次回落 |
-| gc 对象数 | 152,388 | 159,750 | **无单调增长**：一直在 156k–159.8k 震荡 —— 说明"只增不删"的集合已不再累积 |
-| 审计库 db | 0.25 MB | 2.55 MB | ≈ **+4.6 MB/h**（旧默认策略下同负载是 +20.5 MB/h）；WAL 在 1.1–10.5 MB 间被周期性截断 |
+| gc 对象数 | 152,388 | 159,750 | **无单调增长**：一直在 156k–159.8k 震荡 —— 本窗口内"只增不删"的集合未见累积 |
+| 审计库 db | 0.25 MB | 2.55 MB | ≈ **+4.6 MB/h**（旧默认策略下同负载是 +20.5 MB/h；负载条件同 §12.10）；WAL 在 1.1–10.5 MB 间被周期性截断 |
 
-> 结论口径：句柄与 gc 对象"无趋势"已经证明**泄漏源被堵住**（此前这两项是单调上涨）。
-> RSS 的 +15.8 MB/h 出现在前 30 分钟，且伴随 8 次回落 —— 更像 pymalloc arena/碎片随工作
-> 集扩张，而不是对象滞留。**最终判定要等 8 小时跑满**（`probe.jsonl` 里每 60 s 一条
-> memory 采样），本报告不提前下结论。
+> 结论口径：句柄与 gc 对象**无趋势**（此前这两项是单调上涨）——这只能说明"这两类泄漏源在
+> 当前窗口内未见增长"，**不等于「没有内存泄漏」**。RSS 的 +15.8 MB/h 出现在前 30 分钟，
+> 且伴随 8 次回落，判断是 pymalloc arena/碎片随工作集扩张而不是对象滞留；这是**判断**，
+> 不外推。最终判定只写"8 小时内未见单调增长"（或如实写未达标），要等 `rss8h4` 跑满。
 
-### 12.10 修复后验收（二，最终代码）：`rss8h4` 前 30 分钟（18:34:50–19:05）
+### 12.10 修复后验收（二）：`rss8h4` 前 30 分钟（18:34:50–19:05）——**19:08 复现，本轮作废**
+
+> **先读 §12.11**：这一窗 30 分钟全绿，但在 **19:08**（第 33 分钟）整站再次僵死——
+> 探针池预热只建出 2 条线程（`liuhao-probe_0/1`），第三个并发探针又在事件循环里
+> 现场 `Thread.start`。所以下表**不能**作为 D-1 的验收证据，只保留为"修复前"的对照。
+
 
 这一轮包含**全部**修复（anyio 护栏 + 探针池预热 + 默认线程池预热），流量形态与 §12.9
 完全相同（`--loaders 4 --heavy --goals-every 90 --sample-every 60`，宿主 CPU 82–87%）：
@@ -621,7 +655,146 @@ Thread (idle) liuhao-diag
 | gc 对象数 | 153,461 | 159,394 | 在 157k–160.5k 震荡，无单调增长 |
 | 审计库 db | 0.25 MB | 2.44 MB | ≈ **+4.5 MB/h**；WAL 在 1.1–10.5 MB 之间被周期性截断 |
 
+> 审计库增速的负载条件（同 §12.10 表头，与改前 20.5 MB/h 的对比必须带这个前提）：宿主
+> CPU 82–87%（4 个 CPU 燃烧进程 + 其它 agent 的 pytest 并发）、`--heavy` 流量（每 30 s 一次
+> chat，含 39 s 慢调用窗口）、每 90 s 建 1 个 goal、每 3 s 一次探活、每 60 s 一次 audit verify。
+> 即"满载 + 每 60 s 校验"这一档；不是空载库的写入速率。
+
 > 与 §12.9 相比，RSS 斜率 15.8 → 14.3 MB/h、句柄由"713 起步"变成"823 起步 + 862 末值"
 > （预热的 28 条线程各带句柄，是启动台阶）。**判据仍是"非单调"**：两项都出现 9/14 次
 > 回落。8 小时终值待跑满（预计 **02:34**）。
+
+### 12.11 D-1 第二次复现：`warm_probe_pool()` 只建出 2 条线程（19:08，已修）
+
+**时间线（`rss8h4`，18:34:50 启动）**
+
+| 时刻 | 事件 |
+| --- | --- |
+| 18:34:50–19:04 | 探活 591 次，health/metrics/ready 0 次非 200（§12.10），看门狗 0 告警 |
+| 19:07:30 左右 | 最后一次正常探活 |
+| 19:08:13 | 起连续探活失败（HTTP 3 s 超时 → 记 `hung`），共 **16 次**（19:08–19:13） |
+| 19:09 / 19:13 | `LoopStallWatchdog` 告警："事件循环已停滞 264.4 秒（阈值 15s）" |
+| 19:13:48 | py-spy 对活进程 22692 取样（证据：`D:\cache\temp\liuhao-fix\stacks\gw22692-1913.dump.txt`） |
+
+**py-spy 现场（与修复前同一个卡点）**
+
+```
+Thread 520 (idle): "MainThread"
+    Condition.wait (threading.py:355)
+    Event.wait (threading.py:655)
+    Thread.start (threading.py:999)          <- 无超时
+    ThreadPoolExecutor._adjust_thread_count (concurrent\futures\thread.py:203)
+    ThreadPoolExecutor.submit (concurrent\futures\thread.py:180)
+    BaseEventLoop.run_in_executor (asyncio\base_events.py:867)
+    _run_probe (src\gateway\health.py:57)     <- 探针池自己在建线程
+    liveness_probe (src\gateway\health.py:182)
+```
+
+同一份 dump 里探针线程**只有 2 条**：`liuhao-probe_0`、`liuhao-probe_1`（另有预热成功的
+`asyncio_0…27` 共 28 条默认线程池线程）。即：anyio 护栏与默认线程池预热都生效了，唯独
+**探针池预热是假成功**。
+
+**根因**：`warm_probe_pool()` 用的是 `list(_PROBE_POOL.map(lambda _: None, range(4)))`。
+`ThreadPoolExecutor` 的空闲 worker 会被 `_adjust_thread_count` 的 `_idle_semaphore` 复用，
+而 no-op 任务在两次 submit 之间就已完成 —— 线程数涨不到 4（实测 2）。此后三个探针并发
+（超时用 `asyncio.shield`，上一发不会被取消，会继续占着线程）一旦超过 2 条，第三次
+submit 就在事件循环线程里现场 `Thread.start` → 满载时永不自愈。
+
+**修复**（[health.py](file:///d:/LiuHao-AI-OS/src/gateway/health.py)）：改成与
+`warm_default_executor()` 相同的栅栏法 —— 提交 N 个任务，每个都卡在
+`threading.Barrier(N)` 上，逼迫执行器真的建出 N 条线程，再一起放行；返回值改为
+**实际线程数**（`len(_PROBE_POOL._threads)`），不再硬编码 4。
+
+**护栏（可证伪）**：`test_probe_pool_threads_are_created_before_the_first_probe` 改用
+**独立的新池**（避免被前面 TestClient 用例提前"喂饱"而假绿），断言预热后 `_threads == 4`，
+并让 4 个任务同时站在 4 方栅栏上。反证：用旧的 map 预热法 + 一个已空闲 worker，实测只
+建出 **2** 条线程，上述断言必然失败（`D:\cache\temp\liuhao-fix\red_probe_pool.py`，输出
+"旧预热法建出的线程数: 2"）。
+
+### 12.12 本轮收尾：繁忙报文统一为四字段 + 30 分钟满载复测（`fix30b`，23:28–23:58）
+
+#### 12.12.1 同一产品只剩一套 503 繁忙报文
+
+改前，同一类"探针超时"有**两种**形状：`/v1/ready`、`/v1/metrics` 走
+`_busy_response`（四字段），而
+`/v1/ready/subsystems`、`/v1/production/preflight` 的超时分支各自手写了一份
+`{"status":"busy","reason":"probe_timeout","user_message":"…请稍后重试。"}`。
+
+改后这两处直接复用 `health.py` 的 `_busy_response()`。实采报文（`busy_after.txt`）：
+
+```json
+{"code":"PROBE_BUSY","message":"就绪检查暂时取不到数据：系统正在处理较慢的请求（探针繁忙），服务本身仍在运行，请 1 秒后重试。","correlation_id":"trace-busy-abc","retry_after":1}
+```
+
+响应头：`Retry-After: 1`、`X-Correlation-ID: trace-busy-abc`。
+
+> **结论（写给后来改代码的人）**：旧形状的提示只放在 `user_message` 里，而前端
+> `errorMessage.ts` 的 `describeFailure` 读的是顶层 `message` / `code`（兼容
+> `detail.code`），**从不读 `user_message`** —— 旧形状的中文提示**一直在丢**，
+> 用户只能拿到 503 的兜底文案。不要把繁忙报文改回旧形状；`status=busy` 的语义
+> 已保留在 `code=PROBE_BUSY` 和中文 `message` 里。
+
+护栏：[test_production.py](file:///d:/LiuHao-AI-OS/tests/observability/test_production.py)
+的 `TestHttpEndpoints::test_probe_timeout_503_uses_four_fields` 参数化覆盖
+`/v1/ready/subsystems` 与 `/v1/production/preflight`，断言
+`set(body) == {code, message, correlation_id, retry_after}`、`code=PROBE_BUSY`、
+`correlation_id` 回传请求的 `X-Trace-ID`、`Retry-After` / `X-Correlation-ID` 头一致。
+`/v1/metrics` 的同类断言在 `tests/test_gateway_health_wiring.py`。两个文件合跑
+**62 passed**（2 warnings，22.49 s）。
+
+消费方核查：全仓**没有**消费 HTTP 503 报文里 `status:"busy"` 的代码（后端与
+`apps/console` 均无此分支）。命中的 `busy` 都属于其它语义：`src/desktop/probe.py`
+是端口占用探测结果，`src/ai/employee.py` 的 `BUSY` 与 `apps/console/.../employees.ts`
+的 `'busy'` 是员工运行态。
+
+**残留（未改，如实登记）**：[main.py](file:///d:/LiuHao-AI-OS/src/gateway/main.py#L536-L548)
+里的 `OverloadGuardMiddleware` 在"在途请求超过上限"时仍回旧的五字段形状
+（`status` / `reason:"too_many_in_flight"` / `status_label` / `user_message` /
+`max_in_flight`）。它没有走 `_busy_response`，本轮只统一了**探针超时**这一类；
+`main.py` 不在本轮改动范围，是否一并统一需单独授权。
+
+#### 12.12.2 30 分钟满载窗口
+
+条件：**14 个 CPU 燃烧进程**（`--loaders 14`）、每 1 秒一轮探活（health/ready/metrics）
++ 轻量业务请求；宿主同期 CPU **84.7–100%**（353 次采样，均值 **97.8%**）。被测源码快照
+`fix30v2src` 当时包含 **health.py 的四字段繁忙报文 + "超时清理不在事件循环线程里
+close 连接"** 两条修复；`observability.py` 两处统一是在这一窗结束之后（00:06）才落地的，
+因此本窗口没有跑到那条分支（它本来也是 0 次非 200）。
+
+| 指标 | 结果 |
+| --- | --- |
+| 总请求 | **6,177**（health 1,765 + ready 1,765 + metrics 1,765 + business 882） |
+| 非 200 | **0**（四类全 0） |
+| `/v1/health` 延迟 | p50 **0** / p95 **16** / max **3,890** ms（单次进程冷启动尖峰） |
+| `/v1/ready` 延迟 | p50 **16** / p95 **16** / max **219** ms |
+| `/v1/metrics` 延迟 | p50 **0** / p95 **16** / max **31** ms |
+| 轻量业务 | p50 **15** / p95 **16** / max **31** ms |
+| 网关 CPU | 进程树累计 **56.05 s** = **3.1%** 单核 |
+| RSS | 86.4 → 107.7 MB（Δ **+21.3**），**非严格单调**（35 次回落，单次最大 2.2 MB） |
+| 线程数 | 55 → 44（峰值 55；预热的 28 条默认池线程在启动台阶后回落） |
+| 身份降级 | 全程 `degraded=false`，`degraded_total=0`、`rejected_total=0`，4 lane 存活 |
+| `LoopStallWatchdog` | **0** 告警、0 次栈转储 |
+
+**判定口径**：这 30 分钟窗口内探活一次没失败、事件循环没有停滞；但**8 小时 RSS 曲线
+仍然不存在**，不外推"已修复"，§0.4 的 D-1 判定保持"未达标"。
+
+#### 12.12.3 `/v1/ready/subsystems` 真实返回（TCP，满载）
+
+人类主体 token（请求头 `X-Trace-ID: trace-subsys-tcp`），宿主 CPU **99.9%**；验证用的是
+00:10 刷新后的快照（已含 `observability.py` 的两处统一）：
+
+| 轮次 | 状态 | 耗时 | 响应头 | 响应体 |
+| --- | --- | --- | --- | --- |
+| 1 | **200** | 390 ms | 含 `x-trace-id` | `status:"ready"`、`total:15`、`healthy:15`、`degraded:0`、`unavailable:0` |
+| 2 | **200** | 16 ms | 含 `x-trace-id` | 同上 |
+| 3 | **200** | 15 ms | 含 `x-trace-id` | 同上 |
+
+首轮 390 ms 是 15 个内核首次 import；后两轮 15–16 ms。本轮磁盘上 **15** 个内核（含
+`retention` 数据保留）。冷启动没有撞到 10 s 探针预算，所以四字段 503 路径由
+§12.12.1 的 ASGI 用例覆盖（真实 TCP 无法人工制造 10 s 卡顿）。
+
+> 口径提醒：验证时首轮曾用 `metadata={}` 的 token 打回来 **403**
+> （"当前登录的不是个人账号…"），补 `{"kind":"human","scope":"L0"}` 后才 200。
+> 这是 `require_human_principal` 的前置条件，不是端点故障。
+
 

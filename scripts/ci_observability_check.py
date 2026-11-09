@@ -3,6 +3,12 @@
 
 Validates that the observability framework is properly configured
 and all components are functional after code changes.
+
+Exit codes: 0 = every check ran and every required backend is available;
+1 = a check really failed; 3 = NOT VERIFIED (a required export backend
+(langfuse / arize-phoenix) is unavailable, so the export path was not
+exercised). The CI observability job installs both backends, so 3 there means
+"the evidence we planned to collect is missing" -- never a green pass.
 """
 
 import sys
@@ -54,25 +60,25 @@ def main():
         return 1
 
     # 3. Test get_config/set_config round-trip
-        print("\n3. Testing get_config/set_config round-trip...")
-        try:
-            # Set config first
-            config = ObservabilityConfig(
-                enable_metrics=True,
-                enable_tracing=True,
-                enable_structured_logging=True
-            )
-            set_config(config)
-            # Now retrieve
-            retrieved = get_config()
-            if retrieved and retrieved.enable_metrics and retrieved.enable_tracing:
-                print("   OK get_config/set_config round-trip successful")
-            else:
-                print("   FAIL Config values not preserved")
-                return 1
-        except Exception as e:
-            print(f"   FAIL get_config/set_config failed: {e}")
+    print("\n3. Testing get_config/set_config round-trip...")
+    try:
+        # Set config first
+        config = ObservabilityConfig(
+            enable_metrics=True,
+            enable_tracing=True,
+            enable_structured_logging=True
+        )
+        set_config(config)
+        # Now retrieve
+        retrieved = get_config()
+        if retrieved and retrieved.enable_metrics and retrieved.enable_tracing:
+            print("   OK get_config/set_config round-trip successful")
+        else:
+            print("   FAIL Config values not preserved")
             return 1
+    except Exception as e:
+        print(f"   FAIL get_config/set_config failed: {e}")
+        return 1
 
     # 4. Test metrics functions
     print("\n4. Testing metrics functions...")
@@ -112,8 +118,23 @@ def main():
         print(f"   FAIL export_to_phoenix() failed: {e}")
         return 1
 
-    # 7. Summary
+    # 7. Summary -- a graceful fallback that silently skips the export is NOT
+    # a pass: the backend being unavailable means the export path was never
+    # exercised here.
+    missing_backends = []
+    if not LANGFUSE_AVAILABLE:
+        missing_backends.append("langfuse")
+    if not PHOENIX_AVAILABLE:
+        missing_backends.append("arize-phoenix")
     print("\n" + "=" * 60)
+    if missing_backends:
+        print(
+            "CI Observability Validation: NOT VERIFIED -- required backend(s) "
+            "unavailable: %s" % ", ".join(missing_backends)
+        )
+        print("The export path was NOT exercised; a fallback is not evidence.")
+        print("=" * 60)
+        return 3
     print("CI Observability Validation: ALL CHECKS PASSED OK")
     print("=" * 60)
     return 0

@@ -6,6 +6,9 @@
 
 **双击**仓库根目录的 `start-liuhao.bat` —— 完事。
 
+**第一次启动会先弹一个黑窗口**（命令行向导）问管理员账号和登录密码；模型可以选「跳过」。
+答完它才会继续启动；第二次起不再问。
+
 命令行等价：
 
 ```bash
@@ -13,16 +16,19 @@ cd D:\LiuHao-AI-OS
 .venv\Scripts\python.exe scripts\start_liuhao.py
 ```
 
-浏览器会自动打开 `http://127.0.0.1:5173`。完成。
+浏览器会自动打开 `http://127.0.0.1:8080`。完成。
 
-## 分步（等价，便于排错）
+> 默认是**单端口模式**：网关直接服务已构建的 `apps/console/console/dist`。若仓库里还没有 `dist`，
+> 启动器会报 `[FAIL]` 并提示用 `--vite` 跑开发双进程（那时前端在 `5173`）。
+
+## 分步（开发双进程模式，仅前端调试需要）
 
 ```bash
 # 1. 网关
 cd D:\LiuHao-AI-OS
 .venv\Scripts\python.exe -m uvicorn src.gateway.main:app --host 127.0.0.1 --port 8080
 
-# 2. 驾驶舱（新开一个终端）
+# 2. 控制台前端（新开一个终端）
 cd D:\LiuHao-AI-OS\apps\console\console
 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 ```

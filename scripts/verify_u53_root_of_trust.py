@@ -10,6 +10,9 @@ production (that integration is the next step, gated on HC-01 stabilisation);
 it asserts that the capability EXISTS and is fail-closed.
 
 Exit 0 = primitive verified. Exit 1 = a capability claim failed.
+Exit 3 = NOT VERIFIED (openssl ts engine unavailable, so the RFC 3161
+assertion cannot be obtained in this environment). 3 is never a pass and is
+never used for a real failure.
 """
 from __future__ import annotations
 
@@ -166,10 +169,9 @@ def main() -> int:
     else:
         print(
             "U53 NOTE: openssl ts engine not available -- RFC 3161 timestamp "
-            "assertion skipped (not fabricated)."
+            "assertion NOT VERIFIED (exit 3); not fabricated, not a pass."
         )
-
-    return 0
+        return 3
 
 
 if __name__ == "__main__":

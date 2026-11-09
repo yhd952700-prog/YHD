@@ -148,6 +148,8 @@ def main():
         print("  shapes do not complete, so the 'AI employee' cannot run them")
         print("  at all. That is a coverage limit of the DECOMPOSER, reported")
         print("  honestly rather than hidden.")
+    # 退出码 0 是刻意的，不是"伪装通过"：本脚本测的是**分解器对目标形状的覆盖**，
+    # 覆盖边界已在此处如实披露；"拿不到 evidence" 的情况在别处是 return 1，不是这里。
     return 0
 
 

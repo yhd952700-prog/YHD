@@ -192,6 +192,27 @@ async def _probe(monkeypatch, coverage, stats=None):
     return response, json.loads(response.body.decode())
 
 
+@pytest.fixture(autouse=True)
+def _pin_audit_write_health(monkeypatch):
+    """Isolate the audit WRITE path (fail-open / "NOT RECORDED").
+
+    A plain pytest process may already have attempted writes against the
+    conftest temp DB. These tests are about readiness semantics, so pin a
+    healthy write path; the failing case is asserted explicitly below.
+    """
+    monkeypatch.setattr(
+        audit_mod,
+        "get_audit_write_health",
+        lambda: {
+            "attempted": 3,
+            "failed": 0,
+            "failing": False,
+            "failure_streak": 0,
+            "last_failure_kind": None,
+        },
+    )
+
+
 def _assert_no_contradiction(body):
     """The invariant. Errors and checks must never disagree about the chain.
 
@@ -437,3 +458,58 @@ class TestCoverageReporterWithoutCheckpointCount:
         )
         assert resp.status_code == 200
         _assert_no_contradiction(body)
+
+
+class TestAuditWriteFailureIsExplicit:
+    """Fail-open is an accepted trade-off; pretending the chain is fine is not.
+
+    The audit store can open fine and fail EVERY write. Policy decisions then
+    run "NOT RECORDED" while ``/v1/ready`` used to show a green audit chain.
+    The gate must now say so in Chinese at the readiness edge.
+    """
+
+    async def test_write_failure_degrades_and_names_the_loss(self, monkeypatch):
+        monkeypatch.setattr(
+            audit_mod,
+            "get_audit_write_health",
+            lambda: {
+                "attempted": 10,
+                "failed": 10,
+                "failing": True,
+                "failure_streak": 10,
+                "last_failure_kind": "readonly_database",
+            },
+        )
+        resp, body = await _probe(monkeypatch, VERIFIED)
+        audit = body["checks"]["audit_store"]
+
+        # Evidence itself is intact; it is the WRITE path that is dead.
+        assert audit["evidence_status"] == "verified"
+        assert audit["write_failing"] is True
+        assert audit["fail_open"] is True
+        assert audit["failure_streak"] == 10
+        assert audit["status"] == "unhealthy"
+        assert resp.status_code == 503
+        assert body["status"] == "degraded"
+
+        assert audit["display_status"] == "审计记录已中断"
+        assert "审计记录已中断" in audit["user_message"]
+        assert "没有被记录" in audit["user_message"]
+        assert any(
+            "NOT RECORDED" in e for e in body.get("errors", [])
+        ), body.get("errors")
+        _assert_no_contradiction(body)
+
+    async def test_unarmed_fence_is_never_labelled_normal(self, monkeypatch):
+        """Windows never sets ``LIUHAO_EXECUTOR_FENCE``; claiming "正常" lies."""
+        monkeypatch.delenv("LIUHAO_EXECUTOR_FENCE", raising=False)
+        _resp, body = await _probe(monkeypatch, VERIFIED)
+        fence = body["checks"]["executor_fence"]
+
+        assert fence["armed"] is False
+        assert fence["enforcement"] == "off"
+        assert fence["display_status"] == "执行隔离未启用"
+        assert "未启用" in fence["user_message"]
+        assert "正常" not in fence["user_message"], (
+            "an unarmed gate must not read as normal enforcement"
+        )

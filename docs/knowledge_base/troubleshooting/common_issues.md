@@ -147,7 +147,7 @@ psql -h localhost -U username -d database_name
 
 ### 问题：对话返回 402 Payment Required
 
-**症状**：调用 `POST /v1/chat` 返回 402，响应体 `code=budget_exceeded`，提示「本次调用会超出你设定的预算，请调整额度或换更便宜的模型」。
+**症状**：调用 `POST /v1/chat` 返回 402，响应体 `code=budget_exceeded`，提示「本次调用会超出可用预算（按保守 token 估算），请调整额度或换更便宜的模型」。
 
 **说明**：402 是**预算/额度不够**，与权限无关；响应体与响应头都带 `correlation_id`，可在审计里对上同一条 `ACCESS_DENIED`（`reason=budget_exceeded`）。
 

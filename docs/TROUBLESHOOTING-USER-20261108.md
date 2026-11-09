@@ -3,6 +3,7 @@
 > **只读整理**：本次未改动任何代码或配置。用户原话逐字取自源码；日志关键词取自代码里的 `logger` 调用；未在真机逐条复跑，凡属推演会标「推断」。
 > **排序原则**：按「用户实际会撞上的概率」从高到低，不按字母、不按模块。
 > **三条线**：每条只写三行 —— 看到什么 → 怎么处理（≤3 步） → 还不行看哪、何时必须找作者。
+> **原文口径**：下文引用的界面文字与日志原文以当前版本 0.1.1 的代码为准；如果你看到的不是这句，请截图反馈。
 
 ---
 
@@ -17,11 +18,12 @@
 | 业务主日志 | `<数据目录>\logs\liuhao.log` | `upstream HTTP failure status=`、`kind=`、`account.` |
 | 结构化错误 | `<数据目录>\logs\error.log` | `evt=llm.call.failed`、`error_class=`、`errno=`、`key_fp=` |
 | 桌面壳 | `<数据目录>\logs\desktop.log` | `启动门结论`、`系统托盘未启动`、`instance.lock` |
-| 引导兜底 | `<程序目录>\bootstrap.log` | 只在数据目录都建不出来时才出现 |
+| 引导兜底 | `<程序目录>\bootstrap.log`（启动器/桌面壳失败）；`%LOCALAPPDATA%\LiuHao\logs\bootstrap.log`（网关引导阶段失败，数据目录不可解析时还会落到 `%TEMP%`） | 两个位置都看；数据目录/日志目录都写不进去时，这里是唯一记录 |
 
 **`error.log` 为空不代表正常**：它是 ERROR 级专用；模型类失败有的只写 INFO 到 `liuhao.log`。
-**不要相信 `config\current_url.txt` 的 pid/端口**：它在网关绑定前写入、之后不更新，可能是死 pid 或旧端口（见 `docs/audit-data-layout-20261108.md`「6. 文档与实际不一致清单」的 `current_url.txt` 条目）。
-**一键证据**：控制台「系统设置 → 遇到问题 → 一键诊断包 → 导出诊断包」，或 `python -m src.desktop diagnose`。
+**`config\current_url.txt` 不是权威地址**：它只是 `scripts/start_liuhao.py` 某次启动成功时写下的快照（安装版 `LiuHao.bat` 启动会写，双击桌面图标启动不写，源码 `start-liuhao.bat` 默认也不写），可能是旧端口/死 pid。地址一律以状态窗口「控制台：」为准。
+**一键证据**：控制台「系统设置 → 遇到问题 → 一键诊断包 → 导出诊断包」；命令行则在**程序目录**运行
+`runtime\python.exe -m src.desktop diagnose`（源码仓库用 `.venv\Scripts\python.exe -m src.desktop diagnose`）。
 
 ### 打不开怎么办：六类对号（与「一键诊断包」的检查项一一对应）
 
@@ -55,9 +57,9 @@
 - **纯命令行 / 无桌面时**：不弹窗，逐行打印「处理一」「处理二」—— 处理一是关掉占用进程后重跑；处理二是**复制「处理二」下面那整条命令（含引号）**重跑，命令里已写好一个候选端口（通常是 8081）。**返回码 2 = 没有启动**（端口冲突等预检失败），不是安装损坏，按提示处理后重跑即可。
 - **还不行**：`launcher.log` 搜 `已被占用`、`evt=port.conflict`；`desktop.log` 搜 `evt=port.retry` / `evt=port.switch` / `evt=port.deferred`，看占用者 PID 和用户选了哪种处理办法；同一进程每次开机都抢 8080（系统组件/安全软件）→ **联系作者**。
 
-### 3. Key 无效：聊天只回「模型服务返回 HTTP 401」
-- **看到**：`模型服务返回 HTTP 401，详情已记录到服务端日志。` → 含义：Key 填错、复制不全、或该 Key 不属于这个接口地址；**不是**额度问题。
-- **处置**：① 「系统设置 → 模型管理」删掉重填 Key（整段粘贴，别带空格/引号）；② 点「测试连接」，应看到 `API Key 无效：请检查是否填错或复制不完整` 之外的成功态；③ 确认接口地址与该厂商匹配（DeepSeek 用 `https://api.deepseek.com/v1`）。
+### 3. Key 无效：聊天只回「…返回 HTTP 401」
+- **看到**：`<服务商名>返回 HTTP 401，详情已记录到服务端日志。`（例如 `DeepSeek返回 HTTP 401，详情已记录到服务端日志。`）→ 含义：Key 填错、复制不全、被吊销、或该 Key 不属于这个接口地址；**不是**额度问题。
+- **处置**：① 「系统设置 → 模型管理」删掉重填 Key（整段粘贴，别带空格/引号）；② 点「测试连接」，正常应显示 `连接成功（… ms）`；失败会显示 `API Key 无效或没有权限。请检查 Key 是否填错、是否复制完整；建议重新生成后再试。`；③ 确认接口地址与该厂商匹配（DeepSeek 用 `https://api.deepseek.com/v1`）。
 - **还不行**：`liuhao.log` 搜 `status=401 kind=invalid_key`；`error.log` 搜 `evt=llm.call.failed` 与 `status=401`，核对 `key_fp=` 是否是你刚填的 Key；Key 在厂商控制台可用但仍 401 且无代理 → **联系作者**。
 
 ### 4. 连不上模型服务（端点不可达 / 代理 / 公司网络）
@@ -65,18 +67,44 @@
 - **处置**：① 浏览器打开厂商控制台，确认这台机器能上网；② 关掉系统代理/公司 VPN 的「全局代理」再试（`http_proxy` 拦 `127.0.0.1` 是本机第一大坑）；③ 本机 Ollama 用户确认 `ollama serve` 在跑、地址是 `http://127.0.0.1:11434`。
 - **还不行**：`error.log` 搜 `evt=llm.call.failed`，看 `error_class=`：`ConnectionRefused`→`errno=10061`、`DNSFailure`→`11001`、`Timeout`→`10060`，并核对 `host/port`；内网强制 TLS 拦截（杀软/上网行为管理）且改不了 → **联系作者**。
 
+### 4.1 证书校验失败（自签证书 / 公司代理 / 私有 CA）
+- **看到**：`无法验证模型服务的证书（自签证书、私有 CA 或公司代理）。本产品不同链路的证书信任来源不同（有的读取系统证书商店，有的只用内置证书列表），在系统里「信任该证书」不一定生效。请改用可直连的网络或地址；若必须走公司代理，请联系网络管理员提供受信任的 HTTPS 入口。`
+  变体：`证书与访问地址不匹配…`（域名/host 对不上）、`证书已过期（也可能是本机时间不正确）…`、`证书尚未生效…`。
+  测试连接里对应 `reason`：`certificate_untrusted` / `certificate_hostname` / `certificate_expired` / `certificate_not_yet_valid` / `certificate`（兜底）。
+- **含义**：HTTPS 握手的证书链没通过校验。常见来源：公司上网行为管理/杀软做了 TLS 中间人、内网自建网关用自签证书、本机时间不对。
+- **处置**：
+  ① 先核对系统时间（右下角日期、时区），时间错会导致"已过期/尚未生效"；
+  ② 能换网络就先换（手机热点可直连时，说明是公司代理的问题）；
+  ③ 域名不匹配：核对「模型管理」里的接口地址，别把 IP 填进只签了域名的地址；
+  ④ 必须走公司代理时，让网络管理员提供代理的根证书 PEM 文件，按下面任选一种方式交给本产品（**不需要重启服务以外的东西**，改完重启网关生效）。
+- **信任来源分叉（排障要点）**：本产品不同链路读的信任库不同——
+  - OpenAI / Anthropic / Google 等走 `httpx`：默认加载 Windows「受信任的根证书颁发机构」，并识别环境变量 `SSL_CERT_FILE`；
+  - Ollama / Moonshot / DeepSeek 等走 `requests`：只认内置证书列表（certifi），会识别 `REQUESTS_CA_BUNDLE`。
+  所以"在系统里信任证书"对第一条链路可能生效、对第二条链路一定不生效，界面不会替用户断言其中一种。
+- **把手上的根证书交给两条链路**（PowerShell，先启动一个长期生效的会话，或在启动器里设置）：
+
+  ```powershell
+  # 公司代理根证书，例如 C:\certs\corp-proxy-root.pem
+  [Environment]::SetEnvironmentVariable('SSL_CERT_FILE', 'C:\certs\corp-proxy-root.pem', 'User')
+  [Environment]::SetEnvironmentVariable('REQUESTS_CA_BUNDLE', 'C:\certs\corp-proxy-root.pem', 'User')
+  ```
+
+  `SSL_CERT_FILE` 是**替换**默认文件路径（Windows 下系统商店仍参与校验），`REQUESTS_CA_BUNDLE` 是 requests 的 CA 包。设完要重启网关（关掉桌面窗口重新打开）。
+- **安全提醒**：把公司代理根证书加进信任列表，等于同意"该代理可以解密本机到模型服务的流量"——其中包含 API Key 与对话内容。只在你能确认这台代理由公司网络团队管理时这样做；公共/不明来源的代理证书不要装。
+- **还不行**：`error.log` 搜 `evt=llm.call.failed`，`error_class=APIConnectionError` 且下一行是 `SSLCertVerificationError` / `certificate verify failed: ...`，按括号里的原因（`unable to get local issuer certificate` / `self-signed certificate in certificate chain` / `Hostname mismatch` / `certificate has expired`）对照上面处置；`model probe failed` 行会给出同一分类。技术原文只写日志与诊断包，界面不展示。
+
 ### 5. 额度用完 / 被限流
-- **看到**：`模型额度已用完。请到「系统设置 → 模型管理」充值，或换一个还有额度的 Key 后重试。` 或 `请求被上游限流了。请稍后重试…` → 含义：Key 本身有效，账户余额见底，或短时间请求太多。
+- **看到**：`模型账户的额度或余额不足，请到提供方控制台充值后重试。` 或 `请求被上游限流（短时间内调用过多），请稍后重试。` → 含义：Key 本身有效，账户余额见底，或短时间请求太多。
 - **处置**：① 去厂商控制台看余额/额度；② 充值或换一个 Key；③ 限流则等 1 分钟再发一条。
 - **还不行**：`liuhao.log` 搜 `kind=quota_exhausted` / `kind=rate_limited`；刚充值仍报额度耗尽（厂商计费延迟或 Key 绑了别的项目）→ 找厂商；反复限流但用量很小 → **联系作者**。
 
 ### 6. Key 被封 / 吊销
-- **看到**：`这个 Key 已被吊销或停用。请到「系统设置 → 模型管理」重新生成并填入新的 Key。` → 含义：厂商侧把 Key 停用（欠费、泄露风控、手动禁用）。
+- **看到**：聊天里是 `API Key 无效或已失效，请到「系统设置 → 模型管理」更新密钥。`；日志里 `kind=key_revoked` → 含义：厂商侧把 Key 停用（欠费、泄露风控、手动禁用）。测试连接会显示 `API Key 已被提供方停用或吊销。请到提供方控制台重新生成 Key，再填到这里。`
 - **处置**：① 去厂商控制台看该 Key 状态；② 新建一个 Key 并替换；③ 若怀疑泄露，先删旧 Key 再换。
 - **还不行**：`liuhao.log` 搜 `kind=key_revoked`；新 Key 仍被立即吊销且本机无异常请求 → 查厂商风控通知，必要时**联系作者**排查是否有异常调用。
 
 ### 7. 模型名不存在
-- **看到**：`模型不存在，请在模型管理中确认模型名`（聊天）或 `模型名不存在：请核对提供方支持的模型 ID`（测试连接）→ 含义：填的模型 ID 厂商没有，或该账号没开通。
+- **看到**：聊天里是 `模型不存在或已下线，请核对模型名（可点「测试连接」查看服务端返回）。`；测试连接是 `模型名不存在，或该接口地址不支持这个模型。请核对模型名称后重试。` → 含义：填的模型 ID 厂商没有，或该账号没开通。
 - **处置**：① 打开厂商文档抄准模型 ID（如 `deepseek-chat`，区分大小写和 `-`）；② 回「模型管理」重新选/填并保存；③ 点「测试连接」确认。
 - **还不行**：`liuhao.log` 搜 `status=404 kind=model_not_found`；模型 ID 确认无误、厂商文档也这么写 → **联系作者**。
 
@@ -131,6 +159,7 @@
 - **还不行**：已从桌面窗口进入仍要证明，或提示 `已存在有效的恢复码` 但你找不到 → **联系作者**，不要删数据目录。
 
 ### 18. 恢复码丢了 + 要换机器
+- **口径**：换机**只认带口令的备份包**。不要直接把整个数据目录拷到新电脑，也不要在同一台电脑换 Windows 用户后继续用旧目录——模型主密钥、身份签名密钥、JWT 签名密钥都用 DPAPI 绑定在原电脑/原用户上。拷过去启动会看到 `本机密钥无法在此机器解密，请用账号备份包恢复或重新生成。`，程序保留原密文、不覆盖，但模型 Key 解不开、登录签名不可信。直接拷目录属于**不支持场景**。
 - **看到**：登录页 `恢复码无效或已失效。`，且手上没有可用码 → 含义：恢复码一次性，**备份包里也不含恢复码**；但备份包带着登录凭据哈希，**记得原密码就能直接登录**，恢复码只在忘记密码时才需要。
 - **处置**：① 记得原密码：新机全新安装 → 导入备份 → 用**原来的账号和密码**登录，不需要恢复码；② 忘了密码：找回当初抄下的恢复码（纸/密码管理器），导入后用它在登录页重置密码；③ 恢复码也找不到：登录后立刻到左侧「恢复码」页生成一枚新的并保存。
 - **还不行**：原密码和恢复码都没有，本机数据还在 → 只能在本机登录后重新导出；本机也进不去 → **联系作者**（这是唯一需要人工介入的账号场景）。
@@ -166,7 +195,7 @@
 - **还不行**：`diagnose` 持续自检失败；或安装目录缺 `console\dist` → **联系作者**。
 
 ### 25. 预算超限（402）/ 权限不足（403）
-- **看到**：聊天、管家派活、员工执行或目标执行时提示 `本次调用会超出你设定的预算，请调整额度或换更便宜的模型。`，HTTP 状态 **402**、`code=budget_exceeded`；或提示 `权限不足：当前账号没有被授权执行这个操作。`，HTTP 状态 **403**、`code=permission_denied`。→ 含义：**402 是钱/额度不够，不是没权限；403 才是这个账号真的没有这项权限。** 两者都刻意使用不同的状态码和 `code`，响应体与响应头都带 `correlation_id`，可在审计页对上同一条 `ACCESS_DENIED`。流式请求同样在**建流前**返回 402/403（响应不是 `text/event-stream`，没有任何分块输出）；只有建流之后才发生的兜底拒绝（例如等会话锁期间额度被别的会话用光）才出现在 `done` 帧的 `status=denied` + `reason`。
+- **看到**：聊天、管家派活、员工执行或目标执行时提示 `本次调用会超出可用预算（按保守 token 估算），请调整额度或换更便宜的模型。`，HTTP 状态 **402**、`code=budget_exceeded`；或提示 `权限不足：当前账号没有被授权执行这个操作。`，HTTP 状态 **403**、`code=permission_denied`。→ 含义：**402 是钱/额度不够，不是没权限；403 才是这个账号真的没有这项权限。** 两者都刻意使用不同的状态码和 `code`，响应体与响应头都带 `correlation_id`，可在审计页对上同一条 `ACCESS_DENIED`。流式请求同样在**建流前**返回 402/403（响应不是 `text/event-stream`，没有任何分块输出）；只有建流之后才发生的兜底拒绝（例如等会话锁期间额度被别的会话用光）才出现在 `done` 帧的 `status=denied` + `reason`。
 - **处置**：① 402：点提示里的「去用量页调整额度」到「我的 Key → 用量」提高额度，或点「换更便宜的模型」到「系统设置 → 模型管理」换一个已定价、更便宜的模型；② 403：换用有该权限的账号（根账号或被授权的成员），或让上级账号授权后重新登录再试；③ 记住口径：**未定价模型只统计用量、不参与预算拦截**——不会因为"成本未知"被当成 0 元放行，也不会因为没有价格表就把人挡在门外。
 - **还不行**：`liuhao.log` 搜 `budget_exceeded` / `permission_denied`，拒绝日志带 `phase=pre_stream`（建流前）或 `phase=during_stream`（流中兜底）；再用 `correlation_id` 在「审计」页筛 `ACCESS_DENIED`，核对 `reason`、`estimated_cost`、`available`；额度确实够、也确认有权限却仍 402/403 → **联系作者**。
 
@@ -177,14 +206,14 @@
 | # | 冲突点 | 文档怎么说 | 代码实际 | 影响 |
 |---|---|---|---|---|
 | 1 | 端口冲突的交互形态 | `END-USER-GUIDE.md`「端口被占用怎么换（0.1.1+）」、`faq.md`「7. 起不来怎么办（0.1.1+）」、`release-announcement.md`「已知限制（发布时必须保留）」第 4 条都说「窗口里**选**『换一个端口继续』或『关掉占用程序再试』」 | 已统一（2026-11-08）：`scripts/start_liuhao.py` 与托盘壳（`src/desktop/app.py`）有桌面时都弹二选一窗口（关掉占用程序再试 / 换一个端口继续），换端口后原地重启并刷新窗口地址；无桌面时打印「处理一/处理二」，返回码 2 | 已一致；两条路径的说明见第 2 条 |
-| 2 | 端口会不会自动变 | `END-USER-GUIDE.md`「浏览器显示旧界面或白屏（0.1.1+）」第 6 步：「换过端口时…用 `current_url.txt` 里的新地址」 | 已统一（2026-11-08）：启动器与托盘/自启都**不静默顺延**；端口被占默认拒绝启动并说明原因，只有显式自动恢复（`allow_port_fallback=True`）才换端口并写 warning 日志 | 已一致，不再分路径 |
+| 2 | 端口会不会自动变 | `END-USER-GUIDE.md`「浏览器显示旧界面或白屏（0.1.1+）」第 6 步曾写「换过端口时…用 `current_url.txt` 里的新地址」 | 已统一（2026-11-08）：启动器与托盘/自启都**不静默顺延**；端口被占默认拒绝启动并说明原因，只有显式自动恢复（`allow_port_fallback=True`）才换端口并写 warning 日志。文档已改为「以实际打开的控制台为准（桌面端是原生窗口，网页模式是浏览器地址栏）」 | 已一致，不再分路径 |
 | 3 | 首启向导长什么样 | `DELIVERY-CHECKLIST.md`「1. 三步使用说明（最终用户只需要这三步）」第 2 步：命令行向导，选 `1/2/0` | 默认走图形向导 `scripts/first_run_gui.py`，`--console` 才回退命令行 | 用户照着找 1/2/0 找不到 |
-| 4 | 401 的用户可见原文 | `DELIVERY-CHECKLIST.md`「2. 逐项状态」、`docs/evidence/log-only-troubleshooting-drill.md:157`（冻结证据，行号不漂）仍写 `[生成失败] 401 Incorrect API key` | `src/ai/providers.py` 已中性化为 `模型服务返回 HTTP 401，详情已记录到服务端日志。` | 排错时会去搜不存在的字符串 |
+| 4 | 401 的用户可见原文 | `DELIVERY-CHECKLIST.md`「2. 逐项状态」、`docs/evidence/log-only-troubleshooting-drill.md:157`（冻结证据，行号不漂）仍写 `[生成失败] 401 Incorrect API key` | `src/ai/providers.py` 已中性化为 `<服务商名>返回 HTTP 401，详情已记录到服务端日志。` | 排错时会去搜不存在的字符串 |
 | 5 | 「详情已记录到服务端日志」 | 用户文案这么承诺 | 代码只记 `status=` 与 `kind=`（`providers.py` 的 `_raise_upstream_http`），**不记上游正文** | 用户以为日志里有原文；实际上只能看 `kind` |
 | 6 | 恢复码接口返回什么 | `docs/account-ui-ia.md`「5. 接口契约（以实现中的后端为准）」的 `/v1/accounts/recovery/local` 行：「**响应不含恢复码**」 | `src/gateway/accounts.py` 返回 `recovery_code`，`Login.tsx` 直接展示 | 内部设计文档会误导二次开发 |
 | 7 | 有没有设置/恢复/备份页 | `docs/known-gaps.md`「四类归属统计」D-9 行、「D-9 备份 / 恢复 / 导出（一键化）」：「无设置页/无恢复流程/没有备份」 | 已有「系统设置」「备份与迁移」「恢复码」页面 | 支持人员会告诉用户「没有这个功能」 |
-| 8 | `bootstrap.log` 在哪 | `docs/evidence/log-only-troubleshooting-drill.md:100`、`:327`（冻结证据，行号不漂）写固定 `%LOCALAPPDATA%\LiuHao\logs\bootstrap.log` | 当前实现：数据目录不可解析时写 `<程序目录>\bootstrap.log` | 该证据文档是**建议方案**，不能当现状引用 |
-| 9 | 开机自启默认开还是关 | `INSTALL-WINDOWS.md`「一、当前交付状态（如实说明）」的「安装后开机自启（托盘）」行 | `src/desktop/autostart.py`：**默认关闭**，需 `autostart enable` | 用户以为装完就自动开机启动 |
+| 8 | `bootstrap.log` 在哪 | `docs/evidence/log-only-troubleshooting-drill.md:100`、`:327`（冻结证据，行号不漂）写固定 `%LOCALAPPDATA%\LiuHao\logs\bootstrap.log` | 当前实现有两个位置：启动器/桌面壳失败写 `<程序目录>\bootstrap.log`；网关引导阶段失败写 `%LOCALAPPDATA%\LiuHao\logs\bootstrap.log`（数据目录不可解析时落到 `%TEMP%`） | 该证据文档是**建议方案**，不能当现状引用 |
+| 9 | 开机自启默认开还是关 | `INSTALL-WINDOWS.md`「一、当前交付状态（如实说明）」的「安装后开机自启（托盘）」行 | `src/desktop/autostart.py`：**默认关闭**，需 `autostart enable` | 已在 `INSTALL-WINDOWS.md` 该行补「默认关闭，需 `autostart enable` 开启」 |
 
 ---
 
@@ -208,7 +237,7 @@
 | 文档位置（小节 / 标题；冻结证据保留行号） | 原句（摘要） | 处理 |
 |---|---|---|
 | `docs/DELIVERY-CHECKLIST.md`「1. 三步使用说明（最终用户只需要这三步）」第 2 步 | 「首次启动会打开命令行向导…选 1（Ollama）、2（云）、0（跳过）」 | **删除**整段命令行向导描述，改指向 `scripts/first_run_gui.py` 的图形向导；仅在 `--console` 时补一句回退说明 |
-| `docs/DELIVERY-CHECKLIST.md`「2. 逐项状态」的 401 行 | 「错误 Key → `[生成失败] 401 Incorrect API key`」 | **改为** `模型服务返回 HTTP 401，详情已记录到服务端日志。`（`kind=invalid_key`） |
+| `docs/DELIVERY-CHECKLIST.md`「2. 逐项状态」的 401 行 | 「错误 Key → `[生成失败] 401 Incorrect API key`」 | **改为** `<服务商名>返回 HTTP 401，详情已记录到服务端日志。`（`kind=invalid_key`） |
 | `docs/DELIVERY-CHECKLIST.md`「1. 三步使用说明（最终用户只需要这三步）」的端口二选一说明 | 「窗口会给两个端口选项」 | **保留**「窗口二选一」口径；另补命令行/无桌面时的「处理一/处理二」与返回码 2 |
 | `docs/END-USER-GUIDE.md`「端口被占用怎么换（0.1.1+）」与「浏览器显示旧界面或白屏（0.1.1+）」第 6 步 | 同上「选『换一个端口继续』」 | **保留**；另补一句命令行/无桌面时的处理一/处理二 |
 | `docs/END-USER-GUIDE.md`「浏览器显示旧界面或白屏（0.1.1+）」第 6 步 | 「换过端口时：旧标签页仍指向旧端口…」 | **限定作用域**：仅手动换端口时；托盘/自启**不再静默顺延**（端口被占明确报错），无需另写顺延说明 |
@@ -218,6 +247,6 @@
 | `docs/known-gaps.md`「四类归属统计」的 D-9 行 | 「备份/恢复/导出…无设置页/恢复流程」 | **删除**“无设置页/无恢复流程”；功能已存在，改为“缺少 xx 校验”等真实缺口 |
 | `docs/known-gaps.md`「D-9 备份 / 恢复 / 导出（一键化）」 | 「没有设置页入口、没有恢复流程、没有版本兼容校验」 | **删除前三项**，只保留仍成立的“版本兼容校验”部分 |
 | `docs/evidence/log-only-troubleshooting-drill.md:157` | 「`[生成失败] Error code: 401 - … Incorrect API key provided …`」 | **标注为历史证据（已失效）**，或整段删除；当前不会向用户展示该原文 |
-| `docs/evidence/log-only-troubleshooting-drill.md:100`、`:327` | 「建议加的日志…固定 `%LOCALAPPDATA%\LiuHao\logs\bootstrap.log`」 | **保留但明确标注“提案，未实现”**；当前为 `<程序目录>\bootstrap.log`，勿当现状引用 |
+| `docs/evidence/log-only-troubleshooting-drill.md:100`、`:327` | 「建议加的日志…固定 `%LOCALAPPDATA%\LiuHao\logs\bootstrap.log`」 | **保留但明确标注“提案，未实现”**；当前有两个位置：启动器/桌面壳失败写 `<程序目录>\bootstrap.log`，网关引导阶段失败写 `%LOCALAPPDATA%\LiuHao\logs\bootstrap.log`（不可解析时落到 `%TEMP%`），勿当现状引用 |
 | `docs/INSTALL-WINDOWS.md`「一、当前交付状态（如实说明）」的「安装后开机自启（托盘）」行 | 「安装后开机自启（托盘）…已验证」 | **补一句**「默认关闭，需 `autostart enable`」，避免读成默认开启 |
-| `docs/audit-data-layout-20261108.md`「6. 文档与实际不一致清单」的 `current_url.txt` 条目 | 「`current_url.txt` 记录本次实际访问地址、pid」 | 该审计条目本身正确，但**引用它时要带上结论**：文件会陈旧，pid/端口不可信；建议在索引页加警示 |
+| `docs/audit-data-layout-20261108.md`「6. 文档与实际不一致清单」的 `current_url.txt` 条目 | 「`current_url.txt` 记录本次实际访问地址、pid」 | 引用它时以本手册正文为准：文件只是某次启动的快照（安装版 `LiuHao.bat` 会写、双击桌面图标不写），可能过期；地址以状态窗口「控制台：」为准 |

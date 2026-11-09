@@ -1018,6 +1018,8 @@ def main() -> int:
         return 1
 
     if args.list:
+        # --list / --explain 是信息模式：只列出提取到的命令与干跑建议，不宣告
+        # 任何检查结论。这里的退出码 0 不是"伪装通过"。
         print(f"共 {len(sites)} 条命令/命令片段（{len(targets)} 份文档）")
         for site in sites:
             print(f"{rel(site.doc)}#{site.section} L{site.line} [{site.origin}] {site.text}")

@@ -21,8 +21,9 @@ This gate inspects the LIVE store READ-ONLY and asserts two things:
      unique) -- identical SQL to ``AuditStore.duplicate_seq_count()``.
 
 Fail-closed: any violation => non-zero exit (default 2). A missing live store
-(no deployed DB in this environment) is reported as a SKIP (exit 0) -- honest,
-not a silent pass; the aggregate flags it PASS (NOTE).
+(no deployed DB in this environment) is reported as SKIP with exit 3 (NOT
+VERIFIED) -- honest, not a silent pass; the aggregate counts it as SKIP and
+exits 3 rather than reporting PASS.
 
 READ-ONLY POSTURE (enforced, not merely asserted)
 -------------------------------------------------
@@ -209,13 +210,16 @@ def main() -> int:
     db_path = _resolve_live_db_path()
     rc = 0
     if not os.path.exists(db_path):
-        # Nothing deployed to verify in this environment. Honest SKIP -- the
-        # aggregate's NOTE_MARKERS will flag this as PASS (NOTE), never a
-        # silent PASS.
+        # Nothing deployed to verify in this environment. This is NOT a pass:
+        # the live no-fork property was not checked. Exit 3 (SKIP) so CI can
+        # distinguish "not verified" from "verified OK"; the live gate belongs
+        # in a deployed soak / release environment that actually has a store.
         print(
             "NO-FORK GATE SKIP: live audit store not present at %s "
-            "(no deployed DB to verify in this environment)" % db_path
+            "(no deployed DB to verify in this environment; exit 3 = NOT VERIFIED)"
+            % db_path
         )
+        rc = 3
     else:
         try:
             conn = open_read_only(db_path)

@@ -1048,7 +1048,7 @@ def _can_exit_nonzero_source(source: str) -> bool:
 
 #: Gates that end in a conditional status. Four real scripts -- verify_deploy_readiness.py
 #: (``return 1 if any_fail else 0``), verify_image_build.py (``return 1 if any_fail else
-#: (2 if any_nv else 0)``), verify_p6_e2e_file_creation.py (``return 0 if ok else 1``)
+#: (3 if any_nv else 0)``), verify_p6_e2e_file_creation.py (``return 0 if ok else 1``)
 #: and verify_real_execution_e2e.py (``sys.exit(rc)`` where ``rc`` comes from ``main()``)
 #: -- were reported as unable to fail purely because of these shapes.
 _CAN_FAIL_SHAPES = [

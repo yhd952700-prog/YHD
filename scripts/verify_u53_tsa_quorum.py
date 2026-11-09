@@ -19,6 +19,8 @@ integration is the next step, gated on HC-01 stabilisation); it asserts the
 capability EXISTS and is fail-closed.
 
 Exit 0 = capability verified. Exit 1 = a capability claim failed.
+Exit 3 = NOT VERIFIED (openssl ts engine unavailable, so the quorum assertions
+cannot be obtained in this environment). 3 is never a pass and never a failure.
 """
 from __future__ import annotations
 
@@ -70,9 +72,9 @@ def main() -> int:
     if shutil.which("openssl") is None:
         print(
             "U53 QUORUM NOTE: openssl ts engine not available -- quorum "
-            "assertions skipped (not fabricated)."
+            "assertions NOT VERIFIED (exit 3); not fabricated, not a pass."
         )
-        return 0
+        return 3
 
     # 1. Mint + verify a quorum bundle (3 members, quorum 2).
     m1, m2, m3 = _member(), _member(), _member()

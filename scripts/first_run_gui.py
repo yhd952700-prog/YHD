@@ -18,8 +18,8 @@
 5. 自检结果：固定四项检测（网关端口 / 数据目录 / 托盘驻留 / 默认模型）——
    端口试绑定（端口上已有鎏灏在监听也算通过）、数据目录试写临时文件、
    托盘查系统级单实例锁（本次启动将驻留托盘时也判为通过）、
-   默认模型真的发一次最小请求；全部通过后点「进入控制台」，
-   由启动器拉起网关并打开浏览器。
+   默认模型真的发一次最小请求；必要项通过（模型选「跳过」时标注稍后配置）后
+   点「进入控制台」，由启动器拉起网关并打开浏览器。
    （控制台地址显示在状态窗口底部的「控制台：」一行；``config\\current_url.txt``
    只有源码启动器 ``scripts/start_liuhao.py`` 会写，安装版不生成。）
 
@@ -44,6 +44,7 @@ import tempfile
 import threading
 import time
 import traceback
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -456,21 +457,38 @@ def write_data_dir_marker(data_dir: Path) -> None:
         _write_log(data_dir, f"已同步卸载键 DataDir = {data_dir}（{key}）")
 
 
+def _recommended_free_port(preferred: int) -> int:
+    """给用户推荐一个当前确实空闲的端口，而不是随口报一个数。"""
+    from src.desktop.probe import pick_port
+
+    starts = [preferred]
+    if preferred != 8081:
+        starts.append(8081)
+    for start in starts:
+        try:
+            return pick_port(start, 100)
+        except RuntimeError:
+            continue
+    return preferred
+
+
 def check_port(host: str, port: int) -> str | None:
     """端口被占用时返回中文说明；可用返回 ``None``。
 
-    以「端口 」开头是约定：界面据此识别端口冲突并显示「改用其他端口」按钮。
+    用 ``port_is_free`` 同时探 IPv4 通配、回环与 IPv6：只绑 ``127.0.0.1``
+    的探测会把监听 ``0.0.0.0`` 的占用者误判成空闲。
     """
     from scripts import start_liuhao as launcher
+    from src.desktop.probe import port_is_free
 
-    if not launcher._port_in_use(host, port):
+    if port_is_free(port, host):
         return None
     owner = launcher._describe_port_owner(port)
     detail = f"（占用者：{owner}）" if owner else ""
+    suggested = _recommended_free_port(port + 1 if port < 65535 else 8081)
     return (
-        f"端口 {port} 已被占用{detail}。\n"
-        "处理：关闭占用该端口的程序（通常是上一次没有正常退出的鎏灏）后点「重试」；"
-        "或点「改用其他端口」换一个空闲端口。"
+        f"这个端口 {port} 被占用{detail}。换一个（推荐 {suggested}），"
+        "或者关掉占用它的程序。"
     )
 
 
@@ -535,6 +553,27 @@ def _env_api_port() -> int:
         return int((os.environ.get("LIUHAO_API_PORT") or "").strip() or 8080)
     except ValueError:
         return 8080
+
+
+def _persist_api_port(data_dir: Path, port: int) -> None:
+    """把选定的端口落到桌面端约定的位置（``<数据目录>/config/desktop_port.json``）。
+
+    只调 ``src.desktop.service`` 的持久化接口，不在这里另造一份配置：下次启动
+    时桌面端按「环境变量 → 这份文件 → 8080」的顺序取值。写失败不把首启判死
+    （账号已建好、本次启动仍用环境变量），但必须留下可查的中文日志。
+    """
+    from src.desktop.service import save_saved_port
+
+    try:
+        target = save_saved_port(port)
+    except Exception as exc:  # noqa: BLE001 - 端口配置写失败不能阻断首启
+        _write_log(
+            data_dir,
+            f"端口 {port} 未能持久化：{type(exc).__name__}: {exc}；"
+            "下次启动可能回落到 8080。",
+        )
+        return
+    _write_log(data_dir, f"端口 {port} 已持久化：{target}")
 
 
 def _fail(data_dir: Path | None, message: str, *, detail: str = "") -> CommitResult:
@@ -666,16 +705,17 @@ def commit(values: dict[str, Any], *, port: int | None = None) -> CommitResult:
     # 只出现在测试/显式要求里，不往环境变量里写。
     if api_port:
         os.environ["LIUHAO_API_PORT"] = str(api_port)
+        _persist_api_port(dir_value, api_port)
     clear_current_url(dir_value)
     _write_log(
         dir_value,
         f"first-run done: principal={principal} model={mode} port={api_port}",
     )
-    return True, "设置完成，正在启动控制台…"
+    return True, "设置完成，正在启动鎏灏窗口…"
 
 
 # ---------------------------------------------------------------------------
-# 完成页自检：四项真实检查 + 可点击的下一步
+# 完成页自检：四项当场检查 + 可点击的下一步
 # ---------------------------------------------------------------------------
 
 
@@ -717,11 +757,9 @@ def _flag(value: Any) -> str:
 
 def check_port_ready(host: str, port: int) -> CheckResult:
     """网关端口：可绑定，或已被本机鎏灏监听（两种情况都可以直接使用）。"""
-    from src.desktop.probe import http_json
-    from src.observability.boot_report import port_state
+    from src.desktop.probe import http_json, port_is_free
 
-    bindable, state = port_state(host, port)
-    if bindable:
+    if port_is_free(port, host):
         return CheckResult(
             key="port",
             title="网关端口",
@@ -729,22 +767,25 @@ def check_port_ready(host: str, port: int) -> CheckResult:
             detail=f"端口 {port} 可用（没有其他程序占用）。",
             code="free",
         )
-    if state == "serving":
-        info = http_json(f"http://{host}:{port}/v1/health", timeout=0.8)
-        body = info.get("body") if isinstance(info.get("body"), dict) else {}
-        if info.get("ok") and body.get("service") == "liuhao-gateway":
-            return CheckResult(
-                key="port",
-                title="网关端口",
-                ok=True,
-                detail=f"端口 {port} 上已有鎏灏在运行，可以直接打开控制台。",
-                code="serving",
-            )
+    info = http_json(f"http://{host}:{port}/v1/health", timeout=0.8)
+    body = info.get("body") if isinstance(info.get("body"), dict) else {}
+    if info.get("ok") and body.get("service") == "liuhao-gateway":
+        return CheckResult(
+            key="port",
+            title="网关端口",
+            ok=True,
+            detail=f"端口 {port} 上已有鎏灏在运行，可以直接打开鎏灏窗口。",
+            code="serving",
+        )
+    suggested = _recommended_free_port(port + 1 if port < 65535 else 8081)
     return CheckResult(
         key="port",
         title="网关端口",
         ok=False,
-        detail=f"端口 {port} 被其他程序占用；不换端口的话，这次打不开控制台。",
+        detail=(
+            f"这个端口 {port} 被占用；换一个（推荐 {suggested}），"
+            "或者关掉占用它的程序。"
+        ),
         action="换一个端口",
         blocking=False,
         advice="可以稍后再弄，软件已可用：启动时还会再提示一次，也可以现在就点按钮改好。",
@@ -772,7 +813,7 @@ def check_data_dir_writable(data_dir: Path) -> CheckResult:
         detail=f"现在无法写入：{data_dir}（可能磁盘已满、目录被设为只读，或被安全软件拦截）。",
         action="打开数据目录",
         blocking=True,
-        advice="必须先处理：账号和对话都写不进这个目录，控制台打不开。处理好后点「重新检测」。",
+        advice="必须先处理：账号和对话都写不进这个目录，鎏灏窗口打不开。处理好后点下方「重新检测全部四项」。",
         code="unwritable",
         log_detail=f"{type(exc).__name__}: {exc}" if exc else "",
     )
@@ -826,7 +867,10 @@ def check_tray_resident(data_dir: Path, *, tray_planned: bool) -> CheckResult:
         key="tray",
         title="托盘驻留（关窗后继续运行）",
         ok=True,
-        detail="启动后会在托盘显示；关闭这个窗口不会停止服务。",
+        detail=(
+            "托盘组件可用；启动后会在托盘显示，关闭窗口后服务继续运行"
+            "（本次只验证组件能加载，不启动托盘）。"
+        ),
         code="planned",
     )
 
@@ -850,10 +894,10 @@ def check_default_model(expected_name: str = "") -> CheckResult:
             key="model",
             title="默认模型",
             ok=False,
-            detail="还没有配置模型（本次选择了跳过）。",
+            detail="本次选择了跳过，之后可在「系统设置 → 模型管理」配置。",
             action="去模型页测试连接",
             blocking=False,
-            advice="可以稍后再弄，软件已可用：账号和数据都已就绪，聊天需要先配好模型。",
+            advice="不阻塞进入控制台：账号和数据已就绪；需要真实回复时再配置模型。",
             code="skipped",
         )
 
@@ -900,7 +944,7 @@ def check_default_model(expected_name: str = "") -> CheckResult:
 def run_self_check(
     *, data_dir: Path, port: int, model_name: str = "", tray_planned: bool = False
 ) -> list[CheckResult]:
-    """依次做四项真实检查；任何一项异常都变成"需要处理"，不中断其余检查。"""
+    """依次做四项当场检查（托盘一项只验证组件可加载）；任何一项异常都变成"需要处理"，不中断其余检查。"""
     results: list[CheckResult] = []
     for probe in (
         lambda: check_port_ready("127.0.0.1", int(port)),
@@ -999,8 +1043,9 @@ class _WizardWindow:
 
     点击「完成并自检」时调用注入的 ``on_submit``；失败只在窗口内显示中文原因，
     窗口不关闭，并给出「重试 / 换目录 / 打开日志目录 / 改用其他端口」等按钮；
-    成功后进入自检页，四项结果全部来自本机实测，失败项各自带一个可点击的
-    下一步；用户确认后才关闭窗口，由启动器继续拉起控制台。
+    成功后进入自检页，四项结果全部来自本次当场检查（托盘一项为组件可加载、
+    启动后将驻留）；失败项各自带一个可点击的下一步；用户确认后才关闭窗口，
+    由启动器继续拉起控制台。
     """
 
     def __init__(
@@ -1216,10 +1261,10 @@ class _WizardWindow:
             ),
             fg="#555555", anchor="w", justify="left", wraplength=620,
         ).pack(anchor="w")
-        # 第一页就说清楚：运行期间不能关掉启动窗口（以前要到登录页才提示）。
+        # 第一页就说清楚：关窗等于放弃本次设置；服务启动后的窗口关闭只是隐藏到托盘。
         self._tk.Label(
             frame,
-            text="运行期间请保留本窗口（可最小化）：关闭它会停止本地服务。",
+            text="关闭将放弃本次设置，不会创建账号。",
             fg="#b00020", anchor="w", wraplength=620, justify="left",
         ).pack(anchor="w", pady=(6, 0))
         row = self._tk.Frame(frame)
@@ -1354,6 +1399,21 @@ class _WizardWindow:
         self._pair(self.cloud_row, "base_url", self.cloud_url_var, CLOUD_DEFAULT_BASE_URL)
         self._pair(self.cloud_row, "模型名", self.cloud_model_var, CLOUD_DEFAULT_MODEL, 0)
         self._pair(self.cloud_row, "API Key", self.cloud_key_var, "", 1, show="*")
+        self.cloud_help = self._tk.Frame(frame)
+        self.cloud_help.pack(fill="x", padx=(24, 0), pady=(2, 0))
+        self._tk.Label(
+            self.cloud_help,
+            text="Key 在 DeepSeek 开放平台申请；新账号可能需要先充值才能调用。",
+            fg="#555555", anchor="w", justify="left", wraplength=560,
+        ).pack(anchor="w")
+        self._tk.Label(
+            self.cloud_help,
+            text="填完不用自己找地方测试：第 5 步自检会真的发一次请求验证 Key。",
+            fg="#555555", anchor="w", justify="left", wraplength=560,
+        ).pack(anchor="w")
+        self._tk.Button(
+            self.cloud_help, text="打开申请页", command=self._open_deepseek
+        ).pack(anchor="w", pady=(2, 0))
         self._tk.Label(
             frame,
             text=(
@@ -1410,14 +1470,14 @@ class _WizardWindow:
         ).pack(anchor="w")
         self._tk.Label(
             frame,
-            text="之后随时可在控制台左侧底部的「关于与隐私」查看版本、数据目录、"
+            text="之后随时可在鎏灏窗口左侧底部的「关于与隐私」查看版本、数据目录、"
                  "许可证与联网说明。",
             fg="#777777", anchor="w", justify="left", wraplength=620,
         ).pack(anchor="w", pady=(8, 0))
         return frame
 
     def _page_check(self, parent: Any) -> Any:
-        """最后一页：四项本机实测结果 + 失败项的可点击下一步。"""
+        """最后一页：四项当场检查结果 + 失败项的可点击下一步。"""
         frame = self._tk.Frame(parent)
         # 本页文字比前几页短，不撑一下会被窗口自适应压得很窄、换行受伤。
         self._tk.Frame(frame, width=640, height=1).pack()
@@ -1426,9 +1486,21 @@ class _WizardWindow:
         ).pack(anchor="w", pady=(0, 6))
         self._tk.Label(
             frame,
-            text="下面四项都是刚刚在这台电脑上实测的结果，不是预设文案。",
+            text=(
+                "下面四项会当场检查：端口试绑定、数据目录试写入、"
+                "托盘组件试加载（启动后驻留）、默认模型会真的发一次请求。"
+            ),
             fg="#555555", anchor="w", wraplength=620,
         ).pack(anchor="w")
+        self._tk.Label(
+            frame,
+            text=(
+                "「换一个端口」＝把 8080 换成别的数字，例如 8081。\n"
+                "「打开数据目录」＝打开账号和聊天记录所在的文件夹。\n"
+                "「去模型页测试连接」＝回第 3 步检查 Key、地址和模型名。"
+            ),
+            fg="#777777", anchor="w", justify="left", wraplength=620,
+        ).pack(anchor="w", pady=(4, 0))
         self._check_summary_label = self._tk.Label(
             frame, text="正在自检…", fg="#555555", anchor="w", justify="left",
             wraplength=620,
@@ -1500,6 +1572,18 @@ class _WizardWindow:
             child.configure(state=state_ollama)
         for child in self.cloud_row.winfo_children():
             child.configure(state=state_cloud)
+        for child in self.cloud_help.winfo_children():
+            child.configure(state=state_cloud)
+
+    def _open_deepseek(self) -> None:
+        """用系统默认浏览器打开 DeepSeek 开放平台的 API Key 申请页。"""
+        url = "https://platform.deepseek.com/api_keys"
+        try:
+            opened = webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - 打不开浏览器不能卡住向导
+            opened = False
+        if not opened:
+            self.error_label.configure(text=f"没能自动打开浏览器，请手动访问：{url}")
 
     # -- 导航 ---------------------------------------------------------------
     def _show(self, index: int) -> None:
@@ -1513,7 +1597,7 @@ class _WizardWindow:
                 page.pack_forget()
         self._back.configure(state="normal" if 0 < index < 4 else "disabled")
         if index == 4:
-            self._next.configure(text="进入控制台", state="normal")
+            self._next.configure(text="进入鎏灏", state="normal")
             self._start_checks()
         elif index == 3:
             self._next.configure(text="完成并自检", state="normal")
@@ -1603,16 +1687,23 @@ class _WizardWindow:
 
     def _use_other_port(self) -> None:
         from tkinter import messagebox
+        from src.desktop.probe import port_is_free
 
-        suggestion = self.port + 1 if self.port < 65535 else 8080
+        suggestion = _recommended_free_port(self.port + 1 if self.port < 65535 else 8081)
         while True:
             value = self._ask_new_port(suggestion)
             if value is None:
                 return
-            problem = check_port("127.0.0.1", value)
-            if problem:
-                messagebox.showwarning("端口不可用", problem, parent=self.root)
-                suggestion = value + 1 if value < 65535 else 8080
+            if not port_is_free(int(value), "127.0.0.1"):
+                suggested = _recommended_free_port(
+                    int(value) + 1 if int(value) < 65535 else 8081
+                )
+                messagebox.showwarning(
+                    "端口不可用",
+                    f"这个端口 {value} 被占用。换一个（推荐 {suggested}），或者关掉占用它的程序。",
+                    parent=self.root,
+                )
+                suggestion = suggested
                 continue
             self.port = int(value)
             self.port_var.set(str(value))
@@ -1698,14 +1789,20 @@ class _WizardWindow:
             result = by_key.get(key)
             if result is None:
                 widgets["badge"].configure(text="需要处理", fg="#b00020")
-                widgets["detail"].configure(text="这项检查没有结果；请点「重新检测」。")
+                widgets["detail"].configure(
+                    text="这项检查没有结果；请点下方「重新检测全部四项」。"
+                )
                 widgets["advice"].configure(text="")
                 widgets["action"].pack_forget()
                 continue
-            widgets["badge"].configure(
-                text="通过" if result.ok else "需要处理",
-                fg="#0a7d33" if result.ok else "#b00020",
-            )
+            if result.code == "skipped":
+                # 跳过模型是合法选择：灰色「稍后配置」，不按失败标红。
+                widgets["badge"].configure(text="稍后配置", fg="#777777")
+            else:
+                widgets["badge"].configure(
+                    text="通过" if result.ok else "需要处理",
+                    fg="#0a7d33" if result.ok else "#b00020",
+                )
             widgets["detail"].configure(text=result.detail)
             widgets["advice"].configure(text=result.advice)
             if result.action:
@@ -1714,12 +1811,19 @@ class _WizardWindow:
             else:
                 widgets["action"].pack_forget()
 
-        failures = [item for item in results if not item.ok]
+        failures = [item for item in results if not item.ok and item.code != "skipped"]
+        skipped = [item for item in results if item.code == "skipped"]
         if failures:
             names = "、".join(item.title for item in failures)
             self._check_summary_label.configure(
                 text=f"有 {len(failures)} 项需要处理：{names}。每项右侧都有可点的下一步。",
                 fg="#b00020",
+            )
+        elif skipped:
+            names = "、".join(item.title for item in skipped)
+            self._check_summary_label.configure(
+                text=f"{names}稍后配置，不阻塞进入控制台；其余必要项都已通过。",
+                fg="#777777",
             )
         else:
             self._check_summary_label.configure(
@@ -1729,7 +1833,7 @@ class _WizardWindow:
         if any(item.blocking for item in failures):
             self._next.configure(state="disabled", text="请先处理上面的问题")
         else:
-            self._next.configure(state="normal", text="进入控制台")
+            self._next.configure(state="normal", text="进入鎏灏")
         if self._ready:
             self.root.after_idle(lambda: self._apply_geometry(center=False))
 
@@ -1841,6 +1945,16 @@ class _WizardWindow:
             self.error_message = ""
             self._stop_dpi_watcher()
             self.root.destroy()
+            return
+        from tkinter import messagebox
+
+        if not messagebox.askyesno(
+            "放弃首次设置？",
+            "确定要放弃本次设置吗？\n\n"
+            "放弃后不会创建账号；需要重新双击桌面图标再来一次。",
+            parent=self.root,
+            default=messagebox.NO,
+        ):
             return
         self.canceled = True
         self._stop_dpi_watcher()

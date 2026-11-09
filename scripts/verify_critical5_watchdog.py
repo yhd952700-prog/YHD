@@ -745,4 +745,7 @@ print(
     f"{hold_clause}"
 )
 print("  (real GitHub Ubuntu run remains UNVERIFIED: no act/Docker here)")
+# 退出码 0 是刻意的，不是"伪装通过"：本脚本断言的对象是**静态 workflow 接线**
+# （needs: 覆盖、job 可达性），这类证据在本环境可取得且已取得；末尾的
+# UNVERIFIED 只是标注"真实 GitHub 运行"这一外部证据拿不到，不影响上面已证的部分。
 sys.exit(0)

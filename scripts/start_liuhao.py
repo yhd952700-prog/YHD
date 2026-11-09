@@ -28,6 +28,7 @@ import argparse
 import atexit
 import contextlib
 import ipaddress
+import json
 import os
 import shutil
 import socket
@@ -50,15 +51,21 @@ CONSOLE_DIR = ROOT / "apps" / "console" / "console"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.common.instance_lock import InstanceLockBusy, InstanceLock, instance_root  # noqa: E402
-from src.common.leak_scan import OMITTED_MEMBERS_NAME  # noqa: E402
 from src.brand import BRAND_LOCKUP  # noqa: E402
+from src.common.data_paths import resolve_store_path  # noqa: E402
+from src.common.instance_lock import InstanceLock, InstanceLockBusy, instance_root  # noqa: E402
+from src.common.leak_scan import OMITTED_MEMBERS_NAME  # noqa: E402
 
 #: 唯一生效的日志配置。由 ``python -m src.gateway`` 子进程按 UTF-8 读取后
 #: 以映射交给 uvicorn：10 MiB × 5 份轮转，INFO 进 logs/liuhao.log，ERROR
 #: 另进 logs/error.log（见配置文件头注释）。
 LOG_CONFIG = ROOT / "config" / "logging.yaml"
-LOG_DIR = ROOT / "logs"
+#: 启动器自己的日志目录（launcher.log / 就绪探针失败提示）。同样服从数据根：
+#: ``LIUHAO_LOG_DIR`` > ``LIUHAO_DATA_DIR/logs`` > 仓库根 ``logs``。否则只设
+#: ``LIUHAO_DATA_DIR`` 的隔离运行仍会在共享开发目录里留下运行时文件。
+LOG_DIR = Path(
+    resolve_store_path("logs", ROOT / "logs", env_var="LIUHAO_LOG_DIR")
+)
 
 #: 网关子进程的工作目录。开发态就是仓库根；安装版由 ``launch_installed``
 #: 指向**数据目录**（程序目录只读），但 ``ROOT`` 必须继续指向程序目录：
@@ -93,16 +100,15 @@ _children: list[subprocess.Popen] = []
 
 
 def _port_in_use(host: str, port: int) -> bool:
-    """True when ``host:port`` is already bound by another process."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.5)
-    try:
-        sock.bind((host, port))
-    except OSError:
-        return True
-    finally:
-        sock.close()
-    return False
+    """True when ``host:port`` is already bound by another process.
+
+    必须与桌面壳用**同一套多地址探测**：只绑 ``127.0.0.1`` 会漏判监听
+    ``0.0.0.0`` 的占用者（Windows 上通配与具体地址可以共存），于是启动器
+    以为空闲、网关却在绑定阶段失败。判定口径统一到 ``port_is_free``。
+    """
+    from src.desktop.probe import port_is_free
+
+    return not port_is_free(int(port), host=host or "127.0.0.1")
 
 
 class PortUnavailable(RuntimeError):
@@ -431,7 +437,9 @@ def _wait_http_ok(url: str, timeout: float, label: str, hint: str = "") -> bool:
     while time.monotonic() < deadline:
         try:
             with opener.open(url, timeout=3) as resp:
-                if 200 <= resp.status < 500:
+                # 只认 200：3xx/4xx 说明端口上响应的不是我们要的页面
+                # （例如别人的服务、代理的错误页），不能算"就绪"。
+                if resp.status == 200:
                     print(f"  [ok] {label} 就绪（{waited:.1f}s，HTTP {resp.status}）")
                     return True
         except (urllib.error.URLError, OSError):
@@ -609,6 +617,82 @@ def _start_https_proxy(args: argparse.Namespace, single_port: bool) -> None:
     wait_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
     _wait_https_ok(f"https://{wait_host}:{https_port}/", 30.0, "HTTPS 代理")
     print(f"      手机端安装地址： https://<局域网IP>:{https_port}/")
+
+
+def _relay_dir() -> Path:
+    """中继数据目录（与 ``scripts/mobile_access.py``、``scripts/ops/lan_relay.py`` 一致）。"""
+    raw = (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser() / "mobile_access"
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        return base / "LiuHao" / "data" / "mobile_access"
+    base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    return base / "liuhao" / "mobile_access"
+
+
+def _wait_relay_ready(admin_port: int, timeout: float = 8.0) -> dict | None:
+    """等中继管理面可用，并取回配对码。"""
+    deadline = time.monotonic() + timeout
+    opener = _no_proxy_opener()
+    while time.monotonic() < deadline:
+        token_file = _relay_dir() / "admin.token"
+        try:
+            token = token_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            time.sleep(0.3)
+            continue
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{admin_port}/status",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with opener.open(request, timeout=2) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+            if isinstance(payload, dict):
+                return payload
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+        time.sleep(0.3)
+    return None
+
+
+def _start_mobile_relay(args: argparse.Namespace, single_port: bool) -> None:
+    """显式开启「手机访问」：网关仍只绑回环，中继是唯一的局域网入口。"""
+    backend_port = args.api_port if (single_port or args.backend_only) else args.ui_port
+    relay_env = dict(os.environ)
+    relay_env["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT), relay_env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
+    _spawn(
+        [
+            _venv_python(),
+            "-u",
+            str(ROOT / "scripts" / "ops" / "lan_relay.py"),
+            "--lan-host",
+            "0.0.0.0",
+            "--lan-port",
+            str(args.mobile_port),
+            "--admin-port",
+            str(args.mobile_admin_port),
+            "--backend-host",
+            "127.0.0.1",
+            "--backend-port",
+            str(backend_port),
+        ],
+        ROOT,
+        "mobile-relay",
+        relay_env,
+    )
+    status = _wait_relay_ready(args.mobile_admin_port)
+    if not status:
+        print("  [FAIL] 手机访问中继没有就绪；用 scripts/mobile_access.py status 查看原因")
+        return
+    print("  [ok] 手机访问已开启（网关仍只绑回环，仅中继监听局域网）")
+    print(f"       配对码：{status.get('pair_code')}（10 分钟内一次有效）")
+    for url in status.get("pair_urls") or []:
+        print(f"       手机打开：{url}")
+    print("       设备清单 / 踢人：python scripts/mobile_access.py devices")
 
 
 def _shutdown_all() -> None:
@@ -878,6 +962,18 @@ def main() -> int:
     )
     parser.add_argument("--https-port", type=int, default=8443, help="HTTPS 代理监听端口（默认 8443）")
     parser.add_argument(
+        "--mobile-access",
+        action="store_true",
+        help=(
+            "开启手机访问：网关仍只绑本机回环，另起一个局域网中继（默认端口 8090），"
+            "需要一次性配对码；不开时局域网完全不可达。"
+        ),
+    )
+    parser.add_argument("--mobile-port", type=int, default=8090, help="手机访问中继端口（默认 8090）")
+    parser.add_argument(
+        "--mobile-admin-port", type=int, default=8091, help="手机访问管理端口（只绑回环，默认 8091）"
+    )
+    parser.add_argument(
         "--diagnose",
         action="store_true",
         help=(
@@ -1011,6 +1107,9 @@ def main() -> int:
         _shutdown_all()
         return 1
 
+    if args.mobile_access:
+        _start_mobile_relay(args, single_port)
+
     if args.backend_only:
         print()
         print(f"网关已就绪：  {api_base}")
@@ -1114,7 +1213,7 @@ def _console_url_with_proof(base: str) -> str:
 
 
 def _print_lan_urls(api_port: int, host: str, https_port: int | None = None) -> None:
-    """在控制台打印局域网访问地址，方便手机扫码/手输。
+    """在控制台打印局域网访问地址，方便手机手输（本产品没有二维码配对）。
 
     默认只绑回环时这些地址根本连不上，打印出来只会误导用户，所以直接跳过。
     """

@@ -1242,6 +1242,94 @@ def _reap_localappdata_test_copies():
         shutil.rmtree(candidate, ignore_errors=True)
 
 
+# ==================== 本地推理白名单端口上的假上游 ====================
+
+
+#: 产品策略（``src/ai/net_guard.py::LOCAL_INFERENCE_PORTS``）：带 Key 的 http
+#: 只放行回环 + 这四个端口。假上游若绑随机端口，用例实际证明的是"策略会拒绝
+#: 随机端口"，与它声称验证的行为相反——所以这里只在白名单里取端口，
+#: 产品策略一字不动。
+_LOOPBACK_INFERENCE_PORTS = (11434, 1234, 8000, 8080)
+_LOOPBACK_LEASES: dict = {}
+_LOOPBACK_LOCK = _guard_threading.Lock()
+
+
+def _loopback_port_is_listening(port: int) -> bool:
+    """端口上已经有进程在监听吗（例如本机真开着 Ollama / LM Studio）。"""
+    import socket as _socket
+
+    try:
+        with _socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def _bind_loopback_inference_port(handler_cls, label: str):
+    """在 11434/1234/8000/8080 里挑一个空闲端口起假上游。
+
+    占用处理与 ``scripts/acceptance/local_attack_surface_e2e.py`` 一致：
+
+    * 本进程内已被其它用例占用 → 换下一个（占用表由 ``_LOOPBACK_LOCK`` 保护）；
+    * 被本机其它进程监听（真的有 Ollama 在跑）→ 换下一个，绝不抢占；
+    * 四个都不可用 → 抛 ``RuntimeError`` 并说明原因，绝不静默退回随机端口
+      ——那会把用例外面的策略拒绝误当成被测行为，变成"永远红"或"永远绿"。
+    """
+    from http.server import ThreadingHTTPServer as _ThreadingHTTPServer
+
+    problems = []
+    with _LOOPBACK_LOCK:
+        for port in _LOOPBACK_INFERENCE_PORTS:
+            holder = _LOOPBACK_LEASES.get(port)
+            if holder:
+                problems.append(f"{port}：被本进程的 {holder} 占用")
+                continue
+            if _loopback_port_is_listening(port):
+                problems.append(f"{port}：已被本机其它进程监听")
+                continue
+            try:
+                httpd = _ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+            except OSError as exc:
+                reason = getattr(exc, "strerror", None) or str(exc)
+                problems.append(f"{port}：绑定失败 {reason}")
+                continue
+            httpd.daemon_threads = True
+            _LOOPBACK_LEASES[port] = label
+            return httpd, port
+    raise RuntimeError(
+        "白名单端口 11434/1234/8000/8080 全部不可用，无法在不动产品策略的前提下"
+        "验证本机推理端点：" + "；".join(problems) + "。请释放端口后重跑"
+        "（`netstat -ano | findstr \":11434\"` 可查 PID）。"
+    )
+
+
+@pytest.fixture
+def loopback_inference_server():
+    """在本地推理白名单端口上起假上游；退出时自动关停并释放端口。
+
+    用法：``with loopback_inference_server(_Handler, "label") as server:``，
+    ``server.server_address[1]`` 就是白名单内的真实端口。
+    """
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _serve(handler_cls, label: str = "stub"):
+        httpd, port = _bind_loopback_inference_port(handler_cls, label)
+        thread = _guard_threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield httpd
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+            with _LOOPBACK_LOCK:
+                if _LOOPBACK_LEASES.get(port) == label:
+                    del _LOOPBACK_LEASES[port]
+
+    return _serve
+
+
 # ==================== Export ====================
 
 __all__ = [
@@ -1249,4 +1337,5 @@ __all__ = [
     "pytest_collection_modifyitems", 
     "pytest_runtest_setup",
     "pytest_addoption",
+    "loopback_inference_server",
 ]

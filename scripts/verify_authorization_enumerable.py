@@ -21,8 +21,10 @@ Part B -- DISCLOSED (owner-pending policy decision, NOT enforced here).
     be mistaken for done. The policy default (fill-or-deny, union vs
     intersection, identity_approve visibility) is 鹿补之 + 王权衡's decision.
 
-Exit code: 0 when every DECIDED (Part A) invariant holds. A Part B gap is a
-loud WARN, not a hard fail, because it is explicitly an owner-pending decision.
+Exit code: 0 = PASS (Part A holds AND Part B is verified); 1 = Part A broken;
+3 = Part B NOT VERIFIED (owner-pending gap or introspection unavailable).
+Part B must NOT be folded into a PASS: the product has not implemented target
+binding, so "GATE: PASS" would be a claim nobody can back with evidence.
 """
 
 import os
@@ -124,8 +126,14 @@ def part_a_host_command() -> bool:
     return all_ok
 
 
-def part_b_sovereignty_and_policy() -> None:
-    """DISCLOSED: enumeration APIs exist, but target binding is not yet enforced."""
+def part_b_sovereignty_and_policy() -> bool:
+    """DISCLOSED: enumeration APIs exist, but target binding is not yet enforced.
+
+    Returns ``True`` only when target binding is actually verified. A disclosed
+    gap or an introspection that could not run means NOT VERIFIED (exit 3) --
+    never a pass.
+    """
+    verified = True
     _hr("Part B -- sovereignty grant & policy approval (DISCLOSED / UNVERIFIED)")
     print("  Finding: authorization surfaces bind ACTION NAMES only; none carries a")
     print("  `target` field, so 'authorized target == executed target' is NOT yet")
@@ -142,10 +150,13 @@ def part_b_sovereignty_and_policy() -> None:
     api_ok = all(callable(f) for f in (list_grants, get_grant, grant_window, issue_grant))
     _check("sovereignty enumeration APIs present (list_grants/get_grant/grant_window/issue_grant)",
            api_ok)
+    if not api_ok:
+        verified = False
     has_target = "target" in SovereigntyGrant.__dataclass_fields__
     if not has_target:
         _gap("SovereigntyGrant carries a `target` field (binds executed target)",
              "NO target field -> one grant authorizes ANY target; audit records no target")
+        verified = False
 
     # Policy approval request: introspect if importable.
     try:
@@ -154,26 +165,34 @@ def part_b_sovereignty_and_policy() -> None:
         if not pol_has_target:
             _gap("policy ApprovalRequest carries a `target` field",
                  "NO target field -> policy grant does not bind a target")
+            verified = False
     except Exception as exc:  # pragma: no cover - env without fastapi etc.
         _check("policy ApprovalRequest importable for introspection",
                False, f"not introspected in this env: {exc!r}")
+        verified = False
+    return verified
 
 
 def main() -> int:
     _hr("GATE: authorization grants enumerable + auditable; scope binds execution")
     a_ok = part_a_host_command()
-    part_b_sovereignty_and_policy()
+    b_verified = part_b_sovereignty_and_policy()
     _hr("Summary")
-    if a_ok:
-        print("  Part A (decided mechanism): HARD PASS -- authorized target == executed")
-        print("  target is enforced on the live host-command path; usage is enumerable.")
-        print("  Part B (owner-pending): DISCLOSED UNVERIFIED -- sovereignty grant and")
+    if not a_ok:
+        print("  Part A FAILED -- a decided authorization invariant is broken.")
+        print("  GATE: FAIL.")
+        return 1
+    print("  Part A (decided mechanism): HARD PASS -- authorized target == executed")
+    print("  target is enforced on the live host-command path; usage is enumerable.")
+    if not b_verified:
+        print("  Part B (owner-pending): NOT VERIFIED -- sovereignty grant and")
         print("  policy approval have no `target` binding yet; decision is 鹿补之 + 王权衡.")
-        print("  GATE: PASS (decided invariants enforced; pending gap disclosed).")
-        return 0
-    print("  Part A FAILED -- a decided authorization invariant is broken.")
-    print("  GATE: FAIL.")
-    return 1
+        print("  GATE: SKIP (exit 3 = NOT VERIFIED) -- Part A holds, Part B is not")
+        print("  implemented. This is NOT a pass; the gap stays visible in CI.")
+        return 3
+    print("  Part B: VERIFIED -- both authorization surfaces bind an executed target.")
+    print("  GATE: PASS (decided invariants enforced and target binding verified).")
+    return 0
 
 
 if __name__ == "__main__":

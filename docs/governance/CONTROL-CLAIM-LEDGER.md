@@ -250,8 +250,11 @@ costs: it teaches people to ignore the line."（该 commit 信息还自纠了一
 都洗成 `NOT_VERIFIED`（原 `:172` `full run rc={rc2}…` / 原 `:271` `reliability suites rc={rc}…`），使
 "检查根本没跑起来"（rc=4 `unrecognized arguments`）与"跑了但没通过"**落进同一个 `NOT_VERIFIED`**、不可辨。
 **`938b59fd`（#383）已改**：新增独立 `ERROR` 状态 + `_tool_failure()` 识别"旗子被拒 / 运行器模块缺失"，
-C2/C3/C6/C8/C9 的运行时失败 → `ERROR`（**exit 2**），而"跑了但没通过"仍留 `NOT_VERIFIED`（exit 0）；
+C2/C3/C6/C8/C9 的运行时失败 → `ERROR`（**exit 2**），而"跑了但没通过"当时仍留 `NOT_VERIFIED`；
 `pyproject.toml:115` 补齐声明。**本条从"未处置"转为"已改正"**——登记见 §2 更正登记表第 3 行。
+（**2026-11-08 补注（现状已变）**：`NOT_VERIFIED` / `BLOCKED` 现在以**退出码 3** 收尾、
+并打印显式 warning，不再返回 0；FAIL 或 checker 跑不起来仍是 2。依据
+`scripts/verify_readiness.py:1114-1124`。任何"未验证也算通过"的旧表述都不适用于当前代码。）
 （残留：**门禁面**仍缺"`--timeout` ⇒ 必须有 `pytest-timeout` 声明"这条**静态**检查；见上表末行的【提案，未接线】。）
 
 ### 6. 8 个案例的分类归位（2026-10-05~07，全部 ∈ HEAD；逐笔 `git show` 亲验）

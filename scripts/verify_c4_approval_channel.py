@@ -336,6 +336,8 @@ def _tracked_files() -> List[pathlib.Path]:
             cwd=str(REPO_ROOT), capture_output=True, text=True, check=True,
         )
     except (OSError, subprocess.CalledProcessError):
+        # git 不可用时退化为文件树遍历：检查**仍然完整执行**，只是取证来源不同。
+        # 这是降级取证，不是"拿不到证据却 exit 0"。
         return [p for p in REPO_ROOT.rglob("*") if p.is_file()]
     return [REPO_ROOT / p for p in out.stdout.split("\0") if p]
 

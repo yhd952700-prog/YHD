@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-11-08 实测）**：活跃文档 **270** 篇（不含 `archive/` 与
-> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 270 篇**。该数字由
+> **覆盖状态（2026-11-08 实测）**：活跃文档 **281** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 281 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -107,8 +107,9 @@ docs/
 ├── architecture/       (8)     架构
 ├── audit-30min-real-work-20261108/ (—) 30 分钟办公走查证据截图
 ├── audit-first-journey-20261108/ (—)   首次使用走查证据（截图 + 网关日志）
+├── audit/              (7)     独立只读深度体检（架构 / 运维 / 依赖与许可 / 工具与自动化 / 记忆与知识 / 产品完整度 / 测试与工程质量）
 ├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
-├── best-practices/     (5)     编码/Agent/记忆/多 AI 员工/测试最佳实践
+├── best-practices/     (6)     编码/Agent/记忆/多 AI 员工/测试最佳实践
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
 ├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
 ├── compliance/         (—)     SBOM · 第三方许可证原文 · 通告
@@ -124,8 +125,8 @@ docs/
 ├── oss-radar/          (8)     开源技术雷达（按路分工的选型与风险记录）
 ├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
 ├── roadmap/            (1)     百万行路线图
-├── security/           (2)     安全威胁模型 · 依赖漏洞报告
-├── spec/               (12)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
+├── security/           (3)     安全威胁模型 · 依赖漏洞报告 · 发布包签名
+├── spec/               (13)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
 │   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
 ├── tutorials/          (7)     从零构建 Agent / 多 AI 员工 / 代码审查 / 数据流水线教程
 ├── ui-audit-20261106/  (1)     控制台全页巡检与多账号验收报告
@@ -157,9 +158,9 @@ docs/
 
 ---
 
-## 4. 全量清单（270 篇，逐一列出）
+## 4. 全量清单（281 篇，逐一列出）
 
-### 4.1 根级（5）
+### 4.1 根级（6）
 
 | 文件 | 说明 |
 |---|---|
@@ -168,8 +169,9 @@ docs/
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
 | [`faq.md`](faq.md) | 常见问题（面向用户，Windows 安装版 0.1.1 实测行为） |
+| [`test-isolation-gap.md`](test-isolation-gap.md) | 缺陷说明：`LIUHAO_DATA_DIR` 不足以隔离测试数据（待打包线处理） |
 
-### 4.2 根级设计与决策（48）
+### 4.2 根级设计与决策（55）
 
 | 文件 | 说明 |
 |---|---|
@@ -209,7 +211,7 @@ docs/
 | [`INSTALL-WINDOWS.md`](INSTALL-WINDOWS.md) | Windows 安装与卸载 |
 | [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
 | [`MASTER-TASK-LEDGER.md`](MASTER-TASK-LEDGER.md) | 总任务台账：用户历次要求的逐条状态与证据（**唯一不漏项的真相源**） |
-| [`account-hierarchy.md`](account-hierarchy.md) | 账号层级体系规格（当前为规格文档，不含代码改动） |
+| [`account-hierarchy.md`](account-hierarchy.md) | 账号层级体系规格（**规格已部分落地**：成员/权限矩阵/角色模板/Key 共享均已有接口与页面；以当前代码与 `/v1/accounts*` 接口为准，文档内状态行可能滞后） |
 | [`account-ui-ia.md`](account-ui-ia.md) | 多账号界面信息架构与页面清单（依据 account-hierarchy §9） |
 | [`ACCEPTANCE-BUTLER-REAL-MODEL.md`](ACCEPTANCE-BUTLER-REAL-MODEL.md) | 管家真实模型验收：一条命令跑完三类关键场景并给 PASS/FAIL/SKIP |
 | [`release-announcement.md`](release-announcement.md) | 发布文案草稿（官网/网盘分享说明） |
@@ -221,6 +223,13 @@ docs/
 | [`TROUBLESHOOTING-USER-20261108.md`](TROUBLESHOOTING-USER-20261108.md) | 用户故障处置手册 v0.1.1（按撞上概率排序；推演项已标注） |
 | [`SBOM-LICENSE-COMPLIANCE-REPORT.md`](SBOM-LICENSE-COMPLIANCE-REPORT.md) | SBOM 与许可证合规报告（0.1.1，附 `compliance/` 原始证据） |
 | [`WINDOWS-COMPAT-DPI-AUDIT-2026-11-08.md`](WINDOWS-COMPAT-DPI-AUDIT-2026-11-08.md) | Windows 兼容性与高 DPI 只读审计（证据见 `dpi-evidence/`） |
+| [`audit/findings-architecture.md`](audit/findings-architecture.md) | 架构域只读深度体检（2026-11-08；证据强度与边界见文首） |
+| [`audit/findings-ops.md`](audit/findings-ops.md) | 运维域只读深度体检（2026-11-08；含启动/停止/备份/升级链路核对） |
+| [`audit/findings-deps-license.md`](audit/findings-deps-license.md) | 依赖与许可域只读体检（2026-11-08） |
+| [`audit/findings-tools-automation.md`](audit/findings-tools-automation.md) | 工具与自动化域只读体检（2026-11-08） |
+| [`audit/findings-memory-knowledge.md`](audit/findings-memory-knowledge.md) | 记忆与知识系统域只读体检（2026-11-08；记忆读写一致性 / 知识库 RAG 全链路 / 检索准确度） |
+| [`audit/findings-product-completeness.md`](audit/findings-product-completeness.md) | 产品完整性审计（2026-11-08；隔离实例真跑 + UI 走查，只读） |
+| [`audit/findings-testing.md`](audit/findings-testing.md) | 测试与工程质量域只读体检（2026-11-08；29 条 QA 条目 + 12 章证据索引，含 SKIP/CI 盲区判定） |
 
 ### 4.3 `adr/`（3）— 架构决策记录
 
@@ -325,7 +334,7 @@ docs/
 > 各篇文首「诚实状态头」中的类名与行号已逐条对代码验证；未标注行号的段落
 > （尤其缺口清单）须以代码实测为准。
 
-### 4.8 `spec/`（12 + `incoming/` 6）— 权威规格
+### 4.8 `spec/`（13 + `incoming/` 6）— 权威规格
 
 | 文件 | 说明 |
 |---|---|
@@ -341,9 +350,10 @@ docs/
 | [`spec/POLICY-ENFORCEMENT-DESIGN.md`](spec/POLICY-ENFORCEMENT-DESIGN.md) | 策略执行设计 |
 | [`spec/REMEDIATION-PLAN.md`](spec/REMEDIATION-PLAN.md) | 修复计划 |
 | [`spec/REPO-LINE-CONVERGE.md`](spec/REPO-LINE-CONVERGE.md) | 仓库线索收敛计划 |
+| [`spec/SELF-EVOLUTION.md`](spec/SELF-EVOLUTION.md) | 自进化目标规格：T0–T3 分级、永久禁区、G0–G14 门禁矩阵、回滚与证据契约 |
 | [`spec/incoming/`](spec/incoming/) | ⚠️ **已被取代的合并草案**（6 篇，由同目录 `MERGE-LEDGER.md` 登记合并过程） |
 
-### 4.9 `operations/`（8）· `product/`（7）· `l10k/`（1）· `security/`（2）· `decisions/`（1）
+### 4.9 `operations/`（8）· `product/`（7）· `l10k/`（1）· `security/`（3）· `decisions/`（1）
 
 | 文件 | 说明 |
 |---|---|
@@ -365,6 +375,7 @@ docs/
 | [`l10k/test-design.md`](l10k/test-design.md) | L10K 基准设计（基线数据在根 `l10k-baseline.yaml`） |
 | [`security/shell-adapter-threat-model.md`](security/shell-adapter-threat-model.md) | Shell 适配器威胁模型 |
 | [`security/dependency-vulnerability-report-2026-11-08.md`](security/dependency-vulnerability-report-2026-11-08.md) | 依赖漏洞扫描与升级建议（pip-audit + npm audit，只读） |
+| [`security/release-signing.md`](security/release-signing.md) | 发布包 Ed25519 签名维护者手册：签发工具、公钥配置、强制签名原因、公钥轮换 |
 | [`decisions/OPEN-DECISIONS.md`](decisions/OPEN-DECISIONS.md) | 悬而未决决策登记 |
 
 ### 4.10 `ci/`（2）— CI 门禁豁免登记 · 执行记录
@@ -395,7 +406,7 @@ docs/
 > "当时路径指向何处"的忠实记录 —— 为了让 linter 变绿而改写历史快照，是**更坏的谎**。
 > 查现行路径请看本索引。
 
-### 4.13 `best-practices/`（5）— 工程最佳实践
+### 4.13 `best-practices/`（6）— 工程最佳实践
 
 | 文件 | 说明 |
 |---|---|
@@ -403,6 +414,7 @@ docs/
 | [`best-practices/error-handling-patterns.md`](best-practices/error-handling-patterns.md) | 错误处理模式 |
 | [`best-practices/memory-management-best-practices.md`](best-practices/memory-management-best-practices.md) | 记忆管理最佳实践 |
 | [`best-practices/multi-agent-coordination.md`](best-practices/multi-agent-coordination.md) | 多 AI 员工协作 |
+| [`best-practices/test-subset-mapping.md`](best-practices/test-subset-mapping.md) | 改动路径 → 必跑测试子集与 slow 用例策略 |
 | [`best-practices/testing-strategies.md`](best-practices/testing-strategies.md) | 测试策略 |
 
 ### 4.14 `tutorials/`（7）— 从零构建教程
@@ -585,7 +597,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 270 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 281 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |

@@ -27,14 +27,15 @@ heavy C3/C6/C7 battery on a quick check), or ``--full`` to actually execute the
 test suite inside C3.
 
 Exit codes:
-  - 0  : no condition FAILED and none ERRORED (nothing contradicted, nothing
-         unable to run)
+  - 0  : every condition PASSed (authoritative release-ready verdict)
   - 2  : one or more conditions FAILED or ERRORED
+  - 3  : no FAIL/ERROR, but at least one condition is NOT_VERIFIED or BLOCKED
 
-NOT VERIFIED / BLOCKED do NOT cause a non-zero exit today (they are pending
-verification, not contradictions). ERROR does: a check that could not be
-evaluated is a failure of the verification process, not a pending item. The JSON
-``release_ready`` field is the authoritative verdict.
+NOT_VERIFIED / BLOCKED are pending verification, not contradictions -- but they
+are also NOT a pass. They exit 3 so CI can never render "we could not verify it"
+as green. ERROR exits 2: a check that could not be evaluated is a failure of the
+verification process, not a pending item. The JSON ``release_ready`` field is
+the authoritative verdict.
 """
 from __future__ import annotations
 
@@ -1113,9 +1114,14 @@ def main(argv):
     # Exit 2 on any FAIL (contradiction) OR any ERROR (a checker that could not
     # run: a verification-process failure, not a pending item). Use an explicit
     # sys.exit branch (not a returned IfExp) so the meta-guardrail can prove
-    # this gate can fail. NOT VERIFIED / BLOCKED stay exit 0 by design.
+    # this gate can fail.
     if n_fail > 0 or n_error > 0:
         sys.exit(2)
+    # Exit 3 when nothing is broken but something could not be verified: pending
+    # verification is NOT release-ready and must not read as a green pass.
+    if n_nv > 0 or n_blocked > 0:
+        print("  Exit 3 = NOT VERIFIED: pending conditions keep this NOT release-ready.")
+        sys.exit(3)
     sys.exit(0)
 
 

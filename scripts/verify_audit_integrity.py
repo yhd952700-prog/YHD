@@ -20,10 +20,13 @@ a tamper-evident `record_hash` (sha256 of the canonical record) so the run itsel
 can be independently attested.
 
 Fail-closed: any gate rc != 0 => aggregate FAIL => non-zero exit.
-A skipped openssl-gated gate (rc 0 but stdout flags a skip/note) is PASS-with-note,
-never a silent PASS.
+SKIP is its own state, never PASS. A gate that ran nothing (missing live DB,
+disabled feature, missing tool) exits 0 but prints a skip marker; that gate is
+counted as SKIP, the aggregate reports OVERALL=SKIP and exits 3. CI must handle
+3 explicitly (it means "not verified", not "verified OK").
 
-Exit 0 = all gates pass. Exit 2 = at least one gate failed.
+Exit 0 = all gates pass. Exit 2 = at least one gate failed. Exit 3 = no gate
+failed but at least one gate was SKIP (not verified).
 """
 from __future__ import annotations
 
@@ -49,8 +52,14 @@ GATES: list[tuple[str, str, str]] = [
     ("FORK", "live audit_store.db no-fork monitor (RCA-1 recurrence guard, F6)", "scripts/verify_audit_chain_no_fork.py"),
 ]
 
-#: substrings (lowercased) that flag a PASS-with-note (skip / self-attested / etc.)
-NOTE_MARKERS = ("skip", "self-attested", "self_attested", "not verified", "extrapolation")
+#: substrings (lowercased) that flag a PASS-with-note but the gate DID run
+#: (self-attested honesty caveats, extrapolation disclosures, etc.).
+NOTE_MARKERS = ("self-attested", "self_attested", "extrapolation")
+
+#: substrings (lowercased) that prove the gate did NOT verify its subject.
+#: These must never be counted as PASS -- "not run" and "ran and passed" are
+#: different facts.
+SKIP_MARKERS = ("skip", "not verified", "not_verified", "not-verified", "unverified")
 
 
 def _run_gate(script_rel: str) -> dict:
@@ -72,11 +81,22 @@ def _run_gate(script_rel: str) -> dict:
         if line.strip():
             last_line = line.strip()
             break
-    if proc.returncode == 0:
-        note = any(marker in out.lower() for marker in NOTE_MARKERS)
-        result["status"] = "PASS"
-        result["label"] = "PASS (NOTE)" if note else "PASS"
+    if proc.returncode == 3:
+        # Child gate's explicit three-state SKIP contract: NOT VERIFIED.
+        result["status"] = "SKIP"
+        result["label"] = "SKIP"
         result["evidence"] = last_line
+    elif proc.returncode == 0:
+        lowered = out.lower()
+        if any(marker in lowered for marker in SKIP_MARKERS):
+            result["status"] = "SKIP"
+            result["label"] = "SKIP"
+            result["evidence"] = last_line
+        else:
+            note = any(marker in lowered for marker in NOTE_MARKERS)
+            result["status"] = "PASS"
+            result["label"] = "PASS (NOTE)" if note else "PASS"
+            result["evidence"] = last_line
     else:
         result["evidence"] = last_line or ("rc=%d" % proc.returncode)
     return result
@@ -85,7 +105,9 @@ def _run_gate(script_rel: str) -> dict:
 def main() -> None:
     rows = [_run_gate(script) for _, _, script in GATES]
     n_fail = sum(1 for r in rows if r["status"] == "FAIL")
-    n_pass = len(rows) - n_fail
+    n_skip = sum(1 for r in rows if r["status"] == "SKIP")
+    n_pass = len(rows) - n_fail - n_skip
+    overall = "FAIL" if n_fail else ("SKIP" if n_skip else "PASS")
 
     print("=== verify_audit_integrity: audit-integrity aggregate ===")
     for (gid, desc, _), r in zip(GATES, rows):
@@ -99,12 +121,16 @@ def main() -> None:
         ],
         "n_pass": n_pass,
         "n_fail": n_fail,
+        "n_skip": n_skip,
+        "overall": overall,
     }
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
     record_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     print("")
-    print("PASS=%d FAIL=%d OVERALL=%s" % (n_pass, n_fail, "PASS" if n_fail == 0 else "FAIL"))
+    print(
+        "PASS=%d FAIL=%d SKIP=%d OVERALL=%s" % (n_pass, n_fail, n_skip, overall)
+    )
     print("record_hash=%s" % record_hash)
 
     if "--emit" in sys.argv[1:]:
@@ -119,6 +145,8 @@ def main() -> None:
 
     if n_fail > 0:
         sys.exit(2)
+    if n_skip > 0:
+        sys.exit(3)
     sys.exit(0)
 
 

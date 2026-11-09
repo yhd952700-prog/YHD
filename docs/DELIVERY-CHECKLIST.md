@@ -3,6 +3,11 @@
 > 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）；
 > 2026-11-07 交付面审计后更新 §0 当前产物与体积口径；2026-11-07 收口补 §5.11 发布候选凭证（`b4406497`）；
 > 2026-11-08 补 §5.12 新 tip 凭证（`416f7109`）与 §7 新一轮冻结前置清单、§7.1 宣布 True 还差什么、§7.2 自定义 Base URL 的 SSRF 口径。
+> **历史快照提示（2026-11-08）**：本清单中的安装包路径、体积与「dist/installer 仍是 0.1.0」
+> 一类描述，是 2026-11-05～11-07 的时点记录；当前实际产物与校验值见
+> [`dist/installer/README-DELIVERY.txt`](../dist/installer/README-DELIVERY.txt) 与
+> `dist/payload/manifest.json`，不要拿本清单的旧数字当现状。
+>
 > 判定口径：只有「本轮亲手跑出结果」才写「已完成」；只有代码/文档但没跑过
 > 真实链路的写「部分完成」或「未验证」；完全没做的写「未做」。
 > 未做与未验证项均已登记到 [known-gaps.md](known-gaps.md)，不在本清单里
@@ -105,9 +110,9 @@
 | # | 项目 | 怎么做 | 算过 | 算不过 | 证据 |
 |---|---|---|---|---|---|
 | S-01 | 安装位置 | 双击安装包，保持默认目录 `D:\LiuHao`，数据目录 `D:\LiuHaoData` | 程序与数据都在 D 盘；`D:\LiuHao\data-dir.txt` 指向 `D:\LiuHaoData` | 落到 `C:\Users\...` 或 `Program Files`；`data-dir.txt` 缺失/指向别处 | 两个目录的 `Get-ChildItem` 输出 + `data-dir.txt` 截图 |
-| S-02 | 图标正确 | 看桌面与开始菜单快捷方式 | 显示鎏灏图标（`{app}\assets\liuhao.ico`），双击能启动；快捷方式目标为 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py app --open-browser` | 空白/白纸/齿轮/默认 exe 图标；目标指向测试或走查目录；双击报找不到文件 | 快捷方式属性截图（目标+图标）+ 桌面截图 |
+| S-02 | 图标正确 | 看桌面与开始菜单快捷方式 | 显示鎏灏图标（`{app}\assets\liuhao.ico`），双击能启动；快捷方式目标为 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py app`；即便命令行里出现 `--open-browser`（历史参数）也不会切换到浏览器模式，网页模式一律用 `--web`；双击出现原生窗口而不是 Edge | 空白/白纸/齿轮/默认 exe 图标；目标指向测试或走查目录；双击报找不到文件 | 快捷方式属性截图（目标+图标）+ 桌面截图 |
 | S-03 | 首启向导 | 首次启动，逐字填完五步：数据目录 → 管理员账号 → 模型（含端口）→ 确认 → 自检 | 图形窗口（不是黑命令行），五步都能「下一步/上一步」；端口被占时出现「换一个端口」；自检结果如实显示 | 只弹黑窗口；卡在某一步；端口被占只报错无二选一；向导写不出数据目录 | 每步截图 + 向导日志路径 |
-| S-04 | 浏览器自动打开 | 向导完成后不要手动点任何东西 | 默认浏览器自动打开 `http://127.0.0.1:<端口>`，登录页可见 | 没自动打开；打开的是空白页/旧缓存页；端口与向导填写不一致 | 浏览器地址栏截图 + 启动日志中的监听端口行 |
+| S-04 | 自动进入控制台 | 向导完成后不要手动点任何东西 | 原生窗口（WebView2）自动出现并加载 `http://127.0.0.1:<端口>` 的登录页；不弹出系统浏览器 | 没出现窗口；窗口是空白页/旧缓存页；弹出了 Edge/默认浏览器；端口与向导填写不一致 | 原生窗口截图 + 启动日志中的监听端口行；网页模式另验 `--web` |
 | S-05 | 能登录进去 | 用向导里建的账号登录 | 登录后落在「总览」，左侧导航可见；刷新后仍保持登录 | 一直转圈（见 S-11）、401、白屏、登录后又跳回登录页 | 登录请求的 Network 状态码 + 页面截图 |
 | S-06 | 真实 DeepSeek Key，不重启即用 | 保持后端运行，进 **系统设置 → 模型管理**，填 `https://api.deepseek.com/v1`、`deepseek-chat`、真实 Key，保存后直接去对话 | 不重启后端，60 秒内收到真实回复；日志显示调用了真实 provider（不是 mock） | 必须重启才生效；仍走 mock；401/404/503 且换 Key 后依旧 | 回复截图 + 日志中的 provider 行 + Key 脱敏后的配置截图 |
 | S-07 | 回环写入正常 | 在同一浏览器里做三次写操作：登录、发一条消息、建一个目标 | 全部成功；服务端日志 `SECURITY_REJECTED` 计数为 0（尤其无 `cross_site_write`） | 任一写入 403 `cross_site_write`；只有读能过、写全挂 | 三次请求的状态码 + 日志检索输出：`Select-String SECURITY_REJECTED` |
@@ -200,6 +205,56 @@
    `BEFORE-INSTALL.txt` 第 4 条一致）；`src/upgrade/manager.py` 只是把 `.git`
    列入安装排除名单，不读取它的内容。
 
+## 0.5 数据目录下配置项的卸载归类（2026-11-08）
+
+首次设置向导会把用户选的端口持久化到 `<数据目录>\config\desktop_port.json`
+（`{"port": 8123, "updated_at": ...}`），由 `src.desktop.service.load_saved_port()`
+读取、作为启动端口来源（优先级：`--port` > `LIUHAO_API_PORT` > 该文件 > 默认 8080）。
+它记录的是**用户手动选过的端口偏好**，不是可再生成的机器状态——删掉后下次启动会
+回落到 8080，可能与用户已放行的防火墙规则/书签不一致。
+
+| 文件 | 位置 | 性质 | 卸载时 |
+|---|---|---|---|
+| `desktop_port.json` | `<数据目录>\config\` | 用户配置（端口偏好） | **默认保留**，与其它数据目录内容同口径；只有用户在卸载时二次确认「删除数据目录」才一并删除 |
+| `desktop.json` | `%LOCALAPPDATA%\LiuHao\` | 机器状态（只存上次选中的数据目录指针） | **无条件删除**（`[UninstallDelete]`）；留着会让下次启动自动连回旧目录，表现为「账号数据丢了」 |
+| `run\instance.json`、`config\current_url.txt`、`.liuhao-startup-probe-*`、`bootstrap.log` | 程序/数据目录 | 运行痕迹（pid、地址、堆栈） | **无条件删除**（同上，卸载不留能直接登录的残迹） |
+
+判断依据（两者按「删掉会不会改变用户可见行为」区分，而不是按「看起来像不像配置」）：
+
+1. `desktop_port.json` 有值时会实际改变启动端口，用户能感知；归入用户数据，
+   随数据目录保留/删除。
+2. `desktop.json` 只是上次选择的指针，删掉后首启重新探测即可恢复，但**不删会让
+   安装版按旧路径找数据**，所以属于必须清的机器状态。
+3. `scripts/purge_installed_config.py` 的 `CONFIG_EXCLUDES` 只清理**程序目录**
+   `{app}\config` 里「新版不再随包」的旧配置，不遍历数据目录；因此
+   `desktop_port.json` 不需要加入该清单，也未被误删（有测试保证该清单与
+   `stage_payload.CONFIG_EXCLUDES` 的差集恰好是两个用户凭据）。
+
+### 0.6 验收副本不得落在 `%LOCALAPPDATA%\LiuHao`（2026-11-08）
+
+本轮在 `%LOCALAPPDATA%\LiuHao` 下发现 6 份 `data.after-smoke-*` / `data.bak-*`
+整目录副本（187 个文件 / 13,779,798 字节），其中 4 份含账号凭据库与身份库、
+3 份含模型主密钥与模型库。它们是**验收时手工整目录复制**产生的，不是产品行为，
+但会让「用户现场取证」不可信 —— 谁也分不清哪份是用户真实数据。
+
+约束（后续验收一律照此执行）：
+
+1. **不复制到 `%LOCALAPPDATA%\LiuHao`。** 需要 before/after 对比时，副本放系统
+   临时目录（`%TEMP%` 下的具名目录），验收结束随脚本一起删。
+2. **数据目录用参数显式指定。** `install_smoke_e2e.ps1` 的 `-InstallDir` / `-DataDir`
+   默认就是 `D:\LiuHaoSmoke\...`，不要为了“像真实用户”改成默认目录。
+3. **开始菜单组用独立名字。** 脚本默认 `-StartMenuGroup LiuHaoSmoke`；沿用产品
+   组名 `LiuHao` 会把用户的开始菜单项改成指向验收目录（已记入 §0.2 缺陷）。
+4. **测试侧已强制隔离。** `tests/conftest.py` 现在同时把 `LIUHAO_DESKTOP_CONFIG`
+   与 `LIUHAO_LOG_DIR` 指向 `tmp_path`，避免测试把真实 `desktop.json`
+   （上次选中的数据目录指针）写坏。
+5. **启动探针必须自清理。** `.liuhao-startup-probe-*` 由
+   `src/observability/boot_report.py::_write_probe` 创建，成功路径必须删除；
+   该行为由 `tests/test_boot_report.py::test_probe_writable_leaves_no_probe_file`
+   钉住。历史残留（旧 `mkstemp` 实现留下 42 个 2 字节文件）已由安装器
+   `[UninstallDelete]` 对 `{code:GetDataDir}` 与 `{#LegacyDataDir}` 两处
+   一起覆盖，卸载即清。
+
 ## 1. 三步使用说明（最终用户只需要这三步）
 
 > 与 `scripts/first_run_gui.py` 的真实界面对齐（页标题与按钮文字以该文件为准）：
@@ -208,9 +263,13 @@
 > 其中第 4 页的「下一步」显示为「**完成并自检**」、第 5 页显示为「**进入控制台**」。
 
 1. **下载并安装**：校验 SHA256 后双击 `LiuHao-Setup-<版本号>.exe`。
-   Windows 提示「未知发布者」时选「更多信息 → 仍要运行」。程序默认装到
-   `D:\LiuHao`（数据 `D:\LiuHaoData`），不需要管理员权限；D 盘不可用时自动回退到
-   `%LOCALAPPDATA%\Programs\LiuHao`，实际位置见程序目录 `data-dir.txt`。
+   Windows 提示「未知发布者」时选「更多信息 → 仍要运行」（本包是项目自签名：
+   导入信任脚本后属性里 `Status` 为 `Valid` 且能看到签名者，但按微软口径自签名在
+   SmartScreen 上等同未签名，仍可能提示）。程序默认装到
+   `D:\LiuHao`（数据 `D:\LiuHaoData`、备份 `D:\LiuHaoBackups`），不需要管理员权限；
+   D 盘不可用时自动回退到 `%LOCALAPPDATA%\Programs\LiuHao`，实际位置见程序目录
+   `data-dir.txt`。**备份与数据在同一块盘，磁盘损坏时无法用来恢复**，要防灾请自行另存移动硬盘。
+   升级信任与备份根的用户环境变量由安装器写入当前用户环境，装完不需要手工设置任何环境变量。
    老版本用户覆盖安装保持原位置不变。
    **成功标志**：桌面上出现「鎏灏」快捷方式，安装结束时状态窗口出现
    （关闭状态窗口只是隐藏到托盘、服务继续运行）。
@@ -227,8 +286,8 @@
    **中途放弃**：任意一页点「取消」或直接关窗 = 放弃本次设置，**不创建账号、不启动控制台**；
    下次双击桌面快捷方式会重新从第 1 页开始。
    **端口被占用**：向导不会自动换端口；回第 3 页在「服务端口」里填一个空闲端口再继续。
-3. **填 Key 并发第一条消息**：在自动打开的登录页（没自动打开就访问 `http://127.0.0.1:8080`，
-   地址同时显示在**状态窗口底部的「控制台：」一行**）用第 2 步建的账号登录，登录后落在
+3. **填 Key 并发第一条消息**：在自动打开的控制台登录页（没自动出现就检查托盘；网页模式才访问 `http://127.0.0.1:8080`，
+   桌面端地址以原生窗口实际加载为准）用第 2 步建的账号登录，登录后落在
    「总览」，点左侧 **工作台 → 直接对话**，输入一句话发送。
    **成功标志**：几秒内出现模型回复，且**不是 `[演示数据]` 前缀**；若出现 `[演示数据]`，
    说明还没接真实模型（第 3 步选了「跳过」），到 **系统设置 → 模型管理** 补上 Key 再试。
@@ -271,7 +330,7 @@
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
 | 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-21（E-9～E-21 为历次追加；2026-11-07 本轮关闭/仍开放清单另列） | — |
-| 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 为 False，裁决后理由只剩 C9（桌面分发形态无真实 CD，属形态差异） |
+| 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节；当时的退出码 0；**现行契约**下 NOT_VERIFIED/BLOCKED 会以 3 收尾，见 `scripts/verify_readiness.py:1114-1124`）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 为 False，裁决后理由只剩 C9（桌面分发形态无真实 CD，属形态差异） |
 | 17 | 多账号 8 项硬要求验收（脚本化，含 2 条附加边界） | 已完成 | `scripts/acceptance/account_matrix_acceptance.py` 实跑：8 项全 🟢 + B1/B2 全 🟢，**109 项检查 0 失败、退出码 0**（8 项主体 98 + B1 6 + B2 5）；固定端口 19008、独立数据目录 `D:\_audit\account-matrix-2`；含 `src/` 近期写入的防误跑保护（命中即拒绝、退出码 2，`--force` 显式跳过）；证据 `D:\_audit\account-matrix-2\report.json`、`ui\*.png`；发布前必跑项见 `dist/release-gate/RELEASE-RUNBOOK.md` §5.6 | 本次运行期间另一条线仍在写 `src/`（5 个 `.py`），属强制模式；正式发版前需在「`src/` 连续 2 分钟无写入」时去掉 `--force` 再跑一次，两次结果一致才算最终凭证 |
 | 18 | 产品许可证条款（专有） | **待确认（发布前必须由人/律师定稿）** | 仓库根 `LICENSE` 现为短版声明（940 字节：著作权归属 + 保留一切权利 + 禁止未经书面许可再分发/转售/反向工程 + 第三方组件见 `licenses\` 与 `LGPL-SOURCE-OFFER.txt`）；完整 40 行草稿原样存于 [docs/legal/EULA-DRAFT-pending-review.md](legal/EULA-DRAFT-pending-review.md)，文件开头标注「AI 起草，未经法务确认，不得作为正式条款对外发布」 | 适用法律、违约终止、责任限制额度三类条款**故意未写进正式 LICENSE**，须由人/律师定稿后才能对外发布；在此之前产品界面只写「许可证与合规材料」并提供查看入口，不得声称许可协议已生效 |
 
@@ -588,7 +647,7 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | Guardrails / Step 21 | **未真跑**：上游 `test` 红，被 CRITICAL-5 看门狗显式判红（未静默跳过） |
 | 文档三条门禁 | 本地 PASS：`verify_doc_count_claims`（15,418 / 25,093 / 15,552 / 26,287）、`verify_doc_links`、`verify_docs_index_coverage`；CI 内因 Guardrails 被上游阻断未执行 |
 | Security Scan | **红**：被 CRITICAL-5 看门狗阻断（`security` 依赖 `test`） |
-| 安装包 | **未重建**：`dist/installer` 仍是 0.1.0（构建 11-06 17:29，早于 `9e537633`），不能作为本提交产物 |
+| 安装包 | **历史快照（2026-11-07 时点）**：当时 `dist/installer` 仍是 0.1.0（构建 11-06 17:29，早于 `9e537633`），不能作为本提交产物；2026-11-08 现状以 `dist/installer/README-DELIVERY.txt` 为准（已有 0.1.1 exe，但该构建冒烟未通过、未转正） |
 | `--full` | **未在 `b4406497` 重跑**；§5.10 的 `PASS=10` 只对 `72fd9b17` 成立 |
 | 2h soak | **未在修复后重跑**（known-gaps G-8） |
 

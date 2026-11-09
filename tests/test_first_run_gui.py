@@ -8,11 +8,18 @@
 """
 from __future__ import annotations
 
+import gc
 import os
 import socket
 from pathlib import Path
 
 import pytest
+
+# 本文件会创建真实 Tk 窗口（test_check_page_buttons_exist_and_are_clickable）。
+# 与 tests/desktop/conftest.py 共用同一套护栏实现：autouse fixture 在全部
+# fixture teardown 之后、pytest 主线程里检查 Tk 是否已回收，避免「Tk 落进引用环、
+# 由后台线程的循环 GC 回收」触发 Tcl_AsyncDelete -> int3 的进程级 abort。
+from _tk_thread_guard import tk_lifecycle_guard  # noqa: F401 - autouse fixture
 
 from scripts import first_run_gui as gui
 from scripts import first_run_wizard as frw
@@ -507,9 +514,20 @@ def test_check_page_buttons_exist_and_are_clickable(isolated_env, monkeypatch):
         window._run_check_action("model")
         assert window._index == 2
     finally:
+        # 收尾顺序是有意的（护栏在 teardown 时会检查 Tk 是否已回收）：
+        #   1) 先停 DPI 观察者；
+        #   2) 断开 window 对 root/控件/变量的引用 —— _WizardWindow 用
+        #      ``dir_var.trace_add`` 注册了 Python 回调，Tcl 侧的 trace 会反向
+        #      持有 window，而 tkapp 不被循环 GC 追踪，这种环 Python 永远收不掉
+        #      （每跑一次泄漏一个 Tcl 解释器）；断开后 root 的引用计数才能归零；
+        #   3) 在解释器仍存活时 destroy()，最后释放 root 让 tkapp 在主线程析构。
         try:
             window._stop_dpi_watcher()
-            window.root.destroy()
+            root = window.root
+            window.__dict__.clear()
+            root.destroy()
+            del root
         except Exception:  # noqa: BLE001
             pass
+        gc.collect()
 

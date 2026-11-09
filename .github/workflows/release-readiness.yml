@@ -87,8 +87,19 @@ jobs:
         # CI artifact. C7 stays NOT VERIFIED on CI by design (its numeric gate is
         # profile-keyed and SKIPs on the Linux runner — the machine-independent
         # invariants remain the blocking check and PASS). The script exits 2 only
-        # on a real FAIL; NOT VERIFIED / BLOCKED do not fail the run.
-        run: python scripts/verify_readiness.py --full
+        # on a real FAIL/ERROR; NOT VERIFIED / BLOCKED exit 3 and are surfaced as
+        # an explicit ::warning:: -- a pending condition is never rendered as a
+        # pass (this includes C7, which stays NOT_VERIFIED on Linux by design).
+        run: |
+          set +e
+          python scripts/verify_readiness.py --full
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): conditions remain NOT_VERIFIED/BLOCKED (e.g. C7 on Linux); NOT release-ready, NOT a pass"
+            exit 0
+          fi
+          exit "$code"
 
   independent-verification:
     name: Independent Verification (C10 harness)

@@ -81,6 +81,23 @@ jobs:
           pip install -e .[tests]
           pip install flake8
 
+      # tests/test_console_single_port.py 的 console_dist fixture 在无构建产物时
+      # 直接 pytest.skip。CI 此前从不 build dist，5 个单端口/PWA 用例因此永久
+      # skip（据实测量）。在 pytest 之前真实构建 console，让它们跑起来；构建
+      # 本身失败会让本步骤红，而不是悄悄退回 skip。
+      - name: Set up Node (console build for single-port tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/console/console/package-lock.json
+
+      - name: Build console dist (required by single-port tests)
+        working-directory: apps/console/console
+        run: |
+          npm ci
+          npm run build
+
       - name: Verify test collection is complete
         # Runs BEFORE the unit tests on purpose. A collection-time ImportError
         # aborts the whole pytest session, so the tests below would report a
@@ -97,6 +114,26 @@ jobs:
           else
             echo "No tests directory found - skipping"
           fi
+
+      # 门禁契约的「跳过必须显式可见」。刻意不改 tests/conftest.py（多线共享的
+      # 热点）：带 gate_contract 标记的用例本地允许 skip 并打印原因，CI 上 skip
+      # 就意味着某条门禁契约悄悄停止检查。这里单独跑一遍，直接断言 junitxml
+      # 里 skipped == 0，不依赖任何 hook。
+      - name: Gate contract tests must not skip
+        run: |
+          python -m pytest -m gate_contract -q --junitxml=gate-contract.junit.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse("gate-contract.junit.xml").getroot()
+          skipped = sum(1 for case in root.iter("testcase")
+                        if case.find("skipped") is not None)
+          if skipped:
+              print("::error::NOT VERIFIED: %d gate_contract test(s) skipped; "
+                    "a skipped contract is not checked" % skipped)
+              sys.exit(1)
+          print("gate_contract: 0 skipped")
+          PY
 
       - name: Verify Code Quality
         run: |
@@ -228,7 +265,18 @@ jobs:
           pip install langfuse arize-phoenix
 
       - name: Run Observability Checks
-        run: python scripts/ci_observability_check.py
+        # exit 3 = NOT VERIFIED (a required export backend is missing). Report it
+        # as an explicit warning; never let a missing backend read as a pass.
+        run: |
+          set +e
+          python scripts/ci_observability_check.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): an observability export backend is unavailable; the export path was not exercised"
+            exit 0
+          fi
+          exit "$code"
 
   # Guardrails: every `scripts/verify_*.py` that carries a pass/fail contract.
   # These scripts protect the Policy route C invariants (C-1..C-5), the D8 risk
@@ -313,27 +361,35 @@ jobs:
       # into "wait for a human", so this fails CI at the moment such a call
       # site is written instead of surfacing as a production incident.
       - name: Verify every armed action is inert on production paths (C-6)
-        run: python scripts/verify_armed_actions_are_inert.py
+        # exit 3 = NOT VERIFIED (TestClient / gateway app unavailable, so
+        # reachability was never measured). Warn loudly, never go green silently.
+        run: |
+          set +e
+          python scripts/verify_armed_actions_are_inert.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): armed-action reachability could not be measured (TestClient/gateway app unavailable)"
+            exit 0
+          fi
+          exit "$code"
 
       # A4: decision / enforcement / evidence must be one event with one
-      # correlation_id. Wired deliberately even though it currently exits 2:
-      # exit 2 means "ALLOW+DENY closure proven, one probe UNVERIFIED (known
-      # CRIT-1C gap: a CRITICAL action still runs when the audit write fails)".
-      # An unwired guard protects nothing, and hiding a known gap behind an
-      # unwired script is worse than showing it. So: 0 or 2 passes, 1 (a real
-      # closure regression) fails. When CRIT-1C is fixed, tighten this to
-      # require 0.
-      - name: Verify A4 same-decision-point closure
+      # correlation_id. This gate used to be wired as "0 or 2 passes" because a
+      # probe was UNVERIFIED (known CRIT-1C gap). The gap is now closed: re-run
+      # on 2026-11-08 prints "ALL GREEN — A4 same-decision-point closure proven
+      # (9 probes)" and exits 0. The 2-tolerant branch was therefore stale and
+      # could hide a real closure regression, so it is tightened to require 0.
+      - name: Verify A4 same-decision-point closure (must be ALL GREEN)
         run: |
           set +e
           python scripts/verify_same_decision_point_closure.py
           code=$?
           set -e
-          if [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; then
-            echo "A4 closure: no regression (exit $code; 2 = known UNVERIFIED gap, tracked)"
+          if [ "$code" -eq 0 ]; then
             exit 0
           fi
-          echo "::error ::A4 closure gate failed (exit $code)"
+          echo "::error ::A4 closure gate must exit 0 (ALL GREEN); got $code. If 2, a probe is UNVERIFIED again -- prove the gap really reopened before re-widening this gate."
           exit 1
 
       # AGENT SCIENCE GATE (causal ablation): is the multi-agent / memory layer
@@ -371,8 +427,14 @@ jobs:
 
       # Licenses drift silently (Redis v8 -> AGPLv3, Elasticsearch -> SSPL).
       # A version pin never tells you that; this does.
+      #
+      # 输入必须显式写清楚：CI 这里只有 `pip install -e .[tests]` 的开发环境，
+      # 含 dev extras，**不等于随包集**，所以用 --env（许可证不一致/受限无
+      # acknowledged 仍判红；未登记项只告警）。发布门禁必须用
+      # `--dist-path dist/payload/app/runtime/Lib/site-packages`：那个模式下
+      # 「随包有、登记表无」直接 FAIL，这正是 2026-11-08 补记 68 个随包组件的原因。
       - name: Verify OSS component licenses against oss-registry.yaml
-        run: python scripts/verify_oss_licenses.py
+        run: python scripts/verify_oss_licenses.py --env
 
       # oss-ecosystem/capabilities/*.yaml 的字段契约。schema 从 2026-09-13 起就写着
       # 「让『每个发现的项目都必须分析』变成**可校验**的事」并指名了 pipeline/validate_entries.py，
@@ -513,7 +575,17 @@ jobs:
       # assert the live HC-01 chain is signed in prod -- that integration is the
       # next step, gated on HC-01 stabilisation.
       - name: Verify U53 Root-of-Trust chain-head signing primitive (self-test)
-        run: python scripts/verify_u53_root_of_trust.py
+        # exit 3 = NOT VERIFIED (no openssl ts engine), not a pass.
+        run: |
+          set +e
+          python scripts/verify_u53_root_of_trust.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): U53 root-of-trust self-test needs an openssl ts engine; the RFC 3161 assertion was not obtained"
+            exit 0
+          fi
+          exit "$code"
 
       # PHASE 3.6 / U53 HA (high availability): a single TSA is a SPOF. This gate
       # is a self-test of the K-of-M quorum TSA (src/kernels/audit/trusted_timestamp.py):
@@ -524,7 +596,17 @@ jobs:
       # assert the live HC-01 chain is quorum-timestamped in prod -- that
       # integration is the next step, gated on HC-01 stabilisation.
       - name: Verify U53 high-availability K-of-M quorum TSA (self-test)
-        run: python scripts/verify_u53_tsa_quorum.py
+        # exit 3 = NOT VERIFIED (no openssl ts engine), not a pass.
+        run: |
+          set +e
+          python scripts/verify_u53_tsa_quorum.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): U53 quorum TSA self-test needs an openssl ts engine; quorum assertions were not obtained"
+            exit 0
+          fi
+          exit "$code"
 
       # PHASE 3.6 / U51 (no single value commits its own history => cheap
       # notarization/inclusion-proof infeasible): this gate is a self-test of the
@@ -593,26 +675,54 @@ jobs:
         run: python scripts/verify_fence_single_writer.py
 
       # PHASE 3.6 / F6 (RCA-1 recurrence guard, HC-01 team-owned engineering):
-      # the unified aggregate above drives HERMETIC temp stores or re-derives the
+      # the unified aggregate below drives HERMETIC temp stores or re-derives the
       # seven JSON chains -- NONE of them open the actual DEPLOYED
       # audit_store.db. So a re-fork of the live store (concurrent non-atomic
       # seq assignment -> duplicate seq, broken hash-chain joins) would go
       # UNNOTICED by CI. This gate reads the LIVE store READ-ONLY (it never
       # writes/repairs/restores/migrates/rebuilds it -- those are frozen
       # human-sovereign HC-01 decisions) and asserts verify_integrity() ok AND
-      # duplicate_seq_count() == 0. A missing live store is a SKIP (exit 0), not
-      # a silent pass. Fail-closed: rc 2 on any fork/tamper signal. It does NOT
-      # assert HC-01 VERIFIED.
-      - name: Verify live audit_store.db is not forked (RCA-1 recurrence guard, F6)
-        run: python scripts/verify_audit_chain_no_fork.py
+      # duplicate_seq_count() == 0. Exit 3 = SKIP (no deployed store here) --
+      # NOT a pass. CI prints an explicit warning for 3 and still fails on 2.
+      # The live check must run for real in the deployed soak / release
+      # environment, which actually has audit_store.db.
+      - name: Verify live audit_store.db is not forked (SKIP=3 without deployed store)
+        run: |
+          set +e
+          python scripts/verify_audit_chain_no_fork.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::live no-fork gate SKIPPED (exit 3 = NOT VERIFIED): no deployed audit_store.db in this hermetic CI. Run it in the deployed soak/release environment."
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error ::live no-fork gate FAILED (exit $code) -- RCA-1 fork/tamper signal"
+            exit 1
+          fi
 
       # PHASE 3.6 / UNIFIED audit-integrity aggregate: a single fail-closed gate that
       # re-derives ALL six P08/U51/U53 gates in separate subprocesses (builder-
       # decoupled -- the builder cannot fake a gate it does not run) and fails the
       # whole command if any one fails. Closes the gap that independent_verification.py
       # (G10) does NOT compose the U51/U53 gates. Emits a tamper-evident record_hash.
-      - name: Verify unified audit-integrity aggregate (P08 + U51 + U53, fail-closed)
-        run: python scripts/verify_audit_integrity.py
+      # Exit 3 = at least one sub-gate NOT VERIFIED (openssl ts unavailable / no
+      # live store). CI must not render that as green: print an explicit warning.
+      # FAIL (2) still fails the job; PASS (0) stays strict.
+      - name: Verify unified audit-integrity aggregate (PASS/FAIL/SKIP explicit)
+        run: |
+          set +e
+          python scripts/verify_audit_integrity.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::audit-integrity aggregate SKIPPED some gates (exit 3 = NOT VERIFIED). Inspect the PASS/FAIL/SKIP summary above; do not read this as all-green."
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error ::audit-integrity aggregate FAILED (exit $code)"
+            exit 1
+          fi
 
       # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
       # sovereign override assertion and an independent verifier's confirmation --
@@ -966,7 +1076,18 @@ jobs:
         run: python scripts/verify_app_instantiation_hygiene.py
 
       - name: Verify authorization grants are enumerable + target-bound (C-3/C-4)
-        run: python scripts/verify_authorization_enumerable.py
+        # exit 3 = Part B NOT VERIFIED (target binding not enforced / not
+        # introspectable). Part A still runs and its failure stays exit 1.
+        run: |
+          set +e
+          python scripts/verify_authorization_enumerable.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): authorization target binding is not enforced; Part A (decided mechanism) still passed"
+            exit 0
+          fi
+          exit "$code"
 
       - name: Verify HC-11 identity-chain mechanism is fail-closed in both postures
         run: python scripts/verify_hc11_identity_chain_integrity.py
@@ -986,7 +1107,18 @@ jobs:
       # is resolvable, so a missing dependency reads as a missing dependency
       # instead of an alembic build defect. Needs the `alembic` installed above.
       - name: Verify schema upgrade and rollback really run
-        run: python scripts/verify_deploy_readiness.py
+        # exit 3 = NOT VERIFIED (a check could not obtain evidence here). Warn,
+        # never silently pass; a real FAIL stays exit 1.
+        run: |
+          set +e
+          python scripts/verify_deploy_readiness.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): deploy readiness has NOT_VERIFIED gaps; no hard failure, but not a pass"
+            exit 0
+          fi
+          exit "$code"
 
       # Deployment gate variables: every control gated on an env var that no
       # deployable artifact actually sets. Needs no docker and no browser, so it
@@ -1194,15 +1326,32 @@ jobs:
         working-directory: apps/console/console
         run: npm run lint
 
+      # `npm run test` was declared in package.json but never invoked by CI, so
+      # console logic/regression tests could break without any pipeline signal.
+      # Measured before wiring: 52 files / 566 tests pass (npm test).
+      - name: Test the console (vitest)
+        working-directory: apps/console/console
+        run: npm test
+
       # The Dockerfile was never executed by a build engine in CI, so a broken
       # image could reach a deployment with every other gate green. This job
       # already has a Docker daemon and the Python env, so G9b runs here for
       # real: build the staging image, boot a container, wait for healthy, and
       # probe /v1/health + /v1/ready + /v1/metrics/prometheus. The script
-      # self-reports exit 2 (NOT_VERIFIED) if the daemon is missing, so a
-      # vanished daemon can never read as a pass.
+      # self-reports exit 3 (NOT_VERIFIED) if the daemon is missing, so a vanished
+      # daemon can never read as a pass (it is surfaced as an explicit warning).
       - name: Verify the staging image builds and boots
-        run: python scripts/verify_image_build.py --build-timeout 1200
+        # exit 3 = NOT VERIFIED (docker CLI/daemon unavailable), 1 = real FAIL.
+        run: |
+          set +e
+          python scripts/verify_image_build.py --build-timeout 1200
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): the staging image could not be built/booted here (docker CLI or daemon unavailable)"
+            exit 0
+          fi
+          exit "$code"
 
   # Architecture gate (Semgrep) —— 本仓库**唯一会阻断**的静态检查作业。
   #

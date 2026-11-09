@@ -13,6 +13,7 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 | 1 | Local `semgrep` CLI cannot start | Development tooling only | Open, accepted |
 | 2 | Gemini real success path unverified (no API key) | Gemini option is wired to `google-genai`; only a fake-key 400 proves the request reaches Google | Open, accepted |
 | 3 | `file_write` 的占位内容会被当成真实产物 | 模型可以把任务名/描述原样写进文件，`artifacts` 非空即被算作可交付 | **发布后处理**（本轮只登记，不改代码） |
+| 4 | Windows 上 rename 的掉电持久性只有 best-effort | 队列迁移在整机掉电后可能回到 rename 前状态；不损坏数据，最坏多迁一次 | Open（平台限制，见 §5） |
 
 ---
 
@@ -89,6 +90,146 @@ this entry.
 `inputs.content`：不能与任务名/描述相同、不能是明显的占位说明；不满足则不计入
 `artifacts`，并按"无产出"处理。验收用例至少覆盖：占位内容 → 不算交付；真实
 正文 → 算交付；短但合法的文件（如 `hello.txt`）不被误杀。
+
+---
+
+## 4. 本轮安全修复的端到端验证缺口（2026-11-08）
+
+> 口径：**代码已改、单元/HTTP 层有用例；但没有在真实外部环境跑通整条链路。**
+> 任何人引用这些能力时，不得写成「已验证」。每项都给出关闭它所需的最小实验。
+>
+> **2026-11-08 更新**：4.2（https+真实 Key）与 4.5（Ollama 真实生成）已在本机
+> 真实外网 / 真实模型上跑通，状态改为「已端到端验证」，并保留各自仍未覆盖的
+> 部分；4.4（PDF 单页超时）改为子进程可抢占并附实测耗时；4.1、4.3 状态不变。
+
+### 4.1 DNS 重绑定 TOCTOU（`src/ai/net_guard.py`）
+
+**已修**：校验通过后按线程固定解析结果（替换 `socket.getaddrinfo`），同线程后续
+建连只返回已校验地址。**证据**：用伪解析器（第一次公网、第二次 127.0.0.1）
+验证第二次解析仍返回已校验公网 IP。
+
+**未端到端验证**：没有用真实恶意 DNS 服务端 + 真实 SDK 建连验证"TTL=0 切换后
+仍连到已校验地址"。
+
+**关闭方式**：起一个可控 DNS 服务，第一次返回公网 IP、第二次返回回环 IP，让
+真实 provider 发起连接，抓包确认 peer address 仍是第一次的公网 IP。
+
+### 4.2 带 Key 公网端点强制 https（`src/gateway/models.py` + `net_guard`）
+
+**已端到端验证（2026-11-08，真实 https + 真实 Key，非桩）**。以下证据来自运行中的
+网关（同一进程 PID 15332，启动时间 05:27:05，全程**未重启**）：
+
+- **保存**：`POST /v1/models`（`provider=deepseek`、`base_url=https://api.deepseek.com/v1`、
+  `model=deepseek-chat`、`timeout=60`）→ 200 / 153ms，`verified=false`，默认模型不变；
+  响应里的 Key 为脱敏形式，明文不出网关。
+- **不重启即用**：同一进程内 `POST /v1/models/{id}/test` → 200 / 1475ms，真实回复
+  `Pong! 🏓 …`；`POST /v1/chat/stream` → 首字 1143.6ms / 总 1272.5ms，真实回复
+  「2+2等于4。」，`done.status=completed`、`usage_recorded=true`。
+- **http+Key 必失败（反例）**：同一基址改 `http://api.deepseek.com/v1` → 400，原文
+  「带 Key 的服务地址必须使用 https；http 明文只允许本机 Ollama/本地推理端口
+  （11434/1234/8000/8080）。」
+- **TLS 握手与证书来源（2026-11-09 修正）**：`requests` 链路的 `verify` 为 True，CA 取
+  `.venv/Lib/site-packages/certifi/cacert.pem`（`certifi 2026.10.23`），只认内置列表；
+  但模型调用的主流链路走 `httpx`，默认上下文在 Windows 下加载**系统受信任根证书库**
+  （实测 `cert_store_stats={'x509':38,'x509_ca':35}`）并尊重 `SSL_CERT_FILE`。
+  因此「本产品不读系统证书商店」对 httpx 链路不成立，界面文案统一改为
+  「不同链路信任来源不同，在系统里信任证书不一定生效」；自救入口见
+  `docs/TROUBLESHOOTING-USER-20261108.md` 4.1（`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`）。
+  实测 `TLSv1.3` / `TLS_AES_256_GCM_SHA384` / 对端证书 `CN=api.deepseek.com`；
+  无 Key 访问同一端点 156ms 返回 401，证明连接真实到达上游。
+- **超时与重试发生在哪一步（2026-11-09 更新）**：401 不重试（日志 `attempt=1`、
+  200ms 收口，`upstream_kind=invalid_key`）；超时/连接类在 `src/ai/providers.py`
+  的 `chat_with_retry` / `stream_with_retry` 最多重试**一次**，网关层不重试。
+  新增短超时收敛：`timeout < 5s`（默认阈值，可用
+  `LIUHAO_RETRY_MIN_TIMEOUT_SECONDS` 调整）时**不重试**——`timeout=2` 的总耗时
+  从 4992~5075ms 降到接近单次（不再为同一句错误多等 2.5 倍）。
+  证书 / DNS / 地址拒绝始终 `attempt=1`。
+- **失败时用户看到的中文**：错 Key 时 `test` 返回
+  「API Key 无效：请检查是否填错或复制不完整」；`/v1/chat` 返回
+  「API Key 无效或已失效，请到「系统设置 → 模型管理」更新密钥。（模型：deepseek-chat）」，
+  技术详情里上游把 Key 打成 `****0000`（不含明文）。
+- **Key 不泄露**：日志只有 `key_fp=sha256:…`；诊断包（zip 14045 字节，逐成员扫描）
+  与数据目录/日志共 105 个文件，全文命中 0、前 12 位命中 0。
+
+**仍未覆盖**：只用 DeepSeek 一家真实公网 Key；OpenAI/Anthropic/Gemini/Moonshot 的
+**真实** Key 未测（其协议适配见 4.6）。带 Key 的 http 仅对回环
+`11434/1234/8000/8080` 放行——自建 OpenAI 兼容服务若监听其它本机端口，仍会被 400
+拒绝（本机 18080 实测如此），这是有意收紧，不是缺陷。
+
+### 4.3 远端升级成功链路（`src/upgrade/sources.py` / `downloader.py`）
+
+**已修**：强制 https、拒绝私网/回环、禁 30x、远端包必须带 Ed25519 签名 +
+可信公钥；清单本身也签名（`manifest_signature`），并带单调 `sequence` 做防重放/
+防降级。固定清单哈希 `manifest_sha256` 已退化为**可选首次引导**，不再需要每次
+发布重新下发——客户端只固定公钥即可自动检查。**证据**：签名工具本地闭环
+`tests/test_upgrade_signing_e2e.py` 9 条；"无固定哈希自动升级 + 重放/降级/篡改
+拒绝" `tests/test_upgrade_manifest_trust.py` 7 条（真实密钥 + 本机 HTTP 服务）。
+
+**未端到端验证**：没有真实公网 HTTPS + CDN + 证书链环境；30x 不跟随只在本机
+HTTP 服务上验证；真实公网上的"检查 → 下载 → 应用"整链仍未跑过。
+
+**关闭方式**：把一份签名清单与 ZIP 放到真实 https 静态站点，配置
+`LIUHAO_UPGRADE_MANIFEST_URL` + `LIUHAO_UPGRADE_PUBLIC_KEY`（不再需要
+`LIUHAO_UPGRADE_MANIFEST_SHA256`），跑一次 `check + download + apply`，记录真实
+响应；再用 302 跳转、旧 sequence 清单、旧版本包各跑一次反例。
+
+### 4.4 PDF 单页超时（`src/knowledge/extractors.py`）
+
+**已修（2026-11-08，可抢占解析）**：单流/总解压字节上限；每页计时，超 10s 抛
+`PdfPageTimeout`。PDF 解析已整体移到 `spawn` 子进程（`sink.get` 计时 → 超时
+`Process.kill()`），父进程只收页与组装，进程、队列句柄在 `finally` 回收。
+
+**实测证据**（`%TEMP%\liuhao-pdf`，`.venv` 复现脚本）：
+
+- 病态页（单页 40 万条 `Tj`，200in × 200in MediaBox）+ 1s 预算：
+  改前 **19.11s** 才返回 `PdfPageTimeout`（耗时在页返回后才判定）；
+  改后 **1.95s** 返回，进程被强杀，`multiprocessing.active_children()==[]`。
+- 正常 PDF 解析本身不变（5 页 0.06s / 50 页 0.50s），但每次上传多一次子进程
+  启动开销：改前 0.109s / 0.500s → 改后 0.90s / 1.30s（固定 +0.75~0.85s）。
+- 边界：320 页 → `TooManyPages`；加密 → `EncryptedPdfError`；扫描件 →
+  `ScannedPdfError`；截断文件 → `CorruptedDocument`；均无残留子进程。
+- 回归：`tests/knowledge/test_document_import.py` + `tests/test_security_hardening_batch.py`
+  64 项、`tests/knowledge/` 225 项全绿；超时用例改为真实慢页 + 0.5s 预算，
+  断言「5s 内返回且子进程已回收」。
+
+**残留风险**：子进程启动依赖 `spawn`（宿主 `__main__` 需有 `__main__` 守卫；
+打包运行时 `runtime/python.exe` 已满足）。若要求每次上传都消除这 0.8s，
+需要常驻预热 worker，属于后续优化而非本缺口。
+
+### 4.5 Ollama 真实生成（`src/ai/providers.py` / `src/gateway/models.py`）
+
+**已端到端验证（2026-11-08，本机真实 Ollama，非 mock）**：
+
+- **环境**：`127.0.0.1:11434`，模型 `qwen2.5:3b`（1.9GB，Q4_K_M，3.1B 参数）。
+- **网关链路**（`provider=ollama`，默认端口，同一网关进程）：首字 13409.8ms /
+  总 16680.4ms（含 1.9GB 模型冷加载），真实中文回复，`done.status=completed`、
+  `usage_recorded=true`；结束帧只带 `usage_recorded`，不含 token 明细（明细在用量账本）。
+- **直连对照（token 统计）**：`POST /api/chat` → `prompt_eval_count=34`、
+  `eval_count=2`、`total_duration_ms=607`、`load_duration_ms=9`、
+  `eval_duration_ms=101`（墙钟 612ms）。
+- **自定义端口**：另建 `provider=ollama` + `base_url=http://127.0.0.1:11435`
+  （本机转发到 11434）→ 首字 389.9ms / 总 6307.0ms，真实回复；证明自定义端口 +
+  无 Key 不会被"必须 https"误伤。
+- **反例保留**：带凭据的公网 http 仍被 400 拒绝（见 4.2）。
+
+### 4.6 跨厂商 Key 可用性（2026-11-08 实测结论）
+
+**结论：没有写死某一家**，但"换一家"能否直接用取决于两点：协议形态与地址。
+
+- `provider` 表达的是**协议适配器**，不是厂商：`provider=openai` + 自定义
+  `base_url` 可指向任何 OpenAI 兼容服务；`provider=anthropic` 走 Anthropic 的
+  `/v1/messages`；`provider=ollama` 走本地 `/api/chat`。展示用的
+  `vendor_for(provider, base_url)` 按主机名换算真实厂商，不参与路由
+  （`src/ai/model_config.py:110-159`）。
+- **实测证据**（本机桩，端口 8000，只验证协议与鉴权头，不是模型服务）：
+  OpenAI 适配器请求 `/v1/chat/completions` 且带 `Authorization: Bearer …`；
+  Anthropic 适配器请求 `/v1/messages` 且带 `x-api-key: …` +
+  `anthropic-version: 2023-06-01`；两者都经网关返回 200 与桩回复。说明 base_url
+  与鉴权格式由 provider 决定，未被写死为 DeepSeek。
+- **限制**：`SUPPORTED_PROVIDERS` 只有 7 种（`mock/openai/anthropic/google/ollama/
+  moonshot/deepseek`），未知协议没有通用适配器；带 Key 的非回环地址必须 https，
+  回环 http 仅限 4 个端口（见 4.2）。
+- **未覆盖**：只有本机桩的协议证据，没有第二家真实厂商 Key 的真实成功记录。
 
 ---
 
@@ -184,6 +325,34 @@ artifacts 流。
 |---|---|---|
 | deferred-by-decision（不做） | 6 电脑自主操作、10 数字孪生、11 IoT、12 机器人、14 空间智能、15 工业自动化、18 教育、19 创意 | 风险大于收益 / 无采集面 / 缺设备与运维 / 安全关键作动 / 缺空间数据 / 缺工业资质 / 模板 Demo / 无 GPU 竞争力 |
 | design-only（只做设计） | 4 科研、13 云边、21 分布式、25 开源情报、27 隐私计算 | 零实现或与单机形态冲突 / 单机单进程 / 低频工具保留 CLI / MPC/TEE 无落地条件 |
+
+---
+
+## 5. 队列迁移的 rename 掉电持久性在 Windows 上只有 best-effort
+
+**What happens.** `src/tasks/_queue_paths.py` 的队列迁移（`tasks.db` / `tasks.journal` /
+`reminders.db` / `reminders_outbox.jsonl`）在 `os.replace` **之前**对临时文件做了
+`fsync`（Windows 上用 `O_RDWR` 打开后走 `FlushFileBuffers`），**文件内容本身已经落盘**。
+但 rename 之后对**目录**的 `fsync` 在 Windows 上不可用：`os.open(<目录>, O_RDONLY)`
+拿不到可用的目录句柄，`src/common/atomic_write.py` 的 `_fsync_directory` 在那里是
+best-effort、静默跳过。因此：
+
+* 进程级故障（崩溃、被强杀）：安全。临时文件 + 原子 rename 保证要么旧状态、要么新状态；
+* 整机掉电：rename 这一步是否已持久化**没有保证**。可能回到 rename 前（新位置没有、
+  旧位置仍在），也可能已经生效。两种状态都不损坏数据，但下次启动可能再迁一次。
+
+**Impact.** 数据不丢、不损坏；最坏情况是多做一次复制迁移，多花一点启动时间。
+POSIX（Linux / macOS）不受影响：`_fsync_directory` 在那里真正执行。
+
+**How to close it.** 只有改成 `ReplaceFile` + 卷句柄 `FlushFileBuffers` 方案（替代
+`os.replace` + `_fsync_directory`），并在 Windows 上实测掉电/断电注入，才算关闭。
+在此之前不得把这条路径写成「掉电安全」。
+
+**Evidence.** 迁移完整性、跨进程互斥、持锁强杀恢复与孤儿 staging 清理的用例在
+`tests/tasks/test_queue_data_root_migration.py`；实测数据记录在
+[test-isolation-gap.md](test-isolation-gap.md)。
+
+---
 
 ## D-1 自升级 + 受控自改代码
 
@@ -586,17 +755,137 @@ F-3 需要一块可写满的独立卷；F-4 需要在有桌面会话的机器上
 
 ---
 
-## 安装版不生成 `config\current_url.txt`（2026-11-08，**状态：已知未修；产品侧待定**）
+## `config\current_url.txt` 写不写取决于启动方式（2026-11-08，**状态：已核实；文档按启动方式分述**）
 
-`config\current_url.txt` **只有源码启动器 `scripts/start_liuhao.py` 会写**；
-安装版链路（`src/desktop`）不写这个文件。此前多份面向安装用户的文档让用户去找它，
-照做会找不到。
+此前这条写的是"安装版不生成 `config\current_url.txt`"，**与代码不符**（文档线核实后更正）：
+是否生成取决于**走哪条启动路径**，不是取决于"源码版 / 安装版"。
 
-**已做的处置（2026-11-08）。** 文档改为以**状态窗口底部「控制台：」一行**为准：
-[DELIVERY-CHECKLIST.md](DELIVERY-CHECKLIST.md) §1 与 `packaging/stage_payload.py`
-生成的 `START-HERE.txt` 均已改；本轮**不改 `src/desktop`**。
+**写点。** 唯一的写入在 `scripts/start_liuhao.py:140-149`，触发条件是 `LIUHAO_DATA_DIR` 已设置。
 
-**什么算关掉它。** 二选一：① 产品侧决定补写入 —— 安装版启动后把实际控制台地址写进
-数据目录 `config\current_url.txt` 并在「进入控制台」时刷新；或 ② 明确废弃该文件，
-所有安装面文档不再引用。在此之前，安装用户一律以状态窗口底部的「控制台：」为准。
+| 启动方式 | 是否写 | 依据 |
+|---|---|---|
+| 安装版 `LiuHao.bat` | **写** | `scripts/launch_installed.py:500-503` 设置 `LIUHAO_DATA_DIR`，并在 `:1026-1037` 调 `start_liuhao.main()` |
+| 源码 `start-liuhao.bat` | **默认不写** | 默认不设 `LIUHAO_DATA_DIR`，写点条件不成立 |
+| 托盘壳（桌面图标目标） | **不写** | `scripts/liuhao_desktop.py:108-153` 不设该变量、不走 `start_liuhao.main()`；`installer/liuhao.iss:180-190` 指向它 |
+
+**提示（保留）。** 该文件可能是**旧端口或已死 pid 的残留**，不作权威；请以状态窗口底部
+「控制台：」一行为准。[DELIVERY-CHECKLIST.md](DELIVERY-CHECKLIST.md) §1 与
+`packaging/stage_payload.py` 生成的 `START-HERE.txt` 已按此口径表述，本轮**不改 `src/desktop`**。
+
+**结论。** 面向用户的文档不再笼统说"安装版不写"，而是按启动方式分述；用户找地址一律看
+状态窗口「控制台：」。若后续要让托盘壳也写该文件，需在 `scripts/liuhao_desktop.py` 内设置
+`LIUHAO_DATA_DIR` 并走同一写点，再统一三种启动方式的行为。
+
+---
+
+## console devDependencies 的 2 条 critical（2026-11-08，**状态：已知未修；本轮风险接受**）
+
+`apps/console/console` 的 `npm audit --json` 命中 5 条：`tinypool`（CRITICAL，GHSA-5gmw-xhrv-c9v3 /
+GHSA-85c8-ppgw-ccpr，修复 >2.1.1）、`vitest`（CRITICAL，GHSA-82fw-gwwq-j7x9 叠加 `tinypool`，
+修复 ≥5.1.0）、`vite`（HIGH + 6 条 moderate/low，修复 ≥8.3.6）、`source-map-js`（HIGH，修复 ≥1.2.2）、
+`@vitest/mocker`（MODERATE，修复 ≥4.1.12）。其中 `vitest` / `tinypool` 是仅有的 2 条 critical。
+
+**为什么可接受。** 这 5 条全部落在 devDependencies，只在 `npm run dev` / `npm run test` 的本机
+进程里成立；`npm audit --omit=dev` 为 **0**，生产 5 个依赖（`react` / `react-dom` / `ws` 等）
+无一命中，且 devDependencies 不随 `stage_payload.py` 进入安装包。攻击面要求"有人在本机跑
+dev server 且被不可信输入触达"，与安装版用户无关。
+
+**升级路径与代价。** `vitest` 必须 major 到 `5.1.0`（`@vitest/mocker` 随之换档、`tinypool`
+由 >2.1.1 版本替代），牵动 console 全部单测（约 500+ 条，含 `*.test.tsx` 与 `styles.a11y.test.ts`），
+需整轮重跑与快照/断言复核；`vite` 8.2.2 → 8.3.6 与 `source-map-js` → 1.2.2 属语义化范围内，
+会随出包线重新生成 lock 时自然升上去，不需要单独排期。本轮裁决：**不升 major，风险接受**，
+等出包线修完 lock 脱节后再评估。
+
+**什么算关掉它。** `vitest` 升到 ≥5.1.0 且 `npm audit --omit=dev` 与全量 `npm audit` 均为 0，
+`npm run build` + `npm test` 全绿。
+
+---
+
+## 后端 3 个包 7 条命中（2026-11-08，**状态：已知未修；全部不可达，风险接受**）
+
+P0/P1 修复后，`pip-audit` 对 `requirements.txt`（210 个发行包）剩余 **7 条 / 3 个包**，全部
+不在代码路径上：
+
+| 包 | 版本 | 条目 | 严重度 | 修复版本 | 卡点 |
+|---|---|---|---|---|---|
+| `opentelemetry-api` | 1.44.0 | CVE-2026-114603 | MEDIUM 5.5 | 1.45.1 | 需 OTel 整组成套（`sdk` / `exporter-*` / `semconv 0.66b1` / `instrumentation 0.66b1`） |
+| `pydantic-ai-slim` | 2.40.0 | PYSEC-2026-4284/4285/4286/4290/4291 | HIGH 7.9（最高） | 1.107.6 / 2.44.0 / 2.52.0 / 2.53.0 | 需 5 包联动 |
+| `strawberry-graphql` | 0.327.0 | PYSEC-2026-4302 | LOW 3.8 | 0.327.2 | 被 `arize-phoenix==0.327.0` 精确 pin |
+
+**可达性为否的依据。** `pydantic-ai-slim` 全仓 0 处 import；`strawberry-graphql` 只经
+`arize-phoenix` 的 GraphQL 服务端，该服务端从未启动；`opentelemetry-api` 的攻击面是入站
+W3C `traceparent` 头解析，本仓未注册 propagator、不从入站头 `extract`。
+
+**升级路径与代价。** `pydantic-ai-slim` 升到 2.53.0 需同批 `anthropic>=1.9.0`（现 1.3.0）、
+`openai>=3.19.0`（现 3.13.0）、`google-genai>=2.25.0`（现 2.22.0）、`pydantic-graph==2.53.0`、
+`genai-prices>=0.1.9`，且仍受 phoenix extras 约束；`strawberry-graphql` 须先把
+`arize-phoenix` 改为 optional extra 或等上游放宽 pin；OTel 只能在打包前整组升。
+
+**本轮另一项裁决：依赖瘦身不执行。** 删除 `langchain` / `langchain-community` /
+`python-json-logger` 的实际可删面是 **6 包 ≈11.20 MB**（不是 13 包/14.77MB——`aiohttp 3.14.4`
+被 `taskiq 0.13.0` 无条件要求，其 `yarl/multidict/frozenlist/propcache/aiohappyeyeballs/aiosignal`
+链必须保留），11.2 MB 换不来发布风险，**发版后再做**。
+
+---
+
+## SBOM 口径与版本漂移（2026-11-08，**状态：已知；下次打包必须重生成**）
+
+`docs/compliance/sbom-cyclonedx.json`（2026-11-08T00:42Z，95 个组件）与 `requirements.txt`
+（210 个发行包）对账：覆盖 **66/210**，缺 **144**；另有 **2 处真漂移** —— `certifi`
+SBOM 记 `2026.7.22`（锁已 `2026.10.23`）、`pyjwt` SBOM 记 `2.13.0`（锁已 `2.15.1`）。
+
+**144 条缺口不是真缺失，是口径不同。** SBOM 由 `dist/release-gate/sbom_audit.py` 从离线
+payload 的 `app/runtime/Lib/site-packages` 采样，口径是"随包发出的运行期发行包"；lock 是
+解析结果全集，payload 是真实 import 图命中子集。缺口三类：① 只进 lock 的构建/测试工具
+（`pytest` / `hypothesis` / `ruff` 等）；② payload 运行期不触发的可选链（`arize-phoenix*`
+及其 `scipy/pandas/pyarrow/scikit-learn` 等）；③ 运行期 0 import 的拟淘汰集
+（`langchain*` / `python-json-logger` / `httpx-sse`）。
+
+**2 处漂移是时间差，不是口径差。** SBOM 生成于 P0 升级之前，采到的是升级前 payload 快照。
+
+**生成时机必须固定在：payload 组装完成之后、Inno Setup 编译之前。** 过早（锁文件/`pip install`
+阶段）采到的是"锁里写的"而非"包里装的"，正是本次漂移的产生方式；过晚（Inno 已编译）则无法
+在封包前拦截不一致。出包线应把"重新生成 SBOM + 与 payload 版本逐条比对"设为封包前置门禁。
+
+**什么算关掉它。** 一次完整打包流程中，SBOM 由 payload 生成、且与 `runtime/Lib/site-packages`
+实际版本零漂移；对账脚本明确标注"payload 口径"，不再把 lock 全集差异报成缺失。
+
+
+---
+
+## 手工 `uvicorn` 直起会让审计降级并把运行库写进程序目录（2026-11-08，**状态：已知未修；不加拒跑门**）
+
+**知道什么。** 不经 `scripts/launch_installed.py`、直接在安装树里执行
+`runtime\python.exe -m uvicorn src.gateway.main:app` 时：`AUDIT_DB_PATH` 未设置 →
+审计写降级；`_default_revocation_path()` 回落到 `<程序根>\.liuhao_jwt_revocation.db`
+→ 吊销库落在程序目录；`model_registry.sqlite3`（含 `-wal`/`-shm`）与
+`data\observability\alerts.json` 也写进程序目录的 `data\`。
+
+**为什么不修（不加拒跑门）。** 真实启动路径有两条（托盘壳与 `launch_installed.py`），
+两者都经 `launch_installed.py:526-548` 显式设置 `LIUHAO_JWT_REVOCATION_DB` /
+`AUDIT_DB_PATH` / `LIUHAO_WORKSPACE_ROOT`，落点正确。而「直起 uvicorn」是测试与
+诊断常用手段，加硬拒跑会误伤它们在共享机器上的排障；收益（防住一种非交付路径的
+误用）低于代价。
+
+**谁在什么条件下才修。** 只有在**安装后验收或用户报障**里出现真实案例 ——
+即用户按文档操作却把运行数据写进了程序目录、或审计缺行导致问题无法追溯 ——
+才由启动器负责人加一道「非启动器直起时重定向数据落点或打印显式警告」。
+在那之前，状态保持已知未修。
+
+---
+
+## production 第二次启动会复用持久化的 JWT/服务密钥（2026-11-08，**状态：已知未修；真实产物未验证**）
+
+**知道什么。** 首次启动生成的 JWT 签名密钥与服务密钥落盘在数据目录 `config\`，
+后续启动按「有则复用、无则生成」取用，不会每次重启轮换。这保证了同一台机器上
+已登录会话在重启后仍有效，但也意味着**密钥一旦泄露，重启不会自愈**。
+
+**为什么这轮不修。** 改成「每次启动轮换」会让所有已登录会话在重启后失效，
+属于产品行为变更，不能作为收尾顺手改；并且本轮**没有在真实安装产物上验证过**
+这条路径（冒烟里的 S-12 只覆盖「机器级密钥在二次启动时被复用」的观测，
+不等于「密钥持久化策略已按预期工作」）。
+
+**谁在什么条件下才修。** 由安装冒烟脚本那条线在真实安装产物上补一条观测
+（二次启动后比对 `config\` 下的密钥指纹与首次是否一致、以及会话是否仍可用），
+拿到真实结果后再决定是保持复用还是提供「轮换密钥」入口。
 

@@ -28,6 +28,16 @@ CONFIG_EXCLUDES: Sequence[str] = (
     "*.pem",
     "*.key",
     "*.lock",           # 运行时锁文件，如 auth_secrets.json.lock
+    # 打包侧新增的开发/部署模板排除项；升级时必须一并清扫，否则旧安装目录
+    # 会保留这些“已排除又被带回来”的运维文件。
+    "development.yaml",
+    "testing.yaml",
+    "crontab",
+    "supervisor.conf",
+    "nginx.conf",
+    "prometheus.yml",
+    "grafana-dashboard.json",
+    "alert-rules.yaml",
 )
 
 #: 由启动器迁移进数据目录的用户数据，安装器不得删除。

@@ -209,6 +209,8 @@ def main(argv=None) -> int:
             print(f"    - {m}", file=sys.stderr)
 
     if args.list:
+        # `--list` 是纯信息模式（argparse 声明的 "report and always exit 0"）：
+        # 它只打印待人工核对的清单，不宣布"检查通过"。这里的 0 不是伪装通过。
         return 0
 
     if unacknowledged:

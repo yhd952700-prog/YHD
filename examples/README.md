@@ -33,7 +33,7 @@ examples/
 │   └── go_usage.go             # Go SDK
 ├── README.md            # 本文件
 ├── requirements.txt     # Python 依赖
-└── TUTORIAL.md          # 分步教程
+└── （教程见仓库根 TUTORIAL.md —— 设计示意，不可运行）
 ```
 
 ## 如何运行示例

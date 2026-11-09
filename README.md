@@ -9,6 +9,20 @@
 > [`src/brand.json`](src/brand.json)；代码与文档不得另写一套主名。
 > 历史名称 **LIUHAO X / 鎏灏 X** 已收敛为旧称，不再作为主品牌引用。
 
+## 获取与安装（唯一入口）
+
+**当前为内网 / 本地交付：公网发布页尚未建立（TODO：公网发布页待建立）。** 可交付产物只从本仓库构建输出目录取，不要从来源不明的网盘/聊天附件安装：
+
+- 安装包：`dist/installer/LiuHao-Setup-0.1.1.exe`
+- 校验值：`dist/installer/SHA256SUMS.txt`（与安装包同目录；升级包哈希也登记在同一份表）
+- 升级包（只给已安装的机器）：`dist/release/liuhao-0.1.1-upgrade.zip`
+
+> ⚠️ 0.1.1 **尚未转正**。冒烟状态、产物版本与校验值一律以
+> `dist/smoke-report.json`、`dist/release/LIUHAO_RELEASE.json` 和
+> `dist/installer/SHA256SUMS.txt` 为准：当前唯一冒烟记录为登录 `FAIL`，
+> release notes 自述产物未验证。新包冒烟通过前不要对外分发。
+> 安装步骤见 [`docs/END-USER-GUIDE.md`](docs/END-USER-GUIDE.md) 第 1～3 步。
+
 ## 当前状态（诚实头 — 状态快照，不是发布就绪声明）
 
 > **本节的唯一权威来源是 [`MASTER_PROJECT_READINESS.md`](MASTER_PROJECT_READINESS.md) 与
@@ -31,10 +45,10 @@
 
 | 项 | 状态 |
 | --- | --- |
-| 全量测试 | clean-env 全量 `pytest tests/` **3307 passed / 24 skipped / 0 failed**（2026-09-30 记录于 SSoT 的 G2/G3；更早快照曾为 1446 passed，已过时） |
+| 全量测试 | **以最近一次全量运行为准**：本机执行 `.venv\Scripts\python.exe -m pytest tests/`，看最后一行的 passed/failed/skipped 汇总。仓库内任何签入的测试数字都只是历史快照，不当作交付结论 |
 | 网关 | 实测可启动，`/v1/health`、`/v1/ready`、`/docs` 返回 200 |
-| 驾驶舱 | 实测可启动（5173），已把 `/v1` 代理到网关 8080 |
-| 真实推理 | Ollama `qwen2.5:3b` 端到端跑通（实测返回真实中文回复） |
+| 控制台（驾驶舱） | 实测可启动（5173），已把 `/v1` 代理到网关 8080 |
+| 真实推理 | 本机 Ollama 模型端到端跑通（实测返回真实中文回复）。注意两条代码路径默认模型不同：首启向导默认 `qwen2.5:7b`，源码冒烟脚本默认 `qwen2.5:3b`（见 `src/ai/chat.py`） |
 | 端到端冒烟 | 9/9 通过（含 KAREN 画像闭环：写入画像后能正确回忆时区与语言） |
 | DoD 七维 | Implemented / Tested / Observable / Permissioned / Policy Controlled / Audited / Documented —— **逐内核真实状态**见 [`docs/spec/KERNEL-DOD-AUDIT.md`](docs/spec/KERNEL-DOD-AUDIT.md)，不以本行为完成度结论 |
 
@@ -52,7 +66,7 @@
 命令行等价：
 
 ```bash
-# 1) 一键启动：网关 8080 + 驾驶舱 5173，并自动打开浏览器
+# 1) 一键启动：网关 8080 + 控制台 5173，并自动打开浏览器
 .venv\Scripts\python.exe scripts\start_liuhao.py
 ```
 
@@ -64,6 +78,8 @@
   API       http://127.0.0.1:8080     文档 http://127.0.0.1:8080/docs
   健康探针  http://127.0.0.1:8080/v1/health
 ```
+
+（启动器输出的这一行原文是「驾驶舱」；产品术语统一按「控制台」理解。）
 
 `Ctrl+C` 会**把子进程一起带走**，不留孤儿进程。
 
@@ -79,7 +95,7 @@
 # 网关
 .venv\Scripts\python.exe -m uvicorn src.gateway.main:app --host 127.0.0.1 --port 8080
 
-# 驾驶舱（另一个终端）
+# 控制台（另一个终端）
 cd apps/console/console
 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 ```
@@ -87,9 +103,10 @@ node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 ### 环境要求
 
 - Python 3.11+（仓库自带 `.venv`；依赖见 `requirements.txt`）
-- Node.js（驾驶舱已装好 `node_modules`）
-- **Ollama**（本机 LLM，可选）。开发机可能已拉取 `qwen2.5:3b` / `qwen2.5:7b` / `nomic-embed-text`；
-  安装包本身不包含任何模型权重，需要时自行 `ollama pull qwen2.5:3b`。
+- Node.js（控制台已装好 `node_modules`）
+- **Ollama**（本机 LLM，可选）。默认模型口径：**首启向导默认 `qwen2.5:7b`**，
+  **源码冒烟脚本默认 `qwen2.5:3b`**（见 `src/ai/chat.py`）；两者都可在界面/环境变量里改。
+  安装包本身不包含任何模型权重，需要时自行 `ollama pull qwen2.5:7b`。
 - 数据库：**默认 SQLite**（`sqlite:///./liuhao_ai_os.db`），不需要 Postgres。
   Postgres / Redis 仅在 `docker-compose.infra.yml` 里作为可选基础设施。
 
@@ -119,15 +136,15 @@ curl --noproxy '*' -X POST http://127.0.0.1:8080/v1/chat \
 规格层   docs/spec/          MASTER-SPEC v3.0 / UNIFIED-BLUEPRINT / KERNEL-CANON
 内核层   src/kernels/        14 个内核
 能力层   src/ai/  +  LiuHao-O/packages/
-场景层   /v1/*  网关（FastAPI, 8080）  +  驾驶舱（vite, 5173）
+场景层   /v1/*  网关（FastAPI, 8080）  +  控制台（vite, 5173）
 ```
 
 **14 个内核**：audit、capability、context、evaluation、event、execution、identity、
 memory、network、plugin、policy、resource、security、trust。
 
-**网关 15 条路由**：`/v1/chat`（含 stream / sessions / history / stats）、
-`/v1/dashboard/*`、`/v1/profile*`、`/v1/policy/*`（审批与拦截态势）、
-`/knowledge/*`。
+**网关路由以仓库根 [`openapi.yaml`](openapi.yaml) 为准**（当前 141 条 path，随代码增删）。
+常用入口包括 `/v1/chat`（含 stream / sessions / history / stats）、`/v1/dashboard/*`、
+`/v1/profile*`、`/v1/policy/*`（审批与拦截态势）与 `/knowledge/*`。
 
 ---
 
@@ -139,8 +156,8 @@ memory、network、plugin、policy、resource、security、trust。
 | `src/gateway/` | FastAPI 网关与路由 |
 | `src/ai/` | 能力层 |
 | `LiuHao-O/packages/` | 十源 packages 层（SSOT = `LiuHao-O/packages/MAPPING.md`） |
-| `apps/console/console/` | 驾驶舱前端（vite + React + TS） |
-| `scripts/` | 10 个 `verify_*.py` 护栏 + `start_liuhao.py` + `smoke_mvp.py` |
+| `apps/console/console/` | 控制台前端（vite + React + TS） |
+| `scripts/` | `verify_*.py` 护栏（数量以 `scripts/` 实际文件为准，当前 78 个）+ `start_liuhao.py` + `smoke_mvp.py` |
 | `docs/spec/` | 全部规格文档 |
 | `capability-registry.yaml` | 能力注册表 |
 

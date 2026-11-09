@@ -178,3 +178,15 @@ def test_unwritable_data_dir_still_leaves_a_bootstrap_record(tmp_path, monkeypat
     assert "winerror=" in text
     assert "errno=" in text
     assert "action=" in text
+
+
+def test_probe_writable_leaves_no_probe_file(tmp_path):
+    """探针文件必须自清理。
+
+    历史实现用 tempfile.mkstemp 且未保证删除，本机旧数据目录里因此留下 42 个
+    2 字节的 .liuhao-startup-probe-* 占位文件。这里钉住当前实现：一次成功的
+    可写探测结束后，目录里不允许出现任何探针残留。
+    """
+    ok, exc = boot_report.probe_writable(tmp_path)
+    assert (ok, exc) == (True, None)
+    assert list(tmp_path.glob(".liuhao-startup-probe-*")) == []

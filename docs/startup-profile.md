@@ -112,8 +112,13 @@ lifespan 在标记核心就绪后启动一个 daemon 线程：
 
 ## 给前端的契约：`GET /v1/startup`
 
-* 免鉴权、只读、无副作用，可任意轮询；响应头 `Cache-Control: no-store`。
-* 始终 HTTP 200（状态在 body 里，而不是用 5xx 让前端猜）。
+* **仅本机回环可读**：`request.client` 不是 `127.0.0.1` / `::1` / `localhost`
+  时，统一返回 `404 {"detail":"Not Found"}`，与"路由不存在"同形。启动阶段、
+  耗时与降级组件名属于内部拓扑，不向远端匿名暴露。
+* 只读、无副作用，可任意轮询；响应头 `Cache-Control: no-store`。
+* 回环请求 HTTP 200（状态在 body 里，而不是用 5xx 让前端猜）；非回环 404。
+* `LIUHAO_STARTUP_STATUS=0`（或 `false/off/no/disabled`）显式关闭整条接口：
+  连回环也返回 404。默认未设置 = 仅回环可读。
 * 结构：
 
 ```json
@@ -146,13 +151,38 @@ lifespan 在标记核心就绪后启动一个 daemon 线程：
 * `state="degraded"`：核心可用，但后台有组件失败；用
   `background.errors[*].error` 展示真实原因，不要笼统成"启动失败"。
 
+## 安全边界：反向代理与显式开关
+
+**残余风险（必须由部署侧兜底）**：回环判定只用 ASGI 对端
+（`request.client.host`），**不信任** `X-Forwarded-For` 等头。若网关部署在
+同机反向代理之后（nginx / Caddy / 云厂商负载均衡把请求转发到
+`127.0.0.1:8080`），代理到网关的对端就是 `127.0.0.1`，**所有外部请求都会
+被判成本机**，`/v1/startup` 因而对公网可读。
+
+生产部署只要存在反代，就必须二选一（建议两条都做）：
+
+1. **在代理层屏蔽该路径**，例如 nginx：
+   `location = /v1/startup { return 404; }`；Caddy：
+   `@startup path /v1/startup` + `respond @startup 404`。
+2. **进程层显式关闭**：`LIUHAO_STARTUP_STATUS=0`，接口对任何来源都返回 404。
+
+**为什么没有默认整条关闭**：启动器（`scripts/start_liuhao.py` 控制台路径、
+`src/desktop/startup.py` 桌面壳路径）用 `/v1/startup` 的 `ready/degraded` 决定何时
+进入控制台（控制台路径随后在浏览器打开，桌面壳在原生窗口加载）；默认关闭会让本机
+启动流程退化成"等到超时"。因此默认保持"仅回环"，把关闭权做成显式开关；
+如果某类纯服务端安装版不需要启动页，可在安装配置里直接写
+`LIUHAO_STARTUP_STATUS=0`。若未来要改成"默认关闭"，只需把
+`_endpoint_enabled()` 的默认值反过来，并同步修改启动器等所有调用方，
+不能只改网关。
+
 ### 交接给桌面外壳 / 前端的部分（本流未改这些文件）
 
 网关进程在导入 FastAPI 与路由之后才会绑定端口（uvicorn 的生命周期顺序），
 这段时间内浏览器会得到**连接失败**而不是 503。因此：
 
-* 桌面外壳（`src/desktop/app.py` 的 `webbrowser.open`）在 `service.start()`
-  成功后立刻打开浏览器，用户在端口绑定前会看到错误页。
+* 桌面外壳（`src/desktop/app.py`）在 `service.start()` 成功后先显示启动占位页，
+  `ready/degraded` 后才加载控制台；只有浏览器模式（`--web`）才调用 `webbrowser.open`，
+  用户在端口绑定前会看到错误页。
 * 建议（契约即可，无需改网关）：启动页在连接失败时视为
   `state="starting"`，用 250~500 ms 退避轮询 `GET /v1/startup`，拿到
   `state="ready"` 后再渲染控制台；或由外壳先展示"正在启动"占位页。
@@ -166,5 +196,6 @@ lifespan 在标记核心就绪后启动一个 daemon 线程：
 .\.venv\Scripts\python.exe -m pytest tests\test_startup_status_api.py tests\test_chat_gateway.py tests\gateway\test_chat_knowledge.py -q
 ```
 
-覆盖：阶段打点真实存在、端点免鉴权、后台预热完成被如实上报、
+覆盖：阶段打点真实存在、端点仅回环可读（远端 404、开关置 0 全关）、
+后台预热完成被如实上报、
 **后台失败会变成 `degraded` 且错误可见**（不会被吞掉）。

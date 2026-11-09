@@ -111,6 +111,9 @@ def main() -> int:
                 "  LIUHAO_ENFORCE_HUMAN_REGISTRY_INTEGRITY=1 -> hard-fail."
             )
             return 1
+    # 退出码 0 是刻意的，不是"伪装通过"：degraded 是**已披露的策略选择**，不是
+    # 拿不到证据。默认不阻断用户现有部署；运维若要求 fail-closed，必须显式设置
+    # LIUHAO_ENFORCE_HUMAN_REGISTRY_INTEGRITY=1（上面的分支会 return 1）。
     return 0
 
 

@@ -127,8 +127,12 @@ def _run_postgres_verification(database_url: str) -> list[dict[str, object]]:
 
 def main() -> int:
     if METRICS_PERSIST != "1":
-        print("METRICS_PERSIST is not enabled; skipping persistence verification.")
-        return 0
+        print(
+            "METRICS_PERSIST is not enabled; persistence verification was NOT run. "
+            "GATE SKIP (exit 3 = NOT VERIFIED). Enable METRICS_PERSIST=1 (as "
+            ".github/workflows/verify_metrics_persist.yml does) to actually run it."
+        )
+        return 3
 
     if _is_postgres_url(DATABASE_URL):
         rows = _run_postgres_verification(DATABASE_URL)

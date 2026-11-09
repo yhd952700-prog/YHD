@@ -79,14 +79,13 @@ def test_gate_fails_when_deployment_not_critical(monkeypatch):
 def test_live_gate_currently_fails_honestly():
     """The real HC-01 status is UNVERIFIED, so the live gate must fail.
 
-    Skipped (not failed) if this environment cannot import src / read the DB,
-    so the monkeypatch-based tests above remain authoritative.
+    ``determine_hc01_status()`` probes a database it builds itself in a
+    temporary directory, so there is no environment it could legitimately be
+    unavailable in. An exception means the gate is broken: it must be red, and
+    must never be turned into a skip.
     """
     mod = _load_module()
-    try:
-        status = mod.determine_hc01_status()
-    except Exception:  # pragma: no cover - environment dependent
-        pytest.skip("HC-01 determination unavailable in this environment")
+    status = mod.determine_hc01_status()
     # Whatever the honest status, if it is not COMPLIANT the gate must fail.
     if status != "COMPLIANT":
         rc, out = _capture(mod)

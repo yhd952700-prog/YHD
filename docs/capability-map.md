@@ -26,7 +26,7 @@
 
 | # | 能力 | 状态 | 关 2 调用方（证据） | 关 3 默认可达 | 关 4 后端 |
 |---|---|---|---|---|---|
-| 1.1 | 文本对话输入/输出 | 🟢 真接线 | `src/gateway/chat.py:152` → `src/ai/liuhao.py:200` `assistant.chat()`；`src/gateway/main.py:969` 挂载 | 是（登录后） | 真实 Provider，见 4.1；**未配置模型时回落 `MockProvider`**（`src/ai/providers.py:926`），回复正文自带 `Mock response to:`，不伪装真实回答 |
+| 1.1 | 文本对话输入/输出 | 🟢 真接线 | `src/gateway/chat.py:152` → `src/ai/liuhao.py:200` `assistant.chat()`；`src/gateway/main.py:969` 挂载 | 是（登录后） | 真实 Provider，见 4.1；**未配置模型时回落演示 Provider**（`src/ai/providers.py`，提示文本定义在 `src/ai/providers.py:1118-1121`），回复正文以 `[演示数据] 还没有配置模型，因此无法生成真实回答。` 开头，不伪装真实回答 |
 | 1.2 | 文件读取/列目录 | 🟢 真接线 | `src/gateway/files.py:1011-1012` 挂载；工具侧 `src/ai/tools/kernel_tools.py:332/352` | 是（只读） | 真实 `Path.read_text` / `iterdir`，路径经 `resolve_in_workspace` 收敛 |
 | 1.3 | 知识库检索（作为“读资料”的感知） | 🟡 半成品 | `src/gateway/chat.py:159/185` → `src/gateway/knowledge_context.py:104` → `src/knowledge/documents.py`；`src/api/routes/knowledge.py:47-83` | **条件可达**：需 embedding provider（`src/knowledge/embedding.py:345-395`），默认 `auto` 只探测本机 Ollama（`OLLAMA_BASE_URL` / `LIUHAO_OLLAMA_BASE_URL`）；`OPENAI_API_KEY` 不会自动启用云端向量化，云端需部署时显式设置 `LIUHAO_EMBEDDING_PROVIDER`；否则 `status.enabled=False` 并静默降级 | 真实向量库 + 真实 embedding；空库/失败时如实标注“本次未使用知识库” |
 | 1.4 | 图像理解 | 🔴 假实现 | 无生产调用方 | 不可达 | `src/ai/perception.py:170` 明确 `modality understanding not implemented`；`supports_vision` 仅标志位 |
@@ -63,7 +63,7 @@
 | 3.7 | MCP 接入外部工具 | 🔴 假实现 | `src/adapters/mcp/mcp_adapter.py` 自身定义 `initialize_mcp()`；`git grep "initialize_mcp" -- src ":!src/adapters/mcp"` **0 命中** | 默认关闭（`mcp_adapter.py:51`），且即使打开也无人调用 | 适配器代码真实，但无运行时入口 |
 | 3.8 | Android / Windows 桌面自动化（第 3/4 层） | ⚫ 完全没有 | 无 adb/`input tap`/UIA/`SendInput` 生产代码 | 不可达 | 无真实设备/桌面后端 |
 | 3.9 | GitHub / 第三方 SaaS 集成 | 🔴 假实现 | `src/integrations/*_adapter.py` 无注册表消费方；`github_adapter.py` 无实例化方 | 不可达 | 适配器类存在，无调用链 |
-| 3.10 | 命令行备份/恢复 | 🟡 半成品 | `src/cli/__init__.py:219` → `src/cli/backup_commands.py`；`src/backup/backup_manager.py`（本切片提交 `586d9b5c`） | 只有 CLI 入口，控制台/API 无入口 | 真实字节流备份 + `VACUUM INTO` + 恢复校验；加密仍 `NotImplementedError` |
+| 3.10 | 备份/恢复（CLI + API + 控制台） | 🟢 真接线 | CLI：`src/cli/__init__.py:219` → `src/cli/backup_commands.py`；API：`src/gateway/accounts.py:689` `POST /v1/accounts/backup/export`、`:739` `POST /v1/accounts/backup/import`；控制台：`apps/console/console/src/pages/Backup.tsx`（左侧「备份与迁移」，根账号） | 是（CLI 任意本机用户；API/UI 需根账号） | 真实字节流备份 + `VACUUM INTO` + 恢复校验；CLI 口令加密归档已落地（`.lhbak`，AES-256-GCM）。`BackupManager(encryption_enabled=True)` 仍显式 `NotImplementedError`，产品入口不走该参数 |
 
 ---
 
@@ -122,7 +122,7 @@
 | **UAC 提权** | 不做 | 本产品以普通用户权限运行（`%LOCALAPPDATA%` 安装），不请求管理员。提权会引入系统级写入与不可运维的故障面；`src/automation/gate.py:85` 三闸默认关闭，`backends` 仅 `fake.py`。 |
 | **锁屏/登录界面操作** | 无法做到 | 锁屏属于 Windows 安全桌面（Secure Desktop），普通进程无法注入键鼠；`src/automation` 无真实后端。即便接 UIA/SendInput 也在锁屏下被系统拒绝。 |
 | **反作弊 / 游戏防护绕过** | 不做且不可做 | 需要内核级驱动/注入，属安全软件对抗范畴，违反“不接触真实屏幕/键鼠”的现行设计（`src/automation/backends/fake.py` 文件头声明）。 |
-| **mock 模型** | 仅开发态 | 未配置任何模型时 `src/ai/providers.py:926` 默认 `ProviderType.MOCK`，回复正文是 `Mock response to: ...`。它不是产品能力，只是“不伪造真实回答”的显式占位；用户必须配置真实 Provider 才算可用。 |
+| **演示模型** | 仅开发态 | 未配置任何模型时 `src/ai/providers.py` 默认 `ProviderType.MOCK`，回复正文是 `[演示数据] 还没有配置模型，因此无法生成真实回答。请到「系统设置 → 模型管理」填写密钥并选择模型服务，然后重新发送这条消息。`（定义在 `src/ai/providers.py:1118-1121`，2026-11-08 直调实测一致）。它不是产品能力，只是“不伪造真实回答”的显式占位；用户必须配置真实 Provider 才算可用。 |
 | **任意仓库改代码 / 提 PR** | 不做 | 当前只有受限 Python 计算 + 工作区写文件（`src/ai/tools_local.py`）；放开等于任意代码执行与供应链风险。 |
 | **金融交易 / 医疗法律建议** | 不做 | 需外部行情/券商/合规框架与责任主体，单机个人产品不成立。 |
 | **多节点 HA / 集群** | 不做 | 与“双击即用、无需运维”冲突；单机 SQLite + 单进程是产品前提。 |

@@ -50,6 +50,9 @@ _CONTRACTS = pathlib.Path(__file__).resolve().parents[1] / (
     "apps/console/console/src/lib/contracts.ts"
 )
 
+# 本文件与 p10 实跑同组，整套约 17 分 37 秒；默认跳过，只在发版门禁开启。
+pytestmark = pytest.mark.slow
+
 
 def _interface_bodies(text: str) -> dict[str, str]:
     """每个 ``export interface X { ... }`` 的花括号内容（保嵌套，不删任何层级）。"""

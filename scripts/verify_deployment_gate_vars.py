@@ -235,7 +235,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/health.py:304",
+            "src/gateway/health.py:1020",
             "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
@@ -243,9 +243,10 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             # :762 to :766 the moment the workflow's own comment grew, again
             # to :768 when the etcd service block changed (2026-10-24), to
             # :793 when the console-readability job was added (2026-11-04), and
-            # to :806 when the guardrails job grew its own pin-to-temp step in
+            # to :916 when the guardrails job grew its own pin-to-temp step in
             # the same round (the same setter, now cited at both jobs).
-            ".github/workflows/ci.yml:806",
+            ".github/workflows/ci.yml:326",
+            ".github/workflows/ci.yml:916",
         ),
     },
     {
@@ -292,7 +293,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "registry stays in memory, so every issued key is lost on restart "
             "in a container deployment"
         ),
-        "refs": ("src/security/api_keys.py:325",),
+        "refs": ("src/security/api_keys.py:392",),
     },
     {
         "var": "LIUHAO_ALLOW_SIMULATED_EXECUTION",
@@ -308,8 +309,8 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "shipped system"
         ),
         "refs": (
-            "src/ai/providers.py:736",
-            "src/gateway/dashboard.py:52",
+            "src/ai/providers.py:3297",
+            "src/kernels/execution/__init__.py:499",
         ),
     },
     {
@@ -325,7 +326,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "build would otherwise silently turn the single-port deployment into "
             "API-only, with a 200-but-chromeless cockpit)"
         ),
-        "refs": ("src/gateway/console_static.py:127",),
+        "refs": ("src/gateway/console_static.py:94",),
     },
     {
         "var": "LIUHAO_WORKSPACE_ROOT",
@@ -341,8 +342,8 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "the mounted volume and vanish on rebuild"
         ),
         "refs": (
-            "src/gateway/ai_management.py:579",
-            "src/ai/workspace.py:62",
+            "src/common/data_paths.py:30",
+            "src/gateway/accounts.py:388",
         ),
     },
     {
@@ -355,7 +356,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "any non-production deployment that sets it gets a non-durable, "
             "non-audited secret store)"
         ),
-        "refs": ("src/security/encryption.py:962",),
+        "refs": ("src/security/secret_store.py:728",),
     },
 )
 
@@ -467,11 +468,119 @@ ALLOWLIST: Dict[str, str] = {
         "falls back to the documented DEFAULT_TOOL_TIMEOUT_SECONDS; only a "
         "timing value, never a safety switch."
     ),
-    "USERNAME": (
-        "operating-system-provided Windows account name used to tighten the "
-        "identity-key file ACL (src/common/integrity_key.py). Unset falls back "
-        "to getpass and, if that also fails, only skips the ACL hardening with "
-        "a warning; it never enables or disables a safety control."
+    "AI_PROVIDER_KEY": (
+        "fallback API key used only by the boot-report self-check when no "
+        "provider is configured (src/observability/boot_report.py:414). Unset "
+        "yields an empty key and the report records key_fp=''; it does not "
+        "enable any model call. A credential override, not a safety control."
+    ),
+    "AI_PROVIDER_MODEL": (
+        "fallback model name for the boot-report self-check "
+        "(src/observability/boot_report.py:413). Unset defaults to 'mock-model'. "
+        "It only labels the boot report; it never selects a real model or "
+        "widens a safety control."
+    ),
+    "AI_PROVIDER_TYPE": (
+        "fallback provider type for the boot-report self-check "
+        "(src/observability/boot_report.py:412). Unset defaults to 'mock'. "
+        "Diagnostic-only; it changes the reported provider label, not whether "
+        "a safety control applies."
+    ),
+    "CONVERSATION_DB_PATH": (
+        "path override for the conversation store sqlite "
+        "(src/gateway/main.py:1613). Unset falls back to the data-dir-resolved "
+        "default. Relocating a DB file does not enable or disable a safety "
+        "control."
+    ),
+    "DATABASE_URL": (
+        "connection-string override for the provider-metrics store "
+        "(src/api/app.py:22, src/api/providers_metrics.py:94). Unset falls back "
+        "to the data-dir default. A DB location override, not a safety switch."
+    ),
+    "LIUHAO_ALLOW_DATA_DOWNGRADE": (
+        "explicit opt-in for running an older binary against newer data "
+        "(src/upgrade/startup_guard.py:80). Unset means downgrade is refused "
+        "(fail-closed); only an explicit truthy value allows it. The unset "
+        "branch is the strict one."
+    ),
+    "LIUHAO_ALLOW_REMOTE_BACKUP_EXPORT": (
+        "explicit opt-in for exporting encrypted account backups to a remote "
+        "destination (src/gateway/account_backup.py:62). Unset means remote "
+        "export is disabled (fail-closed); only '1'/'true'/'yes'/'on' enables "
+        "it. The unset branch is the strict one."
+    ),
+    "LIUHAO_BACKUP_PASSWORD": (
+        "passphrase for AES-256-GCM encrypted backup bundles "
+        "(src/cli/backup_commands.py:479). When --encrypt is requested and "
+        "this is unset, backup_commands raises ValueError (fail-closed, no "
+        "plaintext fallback). A credential, not a safety-control switch."
+    ),
+    "LIUHAO_EMBEDDING_API_KEY": (
+        "API key for the embedding provider (src/knowledge/embedding.py:501). "
+        "Unset raises EmbeddingUnavailableError, so knowledge ingestion is "
+        "fail-closed without a key. A credential; absence never widens trust."
+    ),
+    "LIUHAO_HUMAN_IDENTITIES_FILE": (
+        "path override for the JSON-file human-identity store "
+        "(src/kernels/identity/_persistence.py:1440). Unset falls back to the "
+        "data-dir default. The integrity-key check applies regardless of path, "
+        "so relocation cannot widen trust."
+    ),
+    "LIUHAO_INSTANCE_DIR": (
+        "path override for the per-instance runtime dir "
+        "(src/gateway/__main__.py:225). Unset falls back to LIUHAO_DATA_DIR or "
+        "LOG_DIR. Relocates runtime scratch; never enables a safety control."
+    ),
+    "LIUHAO_MODEL_CONFIG_DB": (
+        "path override for the model-registry sqlite "
+        "(src/gateway/main.py:1616). Unset falls back to "
+        "<data_dir>/model_registry.sqlite3. A DB location override, not a "
+        "safety switch."
+    ),
+    "LIUHAO_SEARCH_INDEX_WARMUP": (
+        "performance toggle for the background full-text search index warmup "
+        "(src/gateway/chat.py:264). Unset defaults to '1' (warmup on); set to "
+        "0 to skip. It changes CPU usage at startup, not whether a safety "
+        "control applies."
+    ),
+    "MEMORY_DB_PATH": (
+        "path override for the kernel-memory sqlite "
+        "(src/gateway/account_memory.py:996). Unset falls back to the "
+        "module default. Relocating a DB file does not enable or disable a "
+        "safety control."
+    ),
+    "OLLAMA_BASE_URL": (
+        "default base URL for the Ollama provider when none is configured "
+        "(src/ai/liuhao.py:194). Unset defaults to http://127.0.0.1:11434. A "
+        "connectivity default, not a safety switch."
+    ),
+    "OPENAI_API_KEY": (
+        "fallback API key for OpenAI-compatible embedding when "
+        "LIUHAO_EMBEDDING_API_KEY is unset (src/knowledge/embedding.py:502). "
+        "Absence raises EmbeddingUnavailableError (fail-closed). A credential; "
+        "never widens trust."
+    ),
+    "OPENAI_BASE_URL": (
+        "default base URL for the OpenAI provider when none is configured "
+        "(src/ai/liuhao.py:196). Unset defaults to https://api.openai.com. A "
+        "connectivity default, not a safety switch."
+    ),
+    "PERSONAL_CONTEXT_DB_PATH": (
+        "path override for the personal-context/profile sqlite "
+        "(src/gateway/account_memory.py:997). Unset falls back to the module "
+        "default. Relocating a DB file does not enable or disable a safety "
+        "control."
+    ),
+    "PORT": (
+        "listen-port override (src/gateway/main.py:1625). Unset defaults to "
+        "8080. The bind HOST is separately defaulted to 127.0.0.1, so changing "
+        "the port does not widen reachability; it is a connectivity knob."
+    ),
+    "TZ": (
+        "timezone name override for reminder scheduling "
+        "(src/tasks/reminder_time.py:189). Unset defaults to Asia/Shanghai and "
+        "falls back to the system timezone. A clock/zone setting, never a "
+        "safety switch."
     ),
 }
 

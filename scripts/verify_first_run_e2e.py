@@ -23,6 +23,10 @@
 
 全程不手工改配置、不手工写数据库；数据目录由脚本用环境变量指向临时目录，
 测试结束后删除（``--keep`` 可保留以便排查）。
+
+退出码：0 = 全项验证通过；1 = 有真实失败；3 = 未完全验证（NOT VERIFIED）。
+缺 console/dist、或无法凭空取得被吊销/额度耗尽的真实 Key 时，本脚本**永远不会**
+宣称 PASS —— 它会逐项打印哪几项没拿到证据、为什么，并以 3 退出。
 """
 
 from __future__ import annotations
@@ -50,7 +54,10 @@ _PASSWORD = "first-run-check-passphrase"
 class Checks:
     def __init__(self) -> None:
         self.failures: list[str] = []
-        self.skips: list[str] = []
+        #: (name, reason) for checks that could not obtain evidence here.
+        #: Kept as pairs so the final NOT VERIFIED report can say *why*, not
+        #: just count them.
+        self.skips: list[tuple[str, str]] = []
 
     def ok(self, name: str, detail: str, elapsed_ms: Optional[float] = None) -> None:
         suffix = f"  ({elapsed_ms:.0f} ms)" if elapsed_ms is not None else ""
@@ -61,7 +68,7 @@ class Checks:
         print(f"  [FAIL] {name}\n         {detail}")
 
     def skip(self, name: str, detail: str) -> None:
-        self.skips.append(name)
+        self.skips.append((name, detail))
         print(f"  [SKIP] {name}\n         {detail}")
 
 
@@ -377,6 +384,29 @@ def _plain_key_absent(data_dir: Path, api_key: str, checks: Checks) -> None:
         checks.ok("Key 加密落库", "SQLite 文件中不含明文 Key（仅读取校验，未写入）")
 
 
+def _report(checks: Checks) -> int:
+    """Final verdict: 0 = PASS, 1 = FAIL, 3 = NOT VERIFIED (never a pass)."""
+    print("\n" + "=" * 60)
+    if checks.failures:
+        print(f"结果：FAIL（{len(checks.failures)} 项失败，{len(checks.skips)} 项未验证）")
+        for name in checks.failures:
+            print(f"  - {name}")
+        return 1
+    if checks.skips:
+        # A skip is NOT a pass. This script can never claim PASS while some
+        # check could not obtain real evidence in this environment -- exit 3
+        # makes that visible to CI instead of hiding it behind a green tick.
+        print(
+            f"结果：NOT VERIFIED（未完全验证：{len(checks.skips)} 项无法在本环境取得证据）"
+        )
+        print("  未完全验证的项目（不宣称 PASS）：")
+        for name, reason in checks.skips:
+            print(f"  - {name}: {reason}")
+        return 3
+    print("结果：PASS（0 项失败，0 项未验证）")
+    return 0
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -488,14 +518,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
             shutil.rmtree(data_dir, ignore_errors=True)
 
-    print("\n" + "=" * 60)
-    if checks.failures:
-        print(f"结果：FAIL（{len(checks.failures)} 项失败，{len(checks.skips)} 项跳过）")
-        for name in checks.failures:
-            print(f"  - {name}")
-        return 1
-    print(f"结果：PASS（0 项失败，{len(checks.skips)} 项跳过/无法真实验证）")
-    return 0
+    return _report(checks)
 
 
 if __name__ == "__main__":
