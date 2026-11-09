@@ -28,7 +28,12 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.kernels.event import Event, EventScope, get_event_bus
-from .display import decorate_event, event_display_title, status_label
+from .display import (
+    UserReadableHTTPException,
+    decorate_event,
+    event_display_title,
+    status_label,
+)
 from .policy import require_bearer_payload
 
 logger = logging.getLogger(__name__)
@@ -202,7 +207,13 @@ def list_persisted_event_history(
         )
     except Exception as exc:  # noqa: BLE001 - 读失败必须如实说出来
         logger.warning("persisted event history query failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
+        # 必须用 UserReadableHTTPException：网关的唯一 HTTPException 处理器会把
+        # 所有 5xx 的普通字符串 detail 换成通用兜底文案（main.py 的
+        # structured_http_error_handler）。审计库读不到是**可照做**的运维状态，
+        # 这句话必须原样上屏，否则用户只看得到"服务端处理这个请求时遇到意外问题"。
+        raise UserReadableHTTPException(
+            status_code=503, detail=_unreadable_detail(exc)
+        )
 
     if context is not None:
         events = redact_foreign_targets(events, context, tree_sovereign)

@@ -110,8 +110,31 @@ async def test_health_readiness_reports_audit_subsystem():
     def _healthy():
         return {"total_events": 3, "failures": 0, "db_path": "x"}
 
-    with patch.object(kernel_audit, "audit_stats", _healthy):
+    def _no_write_failures(_now=None):
+        # ``audit_store.status`` 由**两个**输入决定（src/gateway/health.py:922-926）：
+        #   * audit_stats()            -> availability / total_events / failures
+        #   * get_audit_write_health() -> write_failing（status 的硬否决项）
+        # 后者读的是进程级水印 ``_write_health_state``（src/kernels/audit/__init__.py
+        # :3134、:3219），conftest 的 ``_isolate_audit_store_per_test`` 只复位
+        # ``_audit_store`` / fence / 链密钥缓存，**不**复位它。本文件前面的
+        # test_log_event_failure_increments_counter_and_reraises 注入过一次提交失败，
+        # failure_streak 因此停在 1，于是这里的 status 恒为 unhealthy —— 与
+        # audit_stats 的补丁无关。把第二个输入也钉成"写路径无失败"，才是在测
+        # "ready 面如实反映审计子系统"，而不是在测残留状态。
+        return {
+            "attempted": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "failure_streak": 0,
+            "failing": False,
+            "last_failure_kind": None,
+        }
+
+    with patch.object(kernel_audit, "audit_stats", _healthy), patch.object(
+        kernel_audit, "get_audit_write_health", _no_write_failures
+    ):
         resp = await health.readiness_probe(_Req())
     data = json.loads(resp.body)
     assert "audit_store" in data["checks"]
     assert data["checks"]["audit_store"]["status"] == "healthy"
+    assert data["checks"]["audit_store"]["availability"] == "available"

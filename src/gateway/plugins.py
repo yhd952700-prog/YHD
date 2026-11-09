@@ -97,56 +97,8 @@ def activate_plugin(
     return _serialize(result)
 
 
-@router.post("/{plugin_id}/execute")
-async def execute_plugin(
-    plugin_id: str,
-    payload: Dict[str, Any] | None = None,
-    principal: str = Depends(require_admin_principal),
-) -> Dict[str, Any]:
-    """Execute a capability on an activated plugin and return the real result.
-
-    The endpoint exists so "已启用" is verifiable: it lazily runs the plugin's
-    ``initialize`` / ``start`` lifecycle (if needed) and then calls the real
-    ``PluginInterface.execute`` implementation.
-    """
-    registry = get_plugin_registry()
-    info = registry.get_plugin(plugin_id)
-    if info is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"没有找到插件「{plugin_id}」。",
-        )
-    if not getattr(info, "activatable", False):
-        raise HTTPException(
-            status_code=409,
-            detail="该条目没有可加载的模块入口，无法执行能力。",
-        )
-
-    instance = registry.get_loaded_plugin(plugin_id)
-    if instance is None:
-        # Same attribution rule as the explicit activate route: the human asked
-        # for the (lazy) activation, so the lifecycle audit names them.
-        with bind_request_principal(principal, kind="human", source="http-request"):
-            result = registry.activate_plugin(plugin_id)
-        if result is None or result.status != PluginStatus.ACTIVE:
-            raise HTTPException(
-                status_code=409,
-                detail=(result.error if result else None) or "插件尚未激活，无法执行能力。",
-            )
-        instance = registry.get_loaded_plugin(plugin_id)
-    if instance is None:
-        raise HTTPException(status_code=409, detail="插件尚未激活，无法执行能力。")
-
-    try:
-        if not instance.can_execute():
-            await instance.initialize()
-            await instance.start()
-        output = await instance.execute(payload or {})
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"插件能力执行失败：{exc}") from exc
-
-    return {
-        "plugin_id": plugin_id,
-        "capabilities": list(info.capabilities),
-        "result": output,
-    }
+# 这里**故意没有** ``POST /v1/plugins/{plugin_id}/execute``（设计决策
+# §10.8.3-1：不做 HTTP 远程执行）。插件能力只在进程内调用；HTTP 面只负责把
+# 真实注册表摊开（GET）和改变激活状态（activate）。0.1.2 的产品口径是"应用页
+# 只有内置示例能力"，旧插件接口返回 404，因此也不存在"传能力名就替你跑"的
+# 入口。tests/test_policy_approval_http.py 逐路由钉死这条约束。

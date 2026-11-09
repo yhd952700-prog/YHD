@@ -167,17 +167,28 @@ def test_placeholder_without_module_is_hidden_and_not_activatable(client):
 
 
 def test_builtin_capability_is_really_callable(client):
-    """激活后必须能真正执行能力，而不是只改状态字段。"""
+    """激活后必须能真正执行能力，而不是只改状态字段。
+
+    执行发生在**进程内**：按 §10.8.3-1，网关不提供"传能力名就替你跑"的 HTTP
+    入口，``POST /v1/plugins/{id}/execute`` 已被移除并要求继续 404。这里先钉住
+    HTTP 面的拒绝，再直接调用插件实例的 ``execute``，证明"激活"是真的加载。
+    """
+    import asyncio
+
+    import src.kernels.plugin as _plugin_mod
+
     c, h = client
     r = c.post(f"/v1/plugins/{BUILTIN_ID}/activate", headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["active"] is True
 
     r2 = c.post(f"/v1/plugins/{BUILTIN_ID}/execute", headers=h, json={})
-    assert r2.status_code == 200, r2.text
-    body = r2.json()
-    result = body["result"]
-    assert result["heartbeat"] is True, body
-    assert result["registered_plugins"] >= 1, body
-    assert result["active_plugins"] >= 1, body
+    assert r2.status_code == 404, r2.text
+
+    instance = _plugin_mod.get_plugin_registry().get_loaded_plugin(BUILTIN_ID)
+    assert instance is not None, "activate did not load a real plugin instance"
+    result = asyncio.run(instance.execute({}))
+    assert result["heartbeat"] is True, result
+    assert result["registered_plugins"] >= 1, result
+    assert result["active_plugins"] >= 1, result
 
