@@ -33,8 +33,8 @@ from .commands import DEFAULT_ALLOWED_TEST_COMMANDS, TestCommandPolicy
 from .errors import (
     ConfirmationRequired,
     InvalidEdit,
-    ProposalNotFound,
     PromotionDisabled,
+    ProposalNotFound,
     SandboxError,
     SelfModError,
     StaleProposal,
