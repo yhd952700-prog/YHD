@@ -9,7 +9,7 @@
   * 可执行文件位于 ``root`` 之下；
   * 文件名是 ``python.exe`` / ``pythonw.exe``；
   * 命令行包含鎏灏入口标记（``liuhao_desktop.py`` / ``launch_installed.py`` /
-    ``https_proxy.py`` / ``-m src.desktop`` / ``-m src.gateway``）。
+    ``https_proxy.py`` / ``lan_relay.py`` / ``-m src.desktop`` / ``-m src.gateway``）。
 
 ``node.exe`` 只在命令行同时出现 ``--vite`` 与本安装根时才算（开发/便携模式的
 前端 dev server）；生产安装包不带 node，这条不会误伤系统里的其他 node。
@@ -39,6 +39,9 @@ _MARKERS = (
     # HTTPS 反代由 ``scripts/ops/https_proxy.py --https`` 拉起，旧清单漏了它，
     # 卸载后 8443 仍在 LISTEN。
     "https_proxy.py",
+    # 手机访问中继由 ``scripts/ops/lan_relay.py`` 以脱离进程方式常驻；旧清单
+    # 没有它，卸载/退出后 8090 仍在 LISTEN，局域网里还能继续访问。
+    "lan_relay.py",
     "-m src.desktop",
     "-m src.gateway",
 )
@@ -177,7 +180,27 @@ def _candidate_ports(base: Path, matched: List[dict[str, Any]]) -> List[int]:
             ports.append(port)
     if any("--https" in item.get("cmd", "") for item in matched):
         ports.append(_HTTPS_PORT)
+    ports.extend(_relay_ports(matched))
     return sorted(set(ports))
+
+
+def _relay_ports(matched: List[dict[str, Any]]) -> List[int]:
+    """从中继命令行取实际监听端口，自定义 ``--lan-port`` 也能被复核到。"""
+    ports: List[int] = []
+    for item in matched:
+        cmd = str(item.get("cmd", ""))
+        if "lan_relay.py" not in cmd:
+            continue
+        parts = cmd.split()
+        for flag in ("--lan-port", "--admin-port"):
+            try:
+                index = parts.index(flag)
+                port = int(parts[index + 1])
+            except (ValueError, IndexError):
+                continue
+            if 1 <= port <= 65535:
+                ports.append(port)
+    return ports
 
 
 def _still_listening(psutil: Any, ports: List[int]) -> List[int]:

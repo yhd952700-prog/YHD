@@ -7,6 +7,8 @@
 常用命令::
 
     python scripts/mobile_access.py start      # 开启，并打印配对码 / 配对链接
+    python scripts/mobile_access.py start --open-firewall
+                                               # 同时按实际端口精确放行防火墙
     python scripts/mobile_access.py status     # 当前配对码、剩余时间、设备数
     python scripts/mobile_access.py devices    # 哪些手机连过、最近一次连接、IP
     python scripts/mobile_access.py pair       # 重新生成一次性配对码
@@ -19,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import subprocess
@@ -35,6 +38,9 @@ RELAY_DIR_REL = Path("mobile_access")
 ADMIN_TOKEN_FILE = "admin.token"
 STATE_FILE = "relay.json"
 LOG_FILE = "relay.log"
+#: 安装版网关可能不在 8080（端口冲突时桌面壳会换端口），开启中继前先读实例。
+INSTANCE_FILE = Path("run") / "instance.json"
+DESKTOP_PORT_FILE = Path("config") / "desktop_port.json"
 
 
 def _data_dir() -> Path:
@@ -52,6 +58,127 @@ def _relay_dir() -> Path:
     path = _data_dir() / RELAY_DIR_REL
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _detect_backend_port() -> int:
+    """找当前网关端口：运行实例优先，其次桌面壳持久化的端口，最后 8080。"""
+    data = _data_dir()
+    for relative in (INSTANCE_FILE, DESKTOP_PORT_FILE):
+        try:
+            payload = json.loads((data / relative).read_text(encoding="utf-8"))
+            port = int(payload.get("port") or 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        if 1 <= port <= 65535:
+            return port
+    return 8080
+
+
+def _firewall_rule_name(port: int) -> str:
+    # 用 ASCII 规则名：netsh / 本地化 Windows 下不会因控制台代码页变成乱码。
+    return f"LiuHao Mobile Access (TCP {port})"
+
+
+def _is_admin() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _powershell(command: str, *, timeout: float = 20.0) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _firewall_has_rule(port: int) -> bool:
+    if os.name != "nt":
+        return False
+    name = _firewall_rule_name(port)
+    query = (
+        f"$r = Get-NetFirewallRule -DisplayName '{name}' -ErrorAction SilentlyContinue "
+        "| Select-Object -First 1; "
+        "if ($r -and $r.Enabled -eq 'True' -and $r.Action -eq 'Allow' "
+        "-and $r.Direction -eq 'Inbound' -and ([string]$r.Profile) -match 'Private') { "
+        "$p = $r | Get-NetFirewallPortFilter; $a = $r | Get-NetFirewallAddressFilter; "
+        f"if ($p.Protocol -eq 'TCP' -and [string]$p.LocalPort -eq '{int(port)}' "
+        "-and ([string]$a.RemoteAddress) -match 'LocalSubnet') { 'FOUND' } }"
+    )
+    try:
+        result = _powershell(query)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "FOUND" in (result.stdout or "")
+
+
+def _open_firewall(port: int) -> bool:
+    """按实际监听端口精确放行：只 TCP、只专用网络、只本子网，绝不整段放开。"""
+    if os.name != "nt":
+        print("  [skip] 非 Windows 平台不需要设置防火墙。")
+        return True
+    name = _firewall_rule_name(port)
+    if _firewall_has_rule(port):
+        print(f"  [ok] 防火墙已有精确放行规则：TCP {port}（专用网络 / 本子网）。")
+        return True
+    command = (
+        f"New-NetFirewallRule -DisplayName '{name}' -Direction Inbound "
+        f"-Protocol TCP -LocalPort {int(port)} -Action Allow "
+        "-Profile Private -RemoteAddress LocalSubnet"
+    )
+    if not _is_admin():
+        print(
+            f"  [UAC] 只新增一条入站规则：TCP {port} / 专用网络 / 本子网；"
+            "不会放开其它端口。"
+        )
+        parameters = f'-NoProfile -ExecutionPolicy Bypass -Command "{command}"'
+        try:
+            rc = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "powershell.exe", parameters, None, 1
+            )
+        except Exception:
+            rc = 0
+        if rc <= 32:
+            print("  [WARN] 未获得管理员授权，防火墙未改动。")
+            print(f"         可手动执行：{command}")
+            return False
+        deadline = time.time() + 30.0
+        while time.time() < deadline:
+            if _firewall_has_rule(port):
+                print(f"  [ok] 已放行防火墙：TCP {port}（仅专用网络、仅本子网）。")
+                return True
+            time.sleep(0.5)
+        print("  [WARN] 未确认规则已生效，请用 Get-NetFirewallRule 检查。")
+        print(f"         手动命令：{command}")
+        return False
+    try:
+        result = _powershell(command + " | Out-Null", timeout=30.0)
+        detail = ((result.stderr or "") + (result.stdout or "")).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        result = None
+        detail = str(exc)
+    if result is not None and result.returncode == 0:
+        print(f"  [ok] 已放行防火墙：TCP {port}（仅专用网络、仅本子网）。")
+        return True
+    print("  [WARN] 未能自动添加防火墙规则（通常需要管理员权限）。")
+    print("         可右键「以管理员身份运行」PowerShell，只执行下面这一条：")
+    print(f"         {command}")
+    if detail:
+        print(f"         原因：{detail.splitlines()[-1]}")
+    return False
 
 
 def _admin_token() -> str:
@@ -126,6 +253,19 @@ def _start(args: argparse.Namespace) -> int:
         print(f"[FAIL] 找不到中继脚本：{RELAY_SCRIPT}")
         return 1
 
+    backend_port = int(args.backend_port or _detect_backend_port())
+    print("即将开启局域网手机访问：")
+    print(f"  监听 {args.lan_host}:{args.lan_port}（只有中继对外；网关仍只绑 127.0.0.1:{backend_port}）")
+    print("  只有配对成功（一次性配对码，10 分钟有效）的设备能进入；请勿在公共 Wi-Fi 开启。")
+    print("  关闭：运行 stop，或开始菜单「手机访问（关闭）」。")
+    if args.open_firewall:
+        _open_firewall(args.lan_port)
+    else:
+        print(
+            f"  提示：手机连不上时，多是 Windows 防火墙未放行；"
+            f"可加 --open-firewall 只放行 TCP {args.lan_port}。"
+        )
+
     log_path = _relay_dir() / LOG_FILE
     log_handle = open(log_path, "a", encoding="utf-8")
     log_handle.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} start ===\n")
@@ -144,7 +284,7 @@ def _start(args: argparse.Namespace) -> int:
         "--backend-host",
         args.backend_host,
         "--backend-port",
-        str(args.backend_port),
+        str(backend_port),
     ]
     extra: Dict[str, Any] = {}
     if os.name == "nt":
@@ -239,7 +379,17 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--lan-port", type=int, default=8090)
     parser.add_argument("--admin-port", type=int, default=8091)
     parser.add_argument("--backend-host", default="127.0.0.1")
-    parser.add_argument("--backend-port", type=int, default=8080)
+    parser.add_argument(
+        "--backend-port",
+        type=int,
+        default=None,
+        help="回环网关端口；默认自动读取运行实例，读不到再用 8080",
+    )
+    parser.add_argument(
+        "--open-firewall",
+        action="store_true",
+        help="开启时精确放行防火墙：仅 TCP <lan-port>、仅专用网络、仅本子网（需管理员）",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "start":

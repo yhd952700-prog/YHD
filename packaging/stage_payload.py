@@ -164,6 +164,12 @@ PAYLOAD_SCRIPTS: Tuple[str, ...] = (
     # 托盘自启入口：HKCU Run 项直接指向它，缺了就只能拉起网关、没有托盘。
     "scripts/liuhao_desktop.py",
     "scripts/ops/https_proxy.py",
+    # 手机访问：电脑端开关 + 局域网配对中继。默认不监听，只有用户从开始菜单
+    # 显式点「手机访问（开启）」或启动器带 ``--mobile-access`` 才起。
+    "scripts/mobile_access.py",
+    "scripts/ops/lan_relay.py",
+    # 开始菜单入口：控制台版开关，保留配对码/失败原因的窗口，不让它一闪而过。
+    "scripts/mobile_access.bat",
     "scripts/gen_local_cert.py",
     # 覆盖升级后按排除清单清理程序目录里的旧配置（安装器 [Run] 调用）。
     "scripts/purge_installed_config.py",

@@ -230,6 +230,12 @@ Name: "{group}\使用说明"; Filename: "{app}\START-HERE.txt"
 Name: "{group}\许可证与合规材料（离线）"; Filename: "{sys}\explorer.exe"; Parameters: """{app}"""; Comment: "断网查看 licenses\（18 项全文）、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE"
 ; 离线诊断入口：不启动网关也能出包，服务起不来时用户可直接双击。
 Name: "{group}\收集诊断信息（离线）"; Filename: "{app}\scripts\collect_diagnostics.bat"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "服务未启动也能采集脱敏诊断包到桌面"
+; 手机访问：默认不监听，必须由用户点这里显式开启；开启后窗口保留配对码。
+; 「放行防火墙」单独一条，走 UAC 只加 TCP 8090 / 专用网络 / 本子网 的入站规则，
+; 不会放开其它端口，也不会开机自启。
+Name: "{group}\手机访问（开启）"; Filename: "{app}\scripts\mobile_access.bat"; Parameters: "start"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "显式开启局域网手机访问；只有一次性配对码能进入，默认不监听"
+Name: "{group}\手机访问（开启并放行防火墙）"; Filename: "{app}\scripts\mobile_access.bat"; Parameters: "start --open-firewall"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "同上；仅新增 TCP 8090（专用网络/本子网）入站规则，需 UAC 确认"
+Name: "{group}\手机访问（关闭）"; Filename: "{app}\scripts\mobile_access.bat"; Parameters: "stop"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "停止中继监听并断开全部已配对设备"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\assets\liuhao.ico"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Tasks: desktopicon
 
