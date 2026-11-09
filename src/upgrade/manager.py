@@ -118,6 +118,9 @@ _DEFAULT_PROTECTED = (
 #: 安装目录一致 —— 升级包就是“安装树”，不是“源码仓库”。早先只允许
 #: ``src/`` 等目录，导致根级模块（``error_types.py``，被 ``src`` 裸名导入）
 #: 与 ``config/`` 永远不进包，干净机器升级后自检直接 ModuleNotFoundError。
+#:
+#: ``docs`` 仍作为根保留：升级包只带白名单文档（见 packaging/make_release.py），
+#: 但清理旧文件时必须能遍历到它，才能把上一版遗留的 500 多个内部文档删掉。
 INSTALL_ROOTS = (
     "src",
     "config",
@@ -132,6 +135,10 @@ INSTALL_ROOTS = (
     "pyproject.toml",
     "requirements.txt",
     "oss-registry.yaml",
+    # 合规材料：随升级包更新，避免用户升级后许可证文本停在旧版本。
+    "THIRD-PARTY-NOTICES.txt",
+    "sbom-cyclonedx.json",
+    "licenses",
     # Package-internal version marker; installed at the app root so
     # `versioning.read_current_version` keeps working without pyproject edits.
     "LIUHAO_RELEASE.json",
