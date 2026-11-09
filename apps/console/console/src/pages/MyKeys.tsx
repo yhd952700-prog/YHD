@@ -36,6 +36,15 @@ function formatCost(value: number | null | undefined): string {
   return value < 0.01 ? `¥${numberText(value, 6)}` : `¥${numberText(value, 2)}`
 }
 
+/**
+ * Key 归属列表客户端分页与用量明细的默认展示条数。
+ *
+ * `/v1/accounts` 与 `/v1/accounts/{p}/usage` 都没有分页参数；改契约会牵动
+ * 网关，因此沿用现有接口，在客户端切片。
+ */
+const KEY_PAGE_SIZE = 50
+const USAGE_PREVIEW = 8
+
 export function MyKeys({
   profile,
   caps,
@@ -59,6 +68,10 @@ export function MyKeys({
   const usage = useAccountData(() => loadUsage(selected))
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [keyQuery, setKeyQuery] = useState('')
+  const [keyPage, setKeyPage] = useState(0)
+  const [keyOwnerExpanded, setKeyOwnerExpanded] = useState(false)
+  const [actorExpanded, setActorExpanded] = useState(false)
 
   const changeSharing = async (allow: boolean, principal: string) => {
     if (readOnly) {
@@ -85,12 +98,28 @@ export function MyKeys({
     } catch (error) {
       setNotice({
         tone: 'error',
-        text: error instanceof Error ? error.message : '授权变更失败',
+        text:
+          error instanceof Error
+            ? error.message
+            : '授权变更没有完成，请重试；持续失败请刷新页面后再试。',
       })
     } finally {
       setBusy(false)
     }
   }
+
+  const normalizedKeyQuery = keyQuery.trim().toLowerCase()
+  const filteredKeyRows = normalizedKeyQuery
+    ? keyRows.filter((member) =>
+        `${member.principal} ${member.status}`.toLowerCase().includes(normalizedKeyQuery),
+      )
+    : keyRows
+  const keyPageCount = Math.max(1, Math.ceil(filteredKeyRows.length / KEY_PAGE_SIZE))
+  const safeKeyPage = Math.min(keyPage, keyPageCount - 1)
+  const pageKeyRows = filteredKeyRows.slice(
+    safeKeyPage * KEY_PAGE_SIZE,
+    (safeKeyPage + 1) * KEY_PAGE_SIZE,
+  )
 
   const usingStub =
     accounts.source === 'stub' || usage.source === 'stub' || tree.source === 'stub'
@@ -120,13 +149,30 @@ export function MyKeys({
           </div>
         )}
 
+        {caps.canAllKeys && (
+          <div style={{ marginBottom: 12 }}>
+            <input
+              className="os-input-plain"
+              style={{ width: '100%' }}
+              value={keyQuery}
+              onChange={(event) => {
+                setKeyQuery(event.target.value)
+                setKeyPage(0)
+              }}
+              placeholder="搜索账号或状态"
+              aria-label="搜索 Key 归属账号"
+            />
+          </div>
+        )}
+
         {caps.canAllKeys ? (
           <Guard
             loading={accounts.loading}
             error={accounts.error}
             data={accounts.data}
-            isEmpty={(data) => data.members.length === 0}
-            emptyTitle="还没有成员"
+            isEmpty={() => keyRows.length === 0}
+            emptyTitle="还没有可代用的 Key"
+            emptyHint="对方开启 Key 共享后，会出现在这里。"
             onRetry={accounts.reload}
           >
             {() => (
@@ -142,7 +188,7 @@ export function MyKeys({
                     </tr>
                   </thead>
                   <tbody>
-                    {keyRows.map((member) => (
+                    {pageKeyRows.map((member) => (
                       <tr key={member.principal}>
                         <td>{member.principal}</td>
                         <td>{keyAuthorizationLabel(member, true)}</td>
@@ -165,8 +211,44 @@ export function MyKeys({
                         </td>
                       </tr>
                     ))}
+                    {pageKeyRows.length === 0 && (
+                      <tr>
+                        <td colSpan={5}>没有命中的账号</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
+                {keyPageCount > 1 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      marginTop: 8,
+                    }}
+                  >
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeKeyPage === 0}
+                      onClick={() => setKeyPage(safeKeyPage - 1)}
+                    >
+                      上一页
+                    </button>
+                    <span className="os-hint">
+                      第 {safeKeyPage + 1} / {keyPageCount} 页 · 共 {filteredKeyRows.length} 条
+                    </span>
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeKeyPage >= keyPageCount - 1}
+                      onClick={() => setKeyPage(safeKeyPage + 1)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </Guard>
@@ -219,7 +301,8 @@ export function MyKeys({
           error={usage.error}
           data={usage.data}
           isEmpty={(data) => data.calls === 0}
-          emptyTitle="暂无调用记录"
+          emptyTitle="还没有调用记录"
+          emptyHint="在「对话」里发一条消息，或让员工执行一次任务后，这里会出现真实的调用次数与用量。"
           onRetry={usage.reload}
         >
           {(data) => (
@@ -254,7 +337,10 @@ export function MyKeys({
               )}
               {data.budget_note && <p className="os-hint">{data.budget_note}</p>}
               {caps.canAllKeys &&
-                data.by_key_owner.map((entry) => (
+                (keyOwnerExpanded
+                  ? data.by_key_owner
+                  : data.by_key_owner.slice(0, USAGE_PREVIEW)
+                ).map((entry) => (
                   <div className="os-kv-row" key={entry.key_owner}>
                     <span className="os-kv-key">Key 归属 · {entry.key_owner}</span>
                     <span className="os-kv-value">
@@ -262,20 +348,36 @@ export function MyKeys({
                     </span>
                   </div>
                 ))}
+              {caps.canAllKeys && data.by_key_owner.length > USAGE_PREVIEW && (
+                <button className="os-link" onClick={() => setKeyOwnerExpanded((value) => !value)}>
+                  {keyOwnerExpanded
+                    ? '收起 Key 归属明细'
+                    : `展开全部 ${data.by_key_owner.length} 条 Key 归属`}
+                </button>
+              )}
               {data.by_actor && data.by_actor.length > 0 && (
                 <>
                   <div className="os-kv-row">
                     <span className="os-kv-key">实际调用者</span>
                     <span className="os-kv-value">仅本账号可见</span>
                   </div>
-                  {data.by_actor.map((entry) => (
-                    <div className="os-kv-row" key={entry.actor}>
-                      <span className="os-kv-key">调用者 · {entry.actor}</span>
-                      <span className="os-kv-value">
-                        {entry.calls} 次 · 用量 {entry.total_tokens}
-                      </span>
-                    </div>
-                  ))}
+                  {(actorExpanded ? data.by_actor : data.by_actor.slice(0, USAGE_PREVIEW)).map(
+                    (entry) => (
+                      <div className="os-kv-row" key={entry.actor}>
+                        <span className="os-kv-key">调用者 · {entry.actor}</span>
+                        <span className="os-kv-value">
+                          {entry.calls} 次 · 用量 {entry.total_tokens}
+                        </span>
+                      </div>
+                    ),
+                  )}
+                  {data.by_actor.length > USAGE_PREVIEW && (
+                    <button className="os-link" onClick={() => setActorExpanded((value) => !value)}>
+                      {actorExpanded
+                        ? '收起调用者明细'
+                        : `展开全部 ${data.by_actor.length} 条调用者`}
+                    </button>
+                  )}
                 </>
               )}
             </div>

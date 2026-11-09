@@ -695,6 +695,11 @@ export function Knowledge({
     )
   }, [docs, need])
 
+  // 搜索词变化后回到第 1 页：只过滤当前页时，停在第 N 页会让人以为「没搜到」。
+  useEffect(() => {
+    setPageIndex(0)
+  }, [need])
+
   const missingNames = Boolean(
     searchResult?.hits.some((hit) => !nameMap.has(hitDocumentId(hit))),
   )

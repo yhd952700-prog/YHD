@@ -16,6 +16,7 @@ import { keyAuthorizationLabel } from '../lib/accountCaps'
 import {
   type AccountMember,
   type AccountNode,
+  countTreeMembers,
   createMember,
   loadAccounts,
   loadRoles,
@@ -31,6 +32,14 @@ import { OneTimeSecret, StubBadge } from '../components/AccountChrome'
 import { permissionLabel, permissionTitle } from '../lib/format'
 
 type Variant = 'root' | 'member'
+
+/**
+ * 成员列表客户端分页大小。
+ *
+ * `/v1/accounts` 一次返回全部成员，没有 offset / limit；改契约会同时影响
+ * 根视图与成员视图，因此沿用现有接口，在客户端按页切片。
+ */
+const MEMBERS_PAGE_SIZE = 50
 
 export function Members({
   profile,
@@ -55,6 +64,20 @@ export function Members({
   )
   const roles = useAccountData(() => loadRoles())
 
+  const [treeQuery, setTreeQuery] = useState('')
+  // 折叠状态本身在模块级 Map（换页 / 换查看范围都不重置），这里只用计数器触发重渲染。
+  const [, bumpFold] = useState(0)
+  const toggleFold = (principal: string, expanded: boolean) => {
+    foldOverrides.set(principal, expanded)
+    bumpFold((value) => value + 1)
+  }
+  // 搜索只作用于根视图；成员视图没有树，这里恒为空集合。
+  const treeQueryText = treeQuery.trim()
+  const treeFolding: TreeFolding = {
+    query: treeQueryText,
+    matched: collectMatchedPaths(tree.data?.tree?.children ?? [], treeQueryText),
+  }
+
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [issued, setIssued] = useState<{ principal: string; code: string; notice?: string } | null>(
     null,
@@ -62,6 +85,10 @@ export function Members({
   const [resetFor, setResetFor] = useState<string | null>(null)
   const [resetPassword, setResetPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  const [pageIndex, setPageIndex] = useState(0)
+  // 创建成功后先本地插入刚建的账号：reload 是异步的，服务端列表回来之前
+  // Guard 仍拿旧数据判定「空」，用户会看到「刚建完却说没有」。
+  const [justCreated, setJustCreated] = useState<AccountMember[]>([])
 
   const act = async (label: string, run: () => Promise<unknown>) => {
     if (readOnly) {
@@ -109,6 +136,8 @@ export function Members({
         code: result.data.activation_code,
         notice: result.data.notice,
       })
+      setJustCreated((prev) => [result.data.account, ...prev])
+      setPageIndex(0)
       accounts.reload()
       tree.reload()
     } catch (error) {
@@ -120,6 +149,21 @@ export function Members({
       setBusy(false)
     }
   }
+
+  const serverMembers = accounts.data?.members ?? []
+  // 服务端列表一旦包含该账号，就用真实行替换本地占位，不会出现重复行。
+  const memberList = [
+    ...justCreated.filter(
+      (created) => !serverMembers.some((member) => member.principal === created.principal),
+    ),
+    ...serverMembers,
+  ]
+  const memberPageCount = Math.max(1, Math.ceil(memberList.length / MEMBERS_PAGE_SIZE))
+  const safeMemberPage = Math.min(pageIndex, memberPageCount - 1)
+  const pageMembers = memberList.slice(
+    safeMemberPage * MEMBERS_PAGE_SIZE,
+    (safeMemberPage + 1) * MEMBERS_PAGE_SIZE,
+  )
 
   const source = accounts.source === 'stub' || tree.source === 'stub' ? 'stub' : 'live'
 
@@ -163,20 +207,37 @@ export function Members({
           />
         )}
 
+        {isRoot && (
+          <div className="os-field">
+            <label htmlFor="member-search">搜索账号</label>
+            <input
+              id="member-search"
+              className="os-input-plain"
+              type="search"
+              value={treeQuery}
+              onChange={(event) => setTreeQuery(event.target.value)}
+              placeholder="输入账号名，命中后自动展开整条路径"
+            />
+          </div>
+        )}
+
         <Guard
           loading={accounts.loading}
           error={accounts.error}
           data={accounts.data}
-          isEmpty={(data) => data.members.length === 0}
+          isEmpty={(data) => data.members.length === 0 && justCreated.length === 0}
           emptyTitle={isRoot ? '还没有成员' : '还没有账号'}
           emptyHint={isRoot ? '在下方创建第一个成员。' : '在下方创建第一个账号。'}
           onRetry={accounts.reload}
         >
-          {(data) => {
+          {() => {
             if (isRoot && tree.data?.tree) {
               return (
                 <div className="os-table-wrap">
                   <table className="os-table">
+                    {treeFolding.query && treeFolding.matched.size === 0 && (
+                      <caption className="os-hint">没有命中的账号</caption>
+                    )}
                     <thead>
                       <tr>
                         <th>成员</th>
@@ -192,6 +253,8 @@ export function Members({
                           key={child.principal}
                           node={child}
                           depth={0}
+                          folding={treeFolding}
+                          onToggleFold={toggleFold}
                           readOnly={readOnly}
                           busy={busy}
                           onViewAs={onViewAs}
@@ -238,7 +301,7 @@ export function Members({
                     </tr>
                   </thead>
                   <tbody>
-                    {data.members.map((member) => (
+                    {pageMembers.map((member) => (
                       <MemberRow
                         key={member.principal}
                         member={member}
@@ -271,6 +334,37 @@ export function Members({
                     ))}
                   </tbody>
                 </table>
+                {memberPageCount > 1 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      marginTop: 8,
+                    }}
+                  >
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeMemberPage === 0}
+                      onClick={() => setPageIndex(safeMemberPage - 1)}
+                    >
+                      上一页
+                    </button>
+                    <span className="os-hint">
+                      第 {safeMemberPage + 1} / {memberPageCount} 页 · 共 {memberList.length} 条
+                    </span>
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeMemberPage >= memberPageCount - 1}
+                      onClick={() => setPageIndex(safeMemberPage + 1)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                )}
               </div>
             )
           }}
@@ -334,6 +428,8 @@ export function Members({
 function TreeNodeRows({
   node,
   depth,
+  folding,
+  onToggleFold,
   readOnly,
   busy,
   onViewAs,
@@ -344,6 +440,8 @@ function TreeNodeRows({
 }: {
   node: AccountNode
   depth: number
+  folding: TreeFolding
+  onToggleFold: (principal: string, expanded: boolean) => void
   readOnly: boolean
   busy: boolean
   onViewAs: (principal: string) => void
@@ -352,6 +450,14 @@ function TreeNodeRows({
   onToggleKey: (member: AccountMember) => void
   onReset: (member: AccountMember) => void
 }) {
+  // 搜索态只保留命中节点及其祖先路径，其余整支不渲染 —— 搜到了就必须看得见。
+  if (folding.query && !folding.matched.has(node.principal)) return null
+  const canFold = node.children.length > 0
+  // 搜索时整条路径强制展开；平时默认展开两层，用户显式切换优先。
+  const expanded = folding.query
+    ? true
+    : (foldOverrides.get(node.principal) ?? depth + 1 < DEFAULT_VISIBLE_DEPTH)
+  const hidden = canFold && !expanded ? countTreeMembers(node) - 1 : 0
   return (
     <>
       <MemberRow
@@ -360,26 +466,32 @@ function TreeNodeRows({
         depth={depth}
         readOnly={readOnly}
         busy={busy}
+        fold={{ canToggle: canFold && !folding.query, expanded, hidden }}
+        onToggleFold={onToggleFold}
+        query={folding.query}
         onViewAs={onViewAs}
         onToggleStatus={onToggleStatus}
         onIssue={onIssue}
         onToggleKey={onToggleKey}
         onReset={onReset}
       />
-      {node.children.map((child) => (
-        <TreeNodeRows
-          key={child.principal}
-          node={child}
-          depth={depth + 1}
-          readOnly={readOnly}
-          busy={busy}
-          onViewAs={onViewAs}
-          onToggleStatus={onToggleStatus}
-          onIssue={onIssue}
-          onToggleKey={onToggleKey}
-          onReset={onReset}
-        />
-      ))}
+      {expanded &&
+        node.children.map((child) => (
+          <TreeNodeRows
+            key={child.principal}
+            node={child}
+            depth={depth + 1}
+            folding={folding}
+            onToggleFold={onToggleFold}
+            readOnly={readOnly}
+            busy={busy}
+            onViewAs={onViewAs}
+            onToggleStatus={onToggleStatus}
+            onIssue={onIssue}
+            onToggleKey={onToggleKey}
+            onReset={onReset}
+          />
+        ))}
     </>
   )
 }
@@ -395,12 +507,20 @@ function MemberRow({
   onIssue,
   onToggleKey,
   onReset,
+  fold,
+  onToggleFold,
+  query,
 }: {
   member: AccountMember
   isRoot: boolean
   depth: number
   readOnly: boolean
   busy: boolean
+  /** 仅树视图传入：能否折叠、当前是否展开、折叠了多少个后代。 */
+  fold?: { canToggle: boolean; expanded: boolean; hidden: number }
+  onToggleFold?: (principal: string, expanded: boolean) => void
+  /** 搜索词：命中片段高亮。 */
+  query?: string
   onViewAs: (principal: string) => void
   onToggleStatus: (member: AccountMember) => void
   onIssue: (member: AccountMember) => void
@@ -411,7 +531,24 @@ function MemberRow({
   return (
     <tr>
       <td>
-        <span style={{ paddingLeft: depth * 16 }}>{member.principal}</span>
+        <span style={{ paddingLeft: depth * 16 }}>
+          {fold?.canToggle && (
+            <button
+              type="button"
+              className="os-link"
+              style={{ marginRight: 6 }}
+              aria-expanded={fold.expanded}
+              aria-label={`${fold.expanded ? '收起' : '展开'} ${member.principal}`}
+              onClick={() => onToggleFold?.(member.principal, !fold.expanded)}
+            >
+              <span aria-hidden="true">{fold.expanded ? '▾' : '▸'}</span>
+            </button>
+          )}
+          {highlightPrincipal(member.principal, query ?? '')}
+          {fold && fold.hidden > 0 && (
+            <span className="os-hint">（还有 {fold.hidden} 个）</span>
+          )}
+        </span>
       </td>
       <td>{active ? '使用中' : member.status}</td>
       {isRoot && <td>{keyAuthorizationLabel(member, true)}</td>}
@@ -582,4 +719,52 @@ const ROLE_LABELS: Record<string, string> = {
 
 function roleLabel(id: string): string {
   return ROLE_LABELS[id] ?? '自定义范围'
+}
+
+/** 默认展开两层：根的直接子节点是第一层，再展开一层，更深的收起。 */
+const DEFAULT_VISIBLE_DEPTH = 2
+
+/**
+ * 用户显式切换过的折叠状态（账号 → 是否展开）。
+ *
+ * 放在模块级而不是组件 state：翻页、切换查看范围、组件重新挂载都不重置 ——
+ * 用户折叠了就是不想看，不该因为一次刷新又全部弹开。
+ */
+const foldOverrides = new Map<string, boolean>()
+
+/** 树视图的检索上下文：query 非空时只渲染命中路径，并强制展开。 */
+interface TreeFolding {
+  query: string
+  matched: Set<string>
+}
+
+/** 命中节点 + 其全部祖先；路径之外的节点一律不渲染。 */
+function collectMatchedPaths(nodes: AccountNode[], query: string): Set<string> {
+  const matched = new Set<string>()
+  const needle = query.trim().toLowerCase()
+  if (!needle) return matched
+  const walk = (node: AccountNode, ancestors: string[]) => {
+    const path = [...ancestors, node.principal]
+    if (node.principal.toLowerCase().includes(needle)) {
+      for (const principal of path) matched.add(principal)
+    }
+    for (const child of node.children) walk(child, path)
+  }
+  for (const node of nodes) walk(node, [])
+  return matched
+}
+
+/** 把账号名里第一处命中的片段包成 `<mark>`；未命中时原样返回。 */
+function highlightPrincipal(text: string, query: string): ReactNode {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return text
+  const index = text.toLowerCase().indexOf(needle)
+  if (index < 0) return text
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark>{text.slice(index, index + needle.length)}</mark>
+      {text.slice(index + needle.length)}
+    </>
+  )
 }

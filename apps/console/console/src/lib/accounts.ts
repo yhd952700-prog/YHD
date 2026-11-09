@@ -153,13 +153,48 @@ export function stubEnabled(): boolean {
   return Boolean(env?.DEV)
 }
 
+/**
+ * 没有可读 detail 时的兜底：不许把「请求失败（500）」这种只报状态码的句子
+ * 直接丢给用户。按状态给出「发生了什么 + 下一步」，与 api.ts 同一口径。
+ */
+function fallbackStatusMessage(status: number): string {
+  if (status === 403 || status === 404) {
+    return '当前账号没有执行这个操作的权限；如需开通，请联系管理员。'
+  }
+  if (status === 408) {
+    return '这次请求超时，操作可能没有完成。请重试；不要重复提交同一个操作。'
+  }
+  if (status === 429) {
+    return '请求过于频繁，请稍后再试。'
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return '本地服务暂时不可用，可能是正在启动或重启。请稍后重试。'
+  }
+  if (status >= 500) {
+    return '本地服务这次没有完成操作，请稍后重试；持续失败可导出诊断包。'
+  }
+  return '操作没有完成，请稍后重试；持续出现可导出诊断包。'
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = tokenHeaders(init?.headers)
   if (init?.body) headers.set('Content-Type', 'application/json')
   let response: Response
   try {
-    response = await fetch(path, { ...init, headers })
-  } catch {
+    // 与 api.ts 相同：没有超时的 fetch 会在服务卡住时永远悬着，界面一直转圈。
+    response = await fetch(path, {
+      ...init,
+      headers,
+      signal: init?.signal ?? AbortSignal.timeout(15_000),
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new AccountApiError(
+        408,
+        null,
+        '这次读取超时（15 秒）。本地服务可能正忙，请重试；如果一直超时，请重启鎏灏后再试。',
+      )
+    }
     throw new AccountApiError(0, null, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
@@ -188,7 +223,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
       throw new AccountApiError(401, code, '登录状态已失效，请重新登录')
     }
-    throw new AccountApiError(response.status, code, message || `请求失败（${response.status}）`)
+    throw new AccountApiError(
+      response.status,
+      code,
+      message || fallbackStatusMessage(response.status),
+    )
   }
   return (await response.json()) as T
 }
@@ -206,7 +245,8 @@ export function neutralDenial(error: unknown): string {
   if (error instanceof AccountApiError && (error.status === 403 || error.status === 404)) {
     return '无权执行该操作'
   }
-  return error instanceof Error ? error.message : '操作失败'
+  const fallback = error instanceof Error ? error.message : ''
+  return fallback || '操作没有完成，请稍后重试；持续出现可导出诊断包。'
 }
 
 async function withStub<T>(

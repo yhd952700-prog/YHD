@@ -10,6 +10,7 @@
  * 非组件的格式化函数在 `lib/format.ts` —— 混在本文件里会让 Fast Refresh 失效。
  */
 
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { isLocalServiceOffline } from '../lib/errorMessage'
 import type { Tone } from '../lib/format'
@@ -58,8 +59,21 @@ export function Card({
 }
 
 export function Loading({ rows = 3 }: { rows?: number }) {
+  // 只有骨架没有文字时，慢请求看起来和"卡死"完全一样：三秒后界面一动不动，
+  // 用户没有任何依据判断该继续等还是该去检查服务。这里先给一句"在做什么"，
+  // 超过 3 秒再补一句"为什么慢、这时能做什么"。
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), 3000)
+    return () => window.clearTimeout(timer)
+  }, [])
   return (
     <div role="status" aria-busy="true" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+      <p className="os-hint" style={{ margin: 0 }}>
+        {slow
+          ? '还在读取。本地服务较忙时会慢一些；如果一直停在这里，请确认鎏灏正在运行，或回到上一页再进来。'
+          : '正在读取…'}
+      </p>
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="os-skeleton" style={{ height: index === 0 ? 22 : 38 }} />
       ))}
@@ -85,11 +99,21 @@ export function Failure({ message, onRetry }: { message: string; onRetry?: () =>
   )
 }
 
-export function Empty({ title, hint }: { title: string; hint?: string }) {
+export function Empty({
+  title,
+  hint,
+  action,
+}: {
+  title: string
+  hint?: string
+  /** 空态同样需要出路：没有内容的页面也得能让用户重读一次。 */
+  action?: ReactNode
+}) {
   return (
     <div className="os-empty" role="status">
       <strong>{title}</strong>
       {hint && <span>{hint}</span>}
+      {action}
     </div>
   )
 }
@@ -121,9 +145,37 @@ export function Guard<T>({
   children: (data: T) => ReactNode
 }) {
   if (error) return <Failure message={error} onRetry={onRetry} />
-  if (data === null) return loading ? <Loading rows={rows} /> : <Empty title="暂无数据" />
+
+  // 空态一律要给出路：只说「暂无数据」等于让用户自己猜是没数据、没读到、
+  // 还是页面坏了。没有内容时至少给一句解释 + 一个可点的重试。
+  const retryAction = onRetry ? (
+    <button className="os-link" onClick={onRetry} style={{ marginTop: 4 }} type="button">
+      <IconRefresh size={12} /> 重试
+    </button>
+  ) : undefined
+
+  if (data === null) {
+    return loading ? (
+      <Loading rows={rows} />
+    ) : (
+      <Empty
+        title="暂无数据"
+        hint="这一块还没有读到内容。点「重试」再读一次；如果刚打开这一页，稍等片刻也可能自行出现。"
+        action={retryAction}
+      />
+    )
+  }
   if (isEmpty?.(data)) {
-    return <Empty title={emptyTitle ?? '暂无数据'} hint={emptyHint} />
+    return (
+      <Empty
+        title={emptyTitle ?? '暂无数据'}
+        hint={
+          emptyHint ??
+          '如果这里本该有内容，说明读取结果为空或还没回来；点「重试」重新读一次。'
+        }
+        action={emptyHint ? undefined : retryAction}
+      />
+    )
   }
   return <>{children(data)}</>
 }

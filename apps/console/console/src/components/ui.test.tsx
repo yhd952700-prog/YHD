@@ -11,8 +11,8 @@
  */
 
 import { describe, expect, test, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { Guard } from './ui'
+import { act, render, screen } from '@testing-library/react'
+import { Guard, Loading } from './ui'
 
 describe('Guard 四态契约', () => {
   test('error 为真 → 渲染 Failure，且带可重试入口', () => {
@@ -136,5 +136,51 @@ describe('状态组件的无障碍角色', () => {
     const status = container.querySelector('[role="status"]')
     expect(status).toBeTruthy()
     expect(status?.textContent).toContain('暂无应用')
+  })
+})
+
+describe('四态文案要能照着做', () => {
+  test('加载态有可见文字；超过 3 秒说明“还在读取”，不像卡死', () => {
+    vi.useFakeTimers()
+    try {
+      render(<Loading rows={2} />)
+      expect(screen.getByText('正在读取…')).toBeTruthy()
+      act(() => {
+        vi.advanceTimersByTime(3000)
+      })
+      expect(screen.getByText(/还在读取/)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('数据为空且非加载：给出重试入口，而不是干说“暂无数据”', () => {
+    const onRetry = vi.fn()
+    render(
+      <Guard loading={false} error={null} data={null} onRetry={onRetry}>
+        {() => <span>不应出现</span>}
+      </Guard>,
+    )
+    expect(screen.getByText('暂无数据')).toBeTruthy()
+    expect(screen.getByText(/点「重试」再读一次/)).toBeTruthy()
+    screen.getByRole('button', { name: /重试/ }).click()
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  test('空列表没有说明时，补一句可执行的提示', () => {
+    render(
+      <Guard
+        loading={false}
+        error={null}
+        data={[] as unknown as { length: number }}
+        isEmpty={(d: { length: number }) => d.length === 0}
+        emptyTitle="还没有调用记录"
+        onRetry={() => {}}
+      >
+        {() => <span>不应出现</span>}
+      </Guard>,
+    )
+    expect(screen.getByText('还没有调用记录')).toBeTruthy()
+    expect(screen.getByText(/点「重试」重新读一次/)).toBeTruthy()
   })
 })

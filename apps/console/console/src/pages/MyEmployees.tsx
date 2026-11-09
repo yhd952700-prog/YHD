@@ -43,6 +43,9 @@ import type { MyEmployee } from '../lib/employees'
 import { BudgetDenialActions, Card, Empty, Failure, Guard } from '../components/ui'
 import { isBudgetDenialMessage } from '../lib/errorMessage'
 
+/** 单页员工数：接口一次返回全量，分页只在渲染层切片。 */
+const EMPLOYEE_PAGE_SIZE = 50
+
 function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
   id: string
   label: string
@@ -86,6 +89,7 @@ export function MyEmployees({
   const [assigning, setAssigning] = useState<string | null>(null)
   const [assignValue, setAssignValue] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [pageIndex, setPageIndex] = useState(0)
 
   // 派活时焦点接力：展开后进输入框，提交/取消后回"单独指派一个任务"。
   // 不用 autoFocus，是因为同一个员工行会被重渲染，只有当前名字的引用有效。
@@ -124,6 +128,18 @@ export function MyEmployees({
           employeeCapabilities(employee, catalogLabels).toLowerCase().includes(need),
       )
     : employees
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / EMPLOYEE_PAGE_SIZE))
+  const safePage = Math.min(pageIndex, pageCount - 1)
+  const pageEmployees = filtered.slice(
+    safePage * EMPLOYEE_PAGE_SIZE,
+    (safePage + 1) * EMPLOYEE_PAGE_SIZE,
+  )
+
+  // 搜索/筛选变了就回第 1 页；否则会停在旧页，看起来像「没有这个人」。
+  useEffect(() => {
+    setPageIndex(0)
+  }, [need])
 
   const runAction = useCallback(
     async (key: string, action: () => Promise<void>, success: string): Promise<boolean> => {
@@ -562,7 +578,40 @@ export function MyEmployees({
         ) : filtered.length === 0 ? (
           <Empty title={`没有员工匹配「${query}」`} hint="试试名字或职责里的其他关键词。" />
         ) : (
-          <div className="os-list">{filtered.map(renderEmployee)}</div>
+          <>
+            <div className="os-list">{pageEmployees.map(renderEmployee)}</div>
+            {filtered.length > EMPLOYEE_PAGE_SIZE && (
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  marginTop: 8,
+                }}
+              >
+                <button
+                  className="os-btn os-btn-ghost"
+                  style={{ width: 'auto' }}
+                  disabled={safePage === 0}
+                  onClick={() => setPageIndex(safePage - 1)}
+                >
+                  上一页
+                </button>
+                <span className="os-hint">
+                  第 {safePage + 1} / {pageCount} 页 · 共 {filtered.length} 位
+                </span>
+                <button
+                  className="os-btn os-btn-ghost"
+                  style={{ width: 'auto' }}
+                  disabled={safePage >= pageCount - 1}
+                  onClick={() => setPageIndex(safePage + 1)}
+                >
+                  下一页
+                </button>
+              </div>
+            )}
+          </>
         )}
       </Card>
     </div>

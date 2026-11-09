@@ -35,6 +35,9 @@ import {
 } from '../components/OperatorControls'
 import { Card, Dot, Empty, Guard } from '../components/ui'
 
+/** 运行时 Tab 的单页条数：接口一次返回全量，分页只在渲染层切片。 */
+const RUNTIME_PAGE_SIZE = 50
+
 const STATUS_TONE: Record<string, string> = {
   idle: 'ok',
   running: 'accent',
@@ -59,6 +62,8 @@ export function Roster({ query }: { query: string }) {
   const employees = useApi<EmployeesPayload>('/v1/employees', 30_000)
   const goals = useApi<GoalsPayload>('/v1/goals', 30_000)
   const [tab, setTab] = useState<'kernels' | 'layers' | 'runtime'>('kernels')
+  const [employeePage, setEmployeePage] = useState(0)
+  const [agentPage, setAgentPage] = useState(0)
 
   const need = query.trim().toLowerCase()
 
@@ -199,7 +204,24 @@ export function Roster({ query }: { query: string }) {
             emptyTitle="还没有可用的执行个体"
             onRetry={employees.reload}
           >
-            {(empData) => (<>
+            {(empData) => {
+              const empList = empData.employees ?? []
+              const empPageCount = Math.max(1, Math.ceil(empList.length / RUNTIME_PAGE_SIZE))
+              const safeEmpPage = Math.min(employeePage, empPageCount - 1)
+              const pageEmployees = empList.slice(
+                safeEmpPage * RUNTIME_PAGE_SIZE,
+                (safeEmpPage + 1) * RUNTIME_PAGE_SIZE,
+              )
+              const agentPageCount = Math.max(
+                1,
+                Math.ceil(empData.agents.length / RUNTIME_PAGE_SIZE),
+              )
+              const safeAgentPage = Math.min(agentPage, agentPageCount - 1)
+              const pageAgents = empData.agents.slice(
+                safeAgentPage * RUNTIME_PAGE_SIZE,
+                (safeAgentPage + 1) * RUNTIME_PAGE_SIZE,
+              )
+              return (<>
               <div className="os-operator-panel">
                 <div className="os-operator-grid">
                   <div>
@@ -227,12 +249,12 @@ export function Roster({ query }: { query: string }) {
                     </div>
                   </div>
                 </div>
-                {empData.employees && empData.employees.length > 0 && (
+                {empList.length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>
-                      按名员工（{empData.employees.length}）
+                      按名员工（{empList.length}）
                     </div>
-                    {empData.employees.map((emp) => (
+                    {pageEmployees.map((emp) => (
                       <div className="os-row" key={emp.name}>
                         <span
                           className="os-dot"
@@ -259,9 +281,40 @@ export function Roster({ query }: { query: string }) {
                         <EmployeeActionButtons name={emp.name} onDone={employees.reload} />
                       </div>
                     ))}
+                    {empList.length > RUNTIME_PAGE_SIZE && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: 8,
+                          alignItems: 'center',
+                          justifyContent: 'flex-end',
+                          marginTop: 8,
+                        }}
+                      >
+                        <button
+                          className="os-btn os-btn-ghost"
+                          style={{ width: 'auto' }}
+                          disabled={safeEmpPage === 0}
+                          onClick={() => setEmployeePage(safeEmpPage - 1)}
+                        >
+                          上一页
+                        </button>
+                        <span className="os-hint">
+                          第 {safeEmpPage + 1} / {empPageCount} 页 · 共 {empList.length} 位
+                        </span>
+                        <button
+                          className="os-btn os-btn-ghost"
+                          style={{ width: 'auto' }}
+                          disabled={safeEmpPage >= empPageCount - 1}
+                          onClick={() => setEmployeePage(safeEmpPage + 1)}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
-                {empData.agents.map((agent) => (
+                {pageAgents.map((agent) => (
                   <div className="os-row" key={agent.id}>
                     <span className="os-dot" style={{ background: `var(--os-${STATUS_TONE[agent.status] ?? 'muted'})` }} />
                     <div className="os-row-main">
@@ -289,6 +342,37 @@ export function Roster({ query }: { query: string }) {
                         <AgentActionButtons agentId={agent.id} status={agent.status} onDone={employees.reload} />
                       </div>
                     ))}
+                {empData.agents.length > RUNTIME_PAGE_SIZE && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      marginTop: 8,
+                    }}
+                  >
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeAgentPage === 0}
+                      onClick={() => setAgentPage(safeAgentPage - 1)}
+                    >
+                      上一页
+                    </button>
+                    <span className="os-hint">
+                      第 {safeAgentPage + 1} / {agentPageCount} 页 · 共 {empData.agents.length} 个执行个体
+                    </span>
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeAgentPage >= agentPageCount - 1}
+                      onClick={() => setAgentPage(safeAgentPage + 1)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                )}
                 {goals.data && goals.data.goals.length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>最近 Goal 执行</div>
@@ -324,7 +408,8 @@ export function Roster({ query }: { query: string }) {
                   </div>
                 )}
               </div>
-            </>)}
+              </>)
+            }}
           </Guard>
         ) : (
         <Guard

@@ -44,6 +44,14 @@ function sourceLabel(value: unknown): string {
  * 后端 `created_at` 是 ISO 原文（含微秒）；直接上屏会看到
  * `2026-11-07T01:55:15.871806` 这类机器时间，必须按本机时区本地化。
  */
+/**
+ * 记忆条目客户端分页大小。
+ *
+ * `/v1/memory/entries` 没有 offset / limit，也不返回分页游标；改契约会同时
+ * 牵动网关与成员端，因此沿用现有接口，在客户端按页切片。检索仍走服务端 query。
+ */
+const MEMORY_PAGE_SIZE = 50
+
 function entryTime(value: unknown): string {
   const text = typeof value === 'string' ? value.trim() : ''
   if (!text) return '—'
@@ -69,11 +77,21 @@ export function Memory({
   const [custodyBusy, setCustodyBusy] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
+  const [pageIndex, setPageIndex] = useState(0)
 
   const memory = useAccountData(() =>
     loadMemory({ principal: profile.principal, isRoot: profile.isRoot }, scope, applied),
   )
   const custody = useAccountData(() => loadMemoryCustody())
+
+  const allEntries = memory.data?.entries ?? []
+  const memoryPageCount = Math.max(1, Math.ceil(allEntries.length / MEMORY_PAGE_SIZE))
+  // 删除或检索后条目变少时，当前页会越界；夹到最后一页，绝不渲染空白页。
+  const safeMemoryPage = Math.min(pageIndex, memoryPageCount - 1)
+  const pageEntries = allEntries.slice(
+    safeMemoryPage * MEMORY_PAGE_SIZE,
+    (safeMemoryPage + 1) * MEMORY_PAGE_SIZE,
+  )
 
   const doExport = async () => {
     if (readOnly) {
@@ -203,6 +221,7 @@ export function Memory({
               value={scope}
               onChange={(event) => {
                 setScope(event.target.value as 'self' | 'subtree')
+                setPageIndex(0)
                 memory.reload()
               }}
             >
@@ -215,6 +234,7 @@ export function Memory({
             style={{ width: 'auto' }}
             onClick={() => {
               setApplied(query.trim())
+              setPageIndex(0)
               memory.reload()
             }}
           >
@@ -243,7 +263,7 @@ export function Memory({
           }
           onRetry={memory.reload}
         >
-          {(data) => (
+          {() => (
             <div className="os-table-wrap">
               <table className="os-table">
                 <thead>
@@ -257,7 +277,7 @@ export function Memory({
                   </tr>
                 </thead>
                 <tbody>
-                  {data.entries.map((entry) => {
+                  {pageEntries.map((entry) => {
                     const mine = entry.account_id === profile.principal
                     return (
                       <tr key={entry.id}>
@@ -326,6 +346,37 @@ export function Memory({
                   })}
                 </tbody>
               </table>
+              {memoryPageCount > 1 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    justifyContent: 'flex-end',
+                    marginTop: 8,
+                  }}
+                >
+                  <button
+                    className="os-btn os-btn-ghost"
+                    style={{ width: 'auto' }}
+                    disabled={safeMemoryPage === 0}
+                    onClick={() => setPageIndex(safeMemoryPage - 1)}
+                  >
+                    上一页
+                  </button>
+                  <span className="os-hint">
+                    第 {safeMemoryPage + 1} / {memoryPageCount} 页 · 共 {allEntries.length} 条
+                  </span>
+                  <button
+                    className="os-btn os-btn-ghost"
+                    style={{ width: 'auto' }}
+                    disabled={safeMemoryPage >= memoryPageCount - 1}
+                    onClick={() => setPageIndex(safeMemoryPage + 1)}
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </Guard>

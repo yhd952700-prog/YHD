@@ -14,7 +14,7 @@
  * * 激活是**人类主权动作**（走带会话的 `apiFetch`，401 由它统一抛出并清会话）；
  *   未知 id 由后端返回真实 404，激活失败会带真实 error，前端原样展示，不假装成功。
  * * 没有插件就如实显示「暂无应用」，不编造；后端对不存在的 plugin_id 返回真实 404，
- *   前端原样展示「未知插件」。
+ *   前端说明"插件已不在列表里"并给出下一步。
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -91,10 +91,10 @@ export function Apps({
           ...prev,
           [pluginId]:
             status === 404
-              ? '未知插件'
+              ? '列表里已经没有这个插件，可能已被移除；列表每 30 秒自动刷新，请稍后再试。'
               : err instanceof Error
                 ? err.message
-                : '激活失败',
+                : '激活没有完成，请重试；持续失败请刷新页面后查看该插件状态。',
         }))
         // 失败也是真实状态：刷新一次，让该行按 failed 渲染且不再显示可点击按钮。
         void apps.reload()

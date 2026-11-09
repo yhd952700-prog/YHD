@@ -30,7 +30,7 @@ import {
   type AuditVerifyResult,
 } from '../lib/operator'
 import type { AccountProfile } from '../lib/accountCaps'
-import { Card, Empty, Guard } from '../components/ui'
+import { Card, Empty, Failure, Guard, Loading } from '../components/ui'
 import { actionLabel, eventLabel, outcomeLabel, principalLabel } from '../lib/format'
 
 /** 事件条数上限。后端默认 100、硬上限 1000；这里取 200 足够人读。 */
@@ -119,7 +119,11 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         }。归档不含校验密钥，离开原机后无法重新做密钥校验。`,
       )
     } catch (err) {
-      setExportNotice(err instanceof Error ? err.message : '导出失败')
+      setExportNotice(
+        err instanceof Error
+          ? err.message
+          : '导出没有完成，请重试；持续失败可在「设置 → 遇到问题」导出诊断包后再试。',
+      )
     } finally {
       setExporting(false)
     }
@@ -141,7 +145,9 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
       })
       setFiltered(response.events)
     } catch (err) {
-      setFilterError(err instanceof Error ? err.message : '读取失败')
+      setFilterError(
+        err instanceof Error ? err.message : '这一批操作没有读出来，请重试。',
+      )
     }
   }, [])
 
@@ -256,7 +262,11 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         )}
 
         {/* 校验结果 —— ok=false 必须看起来就是坏了；缺密钥 / 混合链是另外两种状态 */}
-        {verifyError && <p className="os-error">校验请求失败：{verifyError}</p>}
+        {verifyError && (
+          <p className="os-error">
+            校验请求失败：{verifyError}。可点右上角「检查记录完整性」重试。
+          </p>
+        )}
         {verify && (
           <div className="os-kv">
             <div className="os-kv-row">
@@ -397,9 +407,20 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
           ) : undefined
         }
       >
-        {filterError && <p className="os-error">{filterError}</p>}
-        {correlation && filtered === null && !filterError && <p>读取中…</p>}
-        {shown.length === 0 && !filterError ? (
+        {/* 错误与加载必须显式分支：events 轮询失败时 data 仍是 null，
+            若直接走到空态，会把"读不到审计记录"渲染成"还没有操作记录"。 */}
+        {filterError ? (
+          <Failure
+            message={filterError}
+            onRetry={correlation ? () => void openCorrelation(correlation) : undefined}
+          />
+        ) : correlation && filtered === null ? (
+          <Loading rows={5} />
+        ) : !correlation && events.error ? (
+          <Failure message={events.error} onRetry={events.reload} />
+        ) : !correlation && events.loading && events.data === null ? (
+          <Loading rows={5} />
+        ) : shown.length === 0 ? (
           <Empty
             title={correlation ? '这一批没有其它操作' : '还没有操作记录'}
             hint="有人登录、改设置、建员工或派活时，这里会自动出现一条记录。"
