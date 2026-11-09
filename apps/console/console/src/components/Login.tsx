@@ -94,14 +94,12 @@ const CONFIG_RETRY_DELAY_MS = 2000
 const CONFIG_RETRY_LIMIT = 30
 
 /**
- * 手机中继对被移除 / 未配对的设备返回 401（网关的 `/v1/auth/config` 本身是
- * 匿名可读的，401 只可能来自中继这一层）。
- *
- * 这种情况下重试没有意义：服务是活着的，只是这台设备不再被允许访问。
- * 所以这里停下重试，直接说明要重新配对。
+ * `/v1/auth/config` 本身匿名可读，401 在 0.1.2 里只可能是访问层拒绝
+ * （反向代理、鉴权网关等）。重试没有意义，也不能再讲"配对/手机访问"——
+ * 0.1.2 没有这套能力，配对中继已整包回退。
  */
-const DEVICE_REVOKED_MESSAGE =
-  '这台设备已被移除，请重新配对。请在电脑上重新生成配对码，然后在手机上完成配对。'
+const CONFIG_UNAUTHORIZED_MESSAGE =
+  '无法读取登录配置（401）。请在这台电脑上打开鎏灏桌面端继续操作；手机端目前没有单独的登录或恢复入口。'
 
 /**
  * 首次初始化只能在本机完成。手机浏览器提交必然被网关拒绝，文案必须指到
@@ -157,7 +155,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
   const [error, setError] = useState('')
   const [config, setConfig] = useState<AuthConfig | null>(null)
   const [configError, setConfigError] = useState('')
-  const [deviceRevoked, setDeviceRevoked] = useState(false)
+  const [configUnauthorized, setConfigUnauthorized] = useState(false)
   const [stage, setStage] = useState<Stage>('login')
 
   useEffect(() => {
@@ -175,9 +173,9 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           return
         }
         if (result.status === 401) {
-          // 设备已被移除（中继层 401）：服务在线，重试只会一直显示"正在准备"。
-          setDeviceRevoked(true)
-          setConfigError(DEVICE_REVOKED_MESSAGE)
+          // 访问层拒绝：重试只会一直显示"正在准备"，直接给出可执行的下一步。
+          setConfigUnauthorized(true)
+          setConfigError(CONFIG_UNAUTHORIZED_MESSAGE)
           return
         }
         attempts += 1
@@ -341,18 +339,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
-        {deviceRevoked && (
-          <button
-            type="button"
-            className="os-btn"
-            data-testid="login-repair-link"
-            onClick={() => window.location.assign('/')}
-          >
-            回到配对页，重新配对
-          </button>
-        )}
-
-        {notice && !deviceRevoked && (
+        {notice && !configError && (
           <div className="os-alert" role="alert" data-testid="login-notice">
             <IconAlert size={15} />
             <span>
@@ -385,7 +372,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
-        {!noAccount && !deviceRevoked && (stage === 'login' || stage === 'register') && (
+        {!noAccount && !configUnauthorized && (stage === 'login' || stage === 'register') && (
           <div
             className="os-login-tabs"
             role="tablist"
@@ -448,7 +435,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
-        {stage === 'login' && !deviceRevoked && (
+        {stage === 'login' && !configUnauthorized && (
           <div role="tabpanel" id="os-login-panel" aria-labelledby="os-login-tab-login">
           <form onSubmit={submitLogin}>
             <div className="os-field">
@@ -1197,7 +1184,8 @@ function RecoveryForm({
         <div className="os-note" role="status" data-testid="recovery-path">
           <span>
             重置密码需要在这台电脑上完成。请打开这台电脑上的鎏灏桌面端，在登录页选择「忘记密码」，
-            用初始化时保存的恢复码设置新密码；完成后回到当前设备登录。
+            用初始化时保存的恢复码设置新密码，完成后回到当前设备登录。
+            手机端目前不提供重置密码的入口。
           </span>
         </div>
         <div className="os-login-links">

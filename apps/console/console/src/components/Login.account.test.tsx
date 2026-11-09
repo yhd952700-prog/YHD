@@ -380,14 +380,14 @@ describe('登录页状态机', () => {
     expectNoInviteWords()
   })
 
-  test('设备已被移除（中继 401）：停止重试，说清重新配对并给出回到配对页的入口', async () => {
+  test('访问层拒绝（401）：停止重试，指路桌面端且不再提配对/手机访问', async () => {
     let calls = 0
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         if (String(input) === '/v1/auth/config') {
           calls += 1
-          return json(401, { detail: '设备未配对：请先在电脑端生成配对码，并在手机上完成配对。' })
+          return json(401, { detail: 'Unauthorized' })
         }
         return json(404, { detail: 'Not Found' })
       }),
@@ -395,12 +395,17 @@ describe('登录页状态机', () => {
 
     render(<Login mode="mobile" notice="expired" onSuccess={vi.fn()} />)
 
-    expect(await screen.findByText(/这台设备已被移除，请重新配对/)).toBeTruthy()
-    expect(screen.getByTestId('login-repair-link').textContent).toContain('回到配对页')
-    // 不再显示会误导人的"正在准备"，也不显示与"已被移除"矛盾的"登录已过期"。
+    const message = await screen.findByText(/无法读取登录配置（401）/)
+    expect(message.textContent).toContain('鎏灏桌面端')
+    expect(message.textContent).not.toContain('配对')
+    expect(message.textContent).not.toContain('手机访问')
+    expect(message.textContent).not.toContain('LIUHAO_ALLOW_REMOTE_RECOVERY')
+    // 已经没有"重新配对"这种能力，页面上也不该再有对应入口。
+    expect(screen.queryByTestId('login-repair-link')).toBeNull()
+    // 不再显示会误导人的"正在准备"，也不显示与 401 矛盾的"登录已过期"。
     expect(document.body.textContent).not.toContain('正在准备')
     expect(screen.queryByTestId('login-notice')).toBeNull()
-    // 死了的表单不再摆出来：用户只剩下"重新配对"一条路。
+    // 读不到配置时表单必然失败，不再摆出来。
     expect(document.querySelector('#os-principal')).toBeNull()
 
     // 401 不安排重试：等过一个完整的重试周期后仍然只有 1 次请求。
@@ -426,7 +431,7 @@ describe('登录页状态机', () => {
     expect(await screen.findByText(/正在准备/)).toBeTruthy()
     await new Promise((resolve) => setTimeout(resolve, 2400))
     expect(calls).toBeGreaterThanOrEqual(2)
-    expect(document.body.textContent).not.toContain('这台设备已被移除')
+    expect(document.body.textContent).not.toContain('无法读取登录配置')
   })
 
   test('连不上（服务还没起来）：同样保持"正在准备"并继续自动重试', async () => {

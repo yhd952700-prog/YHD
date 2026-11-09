@@ -60,8 +60,8 @@ export interface AuthConfig {
   }
   /**
    * 恢复码的真实可用状态（后端按根账号是否真的持有恢复码判定）。
-   * ``local`` 表示当前请求来自本机（含已配对手机中继），登录页可展示
-   * “在本机生成恢复码”；``remote_allowed`` 表示运维显式开了远程重置。
+   * ``local`` 表示当前请求来自本机，登录页可展示“在本机生成恢复码”；
+   * ``remote_allowed`` 预留给将来显式放开的远程重置，0.1.2 恒为 false。
    */
   recovery?: {
     available: boolean
@@ -381,7 +381,7 @@ export function currentToken(): string {
 /** 登录页读取元信息的结果。失败时必须带一句能行动的中文，不能静默 null。
  *
  * `status` 是真实的 HTTP 状态（`null` 表示连不上）。登录页靠它区分「服务还没
- * 起来」（连接失败 / 5xx，值得重试）与「设备已被移除」（401，重试没有意义）。
+ * 起来」（连接失败 / 5xx，值得重试）与「访问层拒绝」（401，重试没有意义）。
  */
 export interface AuthConfigResult {
   config: AuthConfig | null

@@ -89,15 +89,15 @@ describe('登录页读取配置', () => {
     expect(result.status).toBe(200)
   })
 
-  test('401（设备已被移除/未配对）→ 带回真实状态码，供登录页停止重试', async () => {
+  test('401（访问层拒绝）→ 带回真实状态码，供登录页停止重试', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
         ok: false,
         status: 401,
         headers: new Headers({ 'Content-Type': 'application/json' }),
-        json: async () => ({ detail: '设备未配对' }),
-        text: async () => JSON.stringify({ detail: '设备未配对' }),
+        json: async () => ({ detail: 'Unauthorized' }),
+        text: async () => JSON.stringify({ detail: 'Unauthorized' }),
       })),
     )
 
