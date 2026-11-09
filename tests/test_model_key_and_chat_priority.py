@@ -140,15 +140,20 @@ class _Upstream:
 
         # 带 Key 的 http 只允许本机推理端口（net_guard 的安全策略）：测试上游
         # 必须落在 11434/1234/8000/8080 之一，否则请求会在发出去之前被拒绝，
-        # 分类断言测的就变成护栏本身了。逐端口尝试，全占用才退回临时端口。
+        # 分类断言测的就变成护栏本身了。绝不退回随机端口（端口 0 不在白名单，
+        # 会让用例以看不懂的护栏错误变红）；四个端口全被占用时显式 skip 并说明原因。
         self._server = None
-        for port in (11434, 1234, 8000, 8080, 0):
+        for port in (11434, 1234, 8000, 8080):
             try:
                 self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
                 break
             except OSError:
                 continue
-        assert self._server is not None, "无法绑定本地测试上游端口"
+        if self._server is None:
+            pytest.skip(
+                "四个白名单推理端口（11434/1234/8000/8080）均被占用，"
+                "带 Key 的 http 上游无法在 net_guard 白名单内绑定"
+            )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
