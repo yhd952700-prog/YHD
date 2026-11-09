@@ -288,9 +288,13 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             还没有设置登录凭据，此时任何人都无法登录。请按页面提示完成首次设置，再回到这里登录。
           </p>
         )}
-        <p className="os-login-aside-note">
-          桌面端只有一个鎏灏窗口；关闭窗口会退到系统托盘，本地服务继续运行。需要时从托盘重新打开即可。
-        </p>
+        {/* 托盘文案只对桌面壳成立：浏览器里没有托盘，宽屏浏览器即使借用了
+            桌面端栅格也不能显示这条说明，否则等于网页端自称桌面端。 */}
+        {isDesktopShell() && (
+          <p className="os-login-aside-note">
+            桌面端只有一个鎏灏窗口；关闭窗口会退到系统托盘，本地服务继续运行。需要时从托盘重新打开即可。
+          </p>
+        )}
       </aside>
 
       <div className="os-login-card">

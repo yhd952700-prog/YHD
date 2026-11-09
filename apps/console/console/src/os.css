@@ -3217,6 +3217,12 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   min-height: 44px;
 }
 
+/* 复选标记本体 15px 在手机上点不准：放大到 22px，仍有 ≥44px 的 label 命中区。 */
+[data-mode='mobile'] .os-check input {
+  width: 22px;
+  height: 22px;
+}
+
 [data-mode='mobile'] .profile-input,
 [data-mode='mobile'] .profile-select,
 [data-mode='mobile'] .profile-btn {
