@@ -1198,6 +1198,11 @@ def _assert_url_allowed(
             status_code=400,
             detail=f"base_url 仅支持 http/https，收到：{parsed.scheme or '(空)'}",
         )
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=400,
+            detail="base_url 不能包含用户名或密码，请把凭据单独填在 Key 里。",
+        )
     host = parsed.hostname
     if not host:
         raise HTTPException(status_code=400, detail="base_url 缺少合法主机名")
