@@ -1261,14 +1261,37 @@ begin
     可行动的处置，而不是装完才让用户发现备份在 C 盘。 }
   BackupOverride := Trim(ExpandConstant('{param:BACKUPS|}'));
   BackupRoot := GetBackupRoot('');
+
+  { Fail-closed：数据目录解析不出盘符时（ResolvedDataDir 为空、或不是绝对路径），
+    备份根会退化成没有盘符的 \LiuHaoBackups。此时 ExtractFileDrive 取到空串，
+    与系统盘符不相等，下面那条「落在系统盘」的判定会**放行**，并把这个坏值写进
+    HKCU\Environment\LIUHAO_UPGRADE_BACKUP_ROOT——静默安装最容易走到这里。
+    宁可拒绝安装，也不写坏值。 }
+  if (BackupOverride = '') and (ExtractFileDrive(BackupRoot) = '') then
+  begin
+    Result := '备份目录无法确定，安装已停止（没有写入任何文件）。' + #13#10#13#10 +
+      '原因：数据目录没有解析出一个可用的盘符（本次解析结果为空' +
+      '，或不是带盘符的绝对路径），安装器无法据此推导备份根。' + #13#10#13#10 +
+      '请这样做：' + #13#10 +
+      '  1) 点「上一步」回到「数据目录」页，把数据目录改到 D 盘（例如 D:\LiuHaoData），' +
+      '再点「下一步」重试；' + #13#10 +
+      '  2) 如果这台机器确实没有 D 盘，请改选其它非系统盘上的目录。' + #13#10#13#10 +
+      '（仅在使用命令行安装时才需要下列参数，界面安装可忽略：' +
+      '安装包加 /DATA=D:\LiuHaoData /BACKUPS=D:\LiuHaoBackups）';
+    Exit;
+  end;
+
   if (BackupOverride = '') and
      (CompareText(ExtractFileDrive(BackupRoot), ExtractFileDrive(ExpandConstant('{sd}'))) = 0) then
   begin
-    Result := '备份目录默认会落在系统盘：' + BackupRoot + #13#10#13#10 +
-      '数据目录当前是 ' + ResolvedDataDir + '，安装器按「数据目录所在盘」推导备份根，' +
-      '结果落在系统盘（' + ExpandConstant('{sd}') + '）。本产品要求备份不占 C 盘。' + #13#10 +
-      '请改选 D 盘的数据目录，或显式指定备份目录：' + #13#10 +
-      '  安装包命令行加 /BACKUPS=D:\LiuHaoBackups';
+    Result := '备份目录默认会落在系统盘，安装已停止（没有写入任何文件）。' + #13#10#13#10 +
+      '备份根会放在 ' + BackupRoot + '，因为当前数据目录是 ' +
+      DirForDisplay(ResolvedDataDir) + '，安装器按「数据目录所在盘」推导备份根，' +
+      '结果落在系统盘（' + ExpandConstant('{sd}') + '）。本产品要求备份不占 C 盘。' + #13#10#13#10 +
+      '请这样做：点「上一步」回到「数据目录」页，把数据目录改到 D 盘' +
+      '（例如 D:\LiuHaoData），再点「下一步」重试。' + #13#10#13#10 +
+      '（仅在使用命令行安装时才需要下列参数，界面安装可忽略：' +
+      '安装包加 /DATA=D:\LiuHaoData /BACKUPS=D:\LiuHaoBackups）';
     Exit;
   end;
 
