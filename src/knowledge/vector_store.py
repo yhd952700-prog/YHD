@@ -1279,6 +1279,25 @@ class PersistentVectorStore(VectorStore):
                 fused = weighted_reciprocal_rank_fusion(
                     vector_ids, lexical, rrf_k=rrf_k
                 )
+                # Equal fused scores are decided inside the fusion by chunk-id
+                # string order. On a measured tie (both 1/61 ≈ 0.016393) the
+                # BM25 winner -- the chunk that actually carried the answer --
+                # lost to an unrelated same-domain document that merely held
+                # the cosine top (0.7015 vs 0.6234). Exact query-term evidence
+                # is the scarcer signal, so ties prefer the better lexical
+                # rank, then cosine, then the chunk id for determinism.
+                lexical_rank = {
+                    chunk_id: rank for rank, (chunk_id, _) in enumerate(lexical)
+                }
+                fused = sorted(
+                    fused,
+                    key=lambda item: (
+                        -item[1],
+                        lexical_rank.get(item[0], len(lexical_ids)),
+                        -similarities.get(item[0], 0.0),
+                        item[0],
+                    ),
+                )
                 ordered_ids = [doc_id for doc_id, _ in fused]
                 fused_scores = dict(fused)
                 mode = "hybrid"

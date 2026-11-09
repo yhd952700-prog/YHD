@@ -544,10 +544,14 @@ def build_knowledge_context(
     blocks: List[str] = []
     sources: List[Dict[str, Any]] = []
     used_tokens = 0
-    for index, hit in enumerate(qualified, start=1):
+    for hit in qualified:
         text = _truncate(str(hit.get("text") or ""), _MAX_SNIPPET_CHARS)
         if not text:
             continue
+        # 引用标签必须与 sources 的下标一一对应（len(blocks) + 1）：跳过空
+        # 片段时编号不得移位，否则客户端把回复中的 [N] 映射回 sources[N-1]
+        # 时会展示错误的命中块。
+        index = len(blocks) + 1
         source = _source_of(hit)
         header = (
             f"[{index}] 文档={source['document_id']} "

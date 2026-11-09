@@ -131,6 +131,31 @@ class TestHybridSearch:
         assert info["mode"] == "hybrid"
         store.close()
 
+    def test_fused_tie_prefers_the_bm25_winner_over_chunk_id_order(self, tmp_path):
+        # 实测（设备巡检问题）：无关文档的向量第 1 名与词法第 1 名的答案块
+        # 融合分打平（都恰好 1/61 ≈ 0.016393），旧裁决按 chunk_id 字典序把
+        # 无关文档排到第一。平票必须偏向词法胜者：精确词条证据比“恰好是
+        # 余弦最高”的同域噪声更稀缺。
+        store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))
+        store.insert(
+            "aaa--boiler#0",
+            [1.0, 0.0],
+            {"text": "完全无关的噪声内容", "document_id": "aaa--boiler"},
+        )
+        store.insert(
+            "zzz--answer#0",
+            [0.0, 1.0],
+            {"text": "巡检记录 TICKET-8842 已归档", "document_id": "zzz--answer"},
+        )
+
+        results, info = store.hybrid_search(
+            "TICKET-8842", [1.0, 0.0], top_k=2, threshold=0.0
+        )
+        ids = [doc_id for doc_id, _, _ in results]
+        assert ids[0] == "zzz--answer#0"
+        assert info["mode"] == "hybrid"
+        store.close()
+
     def test_section_with_strong_bm25_is_promoted_over_vector_favourites(self, tmp_path):
         # 真实模型曾出现 section_hit@5 = 0：文档对了、章节全错。这里用向量路
         # 刻意压低正确章节（cos=0），相邻章节占满向量前几名，只有 BM25 强度
