@@ -9,7 +9,6 @@ if not defined LIUHAO_DATA_DIR if exist "%APP_DIR%\data-dir.txt" (
 )
 
 set "PY=%APP_DIR%\runtime\python.exe"
-if not exist "%PY%" set "PY=%APP_DIR%\.venv\Scripts\python.exe"
 if not exist "%PY%" set "PY=python"
 
 set "OUT=%USERPROFILE%\Desktop"

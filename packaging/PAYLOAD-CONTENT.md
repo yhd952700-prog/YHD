@@ -82,7 +82,8 @@ D:\LiuHaoData\                用户数据（卸载默认保留）
 同目录的 `LIUHAO_RELEASE.json` 是发布清单（整包 SHA256 + 字节数），
 规范见 [docs/self-upgrade.md](../docs/self-upgrade.md) §2.2。
 
-本轮打包扫描：运行文件命中 0（`src/plugins/registry.py`、`src/workflow/checkpoint.py`
-的默认落盘路径已改为按 `LIUHAO_WORKSPACE_ROOT` / 仓库 `data` 解析）；
-`docs/` 中的历史开发机链接单独归类，不影响安装与升级，详见
-`dist\release\dev-path-report.txt`。
+本轮打包扫描：运行文件命中 0（0.1.1 曾命中 2 处；本轮修掉了
+`scripts/collect_diagnostics.bat` 的 `.venv\Scripts` 兜底，`src/plugins/registry.py`、
+`src/workflow/checkpoint.py` 的默认落盘路径此前已改为按 `LIUHAO_WORKSPACE_ROOT` / 仓库
+`data` 解析）；`docs/` 中的历史开发机链接单独归类（本轮 490 个文档文件命中），
+不影响安装与升级，详见 `dist\release\dev-path-report.txt`。
