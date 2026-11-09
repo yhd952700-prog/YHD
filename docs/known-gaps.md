@@ -267,7 +267,7 @@ OpenAI 兼容预设；**MiniMax 不在列表里**。
 | D-4 | 自动化真实后端（浏览器 / 安卓 / Windows 桌面键鼠） | 决定延后（安全门槛未闭合，理由见下） |
 | D-5 | 30 方向战略落地 | 部分完成（真有 8 / 半成品 11；不做项 **决定延后**） |
 | D-6 | 情报中心后续阶段（漏洞查询、缺口对照、更新提醒） | 决定延后（依赖 advisory 接线与产品形态，理由见下） |
-| D-7 | 知识闭环（入库 UI + 检索 + 对话注入） | 部分完成（代码已入库，真实 E2E 未验证） |
+| D-7 | 知识闭环（入库 UI + 检索 + 对话注入） | 部分完成（API 层六项真机 E2E 已 PASS；控制台入库 UI / 来源展示未验证；引用对齐/弃答/删除副作用三项质量缺陷待复验） |
 | D-8 | 进程内排程器（定时/循环 Goal） | 部分完成（`3bda8c7d` 已入库，真实定时验收未做） |
 | D-9 | 备份 / 恢复 / 导出（一键化） | 部分完成（CLI 已操作真实归档 `dcf025c3`；无设置页/恢复流程） |
 | D-10 | 产物索引与执行回溯 | 部分完成（`c14ab20c` + `82f95450`；权限面已审计：HTTP 无跨账号列出/下载入口，下载面按账号分区；未做 UI） |
@@ -310,7 +310,7 @@ artifacts 流。
 |---|---|---|---|
 | 1 | 通用智能与认知架构 | in-progress | 真实主链（`liuhao.py`/`providers.py`/`planner`/`AgentRuntime`）已在；未跑运行时 E2E |
 | 2 | 多智能体协作 | planned-next | 依赖 8、24、3；生产只走单员工 resolver，committee/blackboard 仅测试引用 |
-| 3 | 长期记忆与知识图谱 | in-progress | documents→chunk→embedding→vector_store 真链路；`/v1/chat` 已接 `build_knowledge_context`；缺真实 embedding E2E 与入库 UI 完整闭环 |
+| 3 | 长期记忆与知识图谱 | in-progress | documents→chunk→embedding→vector_store 真链路；`/v1/chat` 已接 `build_knowledge_context`；真实 embedding E2E 已实证（2026-11-09，HEAD `0c3d70ba`，API 层六项 PASS）；缺控制台入库 UI/来源展示与引用质量缺陷复验 |
 | 4 | 自主研究与科学发现 | design-only | 零实现；只设计状态机与安全边界 |
 | 5 | 多模态智能 | planned-next | 依赖 1、3；`perception.py` 仅文本，图像/音频/视频显式未实现 |
 | 6 | 电脑自主操作 | deferred-by-decision | 三闸未全开返回 `[]`，唯一后端 `fake.py`；放开 OS 控制风险大于收益 |
@@ -485,19 +485,31 @@ POSIX（Linux / macOS）不受影响：`_fsync_directory` 在那里真正执行�
 
 ## D-7 知识闭环（入库 UI → 检索 → 对话注入）
 
-**当前状态。** `69db011e` 已把知识中心做成可用的导入/文档/分块预览/检索测试
+**当前状态（2026-11-09 更新）。** `69db011e` 已把知识中心做成可用的导入/文档/分块预览/检索测试
 界面；此后 `79bd69c8`（文档台账、完整分块、事务删除、上传、异步任务）、
 `095ecdb9`（相关性门限与拒答阈值）、`8858c77e`（检索无相关内容时跳过注入）、
 `82404fdb`（拒答契约与注入门禁测试）继续补齐。`/v1/chat` 通过
 `build_knowledge_context` 注入检索上下文（`src/gateway/chat.py:159,185`，
-带 `use_knowledge` 开关）。**仍未验证**的是真实 embedding provider 下的端到端
-链路（上传→切分→向量→对话引用来源），以及「未配置 provider 时返回 503」的
-实际行为。`tests/knowledge/test_documents_admin_api.py` 复跑 **17 passed**
-（此前 422 vs 400 的失败已收口，见 requirements T-19）。
+带 `use_knowledge` 开关）。**2026-11-09 已完成 API 层六项真机 E2E**（独立网关、临时数据目录、
+真实 HTTP；证据在仓库外 `c:\Users\Administrator\.trae-cn\assistant\2026-11-10\kb-e2e\outputs\run.md`
+与 `r1_*.json`/`r2_*.json`，绑定当前 HEAD `0c3d70ba`）：①入库 200、chunks=5、vectors=5（`r1_06`）；
+②切分 5 个 chunk、暗号在 #1（`r1_08`）；③向量真实 `ollama/nomic-embed-text` 768 维 ×5，
+Ollama 直连 `/api/embed` 768 维（`r1_12`/`r1_13`）；④检索 200、hybrid、top_score=0.8211、
+Top-1 命中「蓝鲸-7734」（`r1_09`）；⑤对话 200、`knowledge.used=true`、`decision=inject`、
+`hits=4`、4 条 sources，reply 含暗号与来源编号（`r1_11_chat_exact_keyword.json`）；
+⑥未配置 provider 时 upload/search/ingest 均 **503**「知识库未启用」，status 200 disabled
+（`r2_06`~`r2_09`，需 `LIUHAO_ENV=production` 才能复现——开发态会自动回退 Ollama）。
+**仍未验证/未收口**：控制台入库 UI 与对话引用来源展示（本轮只到 HTTP/API 层）、向量库打不开时
+503「向量库不可用」、流式 `/v1/chat/stream` 注入、异步上传/PDF 提取；另有质量缺陷待修/复验——
+引用对齐 12/14（2 个错位）、7 个不存在的问题只拦下 2 个（5 个被放行注入）、删 A 会误删 B
+的词法索引（`c:\Users\Administrator\.trae-cn\assistant\2026-11-09\knowledge-real-usability\outputs\knowledge-real-usability.md`）。
+`tests/knowledge/test_documents_admin_api.py` 复跑 **17 passed**（此前 422 vs 400 的失败已收口，
+见 requirements T-19）。
 
-**依赖什么。** 可用的 embedding provider（未配置时必须返回 503「未启用」，不得 mock
-伪装）；向量模型已就绪但向量库打不开时必须返回 503「向量库不可用」，不能并成一句
-「未启用」；对话侧引用来源展示。
+**依赖什么。** 控制台展示入库文档与引用来源；向量模型已就绪但向量库打不开时必须返回
+503「向量库不可用」，不能并成一句「未启用」；流式注入与异步上传/PDF 链路需实测；
+引用错位、弃答失效、删除副作用三项质量缺陷需修复并在同一 hash 复验
+（API 层真实 embedding 与未配置 503「未启用」已由上述证据覆盖）。
 
 **验收标准。** 上传文档 → 真实切分 → 真实 embedding → 落库 → 对话能引用
 检索片段并显示来源；未配置 provider 时明确 503 而非假装可用；向量库打不开时明确
@@ -563,7 +575,7 @@ list/read 后仍落在正确账号空间。回归见
 | E-2 | 首次运行向导只保存 Key，不做连通性测试 | Key 无效/模型名错要到发第一条消息才暴露 | 未改产品；文档改为引导去「模型管理 → 测试连接」 |
 | E-3 | 本机非 Ollama 的 OpenAI 兼容端点：聊天可用，但 `/v1/models/{id}/test` 仍按 SSRF 拒绝 | 「测试连接」与聊天两套校验不一致，本地 LM Studio 用户会被误判 | 安全相关，本轮未改 |
 | E-4 | ~~静默卸载（`/VERYSILENT`）停在“保留数据”确认框~~ **已修**：`installer/liuhao.iss` 的 `CurUninstallStepChanged` 在 `UninstallSilent` 时直接退出，按安全默认保留数据，不再弹确认框 | 批量部署/自动化卸载不再挂住 | 已修（安装器实测 `/VERYSILENT` 卸载可正常结束）；交互式卸载的“删除数据”分支已单独实测 |
-| E-5 | 真实厂商 Key 未由本流复验 | 本轮只用本地 OpenAI 兼容桩验证 HTTP 请求路径 | **已关闭（2026-11-08）**：安装版真实 DeepSeek Key 已取证——`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`（未重启后端 PID 16404→16404，`POST /v1/chat` 200 / 1.90s；流式 12 帧、工具调用、Key 脱敏均 PASS）与 `20261108-034245-real-key/live_summary.txt`（8 项 PASS）。原「无原始输出」的限制已被上述证据取代；Gemini 成功路径仍未验证，见 §2 |
+| E-5 | 真实厂商 Key 未由本流复验 | 本轮只用本地 OpenAI 兼容桩验证 HTTP 请求路径 | **已关闭（2026-11-08，真实厂商 Key 首条消息）**：安装版真实 DeepSeek Key 已取证——`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`（未重启后端 PID 16404→16404，`POST /v1/chat` 200 / 1.90s；流式 12 帧、工具调用、Key 脱敏均 PASS）与 `20261108-034245-real-key/live_summary.txt`（8 项 PASS）。原「无原始输出」的限制已被上述证据取代；2026-11-09 补「测试连接」错误 Key 401 → `invalid_key` 分类、主文案中性、数据目录无 Key 明文（`docs/evidence/failure-invalidkey-2026-11-09.md`，实测 HEAD `8450009b`，仅 provider=openai）；Gemini 成功路径仍未验证（见 §2），Anthropic 原生端点仍未验证 |
 | E-6 | `packaging/smoke_payload.py` 接受 MockProvider 通过 | 打包冒烟无法发现真实 provider 依赖缺失（`httpcore2/jiter` 就是这样漏出的） | 未改；真实链路验证在仓库外的 E2E 脚本 |
 | E-7 | 前端正在重写，安装包内是当前 `console/dist` | 前端稳定后必须重建安装包，否则界面过时 | 待重建 |
 | E-8 | 安装包未由**公开权威 CA** 签名 | Windows 首次运行提示「未知发布者」，部分杀软误报 | **已部分关闭**：项目自签名证书已实装，`Get-AuthenticodeSignature dist\installer\LiuHao-Setup-0.1.1.exe` = `Status=Valid`，主体 `CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`；未导入信任仍提示未知发布者，SmartScreen 信誉不足。公开 CA 签名仍未做。安装器首屏文案仍写「未做代码签名」，见 E-24 |
@@ -635,7 +647,7 @@ list/read 后仍落在正确账号空间。回归见
 | 长跑治理（审计增量校验/保留水位/目标归档） | **部分**：代码已修（`fd396351`）并有回归 | 在 `b4406497` 上重跑 2h soak，确认 p50/内存/DB 增长不再随时长上升 |
 | 首启自检探针（E-18） | **部分**：代码已修（`22c2e867`） | 在真实安装包冷启动路径复测，而非只在自检沙箱 |
 | 最终包凭证（E-13、E-16） | **部分**：E-16 凭证绑定 `72fd9b17`（**已作废**），`b4406497` 的 CI 为 failure；新 tip `416f7109` 的本轮凭证见台账 §11.2 | 在**通过 P-1～P-7 的冻结 hash** 上重跑 `--full`，并把路径/字节/SHA256/源码提交回填 `DELIVERY-CHECKLIST.md` §0 |
-| E-5 真实厂商 Key / Anthropic 原生端点 | **仍开放** | 真实 Key 跑通首条消息与失败分类并留原始输出 |
+| E-5 真实厂商 Key / Anthropic 原生端点 | **部分关闭**：真实 DeepSeek Key 首条消息/流式/工具调用已 PASS（`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`，2026-11-08 安装版）；错误 Key 401 → `invalid_key` 分类已验证（`docs/evidence/failure-invalidkey-2026-11-09.md`，实测 HEAD `8450009b`，仅 provider=openai）。**Anthropic 原生端点仍开放** | Anthropic 原生端点用真实 Key 跑通一次并留原始输出 |
 | E-8 安装包代码签名 | **仍开放** | 证书与签名流水线；失败拒绝安装并留审计 |
 | E-14 手机真机登录 | **仍开放**（仅密钥自举已关闭） | 真机同一 Wi-Fi 完成登录+发消息 |
 | E-20 安装器中文/空格/非默认盘符落盘与卸载 | **仍开放** | 真实安装器 `/DIR=<中文 空格路径>` 安装 + 卸载残留核对 |
@@ -654,7 +666,7 @@ list/read 后仍落在正确账号空间。回归见
 | 编号 | 缺口 | 为什么仍然开着（事实） | 关掉标准 |
 |---|---|---|---|
 | G-9 | **Gemini 真实成功调用未验证** | 真实请求能到 Google 并回 `400 API_KEY_INVALID`（证明客户端接线是真的）；成功路径只有 `tests/test_provider_google_genai_parsing.py` 的假客户端。本机无有效 `GOOGLE_API_KEY`/`GEMINI_API_KEY` | 真实 Key 成功一次非空回复并留证（时间戳/耗时/模型 id/回复摘要，不含 Key） |
-| G-10 | **自定义 Base URL 的 SSRF 风险——结论待评估** | 有保存/探测面防护（`src/gateway/models.py:807-855` 公网校验、`:712` 拒跨域重定向）；未回答 DNS 重绑定、`allow_private=True` 的调用路径边界、允许/拒绝清单。**不写成「风险已消除」** | 书面结论 + 私网被拒/DNS 重绑定被拒两条实测（细则见 [DELIVERY-CHECKLIST §7.2](DELIVERY-CHECKLIST.md#72-自定义-base-url-的-ssrf-风险结论待评估不写成已通过)） |
+| G-10 | **自定义 Base URL 的 SSRF 风险——书面结论已出（风险未消除）** | 2026-11-09 书面结论：四路径同一校验，私网/回环/链路本地/保留/多播、带 Key http、跨域重定向、探测期 DNS 漂移均 400；回环仅对 `provider=ollama`/白名单推理端口放行（`docs/evidence/g10-ssrf-2026-11-09.md`）。**DNS 重绑定只有代码级证据**（`src/ai/net_guard.py:131-180` 线程钉住解析；行号按 2026-11-09 工作区代码，证据未绑定 HEAD），无真实 DNS 层实测；Ollama 回环端口不限为已登记残余风险。**不写成「风险已消除」** | 补真实 DNS 环境端到端重绑定实测并留证；在此之前保持「已防护、风险未消除」口径（细则见 [DELIVERY-CHECKLIST §7.2](DELIVERY-CHECKLIST.md#72-自定义-base-url-的-ssrf-风险结论待评估不写成已通过)） |
 | G-11 | **24h 浸泡进行中** | 长跑 harness 正在跑（跨日结束）；2h soak 与 5 账号数字已有，24h 结论未出 | 跑完并给 p50/p95、RSS、审计库/WAL 增长曲线证明不随运行时长线性上升；中途崩溃算不通过 |
 | G-12 | **8/16GB 低配未实测** | 本机 32GB / 24 逻辑核；低配只有「不外推」说明 | 8GB、16GB 各跑首启 + 基础对话 + 30 分钟常驻，记录峰值 RSS 与换页/OOM |
 | G-3 | **仅 Windows x64** | 只有 Windows x64 安装树；无 macOS/Linux/arm64 | 目标平台产物 + 干净机复验 |
@@ -673,7 +685,7 @@ list/read 后仍落在正确账号空间。回归见
 | R-1 | 顶层 61 个 `plugins/` 目录 | 插件管理器默认只扫 `src/plugins`，顶层目录运行时不加载；主程序只注册 builtin | `src/plugins/manager.py:48`；实测 61 个目录 |
 | R-2 | `solutions/industry/` 38 个行业方案 | 只有 `tests/test_all_industry_solutions.py` 导入，`src/` 无引用，产品运行时不加载 | `tests/test_all_industry_solutions.py:32+`；`src/` 检索无命中 |
 | R-3 | `src/automation/` 体系完整 | 后端只有 `fake.py`，三重闸门默认关闭，无真实浏览器/键鼠/安卓执行 | `src/automation/backends/`、`src/automation/gate.py:19`、`src/automation/__init__.py:1-6` |
-| R-4 | ~~「知识中心」只是端点清单~~ **已解除** | `69db011e` 后已是导入/文档/分块预览/检索测试界面，且 `/v1/chat` 注入检索上下文；剩余是真实 embedding E2E 未验证 | `apps/console/console/src/pages/Directory.tsx`、`src/gateway/chat.py:159` |
+| R-4 | ~~「知识中心」只是端点清单~~ **已解除** | `69db011e` 后已是导入/文档/分块预览/检索测试界面，且 `/v1/chat` 注入检索上下文；API 层六项已于 2026-11-09 在 HEAD `0c3d70ba` 实证（`c:\Users\Administrator\.trae-cn\assistant\2026-11-10\kb-e2e\outputs\run.md`），剩余是控制台入库 UI/来源展示与引用对齐/弃答/删除副作用质量缺陷 | `apps/console/console/src/pages/Directory.tsx`、`src/gateway/chat.py:159` |
 | R-5 | 反馈服务有接口 | 进程内 `dict` 存储，重启即丢 | `src/feedback/feedback_service.py:13` |
 | R-6 | 控制台 dist 已构建 | 源码改动后是否重建未验证 | `docs/strategy-30-directions.md:232` |
 

@@ -117,7 +117,7 @@
 | E-08 | 不足的地方自行判断完善，不推回给用户决定 | 全部工程流 | **已完成**（工作方式） | 延后项改为「登记 + 验收标准」，不向用户抛选择题；见 known-gaps 各条 |
 | E-09 | 能并行的任务就并行 | 编排 | **待做** | 本轮同仓多流并行、CI 多 job；缺工具层自动分片，靠人分流；快照时无编排流进程 |
 | E-10 | 界面科幻、未来风；品牌条款不许改 | 前端 | **待做**（未验证） | `docs/ui-scifi-direction.md` + `os.css` `--sc-*` 令牌 + P1 视觉 `cc3af30d`；`apps/console/**` 已随 `1e1855dc` 提交；UI 审计流 11:52 的 37 张三账号截图报告未入库，整站走查与品牌自动校验未做 |
-| E-11 | 知识闭环：入库 UI → 检索 → 对话注入 | 知识 | **待做**（未验证） | `69db011e`/`79bd69c8`/`095ecdb9`/`8858c77e`/`82404fdb`；`/v1/chat` 注入 `build_knowledge_context`；快照时无知识流进程；**真实 embedding E2E 与未配置 503 未验证** |
+| E-11 | 知识闭环：入库 UI → 检索 → 对话注入 | 知识 | **待做**（UI 未验证） | `69db011e`/`79bd69c8`/`095ecdb9`/`8858c77e`/`82404fdb`；`/v1/chat` 注入 `build_knowledge_context`。2026-11-09 已完成 API 层六项真机 E2E（证据 `c:\Users\Administrator\.trae-cn\assistant\2026-11-10\kb-e2e\outputs\run.md` 与 `r1_*.json`/`r2_*.json`，绑定 HEAD `0c3d70ba`）：入库 5 块/5 向量、切分 5 chunk、真实 nomic 768 维、检索 top_score=0.8211、对话 used=true/4 来源含「蓝鲸-7734」、未配置 provider 503 全 PASS；**仍缺控制台入库 UI 与引用来源展示，另有引用对齐 12/14、7 个不存在问题放行 5 个、删 A 误删 B 词法索引三项质量缺陷待修/复验**（`c:\Users\Administrator\.trae-cn\assistant\2026-11-09\knowledge-real-usability\outputs\knowledge-real-usability.md`） |
 | E-12 | 备份/恢复/导出一键化 | 运维/设置 | **待做** | `dcf025c3` 让 CLI 操作真实归档；`scripts/ops/backup.py:11` 自述无生产调用方；无设置页与恢复流程（D-9） |
 | E-13 | 产物索引 + 目标→文件回溯 | 执行/文件 | **待做**（未验证） | `c14ab20c` 索引 CLI、`82f95450` 接入执行链（`31e66269` 补齐执行接线）；快照时无 artifacts 流进程；缺权限过滤、控制台入口、回放界面（D-10） |
 | E-14 | HC-01 基线裁决（可证/不可证分离） | 证据/裁决 | **已完成**（裁决） | [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md) 记录 owner 5 项裁决；C11 状态由「`BLOCKED — HUMAN DECISION PENDING`」改为「**已裁决（ADR-HC01）**」；机器门 `check_hc01` 仍按冻结人类主权门打印 `BLOCKED`（不改口径，不是「裁决未做」） |
@@ -284,7 +284,7 @@
 | 编号 | 事项 | 现状（2026-11-08 实测/代码位置） | 关掉标准（可判真伪） | 原登记 |
 |---|---|---|---|---|
 | G-9 | **Gemini 真实成功调用未验证** | 只有失败路径证据：真实请求到达上游并回 `400 API_KEY_INVALID`，错误分类与中文文案正确；成功路径只有假客户端回归。`91be3d10` 已切 `google.genai`，但**没有一次带真实 Key 的成功回复** | 用真实 Gemini Key 完成一次 `POST /v1/chat` 并收到非空回复（留存时间戳/耗时/模型 id/回复摘要，不含 Key）；`known-gaps` 对应行改「已关闭 + 证据指针」 | 新增 |
-| G-10 | **自定义 Base URL 的 SSRF 风险——结论待评估** | 已有保存/探测面防护：新填地址只接受 http/https、解析后私网/回环/链路本地/保留/多播一律 400（`src/gateway/models.py:807-855`）、探测拒绝跨域重定向（`:712`）；已保存配置放行私网（本机 Ollama）。**未回答**：DNS 重绑定、`allow_private=True` 的调用路径边界、允许/拒绝清单、localhost 字面量限定 | 出书面结论（允许/拒绝清单 + 四个问题逐条答案 + 落地位置），并在任意模型接入验收里带「私网地址被拒」「DNS 重绑定被拒」两条实测。**在此之前写「已防护」但不写「风险已消除」** | 新增（细则见 [DELIVERY-CHECKLIST §7.2](DELIVERY-CHECKLIST.md#72-自定义-base-url-的-ssrf-风险结论待评估不写成已通过)） |
+| G-10 | **自定义 Base URL 的 SSRF 风险——书面结论已出（风险未消除）** | 2026-11-09 书面结论与实测：保存/测试/更新/运行时四路径共用同一目标校验——非 http(s) 400、解析到私网/回环/链路本地/保留/多播 400、带 Key 走 http 400、跨域重定向与探测期 DNS 漂移 400（`src/gateway/models.py:1128-1187`；探测重定向拒绝 `:987-1003`；行号按 2026-11-09 工作区代码，证据未绑定 HEAD）；回环只对 `provider=ollama` 或本地推理端口（11434/1234/8000/8080）放行。**DNS 重绑定只有代码级证据**（`src/ai/net_guard.py:131-180` 线程钉住解析），无真实 DNS 层实测；`provider=ollama` 时回环端口不限为已登记残余风险。证据 `docs/evidence/g10-ssrf-2026-11-09.md` | 补真实 DNS 环境端到端重绑定实测并留请求/响应；在此之前只写「已防护」、**不得写「风险已消除」** | 新增（细则见 [DELIVERY-CHECKLIST §7.2](DELIVERY-CHECKLIST.md#72-自定义-base-url-的-ssrf-风险结论待评估不写成已通过)） |
 | G-3 | **仅 Windows x64** | 只产出 Windows x64 安装树；无 macOS/Linux、无 arm64；`E-20` 路径矩阵仍开放 | 目标平台产物 + 干净机安装复验 | §10.1 |
 | G-4 | **无真实 CD / 无真实远端升级源** | 升级、回滚只在本机安装树（`c9-*`/`c9b-*` 证据）；**没有**任何一次从真实 CD 源拉取、校验签名、回滚的实跑。C9 = `NOT VERIFIED` | 真实 CD 源可拉取、可校验、可回滚并留证；否则 C9 只能是 `NOT VERIFIED` | §10.1 |
 | G-6 | **手机未验证** | 服务侧 LAN `192.168.31.171:8000` 返回 200 已验证；真机打开/登录/发消息无设备、无证据 | 同一 Wi-Fi 真机完成一次登录 + 发消息并留屏/日志 | §10.1 |
@@ -292,8 +292,8 @@
 | G-12 | **8/16GB 低配未实测** | 本机 32GB / 24 逻辑核；低配数字只有「不外推」的说明 | 8GB 与 16GB 各跑一轮首启 + 基础对话 + 30 分钟常驻，记录峰值 RSS 与是否触发 OOM/换页 | §10.1 G-7 |
 
 **§10.3 统计：新登记 7 项（新增编号 G-9/G-10/G-11/G-12，沿用 G-3/G-4/G-6）；本轮关闭 0 项。**
-「登记」不等于「可以忽略」：G-9/G-10 属**结论缺失**，G-3/G-4/G-6/G-11/G-12 属**环境/形态缺口**，
-两类都在 §11.1 C 的「可带缺口发布」清单里，但必须随交付说明一起披露。
+「登记」不等于「可以忽略」：G-9 属**结论缺失**；G-10 **书面结论已出（2026-11-09）但风险未消除**（DNS 重绑定无真实 DNS 层实测）；
+G-3/G-4/G-6/G-11/G-12 属**环境/形态缺口**。两类都在 §11.1 C 的「可带缺口发布」清单里，但必须随交付说明一起披露。
 
 ---
 
@@ -308,12 +308,14 @@
 |---|---|---|---|
 | P-1 | 版本号 0.1.1 全链一致 | 源码/pyproject/frontend/iss 全是 0.1.1，版本一致性用例绿，**包名与 `/v1/health` 自报也是 0.1.1** | 「包是 0.1.0」已过时（2026-11-09 实测）：`dist/installer` 顶层现有 `LiuHao-Setup-0.1.1.exe`（29,567,136 字节）+ `liuhao-0.1.1-upgrade.zip`（2026-11-08 构建）。目标口径本身已推进：源码三处（`pyproject.toml:3`、`src/version.py:8`、`installer/liuhao.iss:25`）均已是 0.1.2，当前真实矛盾是「源码 0.1.2 vs 产物/清单 0.1.1」（`SHA256SUMS.txt`/`LIUHAO_RELEASE.json` 仍 0.1.1），0.1.2 包待 r6 出包 |
 | P-2 | 安装包重打并绑定源码提交 | `LiuHao-Setup-0.1.2.exe` 四件套齐、SHA256 实测一致、`DELIVERY.txt` 的源码提交 = 冻结 hash、装一次首启 ready | 未完成（2026-11-09 复核）：`dist/` 下无任何 `*0.1.2*` 产物；installer 顶层无 `DELIVERY.txt`、未绑定源码提交；上一轮 r5 重打在发布包步骤失败（`freeze-0.1.2-r5\build.log`：`--strict-dev-paths` 命中 `scripts/issue_console_token.py:3-4` 两处字面量，exit 1），根因修复在工作区待提交，r6 前须先入库 |
-| P-3 | 真 Key 对话验收 | 真实厂商 Key 首条消息成功 + 错误 Key 复现 401 且文案中性，原始输出入库 | 已完成（2026-11-08 安装版实测，2026-11-09 复核）：真实 DeepSeek Key 不重启即用，`POST /v1/chat` 200/1.90s，回环三写 `SECURITY_REJECTED=0`，10,018 文件 Key 明文扫描 0 命中（`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md` S-06/S-07/S-08 全 PASS）；错误 Key 复现 401 且文案中性（`docs/evidence/failure-modes-2026-11-06.json`），2026-11-09 又补上「测试连接」`invalid_key` 分类本机桩复现（`docs/evidence/failure-invalidkey-2026-11-09.md`：归类/中性主文案/数据目录 Key 明文 0 命中三断言全过），原始输出均已入库 |
-| P-4 | 任意模型接入 | 自定义 `base_url` + 任意 `model` 保存即生效、能对话；非法地址报错可读 | 部分完成（2026-11-09 更新）：「在跑（工作区未提交）」前提已不成立（工作区未提交项实测 7 个）；保存即生效有安装级实证（real-key CONCLUSION §二，同 PID 不重启）；网关级自定义 ollama 配置 `qwen2.5:3b` 走真实 HTTP PASS（`docs/acceptance/butler-gateway-acceptance-2026-11-08.json`）；G-10 SSRF 书面结论已出（`docs/evidence/g10-ssrf-2026-11-09.md`：私网/链路本地实测 400、带 Key 必须 https、回环白名单放行、跨域重定向拒绝），但「DNS 重绑定被拒」只有代码级证据（线程钉住解析），真实 DNS 层实测仍缺 |
+| P-3 | 真 Key 对话验收 | 真实厂商 Key 首条消息成功 + 错误 Key 复现 401 且文案中性，原始输出入库 | 已完成（2026-11-08 安装版实测，2026-11-09 复核）：真实 DeepSeek Key 不重启即用，`POST /v1/chat` 200/1.90s，回环三写 `SECURITY_REJECTED=0`，10,018 文件 Key 明文扫描 0 命中（`dist/release-gate/smoke/20261108-real-key/CONCLUSION.md` S-06/S-07/S-08 全 PASS）；错误 Key 401 文案中性另有 2026-11-06 四类失败实测（`docs/evidence/failure-modes-2026-11-06.json`），2026-11-09 补「测试连接」`invalid_key` 分类本机桩复现（`docs/evidence/failure-invalidkey-2026-11-09.md`：归类/中性主文案/数据目录 Key 明文 0 命中三断言全过；该复现绑定 HEAD `8450009b`，仅覆盖 provider=openai 的 401，当前 HEAD `0c3d70ba` 未复跑），原始输出均已入库 |
+| P-4 | 任意模型接入 | 自定义 `base_url` + 任意 `model` 保存即生效、能对话；非法地址报错可读 | 部分完成（2026-11-09 更新）：「在跑（工作区未提交）」前提已不成立（工作区未提交项实测 7 个）；保存即生效有安装级实证（real-key CONCLUSION §二，同 PID 不重启）；网关级自定义 ollama 配置 `qwen2.5:3b` 走真实 HTTP PASS（`docs/acceptance/butler-gateway-acceptance-2026-11-08.json`）；G-10 SSRF 书面结论已出（`docs/evidence/g10-ssrf-2026-11-09.md`：私网/链路本地实测 400、带 Key 必须 https、回环白名单放行、跨域重定向拒绝），但「DNS 重绑定被拒」只有代码级证据（线程钉住解析），真实 DNS 层实测仍缺，**按 §10.3 G-10 口径风险未消除** |
 | P-5 | 管家页可用化 | 真实一句话 → 派工 → 汇总，失败分支中性可重试，有 goal id + 事件序列证据 | 已完成（网关级真模型，2026-11-08）：`docs/acceptance/butler-gateway-acceptance-2026-11-08.json` `verdict=PASS`，5 场景全 PASS——一句话派活（goal `c4c63683`，2 任务 completed，723 字结论带 4 条真实来源）、单独指派（192 落到指定员工）、并发峰值 2、失败如实（路径越界报错中性、artifacts 空）、结果格式；复跑文档 `docs/ACCEPTANCE-BUTLER-REAL-MODEL.md` |
-| P-6 | 两腿回归 + 全部 CI 门禁在冻结 hash 上绿 | 两条工作流同 hash 全 success，两腿数字一致，Guardrails 契约探针真跑、Security Scan 未被上游阻断 | 未完成（判定对象已陈旧，需随新冻结 hash 更新）：所引 `b4406497` 的 CI `42386438527` 属旧 hash 的运行，磁盘无新 CI 凭证可推翻或确认；HEAD 现为 `8450009b`（2026-11-09 实测），判定对象须等 0.1.2 冻结 hash 落定后在该 hash 上重跑 |
-| P-7 | `--full` 在冻结 hash 的 clean worktree 上重跑 | 跑前 `git status` 干净，逐关数字与日志/JUnit 落盘，C7 若红单独 `--only C7` 定性 | 本轮在跑（对象 `416f7109`） |
-| P-8 | 前端 dist 与源码同源 | 冻结 hash 上重建 `console/dist`，包内引用 hash 一致，登录首屏在 1280×720/1366×768 可见 | 部分 |
+| P-6 | 两腿回归 + 全部 CI 门禁在冻结 hash 上绿 | 两条工作流同 hash 全 success，两腿数字一致，Guardrails 契约探针真跑、Security Scan 未被上游阻断 | 未完成（判定对象已陈旧，需随新冻结 hash 更新）：所引 `b4406497` 的 CI `42386438527` 属旧 hash 的运行，磁盘无新 CI 凭证可推翻或确认；HEAD 现为 `0c3d70ba`（2026-11-10 实测），判定对象须等 0.1.2 冻结 hash 落定后在该 hash 上重跑 |
+| P-7 | `--full` 在冻结 hash 的 clean worktree 上重跑 | 跑前 `git status` 干净，逐关数字与日志/JUnit 落盘，C7 若红单独 `--only C7` 定性 | 未完成（对象未定）：判定对象须等 0.1.2 冻结 hash；全量 pytest 本轮仍在跑（PID 6704/32668），结果未出，**不得写成已通过** |
+| P-8 | 前端 dist 与源码同源 | 冻结 hash 上重建 `console/dist`，包内引用 hash 一致，登录首屏在 1280×720/1366×768 可见 | 部分（2026-11-09 复核）：0.1.2 包尚未产出（见 P-2），冻结 hash 上重建 `console/dist` 并核对包内引用 hash 的凭证本轮未取得 |
+
+> **2026-11-10 实测事实**：主仓全量 pytest 本轮仍在跑（PID `6704`/`32668`，2026-11-09 09:00 启动），结论未出；P-6/P-7 的判定对象仍须等 0.1.2 新冻结 hash，**不得据此写成已通过**。
 
 ## 11.1 宣布 `RELEASE READY=True` 还差什么（必须 / 可以带缺口发布）
 
@@ -340,7 +342,7 @@ P-5 管家页可用化、P-6 两腿 + CI 绿、P-7 `--full` 凭证绑定 hash。
 | 缺口 | 编号 | 可带的原因（一句话） | 必须怎么披露 |
 |---|---|---|---|
 | Gemini 真实成功调用未验证 | G-9 | 失败路径是真实到达上游的证据，成功路径有假客户端回归；缺「有 Key 成功一次」 | 交付说明写「Gemini 仅验证失败分类，成功路径未验证」 |
-| 自定义 Base URL 的 SSRF 结论待评估 | G-10 | 保存/探测面已有防护，缺的是书面威胁建模结论；**不写成「风险已消除」** | 交付说明列「自定义 Base URL 仅建议用于可信端点」 |
+| 自定义 Base URL 的 SSRF | G-10 | 书面结论已出（2026-11-09）：私网/链路本地/带 Key http/跨域重定向实测 400，回环白名单放行；DNS 重绑定仅代码级证据，**风险未消除** | 交付说明用 `docs/evidence/g10-ssrf-2026-11-09.md` §4 披露文案：「DNS 重绑定防护已在线程级固定解析结果，但尚未在真实 DNS 环境做端到端重绑定实测；将模型类型设为 Ollama 时允许指向本机任意端口，请仅对可信的本机服务使用」 |
 | 仅 Windows x64 | G-3 | 交付形态就是 Windows 桌面安装树 | 系统要求写 Windows 10/11 x64 |
 | 无真实 CD | G-4 | 桌面分发形态差异；安装树升级/回滚已验，但**不等于**真实 CD 已验 | `RELEASE READY=False` 的唯一形态理由，不得写成「已全部验证」 |
 | 无真实远端升级源 | G-4 | 升级源只有本机安装树 | 升级说明写「远端源未接入」 |
