@@ -252,6 +252,47 @@ describe('我的员工', () => {
     expect(screen.getByText(/先在上面创建第一个员工/)).toBeTruthy()
   })
 
+  test('名册读取失败时给出可点的重试按钮，不用空态冒充失败', async () => {
+    let attempts = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/v1/employees/capabilities')) return jsonResponse(CAPABILITIES)
+      attempts += 1
+      if (attempts === 1) {
+        return jsonResponse(
+          {
+            detail: { code: 'employee_list_unavailable', message: '名册暂时读不到' },
+          },
+          500,
+        )
+      }
+      return jsonResponse({ employees: [], count: 0 })
+    })
+
+    render(<MyEmployees query="" />)
+    expect(await screen.findByText('数据不可用')).toBeTruthy()
+    expect(screen.getByText(/名册暂时读不到/)).toBeTruthy()
+    // 失败时不能同时显示“还没有员工”，否则用户会以为只是没人。
+    expect(screen.queryByText('还没有员工')).toBeNull()
+    // 创建表单要说明名册未就绪。
+    expect(screen.getByText(/名册还没读到/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }))
+    await waitFor(() => expect(screen.getByText('还没有员工')).toBeTruthy())
+  })
+
+  test('名册还在读时显示读取中，不显示“还没有员工”', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      if (String(input).includes('/v1/employees/capabilities')) return jsonResponse(CAPABILITIES)
+      // 永不返回：模拟首屏读名册还没回来。
+      return new Promise<Response>(() => {})
+    })
+
+    render(<MyEmployees query="" />)
+    expect(screen.getByText('正在读取员工名册…')).toBeTruthy()
+    expect(screen.queryByText('还没有员工')).toBeNull()
+  })
+
   test('read_only 员工只展示，不渲染改名/停用/删除/派活按钮', async () => {
     stubFetch([
       {

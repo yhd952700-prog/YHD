@@ -96,7 +96,18 @@ export function OneTimeSecret({
   onDone?: () => void
   doneLabel?: string
 }) {
-  const [copied, setCopied] = useState(false)
+  // 三态：未复制 / 已复制 / 复制失败（Clipboard API 在非安全来源不可用时要明说）。
+  const [copyState, setCopyState] = useState<'idle' | 'ok' | 'fail'>('idle')
+  const copy = () => {
+    if (!navigator.clipboard?.writeText) {
+      setCopyState('fail')
+      return
+    }
+    navigator.clipboard.writeText(value).then(
+      () => setCopyState('ok'),
+      () => setCopyState('fail'),
+    )
+  }
   return (
     <div className="os-note" style={{ alignItems: 'flex-start', flexDirection: 'column' }}>
       <strong style={{ fontSize: 13 }}>{label}（只显示这一次）</strong>
@@ -116,18 +127,8 @@ export function OneTimeSecret({
       </code>
       {notice && <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>{notice}</span>}
       <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
-        <button
-          type="button"
-          className="os-btn"
-          style={{ width: 'auto' }}
-          onClick={() => {
-            void navigator.clipboard?.writeText(value).then(
-              () => setCopied(true),
-              () => setCopied(false),
-            )
-          }}
-        >
-          {copied ? '已复制' : '复制'}
+        <button type="button" className="os-btn" style={{ width: 'auto' }} onClick={copy}>
+          {copyState === 'ok' ? '已复制' : copyState === 'fail' ? '复制失败，请手动选中' : '复制'}
         </button>
         {onDone && (
           <button type="button" className="os-btn os-btn-ghost" onClick={onDone}>

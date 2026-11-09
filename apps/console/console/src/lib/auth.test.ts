@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { loadAuthConfig, saveSession, sessionLossNotice } from './auth'
+import { loadAuthConfig, saveSession, sessionLossNotice, clearSession } from './auth'
 import type { Session } from './auth'
 
 afterEach(() => {
@@ -30,7 +30,7 @@ describe('登录页读取配置', () => {
 
     expect(result.config).toBeNull()
     expect(result.error).toContain('鎏灏的本地服务没有运行')
-    expect(result.error).toContain('启动窗口')
+    expect(result.error).toContain('请打开鎏灏')
     expect(result.error).not.toContain('Failed to fetch')
   })
 
@@ -50,7 +50,7 @@ describe('登录页读取配置', () => {
 
     const result = await loadAuthConfig()
     expect(result.error).toContain('无法获取登录配置')
-    expect(result.error).toContain('请确认启动窗口仍在运行')
+    expect(result.error).toContain('请确认鎏灏仍在运行')
     expect(result.error).not.toContain('Not Found')
   })
 
@@ -86,6 +86,34 @@ describe('登录页读取配置', () => {
     const result = await loadAuthConfig()
     expect(result.error).toBeNull()
     expect(result.config?.login_eligible_humans).toBe(1)
+    expect(result.status).toBe(200)
+  })
+
+  test('401（设备已被移除/未配对）→ 带回真实状态码，供登录页停止重试', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ detail: '设备未配对' }),
+        text: async () => JSON.stringify({ detail: '设备未配对' }),
+      })),
+    )
+
+    const result = await loadAuthConfig()
+    expect(result.status).toBe(401)
+    expect(result.config).toBeNull()
+  })
+
+  test('连不上时状态码为 null（登录页据此继续重试）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    )
+
+    const result = await loadAuthConfig()
+    expect(result.status).toBeNull()
   })
 })
 
@@ -167,5 +195,28 @@ describe('同浏览器换账号：不串上一账号的本地缓存', () => {
     saveSession(sessionFor('root1'), false)
 
     expect(JSON.parse(localStorage.getItem('liuhao.sessions') || '[]')).toEqual(['root-session'])
+  })
+
+  test('登出即清账号级缓存（不等下一次登录）', () => {
+    saveSession(sessionFor('root1'), true)
+    localStorage.setItem('liuhao.sessions', JSON.stringify(['root-session']))
+    localStorage.setItem('liuhao.session_meta', JSON.stringify({ 'root-session': { title: '主账号会话' } }))
+    localStorage.setItem('liuhao.session_id', 'root-session')
+    localStorage.setItem('liuhao.user_id', 'root1')
+    localStorage.setItem('liuhao.model_id', 'root-model')
+
+    clearSession()
+
+    for (const key of [
+      'liuhao.sessions',
+      'liuhao.session_meta',
+      'liuhao.session_id',
+      'liuhao.user_id',
+      'liuhao.model_id',
+      'liuhao.last_principal',
+      'liuhao.session',
+    ]) {
+      expect(localStorage.getItem(key), key).toBeNull()
+    }
   })
 })

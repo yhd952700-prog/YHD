@@ -13,14 +13,44 @@
 import { useState } from 'react'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import {
+  deleteMemoryEntry,
   exportMemory,
   loadMemory,
   loadMemoryCustody,
   neutralDenial,
   setMemoryCustody,
+  updateMemoryEntry,
   useAccountData,
 } from '../lib/accounts'
 import { Card, Guard } from '../components/ui'
+
+/** 记忆来源的内部工程名 → 中文标签；未收录的原样显示（不猜语义）。 */
+const SOURCE_LABELS: Record<string, string> = {
+  legacymemory_store: '旧版记忆库',
+  'agent.turn': '智能体轮次',
+  conversation: '对话',
+  task: '任务',
+  knowledge: '知识库',
+  manual: '人工录入',
+}
+
+function sourceLabel(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return '—'
+  return SOURCE_LABELS[text] ?? text
+}
+
+/**
+ * 后端 `created_at` 是 ISO 原文（含微秒）；直接上屏会看到
+ * `2026-11-07T01:55:15.871806` 这类机器时间，必须按本机时区本地化。
+ */
+function entryTime(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return '—'
+  const parsed = new Date(text)
+  if (Number.isNaN(parsed.getTime())) return text
+  return parsed.toLocaleString('zh-CN', { hour12: false })
+}
 
 export function Memory({
   profile,
@@ -37,6 +67,8 @@ export function Memory({
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [custodyBusy, setCustodyBusy] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
 
   const memory = useAccountData(() =>
     loadMemory({ principal: profile.principal, isRoot: profile.isRoot }, scope, applied),
@@ -82,6 +114,58 @@ export function Memory({
       setNotice({ tone: 'error', text: neutralDenial(error) })
     } finally {
       setCustodyBusy(false)
+    }
+  }
+
+  const startEdit = (entry: { id: string; text: string }) => {
+    if (readOnly) {
+      setNotice({ tone: 'error', text: '只读查看中，写操作已禁用' })
+      return
+    }
+    setEditingId(entry.id)
+    setEditText(entry.text)
+    setNotice(null)
+  }
+
+  const saveEdit = async () => {
+    if (!editingId) return
+    const text = editText.trim()
+    if (!text) {
+      setNotice({ tone: 'error', text: '记忆内容不能为空' })
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      await updateMemoryEntry(editingId, { text })
+      setEditingId(null)
+      memory.reload()
+      setNotice({ tone: 'ok', text: '记忆已纠正' })
+    } catch (error) {
+      setNotice({ tone: 'error', text: neutralDenial(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeEntry = async (entry: { id: string; text: string }) => {
+    if (readOnly) {
+      setNotice({ tone: 'error', text: '只读查看中，写操作已禁用' })
+      return
+    }
+    if (!window.confirm(`删除这条记忆？删除后检索不到，且不可恢复。\n\n${entry.text}`)) {
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      await deleteMemoryEntry(entry.id)
+      memory.reload()
+      setNotice({ tone: 'ok', text: '记忆已删除' })
+    } catch (error) {
+      setNotice({ tone: 'error', text: neutralDenial(error) })
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -169,18 +253,77 @@ export function Memory({
                     <th>来源</th>
                     <th>标签</th>
                     <th>内容</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.entries.map((entry) => (
-                    <tr key={entry.id}>
-                      <td>{entry.created_at || '—'}</td>
-                      <td>{entry.account_id}</td>
-                      <td>{entry.source || '—'}</td>
-                      <td>{entry.tags.length > 0 ? entry.tags.join('、') : '—'}</td>
-                      <td>{entry.text}</td>
-                    </tr>
-                  ))}
+                  {data.entries.map((entry) => {
+                    const mine = entry.account_id === profile.principal
+                    return (
+                      <tr key={entry.id}>
+                        <td>{entryTime(entry.created_at)}</td>
+                        <td>{entry.account_id}</td>
+                        <td>{sourceLabel(entry.source)}</td>
+                        <td>{entry.tags.length > 0 ? entry.tags.join('、') : '—'}</td>
+                        <td>
+                          {editingId === entry.id ? (
+                            <input
+                              className="os-input-plain"
+                              value={editText}
+                              onChange={(event) => setEditText(event.target.value)}
+                              aria-label="修改记忆内容"
+                              style={{ width: '100%' }}
+                            />
+                          ) : (
+                            entry.text
+                          )}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {editingId === entry.id ? (
+                            <>
+                              <button
+                                className="os-btn"
+                                style={{ width: 'auto', marginRight: 6 }}
+                                disabled={busy}
+                                onClick={() => void saveEdit()}
+                              >
+                                保存
+                              </button>
+                              <button
+                                className="os-btn os-btn-ghost"
+                                style={{ width: 'auto' }}
+                                disabled={busy}
+                                onClick={() => setEditingId(null)}
+                              >
+                                取消
+                              </button>
+                            </>
+                          ) : mine && !readOnly ? (
+                            <>
+                              <button
+                                className="os-btn os-btn-ghost"
+                                style={{ width: 'auto', marginRight: 6 }}
+                                disabled={busy}
+                                onClick={() => startEdit(entry)}
+                              >
+                                纠正
+                              </button>
+                              <button
+                                className="os-btn os-btn-ghost"
+                                style={{ width: 'auto' }}
+                                disabled={busy}
+                                onClick={() => void removeEntry(entry)}
+                              >
+                                删除
+                              </button>
+                            </>
+                          ) : (
+                            <span className="os-hint">只读</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

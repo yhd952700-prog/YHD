@@ -40,7 +40,7 @@ import {
   updateEmployee,
 } from '../lib/employees'
 import type { MyEmployee } from '../lib/employees'
-import { BudgetDenialActions, Card, Empty, Guard } from '../components/ui'
+import { BudgetDenialActions, Card, Empty, Failure, Guard } from '../components/ui'
 import { isBudgetDenialMessage } from '../lib/errorMessage'
 
 function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
@@ -449,6 +449,11 @@ export function MyEmployees({
       </div>
 
       <Card title="创建员工" sub="名字必填；职责与默认能力可稍后再补" span={12}>
+        {list.error && (
+          <p className="os-note" role="status">
+            名册还没读到：暂时无法判断是否重名、是否已停用。下面仍然可以填写，但保存前建议先到「员工名册」里点重试，把名册读回来。
+          </p>
+        )}
         <form className="os-operator-form" onSubmit={submitCreate} noValidate>
           {/* 关掉浏览器原生校验气泡：它不会被稳定朗读、失焦即消失。
               必填校验走 submitCreate 的 role="alert" + aria-invalid 路径。 */}
@@ -540,7 +545,7 @@ export function MyEmployees({
 
       <Card title="员工名册" sub="名字、职责、默认能力与当前状态" span={12}>
         {list.error ? (
-          <Empty title="暂时无法读取员工名册" hint={list.error} />
+          <Failure message={list.error} onRetry={list.reload} />
         ) : list.loading && employees.length === 0 ? (
           <div className="os-emp-meta">正在读取员工名册…</div>
         ) : employees.length === 0 ? (

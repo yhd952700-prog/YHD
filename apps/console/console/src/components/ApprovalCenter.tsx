@@ -4,6 +4,7 @@ import {
   type EnforcementSnapshot,
   fmtRemaining,
 } from '../lib/policyClient'
+import { Failure } from './ui'
 
 /**
  * 审批中心（Approval Gateway）—— 内核层真拦截的人工授权入口。
@@ -314,7 +315,8 @@ export function ApprovalCenter({
         </>
       )}
 
-      {state.error && <div className="approval-error">读取失败：{state.error}</div>}
+      {/* 失败态必须带可操作出口：原来只有一行红字，用户没有"再试一次"的路。 */}
+      {state.error && <Failure message={state.error} onRetry={actions.onRefresh} />}
       {state.busy && <div className="approval-busy">读取中…</div>}
     </div>
   )

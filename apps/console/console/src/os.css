@@ -795,9 +795,8 @@ main#os-main:focus-visible {
 .os-row-sub {
   font-size: 12px;
   color: var(--os-text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 150% 缩放（等效 960px）下，长中文说明不再被省略号吞掉；长英文标识也允许断行。 */
+  overflow-wrap: anywhere;
 }
 
 .os-row-tail {
@@ -1588,6 +1587,49 @@ main#os-main:focus-visible {
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin-top: 14px;
+}
+
+/* ---------- 「下载桌面版」入口：只给网页端（浏览器 + web 形态） ---------- */
+/* 默认不显示；桌面壳（desktop-shell）与手机端都不会出现这个入口。 */
+.os-download-link {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--os-border);
+  background: var(--os-panel-2);
+  color: var(--os-text);
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.os-download-link:hover {
+  border-color: color-mix(in srgb, var(--os-accent) 45%, transparent);
+  background: var(--os-panel-hover);
+}
+
+/* 按身份而不是按布局判定：浏览器窗口拉宽到 >=1280 时 data-mode 会变成
+   desktop，但身份仍是 web，下载入口必须继续可见。 */
+html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
+  display: inline-flex;
+}
+
+.os-login-card > .os-download-link {
+  margin-top: 14px;
+  width: 100%;
+  justify-content: center;
+  padding: 10px 12px;
+}
+
+/* 网页端窄一些时，顶栏只留图标，避免把主题/通知挤到换行。 */
+@media (max-width: 960px) {
+  .os-topbar-actions .os-download-link span {
+    display: none;
+  }
 }
 
 .os-client-chip {
@@ -3307,6 +3349,7 @@ main#os-main:focus-visible {
   .os-select,
   .os-login-tabs button,
   .os-login-clients button,
+  .os-download-link,
   .os-logout,
   .os-attention-clear {
     border: 1px solid ButtonText;

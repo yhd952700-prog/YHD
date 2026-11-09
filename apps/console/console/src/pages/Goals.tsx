@@ -487,7 +487,17 @@ export function Goals({ query }: { query: string }) {
                           <td>{task.capability_id ? capabilityLabel(task.capability_id) : '—'}</td>
                           <td>
                             {task.error ? (
-                              <span className="os-error">{task.error}</span>
+                              <>
+                                <span className="os-error">{task.error}</span>
+                                {task.technical_detail ? (
+                                  <details style={{ marginTop: 4 }}>
+                                    <summary>技术详情</summary>
+                                    <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                      {task.technical_detail}
+                                    </code>
+                                  </details>
+                                ) : null}
+                              </>
                             ) : (
                               <Truncated text={task.result ?? '—'} max={200} />
                             )}

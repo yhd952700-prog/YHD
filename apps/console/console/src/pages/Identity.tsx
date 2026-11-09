@@ -23,6 +23,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { useApi } from '../lib/api'
+import { useImeComposition } from '../lib/ime'
 import {
   getPrincipal,
   type IdentityRegistry,
@@ -143,6 +144,7 @@ function formatTime(iso: string | null): string {
 }
 
 export function Identity({ query, profile }: { query: string; profile: AccountProfile }) {
+  const ime = useImeComposition<HTMLInputElement>()
   /**
    * 全站主体清单只对根开放；非根不请求这三个端点（它们描述的是整台机器，
    * 不是"你的范围"）。path 为 null 时 `useApi` 不发请求。
@@ -257,7 +259,7 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           data={summary.data}
           isEmpty={(data) => data.total_principals === 0}
           emptyTitle="还没有登记任何账号"
-          emptyHint="当前一个账号都没有；这不是读取失败，而是真实为空。"
+          emptyHint="当前一个账号都没有（不是读取失败）。下一步：到左侧「成员与权限管理」创建第一个账号。"
           onRetry={summary.reload}
         >
           {(data) => (
@@ -395,7 +397,7 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           data={permissions.data}
           isEmpty={(data) => data.grants.length === 0}
           emptyTitle="没有任何授权"
-          emptyHint="没有任何账号被授予任何权限；这不是读取失败，而是真实为空。"
+          emptyHint="还没有任何授权（不是读取失败）。下一步：到「成员与权限管理」给成员分配角色，或在下方「授权清单」按账号查询。"
           onRetry={permissions.reload}
         >
           {(data) => (
@@ -469,8 +471,13 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
               value={lookupId}
               onChange={(event) => setLookupId(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') runLookup(lookupId)
+                if (event.key !== 'Enter') return
+                // 组词中的回车是选词，先别用半截拼音去查账号。
+                if (ime.isImeKey(event)) return
+                runLookup(lookupId)
               }}
+              onCompositionStart={ime.onCompositionStart}
+              onCompositionEnd={ime.onCompositionEnd}
             />
           </label>
           <button

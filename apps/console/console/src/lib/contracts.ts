@@ -50,6 +50,16 @@ export interface DashboardSummary {
   }
   audit?: {
     total_events?: number
+    /** 全库业务事件（已扣除内核 state_change 噪声），事件页展示的就是它。 */
+    business_events?: number
+    /** 当前账号子树可读的事件数（成员看不到他人活动的聚合数字）。 */
+    visible_events?: number
+    visible_business_events?: number
+    noise_events?: number
+    scope?: string
+    scope_principals?: string[]
+    /** 每个数字的口径说明，界面应逐字展示，避免三处读数互相矛盾。 */
+    definition?: Record<string, string>
     breakdown?: Record<string, number>
     db_path?: string
     error?: string
@@ -355,6 +365,8 @@ export interface GoalSummary {
   scope: string
   created_at?: number | null
   error?: string | null
+  /** 后端保留的原始失败原因，折叠展示；主位置只显示中文结论。 */
+  technical_detail?: string | null
   replan_suggested: boolean
   task_count: number
   completed_tasks: number
@@ -379,6 +391,8 @@ export interface GoalDetail {
   scope: string
   correlation_id: string
   error?: string | null
+  /** 后端保留的原始失败原因，折叠展示；主位置只显示中文结论。 */
+  technical_detail?: string | null
   replan_count: number
   replan_suggested: boolean
   trace: GoalTraceEntry[]

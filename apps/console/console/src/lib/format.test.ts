@@ -136,7 +136,8 @@ describe('事件与结果标签', () => {
 
   test('已知类型照旧翻译', () => {
     expect(eventLabel('access_denied')).toBe('访问拒绝')
-    expect(outcomeLabel('allow')).toBe('通过')
+    expect(outcomeLabel('allow')).toBe('放行')
+    expect(outcomeLabel('allowed')).toBe('已授权')
     expect(outcomeTone('denied')).toBe('danger')
     expect(outcomeTone('allow')).toBe('ok')
   })

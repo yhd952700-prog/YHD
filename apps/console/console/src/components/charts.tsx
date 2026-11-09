@@ -230,9 +230,9 @@ export function DonutChart({
             stroke="var(--os-panel-2)"
             strokeWidth={thickness}
           />
-          {segments.map((segment) => (
+          {segments.map((segment, index) => (
             <circle
-              key={segment.slice.label}
+              key={`${segment.slice.label}-${index}`}
               cx={size / 2}
               cy={size / 2}
               r={radius}

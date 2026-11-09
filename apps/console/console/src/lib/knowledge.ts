@@ -72,6 +72,8 @@ export type KnowledgeStatusKind =
   | 'ollama-down'
   | 'ollama-missing-model'
   | 'vector-store'
+  | 'dimension-mismatch'
+  | 'index-model-mismatch'
 
 export interface KnowledgeStatusView {
   kind: KnowledgeStatusKind
@@ -89,6 +91,26 @@ export function knowledgeStatusView(status: KnowledgeStatus): KnowledgeStatusVie
   }
 
   const reason = String(status.reason ?? '')
+  // 维度/模型错配必须先判：旧实现会落到下面「向量模型已就绪」分支，把
+  // 「索引与当前模型不匹配」误标成「向量库打不开」。两者恢复动作不同。
+  if (/维度/.test(reason)) {
+    return {
+      kind: 'dimension-mismatch',
+      enabled: false,
+      title: '向量维度与索引不匹配',
+      detail: `${reason}。请让运维调用 POST /v1/knowledge/maintenance/reindex 按当前向量模型重建索引，完成后点「重新检测」。`,
+      command: null,
+    }
+  }
+  if (/重建索引|嵌入模型/.test(reason)) {
+    return {
+      kind: 'index-model-mismatch',
+      enabled: false,
+      title: '索引与当前向量模型不匹配',
+      detail: `${reason}。请让运维调用 POST /v1/knowledge/maintenance/reindex 按当前向量模型重建索引，完成后点「重新检测」。`,
+      command: null,
+    }
+  }
   // 向量模型建成了但向量库打不开：provider/model 有值，或 reason 已明说向量库不可用。
   if (status.provider !== null || status.model !== null || /向量库不可用/.test(reason)) {
     return {
@@ -130,7 +152,8 @@ export function knowledgeStatusView(status: KnowledgeStatus): KnowledgeStatusVie
     enabled: false,
     title: '还没有配置向量模型',
     detail:
-      '本机默认使用 Ollama：先启动 Ollama；还没拉取向量模型时执行下面的命令（模型名以部署配置为准）。云端向量化需要在部署时设置 LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址。',
+      '本机默认使用 Ollama：先启动 Ollama；还没拉取向量模型时执行下面的命令（模型名以部署配置为准）。云端向量化需要在部署时设置 LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址。' +
+      (reason ? `（服务端原因：${reason}）` : ''),
     command: 'ollama pull nomic-embed-text',
   }
 }
@@ -151,6 +174,12 @@ export interface RetrievalInfo {
   mode?: string
   fts_available?: boolean
   rrf_k?: number
+  /** `ok` / `no_relevant`；索引不可用时为 `unavailable`（MEM-020）。 */
+  status?: string
+  reason?: string | null
+  message?: string | null
+  /** 与顶层同义：`false` 表示本次根本没有执行检索。 */
+  enabled?: boolean
 }
 
 export interface KnowledgeHit {
@@ -166,6 +195,10 @@ export interface KnowledgeSearchResult {
   top_k: number
   hits: KnowledgeHit[]
   count: number
+  /** MEM-020：`false` = 索引不可用、本次没有检索；原因见 reason / message。 */
+  enabled?: boolean
+  reason?: string | null
+  message?: string | null
   retrieval?: RetrievalInfo
 }
 
@@ -374,6 +407,80 @@ export async function deleteKnowledgeDocument(
     documentId: typeof raw.document_id === 'string' ? raw.document_id : documentId,
     deleted: raw.deleted === true,
     chunksRemoved: asCount(raw.chunks_removed),
+  }
+}
+
+/** 无归属历史文档：只有根账号/老部署能在维护视图里看到并删除。 */
+export interface UnassignedKnowledgeDoc {
+  documentId: string
+  displayName: string
+  chunks: number
+  reason: string
+  detail: string
+  preview: string
+  previewTruncated: boolean
+  reference: string
+  canDelete: boolean
+}
+
+export interface UnassignedKnowledgePage {
+  documents: UnassignedKnowledgeDoc[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  hasMore: boolean
+  lost: number
+  note: string
+}
+
+/**
+ * `GET /v1/knowledge/maintenance/unassigned`：列出无法判定归属的历史文档。
+ *
+ * 与普通文档列表不同，这条视图只取 ``owner`` 为空的文档，并带上首块原文预览
+ * 与 ``knowledge://`` 引用；成员访问后端固定 404（前端也不渲染入口）。
+ */
+export async function fetchUnassignedDocuments(
+  limit = 50,
+  offset = 0,
+  signal?: AbortSignal,
+): Promise<UnassignedKnowledgePage> {
+  const safeLimit = Math.min(200, Math.max(1, Math.trunc(limit) || 50))
+  const safeOffset = Math.max(0, Math.trunc(offset) || 0)
+  const raw = await apiFetch<Record<string, unknown>>(
+    `/v1/knowledge/maintenance/unassigned?limit=${safeLimit}&offset=${safeOffset}`,
+    { signal },
+  )
+  const documents = Array.isArray(raw.documents)
+    ? raw.documents
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null
+          const row = item as Record<string, unknown>
+          const id = asText(row.document_id)
+          if (!id) return null
+          return {
+            documentId: id,
+            displayName: asText(row.display_name) ?? id,
+            chunks: asCount(row.chunks),
+            reason: asText(row.reason) ?? 'unknown',
+            detail: asText(row.detail) ?? '',
+            preview: typeof row.preview === 'string' ? row.preview : '',
+            previewTruncated: row.preview_truncated === true,
+            reference: asText(row.reference) ?? `knowledge://documents/${id}#0`,
+            canDelete: row.can_delete === true,
+          }
+        })
+        .filter((doc): doc is UnassignedKnowledgeDoc => doc !== null)
+    : []
+  return {
+    documents,
+    count: asCount(raw.count) || documents.length,
+    total: asCount(raw.total),
+    limit: asCount(raw.limit) || safeLimit,
+    offset: Math.max(0, Number(raw.offset) || 0),
+    hasMore: raw.has_more === true,
+    lost: asCount(raw.lost),
+    note: asText(raw.note) ?? '',
   }
 }
 
@@ -776,8 +883,16 @@ export function toIngestJob(raw: unknown): IngestJob {
   }
 }
 
-/** 大文件：立刻拿到 job id，进度按服务端解析/嵌入的真实页数推进。 */
-export async function submitFileIngestJob(
+/**
+ * 大文件：立刻拿到 job id，进度按服务端解析/嵌入的真实页数推进。
+ *
+ * 取消语义（与后端 `/ingest/jobs/{id}/cancel` 对齐）：
+ * - **文件还没传完**就 abort：直接中止请求，服务端拿不到完整文件，不会建任务；
+ * - **文件已完整上送**再 abort：不能把响应也丢掉 —— 那样拿不到 job id，服务端
+ *   会继续解析入库。此时让请求自然结束，拿到 job id 后立刻请求取消
+ *   （全回滚）。取消请求本身失败时明确告知「任务已创建、服务端可能继续入库」。
+ */
+export function submitFileIngestJob(
   file: File,
   options: {
     docId?: string
@@ -785,17 +900,102 @@ export async function submitFileIngestJob(
     signal?: AbortSignal
   } = {},
 ): Promise<IngestJob> {
-  const form = new FormData()
-  form.append('file', file, file.name)
-  const docId = options.docId?.trim()
-  if (docId) form.append('doc_id', docId)
-  if (options.allowLowQuality) form.append('allow_low_quality', 'true')
-  const raw = await apiFetch<unknown>('/v1/knowledge/documents/upload/jobs', {
-    method: 'POST',
-    body: form,
-    signal: options.signal,
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(makeAbortError())
+      return
+    }
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/v1/knowledge/documents/upload/jobs')
+    xhr.timeout = UPLOAD_TIMEOUT_MS
+    tokenHeaders().forEach((value, key) => xhr.setRequestHeader(key, value))
+
+    let settled = false
+    let bodySent = false
+    let cancelAfterAccept = false
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      options.signal?.removeEventListener('abort', onAbort)
+      fn()
+    }
+    const onAbort = () => {
+      if (!bodySent) {
+        xhr.abort()
+        finish(() => reject(makeAbortError()))
+        return
+      }
+      // 文件已上送：保留响应，等 job id 回来后请求取消。
+      cancelAfterAccept = true
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+
+    xhr.upload.onload = () => {
+      bodySent = true
+    }
+    xhr.onerror = () =>
+      finish(() => reject(new ApiError(0, '无法连接服务端（网络中断或网关不可达）')))
+    xhr.ontimeout = () =>
+      finish(() => reject(new ApiError(408, '上传或服务端解析超时，请稍后重试')))
+    xhr.onabort = () => finish(() => reject(makeAbortError()))
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        if (xhr.status === 401) {
+          clearSession()
+          try {
+            window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT))
+          } catch {
+            // 非浏览器环境：忽略。
+          }
+        }
+        let body: unknown = null
+        try {
+          body = JSON.parse(xhr.responseText)
+        } catch {
+          // 非 JSON 响应（例如边缘网关的纯文本 502）：由状态码兜底。
+        }
+        const parts = describeFailure(
+          body,
+          xhr.status,
+          xhr.statusText,
+          xhr.getResponseHeader('X-Trace-ID'),
+        )
+        finish(() => reject(new ApiError(xhr.status, parts.message)))
+        return
+      }
+      let job: IngestJob
+      try {
+        job = toIngestJob(JSON.parse(xhr.responseText))
+      } catch {
+        finish(() => reject(new ApiError(0, '服务端返回了无法解析的响应')))
+        return
+      }
+      if (!cancelAfterAccept) {
+        finish(() => resolve(job))
+        return
+      }
+      // 用户在上送后取消了上传：现在有 job id，立刻请求服务端取消。
+      void cancelIngestJob(job.jobId)
+        .then((result) => finish(() => resolve(result.job)))
+        .catch(() => {
+          finish(() =>
+            reject(
+              new ApiError(
+                0,
+                `任务已创建（${job.jobId}），但取消请求失败；服务端可能继续入库，请刷新文档列表核对。`,
+              ),
+            ),
+          )
+        })
+    }
+
+    const form = new FormData()
+    form.append('file', file, file.name)
+    const docId = options.docId?.trim()
+    if (docId) form.append('doc_id', docId)
+    if (options.allowLowQuality) form.append('allow_low_quality', 'true')
+    xhr.send(form)
   })
-  return toIngestJob(raw)
 }
 
 export async function submitIngestJob(

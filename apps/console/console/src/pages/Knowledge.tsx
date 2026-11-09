@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent } from 'react'
 import { ApiError, useApi } from '../lib/api'
+import { useImeComposition } from '../lib/ime'
 import {
   cancelIngestJob,
   classifyUploadFailure,
@@ -97,6 +98,7 @@ export function Knowledge({
   /** 402 预算拒绝时去用量页调额度；换模型走 onOpenSettings。 */
   onOpenUsage?: () => void
 }) {
+  const ime = useImeComposition<HTMLInputElement>()
   const status = useApi<KnowledgeStatus>('/v1/knowledge/status', 30_000)
   const disabled = status.data ? !status.data.enabled : false
 
@@ -162,6 +164,8 @@ export function Knowledge({
   const [job, setJob] = useState<IngestJob | null>(null)
   const [jobSubmitting, setJobSubmitting] = useState(false)
   const [jobError, setJobError] = useState<string | null>(null)
+  /** 后端 404 说明任务账本随重启丢失；停止轮询，提示用户重新上传。 */
+  const [jobLost, setJobLost] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const handledJobRef = useRef('')
 
@@ -315,8 +319,10 @@ export function Knowledge({
         } catch (err) {
           setJobError(
             isAbortError(err)
-              ? '已取消提交：任务尚未创建。'
-              : classifyUploadFailure(err, file).message,
+              ? '已取消提交：文件尚未上送完成，任务未创建。'
+              : err instanceof ApiError
+                ? err.message
+                : classifyUploadFailure(err, file).message,
           )
         } finally {
           uploadRef.current = null
@@ -452,6 +458,7 @@ export function Knowledge({
     setActionError(null)
     setNotice(null)
     setJobError(null)
+    setJobLost(false)
     setJobSubmitting(true)
 
     void (async () => {
@@ -480,9 +487,16 @@ export function Knowledge({
           const next = await fetchIngestJob(job.jobId)
           if (alive) setJob(next)
         } catch (err) {
-          if (alive) {
-            setJobError(err instanceof Error ? err.message : '查询任务进度失败')
+          if (!alive) return
+          if (err instanceof ApiError && err.status === 404) {
+            // 入库任务账本只在内存里：进程重启后 jobId 查不到。继续轮询只会
+            // 每秒刷一条错误，必须停下并明确告诉用户“任务丢了、请重新上传”。
+            window.clearInterval(timer)
+            setJobLost(true)
+            setJobError('任务随重启丢失，请重新上传。')
+            return
           }
+          setJobError(err instanceof Error ? err.message : '查询任务进度失败')
         }
       })()
     }, 1000)
@@ -492,7 +506,7 @@ export function Knowledge({
     }
   }, [job?.jobId, job?.status])
 
-  const jobActive = Boolean(job && !isTerminalJobStatus(job.status))
+  const jobActive = Boolean(job && !isTerminalJobStatus(job.status) && !jobLost)
 
   // 终态只处理一次：刷新列表与状态，并把结果写成人话。
   useEffect(() => {
@@ -957,7 +971,14 @@ export function Knowledge({
               )}
             </header>
 
-            {jobSubmitting && <p className="os-hint">正在提交任务，等待服务端返回 job id…</p>}
+            {jobSubmitting && (
+              <p className="os-hint">
+                正在提交任务，等待服务端返回 job id…（文件已上送时会自动请求服务端取消，全回滚）
+                <button className="os-link" onClick={() => uploadRef.current?.abort()}>
+                  取消上传
+                </button>
+              </p>
+            )}
 
             {job && (
               <>
@@ -1322,8 +1343,13 @@ export function Knowledge({
                   value={searchInput}
                   onChange={(event) => setSearchInput(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') runSearch()
+                    if (event.key !== 'Enter') return
+                    // 组词中的回车是选词：不要把半截拼音当成检索词去打空转。
+                    if (ime.isImeKey(event)) return
+                    runSearch()
                   }}
+                  onCompositionStart={ime.onCompositionStart}
+                  onCompositionEnd={ime.onCompositionEnd}
                   placeholder="例如：华东区 Q3 的续费率是多少？"
                   aria-label="检索测试输入"
                 />
@@ -1366,7 +1392,18 @@ export function Knowledge({
               </div>
             )}
 
-            {searchResult && (
+            {searchResult &&
+              (searchResult.enabled === false ||
+                searchResult.retrieval?.status === 'unavailable') && (
+                <div className="os-alert" role="status" style={{ marginTop: 12 }}>
+                  <span>
+                    {searchResult.message ||
+                      `知识库未启用，原因：${searchResult.reason ?? '索引不可用'}`}
+                  </span>
+                </div>
+              )}
+
+            {searchResult && searchResult.enabled !== false && (
               <div style={{ marginTop: 12 }}>
                 <p className="os-hint">
                   命中 {searchResult.hits.length} 条 · 库内向量总数 {searchResult.count} ·{' '}
@@ -1411,14 +1448,16 @@ export function Knowledge({
       <Card title="能力边界" sub="只列真实还缺的；已经能用的不在这里" span={12}>
         <ul className="os-list">
           <li>
-            <strong>文件类型</strong>：上传只接受 <code>.txt</code> /{' '}
-            <code>.md</code>（UTF-8，≤5MB）。PDF / Word / 图片等没有解析器，
-            <strong>不会假装解析</strong>；请先转换成纯文本。
+            <strong>文件类型</strong>：上传接受 <code>.pdf</code> / <code>.docx</code> /{' '}
+            <code>.html</code> / <code>.htm</code> / <code>.txt</code> /{' '}
+            <code>.md</code>（文本类按 UTF-8 读取）；单个文件 ≤{' '}
+            {formatBytes(UPLOAD_MAX_BYTES)}。扫描版 PDF 与图片没有可提取的文本层，
+            <strong>不会假装解析</strong>，会明确报错而不是空着入库。
           </li>
           <li>
-            <strong>上传进度</strong>：multipart 上传走同步入库，只有上传字节进度；
-            服务端分块与向量化的那一段没有进度接口，只能等响应。想要逐分块进度与可取消，
-            请用「后台入库」。
+            <strong>上传进度</strong>：≤ {formatBytes(SYNC_UPLOAD_MAX_BYTES)} 的文件走同步入库，
+            只有上传字节进度；更大的文件自动转后台任务，按真实页数推进、可取消。
+            服务端分块与向量化没有逐分块进度接口。
           </li>
           <li>
             <strong>文档元数据</strong>：列表接口只返回文档标识、来源、分块数与入库时间，

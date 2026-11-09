@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Settings } from './Settings'
+import { findBannedTerms } from '../lib/accountCaps'
 import type { Session } from '../lib/auth'
 import type { DeviceModeState } from '../lib/mode'
 
@@ -212,8 +213,52 @@ describe('系统设置 · 知识库向量化卡', () => {
     // 只读口径落在向量化卡内（页面别处也有同一句成员只读说明）。
     const card = document.getElementById('settings-embedding')
     expect(card).toBeTruthy()
-    expect(within(card as HTMLElement).getByText(/该设置由主账号统一管理/)).toBeTruthy()
+    expect(within(card as HTMLElement).getByText(/该设置由系统统一管理/)).toBeTruthy()
+    // 只读口径不能反过来暴露账号层级：卡内文案不得出现任何层级/角色词。
+    expect(findBannedTerms((card as HTMLElement).textContent ?? '')).toEqual([])
     // 只读卡只有「重新检测」这一个重新取数的动作，没有任何保存类按钮。
     expect(within(card as HTMLElement).queryByRole('button', { name: /保存/ })).toBeNull()
+  })
+
+  test('联网检索设置读取中：说明为什么暂时点不了', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.startsWith('/v1/knowledge/status')) return json(200, ENABLED)
+        if (url.startsWith('/v1/network/research')) return new Promise<Response>(() => {})
+        return json(404, { detail: 'not found' })
+      }),
+    )
+
+    renderSettings()
+    expect(await screen.findByText(/正在读取联网检索设置/)).toBeTruthy()
+    expect(screen.queryByText(/联网检索设置没读到/)).toBeNull()
+  })
+
+  test('联网检索设置读取失败：给出可点的重试，而不是永久灰着', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.startsWith('/v1/knowledge/status')) return json(200, ENABLED)
+        if (url.startsWith('/v1/network/research')) {
+          attempts += 1
+          if (attempts === 1) {
+            return json(500, {
+              detail: { code: 'research_unavailable', message: '检索设置暂时读不到' },
+            })
+          }
+          return json(200, { enabled: false, sites: [], updated_at: null })
+        }
+        return json(404, { detail: 'not found' })
+      }),
+    )
+
+    renderSettings()
+    expect(await screen.findByText(/联网检索设置没读到/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }))
+    await waitFor(() => expect(screen.queryByText(/联网检索设置没读到/)).toBeNull())
   })
 })

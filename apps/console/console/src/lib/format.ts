@@ -116,8 +116,10 @@ export function eventLabel(type: string): string {
 
 /** 审计 outcome → 中文标签。未知原样显示；字段缺失显示「未知」。 */
 const OUTCOME_LABELS: Record<string, string> = {
-  allow: '通过',
-  allowed: '通过',
+  // `allow` 与 `allowed` 是两种真实存在的结果值（同一批审计里会同时出现）。
+  // 都翻成「通过」会让图表/表格出现两段同名结果，用户无法区分，必须各自命名。
+  allow: '放行',
+  allowed: '已授权',
   deny: '拒绝',
   denied: '拒绝',
   conditional: '有条件',
@@ -224,12 +226,14 @@ export function actionLabel(action: unknown): string {
   if (!text) return ''
   const direct = EVENT_LABELS[text]
   if (direct) return direct
-  // 无命名空间的动作名（如 assign_task）也逐段翻译，绝不把 snake_case 露出。
-  if (!text.includes('.')) {
-    return ACTION_SEGMENTS[text] ?? '系统操作'
+  // 后端也见过用空格分隔的动作名（例如 `access allowed`）；点号、下划线、空格
+  // 统一当分隔符，否则整串查不到映射，用户只能看到「系统操作」。
+  const segments = text.split(/[._\s]+/).filter(Boolean)
+  // 单个片段（如 assign_task 拆出来的 assigned）直接查表，绝不把 snake_case 露出。
+  if (segments.length <= 1) {
+    return ACTION_SEGMENTS[text] ?? ACTION_SEGMENTS[segments[0] ?? ''] ?? '系统操作'
   }
-  const pieces = text
-    .split('.')
+  const pieces = segments
     .map((part) => ACTION_SEGMENTS[part] ?? '')
     .filter(Boolean)
   // `account.member.created` 逐段翻译会得到「账号 账号 新增」；相邻重复只留一个。
@@ -305,6 +309,8 @@ const CAPABILITY_LABELS: Record<string, string> = {
   reviewer: '审阅',
   analyst: '分析',
   coder: '编码',
+  'capability.inspect': '能力清单',
+  heartbeat: '心跳检查',
 }
 
 export function capabilityLabel(name: unknown): string {

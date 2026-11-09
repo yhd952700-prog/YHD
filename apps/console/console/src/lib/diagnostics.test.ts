@@ -101,7 +101,7 @@ describe('一键诊断包导出', () => {
 
     const error = (await exportDiagnosticsBundle().catch((err: unknown) => err)) as Error
     expect(error.message).toContain('鎏灏的本地服务没有运行')
-    expect(error.message).toContain('启动窗口')
+    expect(error.message).toContain('请打开鎏灏')
     expect(error.message).not.toContain('Failed to fetch')
   })
 

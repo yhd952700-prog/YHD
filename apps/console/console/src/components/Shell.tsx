@@ -16,6 +16,7 @@ import type { NavItem } from '../lib/nav'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { identityBarRole } from '../lib/accountCaps'
 import { IconActivity, IconBell, IconLogout, IconSearch, IconSparkle } from './icons'
+import { DesktopDownloadLink } from './DesktopDownloadLink'
 
 export interface OsNotification {
   id: string
@@ -193,6 +194,8 @@ export function Shell({
           </label>
 
           <div className="os-topbar-actions">
+            {/* 只在网页端显示；CSS 按 data-mode/data-client 控制，桌面壳/手机端不出现。 */}
+            <DesktopDownloadLink compact />
             <Clock />
             <button
               className="os-icon-btn"

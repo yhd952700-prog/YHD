@@ -38,6 +38,7 @@ import {
   sessionFromToken,
 } from '../lib/auth'
 import { apiFetch } from '../lib/api'
+import { detectClient, isDesktopShell } from '../lib/mode'
 import {
   clearLocalProof,
   localProofHeader,
@@ -54,6 +55,7 @@ import {
   IconLock,
   IconMobile,
 } from './icons'
+import { DesktopDownloadLink } from './DesktopDownloadLink'
 
 export interface LoginProps {
   /** 当前端的形态，登录时随请求上报（令牌里会记下来源端）。 */
@@ -93,6 +95,16 @@ const CLIENT_LABEL: Record<ClientMode, string> = {
 const CONFIG_RETRY_DELAY_MS = 2000
 const CONFIG_RETRY_LIMIT = 30
 
+/**
+ * 手机中继对被移除 / 未配对的设备返回 401（网关的 `/v1/auth/config` 本身是
+ * 匿名可读的，401 只可能来自中继这一层）。
+ *
+ * 这种情况下重试没有意义：服务是活着的，只是这台设备不再被允许访问。
+ * 所以这里停下重试，直接说明要重新配对。
+ */
+const DEVICE_REVOKED_MESSAGE =
+  '这台设备已被移除，请重新配对。请在电脑上重新生成配对码，然后在手机上完成配对。'
+
 /** 首次进入的页面：没有初始账号、或初始化停在半路，都直接进设置表单。 */
 function initialStage(config: AuthConfig): Stage {
   if (config.root_account_exists === false) return 'bootstrap'
@@ -124,6 +136,13 @@ async function postJson<T>(
   return (await response.json()) as T
 }
 
+/** 登录失败必须给出下一步；后端文案已带指引的不重复追加。 */
+function loginErrorText(message: string): string {
+  if (!message) return '登录没有完成。请确认账号与密码，或联系设备管理员。'
+  if (/请|联系|稍后|重试/.test(message)) return message
+  return `${message}。请确认账号与密码是否正确，或联系设备管理员。`
+}
+
 export function Login({ mode, notice = null, onSuccess }: LoginProps) {
   const [principal, setPrincipal] = useState('')
   const [secret, setSecret] = useState('')
@@ -133,6 +152,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
   const [error, setError] = useState('')
   const [config, setConfig] = useState<AuthConfig | null>(null)
   const [configError, setConfigError] = useState('')
+  const [deviceRevoked, setDeviceRevoked] = useState(false)
   const [stage, setStage] = useState<Stage>('login')
 
   useEffect(() => {
@@ -147,6 +167,12 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           setConfig(result.config)
           setConfigError('')
           setStage((current) => (current === 'login' ? initialStage(result.config!) : current))
+          return
+        }
+        if (result.status === 401) {
+          // 设备已被移除（中继层 401）：服务在线，重试只会一直显示"正在准备"。
+          setDeviceRevoked(true)
+          setConfigError(DEVICE_REVOKED_MESSAGE)
           return
         }
         attempts += 1
@@ -185,7 +211,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         const session = await login(principal.trim(), secret, { remember, client: mode })
         onSuccess(session)
       } catch (err) {
-        setError(err instanceof AuthError ? err.message : '登录失败')
+        setError(loginErrorText(err instanceof AuthError ? err.message : '登录失败'))
         setSecret('')
         // 密码清空后提交按钮立刻变 disabled，浏览器会把它上面的焦点丢给 body，
         // 键盘用户得重新 Tab 一整圈。这里把焦点交回密码框（错误已由 role="alert" 播报）。
@@ -241,7 +267,13 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
           <div className="os-login-status-row">
             <span>当前形态</span>
-            <span>{CLIENT_LABEL[mode]}</span>
+            <span data-testid="client-kind">{CLIENT_LABEL[detectClient()]}</span>
+          </div>
+          <div className="os-login-status-row">
+            <span>运行载体</span>
+            <span data-testid="client-surface">
+              {isDesktopShell() ? '桌面客户端（原生窗口）' : '浏览器'}
+            </span>
           </div>
           <div className="os-login-status-row">
             <span>会话有效期</span>
@@ -257,7 +289,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </p>
         )}
         <p className="os-login-aside-note">
-          启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台就会断开连接。
+          桌面端只有一个鎏灏窗口；关闭窗口会退到系统托盘，本地服务继续运行。需要时从托盘重新打开即可。
         </p>
       </aside>
 
@@ -297,7 +329,18 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
-        {notice && (
+        {deviceRevoked && (
+          <button
+            type="button"
+            className="os-btn"
+            data-testid="login-repair-link"
+            onClick={() => window.location.assign('/')}
+          >
+            回到配对页，重新配对
+          </button>
+        )}
+
+        {notice && !deviceRevoked && (
           <div className="os-alert" role="alert" data-testid="login-notice">
             <IconAlert size={15} />
             <span>
@@ -330,7 +373,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
-        {!noAccount && (stage === 'login' || stage === 'register') && (
+        {!noAccount && !deviceRevoked && (stage === 'login' || stage === 'register') && (
           <div
             className="os-login-tabs"
             role="tablist"
@@ -384,14 +427,16 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
           </div>
         )}
 
-        {error && (
+        {/* 登录失败提示只在登录表单里、紧贴密码字段（见下方 os-login-error）；
+            其它阶段（创建账户/迁移/恢复）仍在顶部统一提示。 */}
+        {error && stage !== 'login' && (
           <div className="os-alert" role="alert">
             <IconAlert size={15} />
             <span>{error}</span>
           </div>
         )}
 
-        {stage === 'login' && (
+        {stage === 'login' && !deviceRevoked && (
           <div role="tabpanel" id="os-login-panel" aria-labelledby="os-login-tab-login">
           <form onSubmit={submitLogin}>
             <div className="os-field">
@@ -424,6 +469,8 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
                   value={secret}
                   onChange={(event) => setSecret(event.target.value)}
                   required
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? 'os-login-error' : undefined}
                 />
                 <button
                   type="button"
@@ -434,6 +481,12 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
                   {reveal ? <IconEyeOff size={16} /> : <IconEye size={16} />}
                 </button>
               </div>
+              {error && (
+                <div className="os-alert" role="alert" id="os-login-error" style={{ marginTop: 8 }}>
+                  <IconAlert size={15} />
+                  <span>{error}</span>
+                </div>
+              )}
             </div>
 
             <label className="os-check">
@@ -518,6 +571,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             onToken={async (token) => {
               await finish(token)
             }}
+            recovery={config?.recovery}
           />
         )}
 
@@ -555,7 +609,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
               <div
                 key={client}
                 className="os-client-chip"
-                data-active={client === mode ? 'true' : 'false'}
+                data-active={client === detectClient() ? 'true' : 'false'}
                 title={`当前以${CLIENT_LABEL[client]}形态打开`}
               >
                 <Icon size={15} />
@@ -564,6 +618,9 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             )
           })}
         </div>
+
+        {/* 只在网页端可见（CSS 按 data-mode/data-client 控制），桌面壳与手机端不出现。 */}
+        <DesktopDownloadLink />
 
         <div className="os-login-foot">
           同意以同一账号在桌面端、网页版与手机端登录 —— 三端共用同一会话，
@@ -978,6 +1035,7 @@ function RecoveryForm({
   onCancel,
   onLost,
   onToken,
+  recovery,
 }: {
   busy: boolean
   onBusy: (value: boolean) => void
@@ -985,6 +1043,7 @@ function RecoveryForm({
   onCancel: () => void
   onLost: () => void
   onToken: (token: string) => Promise<void>
+  recovery?: AuthConfig['recovery']
 }) {
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
@@ -992,6 +1051,9 @@ function RecoveryForm({
   const [issueFailed, setIssueFailed] = useState<string | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'fail'>('idle')
   const [handoffBusy, setHandoffBusy] = useState(false)
+  // 本机（含已配对手机中继）才能直接生成恢复码；直连手机端要给出真实路径。
+  const canSelfServiceHere = recovery?.local ?? true
+  const remoteAllowed = recovery?.remote_allowed === true
 
   /**
    * 本机自救：没有任何恢复码的账号，由本机生成一个新码并在页面直接显示。
@@ -1077,6 +1139,17 @@ function RecoveryForm({
       <p className="os-login-sub" style={{ marginBottom: 14 }}>
         用初始化时保存的恢复码重置密码。恢复码使用一次后即失效。
       </p>
+      {!canSelfServiceHere && (
+        <div className="os-note" role="status" data-testid="recovery-path">
+          <span>
+            这台设备不是本机：重置请在本机打开控制台，或先在电脑上开启「手机访问」
+            并完成配对后从手机端操作。
+            {remoteAllowed
+              ? '本机已开启远程恢复，也可以直接在这里重试。'
+              : '若需要跨设备重置，请在电脑上开启远程恢复（环境变量 LIUHAO_ALLOW_REMOTE_RECOVERY）。'}
+          </span>
+        </div>
+      )}
       <div className="os-field">
         <label htmlFor="rec-code">恢复码</label>
         <input
@@ -1135,7 +1208,7 @@ function RecoveryForm({
           </div>
           {copyState === 'fail' && <div>复制失败，请手动选中上面的码复制。</div>}
           <span>
-            这个码只能在这台电脑上使用，用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
+            这个码可用于本机或已配对的手机端，用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
           </span>
         </div>
       )}
@@ -1151,14 +1224,20 @@ function RecoveryForm({
         <button type="button" className="os-link" onClick={onCancel}>
           返回登录
         </button>
-        <button
-          type="button"
-          className="os-link"
-          onClick={() => void issueLocal()}
-          disabled={handoffBusy}
-        >
-          {handoffBusy ? '正在生成…' : '没有恢复码？在本机生成'}
-        </button>
+        {canSelfServiceHere ? (
+          <button
+            type="button"
+            className="os-link"
+            onClick={() => void issueLocal()}
+            disabled={handoffBusy}
+          >
+            {handoffBusy ? '正在生成…' : '没有恢复码？在本机生成'}
+          </button>
+        ) : (
+          <span className="os-hint">
+            没有恢复码？请在本机控制台生成，或通过已配对的「手机访问」操作。
+          </span>
+        )}
         <button type="button" className="os-link" onClick={onLost}>
           恢复码也丢失了
         </button>

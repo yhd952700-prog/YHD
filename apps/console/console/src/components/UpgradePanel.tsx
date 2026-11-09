@@ -6,13 +6,13 @@
  *    旁边，而不是让用户点了以后只看到一句通用报错。
  * 2. **安装完成不等于已生效**。升级写的是磁盘文件，当前进程仍是旧代码，所以
  *    成功后必须明确要求重启，不能显示成"已是最新"。
- * 3. **失败要能被照着做**。自动回滚、校验失败、断网各自给出不同的下一步；
+ * 3. **失败要能被照着做**。回滚尝试、校验失败、断网各自给出不同的下一步；
  *    统一成"升级失败，请重试"等于什么都没说。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from '../lib/api'
-import type { UpgradeStatus } from '../lib/upgrade'
+import type { BackupView, UpgradeStatus } from '../lib/upgrade'
 import {
   applyUpgrade,
   checkForUpdate,
@@ -32,7 +32,7 @@ const STATE_LABEL: Record<string, string> = {
   checking: '检查中',
   applying: '安装中',
   available: '有新版本',
-  applied: '已安装',
+  applied: '已安装（重启后生效）',
   rolled_back: '已回滚',
   failed: '上次未成功',
 }
@@ -47,6 +47,21 @@ function formatTime(value: string | null | undefined): string {
 function errorText(err: unknown): string {
   if (err instanceof ApiError) return err.message
   return err instanceof Error ? err.message : '操作没有完成，请稍后重试。'
+}
+
+/** 备份与数据是否同盘：同盘必须直说"会一起丢"，不能让用户误以为已经安全。 */
+function backupVolumeText(backup: BackupView): string {
+  if (backup.same_volume) {
+    const drive = backup.backup_drive || backup.data_drive
+    return `与数据目录在同一块盘${drive ? `（${drive}）` : ''}：这块盘坏了，数据和备份会一起丢。`
+  }
+  const drives = [
+    backup.data_drive ? `数据在 ${backup.data_drive}` : '',
+    backup.backup_drive ? `备份在 ${backup.backup_drive}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return `与数据目录不在同一块盘${drives ? `（${drives}）` : ''}：单块盘损坏不会同时丢掉数据和备份。`
 }
 
 export function UpgradePanel() {
@@ -108,7 +123,7 @@ export function UpgradePanel() {
   }
 
   async function onApply(version: string) {
-    if (!window.confirm(`确认安装 ${version}？安装期间请不要关闭软件；失败会自动回滚。`)) return
+    if (!window.confirm(`确认安装 ${version}？安装期间请不要关闭软件；安装完成后需要重启才会生效，失败会尝试回滚，但可能需要手动修复。`)) return
     setBusy('apply')
     setNotice({ tone: 'muted', message: `正在安装 ${version}，可能需要几分钟，请不要关闭软件。` })
     try {
@@ -155,7 +170,7 @@ export function UpgradePanel() {
   if (!status) {
     return (
       <div className="os-alert" role="alert">
-        没有读取到版本信息。请确认启动窗口仍在运行后刷新页面。
+        没有读取到版本信息。请确认鎏灏仍在运行后刷新页面。
       </div>
     )
   }
@@ -168,6 +183,7 @@ export function UpgradePanel() {
     status.last_operation?.kind === 'apply' &&
     status.last_operation?.status === 'completed'
   const stateLabel = STATE_LABEL[status.state] ?? status.state
+  const backup = status.backup ?? null
 
   return (
     <div className="os-list">
@@ -184,6 +200,37 @@ export function UpgradePanel() {
           {stateLabel}
         </span>
       </div>
+
+      {backup && (
+        <div
+          className={backup.same_volume ? 'os-alert' : 'os-note'}
+          role={backup.same_volume ? 'alert' : undefined}
+          data-testid="upgrade-backup-info"
+          style={{ marginTop: 12 }}
+        >
+          <div>
+            <strong>备份位置</strong>：{backup.root}
+          </div>
+          <div style={{ marginTop: 6 }}>{backupVolumeText(backup)}</div>
+          <div style={{ marginTop: 6 }}>
+            为什么放在数据目录外：数据目录被删、或它所在的盘坏了，放在里面的备份会一起消失——那正是最需要备份的时候。
+          </div>
+          <div style={{ marginTop: 6 }}>
+            换机时带走：把 {backup.root} 整个目录复制走（只带数据目录会丢掉升级前的回滚备份）。
+          </div>
+          <div style={{ marginTop: 6 }}>
+            最近一次备份：
+            {backup.last_backup_at
+              ? `${formatTime(backup.last_backup_at)}（共 ${backup.backup_count} 份）`
+              : '还没有升级备份（首次升级前会自动生成）。'}
+          </div>
+          {backup.migration && backup.migration.moved > 0 && (
+            <div style={{ marginTop: 6 }}>
+              旧位置 {backup.migration.from} 的 {backup.migration.moved} 份备份已自动搬到新位置。
+            </div>
+          )}
+        </div>
+      )}
 
       {!sourceReady && (
         <div className="os-note" style={{ marginTop: 12 }}>
@@ -248,6 +295,14 @@ export function UpgradePanel() {
       {status.error?.message && !notice && (
         <div className="os-alert" role="alert" style={{ marginTop: 12 }}>
           {status.error.message}
+          {status.error.technical_detail ? (
+            <details style={{ marginTop: 8 }}>
+              <summary>技术详情</summary>
+              <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {status.error.technical_detail}
+              </code>
+            </details>
+          ) : null}
         </div>
       )}
 

@@ -150,7 +150,7 @@ export function LogRetentionPanel({ canManage = true }: LogRetentionPanelProps) 
     <div>
       {!canManage && (
         <p className="os-note" role="note">
-          该设置由主账号统一管理，当前账号只能查看。
+          该设置由系统统一管理，当前账号只读。
         </p>
       )}
       <p>

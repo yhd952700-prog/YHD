@@ -9,6 +9,8 @@
  * 每个页面都扫描 `document.body.textContent`，命中 BANNED_ACCOUNT_TERMS 即失败。
  */
 
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import type { Session } from '../lib/auth'
@@ -171,5 +173,54 @@ describe('备份导入的真实边界', () => {
     for (const term of ['管理员', '主账号', '子账号', '上级', '下级']) {
       expect(text).not.toContain(term)
     }
+  })
+})
+
+/**
+ * 非根界面的文案扫描扩展到「设置 / 日志与磁盘 / 管家」三处。
+ *
+ * 这三页原本会告诉只读账号"这是由主账号统一管理的""请换管理员账号登录"，
+ * 等于直接暴露「你是被创建的」。接口层已不再下发层级字段，界面文案必须同步收口：
+ * 源码与构建产物都只允许出现「系统统一管理 / 当前账号只读 / 暂无此权限」。
+ */
+const HIERARCHY_TERMS = ['主账号', '子账号', '上级', '下级', '管理员'] as const
+
+const NON_ROOT_COPY_FILES = [
+  join(process.cwd(), 'src', 'pages', 'Settings.tsx'),
+  join(process.cwd(), 'src', 'components', 'LogRetentionPanel.tsx'),
+  join(process.cwd(), 'src', 'pages', 'Butler.tsx'),
+]
+
+describe('非根界面文案：设置 / 日志 / 管家', () => {
+  test('源码里不出现层级与角色词（root 这类字段名不在扫描范围）', () => {
+    for (const file of NON_ROOT_COPY_FILES) {
+      const source = readFileSync(file, 'utf8')
+      expect(HIERARCHY_TERMS.filter((term) => source.includes(term))).toEqual([])
+    }
+  })
+
+  test('构建产物不再包含被修正的层级文案，并包含新的中性说法', () => {
+    const assets = join(process.cwd(), 'dist', 'assets')
+    if (!existsSync(assets)) {
+      // 未执行 `npm run build` 时没有产物可查；构建步骤会单独跑这条断言。
+      return
+    }
+    const bundle = readdirSync(assets)
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => readFileSync(join(assets, name), 'utf8'))
+      .join('\n')
+
+    for (const sentence of [
+      '该设置由主账号统一管理',
+      '软件更新由主账号统一管理',
+      '请换管理员账号登录后再来',
+    ]) {
+      expect(bundle).not.toContain(sentence)
+    }
+    // 新文案已进入产物，证明确实重新构建过，而不是只改了源码。
+    expect(bundle).toContain('该设置由系统统一管理，当前账号只读')
+    expect(bundle).toContain('软件更新由系统统一管理')
+    expect(bundle).toContain('当前账号暂无此权限')
+    // 注：`Apps.tsx` 由另一条改动线维护，它的按钮文案不在本用例代管范围。
   })
 })

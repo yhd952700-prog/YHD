@@ -11,6 +11,7 @@ import {
   hitDocumentId,
   isTerminalJobStatus,
   jobStatusLabel,
+  knowledgeStatusView,
   paginateChunks,
   parseServerTime,
   scoreLabel,
@@ -22,7 +23,7 @@ import {
   validateIngestText,
   validateUploadFile,
 } from './knowledge'
-import type { DocumentChunk, KnowledgeHit } from './knowledge'
+import type { DocumentChunk, KnowledgeHit, KnowledgeStatus } from './knowledge'
 
 function hit(overrides: Partial<KnowledgeHit> = {}): KnowledgeHit {
   return {
@@ -304,6 +305,47 @@ describe('分数语义跟随检索模式', () => {
 
   test('未知模式给中性说法，不冒充相似度', () => {
     expect(scoreLabel(undefined)).toBe('排序分')
+  })
+})
+
+describe('知识库降级状态可见性（MEM-020）', () => {
+  function status(overrides: Partial<KnowledgeStatus> = {}): KnowledgeStatus {
+    return {
+      enabled: false,
+      provider: 'ollama',
+      model: 'bge-m3',
+      vectors: 0,
+      reason: null,
+      message: '',
+      ...overrides,
+    }
+  }
+
+  test('向量维度错配单独成一类，不再被误标成「向量库打不开」', () => {
+    const view = knowledgeStatusView(
+      status({ reason: '索引记录维度 768 与当前向量维度 1024 不一致，请执行重建索引' }),
+    )
+    expect(view.kind).toBe('dimension-mismatch')
+    expect(view.title).toBe('向量维度与索引不匹配')
+    expect(view.detail).toContain('768')
+    expect(view.detail).toContain('1024')
+  })
+
+  test('嵌入模型错配也单独成一类', () => {
+    const view = knowledgeStatusView(
+      status({ reason: '索引使用嵌入模型 old-model，当前为 new-model，请执行重建索引' }),
+    )
+    expect(view.kind).toBe('index-model-mismatch')
+    expect(view.title).toBe('索引与当前向量模型不匹配')
+  })
+
+  test('模型没配好时保留服务端真实原因，不只是「不可用」', () => {
+    const view = knowledgeStatusView(
+      status({ provider: null, model: null, reason: '未配置 embedding provider' }),
+    )
+    expect(view.enabled).toBe(false)
+    expect(view.kind).toBe('not-configured')
+    expect(view.detail).toContain('未配置 embedding provider')
   })
 })
 

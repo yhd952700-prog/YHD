@@ -180,6 +180,19 @@ export function readableError(error: unknown): string {
       return `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`
     }
     if (error.code === 'permission_denied') return PERMISSION_DENIAL_MESSAGE
+    // 能力 id、agent id 是执行器/内部标识：只在能力清单里出现，错误文案里不上屏。
+    if (error.code === 'unknown_capability') {
+      return '所选默认能力里有未注册项。请刷新能力清单后重新选择，或先不选默认能力。'
+    }
+    if (
+      error.code === 'agent_unavailable' ||
+      error.code === 'employee_unavailable'
+    ) {
+      return '这个员工的执行个体处于暂停状态，无法接受指派。请先恢复后再派活。'
+    }
+    if (error.code === 'agent_not_found' || error.code === 'employee_not_found') {
+      return '员工不存在或不在当前可见范围。请刷新员工列表后重新选择。'
+    }
     return error.message
   }
   if (error instanceof Error) return error.message

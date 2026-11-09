@@ -28,6 +28,7 @@ import type { OsNotification } from './components/Shell'
 import type { AuthConfig } from './lib/auth'
 import { componentLabel } from './lib/format'
 import {
+  PENDING_RECOVERY_EVENT,
   UNAUTHENTICATED_EVENT,
   clearPendingRecovery,
   clearSession,
@@ -76,6 +77,7 @@ import { About } from './pages/About'
 import { Workbench } from './pages/Workbench'
 import { Backup } from './pages/Backup'
 import { Members } from './pages/Members'
+import { AccountSecurity } from './pages/AccountSecurity'
 import { Memory } from './pages/Memory'
 import { MyData } from './pages/MyData'
 import { MyEmployees } from './pages/MyEmployees'
@@ -152,9 +154,10 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   backup: { title: '备份与迁移', sub: '导出加密包 / 从备份迁移到本机' },
   recovery: { title: '恢复码', sub: '忘记密码时重置；轮换后旧码立即失效' },
   'my-members': { title: '我的账号', sub: '你创建的账号及状态' },
+  account: { title: '账号安全', sub: '修改本人密码；旧密码错误会被明确拒绝' },
   'my-keys': { title: '我的 Key', sub: 'Key 归属与用量' },
   'my-data': { title: '我的数据', sub: '导出人可读 ZIP；记忆与知识库可回导' },
-  memory: { title: '记忆', sub: '只读检索与导出' },
+  memory: { title: '记忆', sub: '检索、纠正、删除与导出' },
 }
 
 /** 合法页面 key。用于校验深链参数，避免 `?p=<乱码>` 把界面带到一个空壳。 */
@@ -191,6 +194,20 @@ export function readDeepLinkModel(): string {
   }
 }
 
+/**
+ * 桌面壳用 `--web` 打开浏览器时会拼 `?mode=web`。
+ *
+ * 只用于标题后缀与常驻提示，**不改变**端形态判定（device.mode 仍按视口算）：
+ * 浏览器模式下仍然要按窄屏/宽屏给出对应布局。
+ */
+export function readBrowserMode(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).get('mode') === 'web'
+  } catch {
+    return false
+  }
+}
+
 function App() {
   const device = useDeviceMode()
 
@@ -214,6 +231,20 @@ function App() {
    */
   const [loginNotice, setLoginNotice] = useState<'expired' | 'logged-out' | null>(null)
 
+  /** `?mode=web`：桌面壳拉起的浏览器窗口。提示只在这里出现。 */
+  const [browserMode] = useState(readBrowserMode)
+  const [browserNoticeClosed, setBrowserNoticeClosed] = useState(false)
+
+  // 浏览器模式下标题必须能一眼分清「这不是桌面应用」；卸载时还原。
+  useEffect(() => {
+    if (!browserMode) return
+    const original = document.title
+    document.title = `${original} · 浏览器模式`
+    return () => {
+      document.title = original
+    }
+  }, [browserMode])
+
   /**
    * 图形化首启刚创建的恢复码。
    *
@@ -223,6 +254,16 @@ function App() {
   const [pendingRecovery, setPendingRecovery] = useState<PendingRecovery | null>(() =>
     readPendingRecovery(),
   )
+
+  /**
+   * 注册响应可能晚于本组件挂载（登录页在同一个 App 里）。保存恢复码后
+   * 立即同步一次，否则横幅要等用户手动刷新才会出现。
+   */
+  useEffect(() => {
+    const sync = () => setPendingRecovery(readPendingRecovery())
+    window.addEventListener(PENDING_RECOVERY_EVENT, sync)
+    return () => window.removeEventListener(PENDING_RECOVERY_EVENT, sync)
+  }, [])
 
   /**
    * 只读查看：只禁用写操作，**不切换数据源**。
@@ -257,6 +298,24 @@ function App() {
     [session, accounts.data, accounts.source, accounts.error, subtreeMemberCount],
   )
   const caps = useMemo(() => deriveCaps(profile), [profile])
+
+  /**
+   * 深链门控：账号数据落定前，除总览外一律**不挂载**目标页。
+   *
+   * 子组件的 effect 会先于父级回退 effect 执行，所以只靠下面那个 redirect
+   * 会出现"先渲染一帧、真发一次请求"的窗口：成员用 `?p=preflight` / `?p=status`
+   * 打开时会打到管理员端点。这里在渲染层就挡住：加载中 → 占位；落定后不可见
+   * → 总览。管理员不受影响（落定后正常挂载）。
+   */
+  const pagesSettled = !session || profile?.loaded === true || Boolean(profile?.error)
+  const visiblePages = useMemo(() => visibleNavKeys(caps), [caps])
+  const shown = !pagesSettled
+    ? active === 'overview'
+      ? 'overview'
+      : null
+    : visiblePages.has(active)
+      ? active
+      : 'overview'
 
   // Policy 审批真实状态 —— 由 App 单一持有，因为侧栏与审批面板显示的是同一份真相。
   const [acl, setAcl] = useState<ApprovalUiState>(EMPTY_STATE)
@@ -406,8 +465,8 @@ function App() {
    */
   useEffect(() => {
     if (!profile?.loaded) return
-    if (!visibleNavKeys(caps).has(active)) navigate('overview')
-  }, [profile?.loaded, caps, active, navigate])
+    if (!visiblePages.has(active)) navigate('overview')
+  }, [profile?.loaded, visiblePages, active, navigate])
 
   const doLogout = useCallback(async () => {
     await performLogout()
@@ -566,7 +625,7 @@ function App() {
         id: 'auth-config-error',
         tone: 'warn',
         title: '无法读取登录配置',
-        detail: '鎏灏的本地服务没有运行。请打开鎏灏（启动窗口保持打开），然后刷新重试。',
+        detail: '鎏灏的本地服务没有运行。请打开鎏灏，然后刷新重试。',
       })
     }
 
@@ -606,7 +665,7 @@ function App() {
         id: 'ready-error',
         tone: 'warn',
         title: '就绪探针不可用',
-        detail: '暂时读不到各项依赖的状态，请确认启动窗口仍在运行，然后刷新重试。',
+        detail: '暂时读不到各项依赖的状态，请确认鎏灏仍在运行，然后刷新重试。',
       })
     }
 
@@ -733,24 +792,49 @@ function App() {
     // profile 到位后壳层才会渲染出 main；账号信息比会话慢时也要能补上焦点。
   }, [session, profile])
 
+  /** 浏览器模式提示：登录前也要可见（此时还没有壳层）。 */
+  const browserNotice =
+    browserMode && !browserNoticeClosed ? (
+      <div
+        className="os-note"
+        role="status"
+        data-testid="browser-mode-notice"
+        style={{ justifyContent: 'space-between', alignItems: 'center' }}
+      >
+        <span>当前为浏览器模式；桌面端请用托盘菜单「打开鎏灏窗口」。</span>
+        <button
+          type="button"
+          className="os-btn os-btn-ghost"
+          onClick={() => setBrowserNoticeClosed(true)}
+        >
+          知道了
+        </button>
+      </div>
+    ) : null
+
   if (!session || !profile) {
     return (
-      <Login
-        mode={device.mode}
-        notice={loginNotice}
-        onSuccess={(next) => {
-          setLoginNotice(null)
-          focusMainAfterLogin.current = true
-          setSession(next)
-        }}
-      />
+      <>
+        {browserNotice}
+        <Login
+          mode={device.mode}
+          notice={loginNotice}
+          onSuccess={(next) => {
+            setLoginNotice(null)
+            focusMainAfterLogin.current = true
+            setSession(next)
+          }}
+        />
+      </>
     )
   }
 
   const meta =
-    active === 'my-keys' && caps.isRoot
-      ? { title: '全部 Key', sub: '每人一条授权记录；标注可代用的成员其 Key 可在模型路由中被你使用' }
-      : (PAGE_META[active] ?? PAGE_META.overview)
+    shown === null
+      ? { title: '正在确认访问权限', sub: '账号数据就绪后自动打开' }
+      : shown === 'my-keys' && caps.isRoot
+        ? { title: '全部 Key', sub: '每人一条授权记录；标注可代用的成员其 Key 可在模型路由中被你使用' }
+        : (PAGE_META[shown] ?? PAGE_META.overview)
 
   return (
     <Shell
@@ -759,7 +843,7 @@ function App() {
       session={session}
       profile={profile}
       caps={caps}
-      active={active}
+      active={shown ?? 'overview'}
       pageTitle={meta.title}
       onNavigate={navigate}
       onToggleTheme={() => device.setTheme(device.theme === 'dark' ? 'light' : 'dark')}
@@ -768,6 +852,8 @@ function App() {
       onQueryChange={setQuery}
       notifications={notifications}
     >
+      {browserNotice}
+
       {viewAs && <ReadOnlyBanner principal={viewAs} onExit={() => setViewAs(null)} />}
 
       {pendingRecovery && (
@@ -809,10 +895,25 @@ function App() {
         <p className="os-page-sub">{meta.sub}</p>
       </div>
 
-      {active === 'overview' && (
-        <Overview query={query} provider={provider} onNavigate={navigate} />
+      {shown === null && (
+        <div className="os-grid">
+          <div className="os-span-12">
+            <div className="os-note" role="status">
+              正在确认访问权限…账号数据就绪后自动打开。
+            </div>
+          </div>
+        </div>
       )}
-      {active === 'butler' && (
+
+      {shown === 'overview' && (
+        <Overview
+          query={query}
+          provider={provider}
+          onNavigate={navigate}
+          isRoot={caps.isRoot}
+        />
+      )}
+      {shown === 'butler' && (
         <Butler
           query={query}
           onOpenApproval={() => navigate('approval')}
@@ -821,50 +922,51 @@ function App() {
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
-      {active === 'employees' && <Roster query={query} />}
-      {active === 'my-employees' && (
+      {shown === 'employees' && <Roster query={query} />}
+      {shown === 'my-employees' && (
         <MyEmployees
           query={query}
           onOpenUsage={() => navigate('my-keys')}
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
-      {active === 'business' && <BusinessCenter query={query} />}
-      {active === 'knowledge' && (
+      {shown === 'business' && <BusinessCenter query={query} />}
+      {shown === 'knowledge' && (
         <Knowledge
           query={query}
           onOpenSettings={() => navigate('settings')}
           onOpenUsage={() => navigate('my-keys')}
         />
       )}
-      {active === 'workbench' && (
+      {shown === 'workbench' && (
         <Workbench
           provider={provider}
           onNavigate={(key) => navigate(key)}
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
-      {active === 'data' && <DataCenter query={query} />}
-      {active === 'approval' && (
+      {shown === 'data' && <DataCenter query={query} isRoot={caps.isRoot} />}
+      {shown === 'approval' && (
         <div className="os-grid">
           <div className="os-span-12">
             <ApprovalCenter state={aclView} actions={aclActions} />
           </div>
         </div>
       )}
-      {active === 'audit' && <Audit query={query} profile={profile} />}
-      {active === 'files' && <Files query={query} />}
-      {active === 'goals' && <Goals query={query} />}
-      {active === 'projects' && <Projects query={query} />}
-      {active === 'apps' && <Apps query={query} canManage={caps.isRoot} />}
-      {active === 'events' && <Events query={query} />}
-      {active === 'trust' && <Trust query={query} />}
-      {active === 'network' && <Network query={query} />}
-      {active === 'identity' && <Identity query={query} profile={profile} />}
-      {active === 'memory' && <Memory profile={profile} caps={caps} readOnly={readOnly} />}
-      {active === 'my-keys' && <MyKeys profile={profile} caps={caps} readOnly={readOnly} />}
-      {active === 'my-data' && <MyData profile={profile} readOnly={readOnly} />}
-      {active === 'members' && (
+      {shown === 'audit' && <Audit query={query} profile={profile} />}
+      {shown === 'files' && <Files query={query} />}
+      {shown === 'goals' && <Goals query={query} />}
+      {shown === 'projects' && <Projects query={query} />}
+      {shown === 'apps' && <Apps query={query} canManage={caps.isRoot} />}
+      {shown === 'events' && <Events query={query} />}
+      {shown === 'trust' && <Trust query={query} />}
+      {shown === 'network' && <Network query={query} />}
+      {shown === 'identity' && <Identity query={query} profile={profile} />}
+      {shown === 'memory' && <Memory profile={profile} caps={caps} readOnly={readOnly} />}
+      {shown === 'my-keys' && <MyKeys profile={profile} caps={caps} readOnly={readOnly} />}
+      {shown === 'account' && <AccountSecurity profile={profile} readOnly={readOnly} />}
+      {shown === 'my-data' && <MyData profile={profile} readOnly={readOnly} />}
+      {shown === 'members' && (
         <Members
           profile={profile}
           caps={caps}
@@ -873,7 +975,7 @@ function App() {
           onViewAs={setViewAs}
         />
       )}
-      {active === 'my-members' && (
+      {shown === 'my-members' && (
         <Members
           profile={profile}
           caps={caps}
@@ -882,16 +984,16 @@ function App() {
           onViewAs={setViewAs}
         />
       )}
-      {active === 'matrix' && (
+      {shown === 'matrix' && (
         <PermissionMatrix profile={profile} caps={caps} readOnly={readOnly} />
       )}
-      {active === 'templates' && <RoleTemplates caps={caps} />}
-      {active === 'backup' && <Backup profile={profile} caps={caps} readOnly={readOnly} />}
-      {active === 'recovery' && <Recovery caps={caps} readOnly={readOnly} />}
-      {active === 'status' && <SystemStatus provider={provider} />}
-      {active === 'preflight' && <Preflight />}
-      {active === 'about' && <About />}
-      {active === 'settings' && (
+      {shown === 'templates' && <RoleTemplates caps={caps} />}
+      {shown === 'backup' && <Backup profile={profile} caps={caps} readOnly={readOnly} />}
+      {shown === 'recovery' && <Recovery caps={caps} readOnly={readOnly} />}
+      {shown === 'status' && <SystemStatus provider={provider} />}
+      {shown === 'preflight' && <Preflight />}
+      {shown === 'about' && <About />}
+      {shown === 'settings' && (
         <Settings
           device={device}
           session={session}

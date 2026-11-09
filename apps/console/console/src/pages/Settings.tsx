@@ -132,7 +132,7 @@ function EmbeddingStatus({ canManage }: { canManage: boolean }) {
       <p className="os-hint" style={{ marginTop: 12 }}>
         这张卡只读：向量化默认只走本机 Ollama；云端向量化需要在部署时设置环境变量，界面不提供选择。
       </p>
-      {!canManage && <p className="os-hint">该设置由主账号统一管理，当前账号只能查看。</p>}
+      {!canManage && <p className="os-hint">该设置由系统统一管理，当前账号只读。</p>}
     </>
   )
 }
@@ -277,8 +277,8 @@ export function Settings({
             </button>
           </span>
           <span className="os-attention-item" data-tone="warn">
-            <strong>黑色命令窗口请保持打开</strong>
-            它是本地服务；关掉它，控制台会断开连接。
+            <strong>关闭窗口不会退出</strong>
+            桌面端只有一个鎏灏窗口；关闭后会退到系统托盘，本地服务继续运行，需要时从托盘重新打开即可。
             <button
               className="os-link"
               onClick={() =>
@@ -305,7 +305,7 @@ export function Settings({
               <IconRefresh size={15} /> 跟随窗口
             </span>
             <span className="os-choice-desc">
-              按视口宽度自动判定（当前 {MODE_LABELS[detected]}）
+              桌面客户端固定为桌面端；浏览器按视口宽度判定（当前 {MODE_LABELS[detected]}）
             </span>
           </button>
 
@@ -371,7 +371,7 @@ export function Settings({
 
         {!canManageSettings && (
           <div className="os-note" role="note" style={{ marginBottom: 12 }}>
-            <span>该设置由主账号统一管理，当前账号只能查看。</span>
+            <span>该设置由系统统一管理，当前账号只读。</span>
           </div>
         )}
 
@@ -388,6 +388,28 @@ export function Settings({
           />
           允许「联网检索」：把检索词发到 hn.algolia.com / api.github.com / export.arxiv.org 三个公开接口
         </label>
+
+        {research.loading && (
+          <p className="os-note" role="status">
+            <span>正在读取联网检索设置…开关暂时是灰的，读完就能改。</span>
+          </p>
+        )}
+
+        {research.error && (
+          <p className="os-alert" role="alert">
+            <span>
+              联网检索设置没读到：{research.error}。开关先灰着，读回来再改。
+            </span>
+            <button
+              className="os-link"
+              type="button"
+              style={{ flex: 'none' }}
+              onClick={research.reload}
+            >
+              重试
+            </button>
+          </p>
+        )}
 
         {researchError && (
           <div className="os-alert" role="alert">
@@ -437,7 +459,7 @@ export function Settings({
           <UpgradePanel />
         ) : (
           <p className="os-note" role="note">
-            软件更新由主账号统一管理；当前账号不提供检查、安装与回滚操作。
+            软件更新由系统统一管理；当前账号不提供检查、安装与回滚操作。
           </p>
         )}
       </Card>

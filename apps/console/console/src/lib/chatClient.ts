@@ -515,6 +515,20 @@ export function makeSessionTitle(text: string): string {
 }
 
 /**
+ * 主文案兜底：上游原文、本机路径只允许进折叠详情，绝不进卡片正文。
+ *
+ * 后端若回退到旧行为，在主文案里拼「；服务端返回：<上游原文>」，这里整段剥掉；
+ * 单独出现的盘符路径与典型上游英文错误名也换成中性中文。
+ */
+function stripUpstreamFromMainText(text: string): string {
+  return text
+    .replace(/；服务端返回：[^\n]*/g, '')
+    .replace(/[A-Za-z]:\\[^\s，。；、）)]*/g, '相关位置')
+    .replace(/\bInternal Server Error\b/gi, '服务端错误')
+    .trim()
+}
+
+/**
  * 把结束帧里的失败分类翻译成可行动的卡片文案。
  *
  * 后端在 `done` 事件里给 `reason`；这里只按约定消费，不猜测、不改分类。
@@ -532,6 +546,37 @@ export function chatFailureText(reason?: string, fallback?: string): string {
       return '这个 Key 已被吊销或停用。请到「系统设置 → 模型管理」重新生成并填入新的 Key。';
     case 'rate_limited':
       return '请求被上游限流了。请稍后重试，或稍等片刻再发一次。';
+    case 'truncated':
+      return '回复达到长度上限被截断，请发送「继续」或换用支持更长输出的模型。';
+    case 'server_error':
+      return '模型服务端出错了（HTTP 5xx），请稍后重试；持续出现请联系服务提供方。';
+    case 'bad_request':
+      return '模型服务认为请求不合法（HTTP 400），请检查模型名与参数设置。';
+    case 'proxy_auth':
+      return '代理要求认证（HTTP 407），请检查代理设置，或暂时关闭代理后重试。';
+    case 'redirect_blocked':
+      return '模型服务返回的是网页而不是接口数据，疑似被网关或登录页拦截；请核对接口地址是否为真实 API 端点。';
+    case 'invalid_response':
+      return '模型服务返回了无法解析的数据（可能是网关或登录页），请核对接口地址后重试。';
+    case 'endpoint_not_found':
+      return '模型接口地址不存在（HTTP 404），接口路径可能不对；常见配置需要以 /v1 结尾。';
+    case 'certificate_untrusted':
+      return '无法验证模型服务的证书（自签证书、私有 CA 或公司代理）。本产品不同链路的证书信任来源不同（有的读取系统证书商店，有的只用内置证书列表），在系统里「信任该证书」不一定生效。请改用可直连的网络或地址；若必须走公司代理，请联系网络管理员提供受信任的 HTTPS 入口。';
+    case 'certificate_hostname':
+      return '模型服务的证书与访问地址不匹配（证书上的域名/主机名和填写的地址不一致）。请核对「系统设置 → 模型管理」里的接口地址，必要时联系网络管理员。';
+    case 'certificate_expired':
+      return '模型服务的证书已过期（也可能是本机时间不正确）。请先核对系统时间；若时间正确，请联系服务提供方或网络管理员更新证书。';
+    case 'certificate_not_yet_valid':
+      return '模型服务的证书尚未生效（也可能是本机时间不正确）。请先核对系统时间；若时间正确，请联系服务提供方或网络管理员。';
+    case 'certificate':
+      return '模型服务证书校验失败（自签证书或证书链不受信任）。请改用可直连的网络或地址，或联系网络管理员。';
+    case 'address_rejected':
+      return '接口地址指向内网或本机，已被安全策略拒绝；如需连接局域网自建服务，请改用 Ollama 类型或显式放行该地址。';
+    case 'dns_failed':
+      return '接口地址当前无法解析，请检查主机名拼写、DNS 与网络。';
+    case 'incomplete_stream':
+    case 'stream_incomplete':
+      return '回复没有传完就中断了，请重试。';
     case 'budget_exceeded':
       return `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`;
     case 'permission_denied':
@@ -539,11 +584,11 @@ export function chatFailureText(reason?: string, fallback?: string): string {
     case 'unreachable': {
       // 后端已经给出带模型名的完整说明时优先用它：固定文案不知道用户配的是
       // 哪个模型，卡片上就少了"该检查哪个模型"的关键信息。
-      const text = (fallback ?? '').trim();
+      const text = stripUpstreamFromMainText(fallback ?? '');
       return text || '连不上模型服务。请检查网络和「系统设置 → 模型管理」里的接口地址后重试。';
     }
     default: {
-      const text = (fallback ?? '').trim();
+      const text = stripUpstreamFromMainText(fallback ?? '');
       return text || '这一轮没有成功，请稍后重试。';
     }
   }

@@ -22,6 +22,7 @@ import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { DonutChart, LineChart } from '../components/charts'
 import { providerLabel } from '../components/ModelManager'
 import { Card, Dot, Guard } from '../components/ui'
+import { MaintenanceData } from '../components/MaintenanceData'
 
 const REFRESH = 30_000
 
@@ -45,7 +46,7 @@ function healthText(status: string | undefined): string {
 // 数据中心
 // ---------------------------------------------------------------------------
 
-export function DataCenter({ query }: { query: string }) {
+export function DataCenter({ query, isRoot }: { query: string; isRoot: boolean }) {
   const analytics = useApi<AnalyticsPayload>('/v1/dashboard/analytics?days=30', 60_000)
   const summary = useApi<DashboardSummary>('/v1/dashboard/summary', REFRESH)
   const need = query.trim().toLowerCase()
@@ -237,6 +238,9 @@ export function DataCenter({ query }: { query: string }) {
           )}
         </Guard>
       </Card>
+
+      {/* 历史数据处置只给根账号：成员连这一块都不渲染，后端接口也固定 404。 */}
+      {isRoot && <MaintenanceData />}
     </div>
   )
 }
@@ -273,7 +277,7 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
 
   return (
     <div className="os-grid">
-      <Card title="依赖健康" sub="来自就绪探针的真实五项检查" span={7}>
+      <Card title="依赖健康" sub="来自就绪探针的真实依赖检查" span={7}>
         <Guard
           loading={ready.loading}
           error={ready.error}
@@ -287,14 +291,26 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
               <div className="os-list">
                 {Object.entries(data.checks ?? {}).map(([name, detail]) => {
                   const healthy = detail?.status === 'healthy'
+                  // blocks_readiness=false 是告警级检查（如监控链路）：它让总览
+                  // 看见问题，但不会让 /v1/ready 返回 503。别把告警标成"断服"。
+                  const blocking = detail?.blocks_readiness !== false
+                  const tone = healthy ? 'ok' : blocking ? 'danger' : 'warn'
                   return (
                     <div className="os-row" key={name}>
                       <span
                         className="os-dot"
-                        style={{ background: healthy ? 'var(--os-ok)' : 'var(--os-danger)' }}
+                        style={{
+                          background: healthy
+                            ? 'var(--os-ok)'
+                            : blocking
+                              ? 'var(--os-danger)'
+                              : 'var(--os-warn)',
+                        }}
                       />
                       <div className="os-row-main">
-                        <div className="os-row-title">{componentLabel(name)}</div>
+                        <div className="os-row-title">
+                          {safeText(detail?.display_name) || componentLabel(name)}
+                        </div>
                         {!healthy && (
                           <div className="os-row-sub">
                             {safeText(detail?.user_message) ||
@@ -302,8 +318,8 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
                           </div>
                         )}
                       </div>
-                      <span className="os-badge" data-tone={healthy ? 'ok' : 'danger'}>
-                        {healthText(detail?.status)}
+                      <span className="os-badge" data-tone={tone}>
+                        {healthy ? healthText(detail?.status) : blocking ? healthText(detail?.status) : '告警'}
                       </span>
                     </div>
                   )

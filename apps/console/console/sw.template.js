@@ -71,7 +71,7 @@ const OFFLINE_BANNER = `
   <strong style="font-weight:600;color:#ffb4a8">本地服务未运行</strong>
   <span>鎏灏的本地服务已断开，这一页是上次缓存的内容，数据不会更新。</span>
   <a href="/" style="display:inline-block;padding:4px 12px;border-radius:999px;background:#ffb4a8;color:#3b2020;font-weight:600;text-decoration:none">重新加载</a>
-  <span style="opacity:.85">请打开鎏灏（启动窗口保持打开）后再试。</span>
+  <span style="opacity:.85">请打开鎏灏后再试。</span>
 </div>`;
 
 /** 把横幅塞进缓存的 HTML；重复回退不会叠加多个横幅。 */

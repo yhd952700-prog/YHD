@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Butler } from './Butler'
+import { findBannedTerms } from '../lib/accountCaps'
 import type { GoalDetail, GoalTask } from '../lib/operator'
 
 const EMPLOYEES = {
@@ -704,8 +705,10 @@ describe('鎏灏管家 · 待我确认', () => {
     pendingForbidden = true
     renderPage()
 
-    await waitFor(() => expect(screen.getByText('当前账号不能在这里批准')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('当前账号暂无此权限')).toBeTruthy())
     expect(screen.getByText(/不代表「没有待确认动作」/)).toBeTruthy()
+    // 中性拒绝不得反过来暴露账号层级：不得出现「管理员 / 主账号」等词。
+    expect(findBannedTerms(document.body.textContent ?? '')).toEqual([])
     expect(screen.queryByText('现在没有等你确认的动作')).toBeNull()
   })
 
@@ -717,5 +720,49 @@ describe('鎏灏管家 · 待我确认', () => {
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes('/v1/policy/approvals/pending')),
     ).toBe(false)
+  })
+})
+
+/** 中文输入法组词中按 Enter 是"选词"，不能把半截拼音当目标提交。 */
+describe('鎏灏管家 · 输入法回车', () => {
+  function posts(): Array<[RequestInfo | URL, RequestInit | undefined]> {
+    return fetchMock.mock.calls.filter(
+      ([url, init]) => String(url) === '/v1/goals' && (init as RequestInit | undefined)?.method === 'POST',
+    ) as Array<[RequestInfo | URL, RequestInit | undefined]>
+  }
+
+  const promptInput = () => screen.getByLabelText('要让管家做什么') as HTMLInputElement
+
+  test('组词中的回车不提交，半截拼音留在输入框', async () => {
+    renderPage()
+    const box = promptInput()
+
+    fireEvent.change(box, { target: { value: 'zhengli zhoubao' } })
+    fireEvent.compositionStart(box)
+    fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 })
+
+    await waitFor(() => expect(posts()).toHaveLength(0))
+    expect(box.value).toBe('zhengli zhoubao')
+  })
+
+  test('compositionend 之后回车才提交这一句目标', async () => {
+    renderPage()
+    const box = promptInput()
+
+    fireEvent.change(box, { target: { value: '整理周报' } })
+    fireEvent.compositionStart(box)
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(posts()).toHaveLength(0))
+
+    fireEvent.compositionEnd(box)
+    // 越过组合结束后的余波窗口（浏览器可能补发一次 Enter）。
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() => expect(posts()).toHaveLength(1))
+    expect(JSON.parse(String(posts()[0][1]?.body))).toMatchObject({
+      natural_language: '整理周报',
+      background: true,
+    })
   })
 })

@@ -96,4 +96,16 @@ describe('总览第一次用引导', () => {
     expect(screen.queryByLabelText('第一次使用')).toBeNull()
     expect(screen.queryByRole('button', { name: '配置模型' })).toBeNull()
   })
+
+  test('首屏数据还没回来时显示“正在检查”，不提前报“当前无异常”', () => {
+    // 所有接口都挂着：数据没回来，就不能给“无异常”这种结论。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => {})),
+    )
+    render(<Overview query="" provider={UNKNOWN_PROVIDER} onNavigate={vi.fn()} />)
+
+    expect(screen.getByText('正在检查依赖与近期失败…')).toBeTruthy()
+    expect(screen.queryByText(/当前无异常/)).toBeNull()
+  })
 })

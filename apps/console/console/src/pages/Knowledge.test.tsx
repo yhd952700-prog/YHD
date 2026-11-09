@@ -6,7 +6,8 @@
  *   2. 删除必须先出现二次确认，并写明「会连同分块与向量一起删除，不可恢复」；
  *   3. 分块预览走 `/documents/{id}/chunks`（不是检索），且几千条分块要分页；
  *   4. 异步入库显示进度 / 取消，并明确「取消后本次不会留下任何数据」；
- *   5. PDF 在本地就被拦下，原话包含「不会假装解析」。
+ *   5. 能力边界文案与真实能力一致：PDF / DOCX / HTML / TXT / MD 可上传，
+ *      单文件 ≤20MB（≤5MB 同步，更大走后台任务）；扫描版 PDF 明确报“无文本层”。
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
@@ -362,5 +363,34 @@ describe('知识中心 · 向量化三态', () => {
 
     expect(open).toHaveBeenCalled()
     expect(new URLSearchParams(window.location.search).get('focus')).toBe('embedding')
+  })
+})
+
+/** 中文输入法组词中按 Enter 是"选词"，不能拿半截拼音去检索。 */
+describe('知识中心 · 输入法回车', () => {
+  function searchCalls() {
+    return fetchMock.mock.calls.filter(([url]) => String(url).includes('/v1/knowledge/search'))
+  }
+
+  const searchBox = () => screen.getByLabelText('检索测试输入') as HTMLInputElement
+
+  test('组词中回车不检索，拼音保留；compositionend 之后回车才检索', async () => {
+    renderPage()
+    await waitForDocs()
+
+    const box = searchBox()
+    fireEvent.change(box, { target: { value: 'xufeelv' } })
+    fireEvent.compositionStart(box)
+    fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 })
+
+    await waitFor(() => expect(searchCalls()).toHaveLength(0))
+    expect(box.value).toBe('xufeelv')
+
+    fireEvent.compositionEnd(box)
+    // 越过组合结束后的余波窗口（浏览器可能补发一次 Enter）。
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() => expect(searchCalls()).toHaveLength(1))
   })
 })

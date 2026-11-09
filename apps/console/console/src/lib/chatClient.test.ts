@@ -52,7 +52,7 @@ describe('streamChat 结束帧', () => {
           new Response(
             JSON.stringify({
               code: 'budget_exceeded',
-              message: '本次调用会超出你设定的预算，请调整额度或换更便宜的模型。',
+              message: '本次调用会超出可用预算（按保守 token 估算），请调整额度或换更便宜的模型。',
               correlation_id: '156a7c18547a47bb',
             }),
             { status: 402, headers: { 'Content-Type': 'application/json' } },
@@ -81,6 +81,12 @@ describe('chatFailureText', () => {
     expect(chatFailureText('key_revoked')).toContain('吊销')
     expect(chatFailureText('rate_limited')).toContain('稍后重试')
     expect(chatFailureText('unreachable')).toContain('网络')
+    // 证书失败三类动作不同：换网络 / 核对地址 / 核对时间，不能都叫"连不上"。
+    expect(chatFailureText('certificate_untrusted')).toContain('信任来源不同')
+    expect(chatFailureText('certificate_untrusted')).toContain('网络管理员')
+    expect(chatFailureText('certificate_untrusted')).not.toContain('让系统信任该证书')
+    expect(chatFailureText('certificate_hostname')).toContain('不匹配')
+    expect(chatFailureText('certificate_expired')).toContain('已过期')
     // 后端给了带模型名的说明时，卡片必须显示它，而不是丢掉模型名。
     expect(
       chatFailureText('unreachable', '连不上模型服务，请确认本地服务已启动或网络可用。（模型：qwen2.5:7b）'),
@@ -179,7 +185,7 @@ describe('friendlyChatError', () => {
 
   test('网络不可达', () => {
     expect(friendlyChatError(new TypeError('Failed to fetch')).text).toBe(
-      '鎏灏的本地服务没有运行。请打开鎏灏（启动窗口应保持打开）后重试；刚启动的话请等几秒。',
+      '鎏灏的本地服务没有运行。请打开鎏灏后重试；刚启动的话请等几秒。',
     )
   })
 
@@ -257,5 +263,47 @@ describe('streamChat notice 与中断兜底', () => {
     expect(chatFailureText('stream_timeout')).toBe('等待模型响应超时，请重试。')
     expect(chatFailureText('stream_interrupted')).toBe('连接中断，请重试。')
     expect(chatFailureText('budget_exceeded')).toContain('超出当前额度')
+  })
+})
+
+/**
+ * 防回归：上游原文（盘符路径 / 英文异常名）只允许进折叠的技术详情，
+ * 绝不能出现在聊天失败卡片的主文案里。输入统一使用带
+ * `C:\srv\gateway.py line 42` 的假上游响应。
+ */
+describe('失败主文案永不回显上游原文', () => {
+  const LEAKY_UPSTREAM = 'Internal Server Error: C:\\srv\\gateway.py line 42'
+
+  function expectCleanMainText(text: string) {
+    expect(text).not.toMatch(/[A-Za-z]:\\/)
+    expect(text).not.toContain('gateway.py')
+    expect(text).not.toContain('Internal Server Error')
+  }
+
+  test('friendlyChatError 5xx：带盘符路径的上游原文不进主文案', () => {
+    const raw = `请求失败（502）：{"detail":"${LEAKY_UPSTREAM}"}`
+    const err = friendlyChatError(new Error(raw))
+    expect(err.text).toBe('AI 服务暂时不可用，请稍后重试')
+    expectCleanMainText(err.text)
+    // 原文仍保留在 raw 里，供「详情」折叠使用，但界面不渲染它。
+    expect(err.raw).toContain('gateway.py')
+  })
+
+  test('friendlyChatError 未分类失败：只给中文兜底，路径留在 raw', () => {
+    const raw = '请求失败（400）：读取 C:\\srv\\gateway.py line 42 时失败'
+    const err = friendlyChatError(new Error(raw))
+    expect(err.text).toBe('对话失败，请稍后重试')
+    expectCleanMainText(err.text)
+    expect(err.raw).toContain('gateway.py')
+  })
+
+  test('chatFailureText 链式失败：剥掉「服务端返回」段与上游原文', () => {
+    const fallback = `所有已配置的模型都没有成功返回（HTTP 500）；服务端返回：{"error":{"message":"${LEAKY_UPSTREAM}"}}`
+    for (const reason of ['unreachable', undefined]) {
+      const text = chatFailureText(reason, fallback)
+      expect(text).toContain('HTTP 500')
+      expect(text).not.toContain('服务端返回')
+      expectCleanMainText(text)
+    }
   })
 })

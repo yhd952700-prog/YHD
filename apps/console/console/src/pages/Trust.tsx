@@ -15,6 +15,7 @@
  */
 
 import { useState } from 'react'
+import { useImeComposition } from '../lib/ime'
 import { getTrust } from '../lib/operator'
 import type { TrustSummary } from '../lib/operator'
 import { Card, Empty, Guard } from '../components/ui'
@@ -57,6 +58,7 @@ function statValue(value: unknown): string {
 }
 
 export function Trust({ query }: { query: string }) {
+  const ime = useImeComposition<HTMLInputElement>()
   const [entityId, setEntityId] = useState('')
   const [submitted, setSubmitted] = useState<string | null>(null)
   const [data, setData] = useState<TrustSummary | null>(null)
@@ -97,8 +99,13 @@ export function Trust({ query }: { query: string }) {
               value={entityId}
               onChange={(e) => setEntityId(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') run(entityId)
+                if (e.key !== 'Enter') return
+                // 组词中的回车是选词，别拿半截拼音去查实体。
+                if (ime.isImeKey(e)) return
+                run(entityId)
               }}
+              onCompositionStart={ime.onCompositionStart}
+              onCompositionEnd={ime.onCompositionEnd}
             />
           </label>
           <button className="os-btn os-btn-primary" onClick={() => run(entityId)} disabled={!entityId.trim()}>

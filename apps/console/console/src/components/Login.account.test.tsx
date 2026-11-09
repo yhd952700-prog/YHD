@@ -137,6 +137,45 @@ describe('登录页状态机', () => {
     expectNoInviteWords()
   })
 
+  test('手机直连（非本机）：写明真实可用的自助恢复路径，不展示无效的本机生成入口', async () => {
+    mockRoutes(
+      config({
+        recovery: {
+          available: true,
+          self_service: false,
+          rotate_recommended: false,
+          local: false,
+          remote_allowed: false,
+        },
+      }),
+    )
+    render(<Login mode="mobile" onSuccess={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '忘记密码' }))
+    const note = await screen.findByTestId('recovery-path')
+    expect(note.textContent).toContain('「手机访问」')
+    expect(note.textContent).toContain('LIUHAO_ALLOW_REMOTE_RECOVERY')
+    expect(screen.queryByRole('button', { name: '没有恢复码？在本机生成' })).toBeNull()
+    expectNoBannedText()
+  })
+
+  test('本机（含已配对手机中继）：可直接在本机生成恢复码', async () => {
+    mockRoutes(
+      config({
+        recovery: {
+          available: false,
+          self_service: true,
+          rotate_recommended: false,
+          local: true,
+          remote_allowed: false,
+        },
+      }),
+    )
+    render(<Login mode="web" onSuccess={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '忘记密码' }))
+    expect(await screen.findByRole('button', { name: '没有恢复码？在本机生成' })).toBeTruthy()
+    expect(screen.queryByTestId('recovery-path')).toBeNull()
+  })
+
   test('本机无账号 → 初始化表单，文案不出现账号类别词', async () => {
     mockRoutes(config({ root_account_exists: false, registration_open: true }))
     render(<Login mode="desktop" onSuccess={vi.fn()} />)
@@ -216,7 +255,7 @@ describe('登录页状态机', () => {
     expect(panel.textContent).toContain('HAND-OFF-2026')
     expect(panel.textContent).toContain('只显示这一次')
     expect(panel.textContent).toContain('抄下来')
-    expect(panel.textContent).toContain('只能在这台电脑上使用')
+    expect(panel.textContent).toContain('可用于本机或已配对的手机端')
     expect(panel.textContent).toContain('用一次就会失效')
     expect(panel.textContent).toContain('重新生成')
     expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
@@ -270,5 +309,71 @@ describe('登录页状态机', () => {
     // 其余结构词仍然必须为 0。
     expect(findBannedTerms(document.body.textContent ?? '').filter((term) => term !== '管理员')).toEqual([])
     expectNoInviteWords()
+  })
+
+  test('设备已被移除（中继 401）：停止重试，说清重新配对并给出回到配对页的入口', async () => {
+    let calls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === '/v1/auth/config') {
+          calls += 1
+          return json(401, { detail: '设备未配对：请先在电脑端生成配对码，并在手机上完成配对。' })
+        }
+        return json(404, { detail: 'Not Found' })
+      }),
+    )
+
+    render(<Login mode="mobile" notice="expired" onSuccess={vi.fn()} />)
+
+    expect(await screen.findByText(/这台设备已被移除，请重新配对/)).toBeTruthy()
+    expect(screen.getByTestId('login-repair-link').textContent).toContain('回到配对页')
+    // 不再显示会误导人的"正在准备"，也不显示与"已被移除"矛盾的"登录已过期"。
+    expect(document.body.textContent).not.toContain('正在准备')
+    expect(screen.queryByTestId('login-notice')).toBeNull()
+    // 死了的表单不再摆出来：用户只剩下"重新配对"一条路。
+    expect(document.querySelector('#os-principal')).toBeNull()
+
+    // 401 不安排重试：等过一个完整的重试周期后仍然只有 1 次请求。
+    await new Promise((resolve) => setTimeout(resolve, 2500))
+    expect(calls).toBe(1)
+  })
+
+  test('服务真不可用（5xx）：保持"正在准备"并继续自动重试', async () => {
+    let calls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === '/v1/auth/config') {
+          calls += 1
+          return json(503, { detail: '暂时不可用' })
+        }
+        return json(404, { detail: 'Not Found' })
+      }),
+    )
+
+    render(<Login mode="mobile" onSuccess={vi.fn()} />)
+
+    expect(await screen.findByText(/正在准备/)).toBeTruthy()
+    await new Promise((resolve) => setTimeout(resolve, 2400))
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(document.body.textContent).not.toContain('这台设备已被移除')
+  })
+
+  test('连不上（服务还没起来）：同样保持"正在准备"并继续自动重试', async () => {
+    let calls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input) === '/v1/auth/config') calls += 1
+        return Promise.reject(new TypeError('Failed to fetch'))
+      }),
+    )
+
+    render(<Login mode="mobile" onSuccess={vi.fn()} />)
+
+    expect(await screen.findByText(/正在准备/)).toBeTruthy()
+    await new Promise((resolve) => setTimeout(resolve, 2400))
+    expect(calls).toBeGreaterThanOrEqual(2)
   })
 })

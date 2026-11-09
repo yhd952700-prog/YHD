@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ApiError } from '../lib/api'
-import type { UpgradeStatus } from '../lib/upgrade'
+import type { BackupView, UpgradeStatus } from '../lib/upgrade'
 import { UpgradePanel } from './UpgradePanel'
 import {
   applyUpgrade,
@@ -22,6 +22,21 @@ const mockedCheck = vi.mocked(checkForUpdate)
 const mockedApply = vi.mocked(applyUpgrade)
 const mockedRollback = vi.mocked(rollbackUpgrade)
 
+function makeBackup(patch: Partial<BackupView> = {}): BackupView {
+  return {
+    root: 'E:\\LiuHaoBackups',
+    data_dir: 'D:\\LiuHaoData',
+    same_volume: false,
+    data_drive: 'D:',
+    backup_drive: 'E:',
+    backup_count: 2,
+    last_backup_at: '2026-11-08T10:01:00Z',
+    last_backup_id: 'backup-1',
+    migration: null,
+    ...patch,
+  }
+}
+
 function makeStatus(patch: Partial<UpgradeStatus> = {}): UpgradeStatus {
   return {
     ok: true,
@@ -37,6 +52,7 @@ function makeStatus(patch: Partial<UpgradeStatus> = {}): UpgradeStatus {
     last_operation: null,
     last_apply: null,
     last_rollback: null,
+    backup: makeBackup(),
     error: null,
     updated_at: '',
     ...patch,
@@ -183,6 +199,44 @@ describe('软件更新面板', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain('发布包校验失败')
     })
+  })
+
+  test('备份信息说清三件事：放哪、是否与数据同盘、换机带走哪个目录', async () => {
+    mockedStatus.mockResolvedValue(makeStatus())
+
+    render(<UpgradePanel />)
+
+    const info = await screen.findByTestId('upgrade-backup-info')
+    expect(info.textContent).toContain('备份位置：E:\\LiuHaoBackups')
+    expect(info.textContent).toContain('与数据目录不在同一块盘（数据在 D: · 备份在 E:）')
+    expect(info.textContent).toContain('为什么放在数据目录外')
+    expect(info.textContent).toContain('换机时带走：把 E:\\LiuHaoBackups 整个目录复制走')
+    expect(info.textContent).toContain('最近一次备份')
+    expect(info.textContent).toContain('共 2 份')
+  })
+
+  test('同盘且还没有备份时，明确警告会一起丢，并说明首次升级会自动生成', async () => {
+    mockedStatus.mockResolvedValue(
+      makeStatus({
+        backup: makeBackup({
+          root: 'C:\\Users\\me\\AppData\\Local\\LiuHao\\backups',
+          data_dir: 'C:\\Users\\me\\AppData\\Local\\LiuHao\\data',
+          same_volume: true,
+          data_drive: 'C:',
+          backup_drive: 'C:',
+          backup_count: 0,
+          last_backup_at: null,
+          last_backup_id: null,
+        }),
+      }),
+    )
+
+    render(<UpgradePanel />)
+
+    const info = await screen.findByTestId('upgrade-backup-info')
+    expect(info.textContent).toContain('在同一块盘（C:）')
+    expect(info.textContent).toContain('数据和备份会一起丢')
+    expect(info.textContent).toContain('还没有升级备份（首次升级前会自动生成）')
   })
 
   test('升级成功后可以一键回滚，回滚使用这次升级前的备份', async () => {

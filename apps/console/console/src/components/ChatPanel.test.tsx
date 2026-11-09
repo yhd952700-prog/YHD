@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ChatPanel } from './ChatPanel'
 import { UNKNOWN_PROVIDER } from '../lib/providerStatus'
 
@@ -132,7 +132,7 @@ describe('ChatPanel 结束帧', () => {
         return new Response(
           JSON.stringify({
             code: 'budget_exceeded',
-            message: '本次调用会超出你设定的预算，请调整额度或换更便宜的模型。',
+            message: '本次调用会超出可用预算（按保守 token 估算），请调整额度或换更便宜的模型。',
             correlation_id: '156a7c18547a47bb',
           }),
           { status: 402, headers: { 'Content-Type': 'application/json' } },
@@ -262,6 +262,36 @@ describe('ChatPanel 结束帧', () => {
     const card = await screen.findByText(/吊销/)
     expect(card.textContent).toContain('Key')
     expect(document.body.textContent).not.toContain('请求失败')
+  })
+
+  test('done.error 带盘符路径与英文异常名：卡片只显示中文结论，不渲染 raw 原文', async () => {
+    const leaky = 'Internal Server Error: C:\\srv\\gateway.py line 42'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      if (path === '/v1/chat/stream') {
+        return sse([
+          `data: ${JSON.stringify({ type: 'done', status: 'error', reason: 'upstream_error', error: leaky })}\n\n`,
+        ])
+      }
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    fireEvent.change(
+      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      { target: { value: '你好' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    await screen.findByText(/服务端错误/)
+    const body = document.body.textContent ?? ''
+    // error.raw 只留在状态里，界面必须只渲染 text：路径与英文异常名都不能上屏。
+    expect(body).not.toMatch(/[A-Za-z]:\\/)
+    expect(body).not.toContain('gateway.py')
+    expect(body).not.toContain('Internal Server Error')
   })
 })
 
@@ -406,5 +436,297 @@ describe('ChatPanel 工具卡与状态行', () => {
     // 正文为空时只能有错误卡，不能落「…」空气泡。
     expect(last.textContent).not.toContain('…')
     expect(last.querySelector('.chat-error')).toBeTruthy()
+  })
+})
+
+/**
+ * 中文输入法（组词中）按回车不能发送：拼音还在候选框里，回车是「选词」不是「发送」。
+ * 这里用 compositionstart/end + keyCode 229 复现真实输入法事件序列；改前必须红。
+ */
+describe('ChatPanel 输入法回车', () => {
+  const INPUT_PLACEHOLDER = '未配置真实模型：当前发送将得到模拟回复'
+
+  function stubStream() {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input)
+        if (path === '/v1/models') return json({ models: [], default_id: null })
+        if (path === '/v1/chat/stream') {
+          calls.push(path)
+          return sse(['data: {"type":"done","status":"completed"}\n\n'])
+        }
+        return json({})
+      }),
+    )
+    return calls
+  }
+
+  const input = () => screen.getByPlaceholderText(INPUT_PLACEHOLDER) as HTMLTextAreaElement
+
+  afterEach(() => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 })
+  })
+
+  test('组词中的回车（keyCode 229）不发送，拼音留在输入框', async () => {
+    const calls = stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    const box = input()
+    fireEvent.change(box, { target: { value: 'nihao' } })
+    fireEvent.compositionStart(box)
+    fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 })
+
+    await waitFor(() => expect(calls).toHaveLength(0))
+    expect(box.value).toBe('nihao')
+  })
+
+  test('compositionstart 后的普通回车也不发送；compositionend 之后回车才发送', async () => {
+    const calls = stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    const box = input()
+    fireEvent.change(box, { target: { value: 'nihao' } })
+    fireEvent.compositionStart(box)
+    // 部分浏览器组合期间 keyCode 不是 229，只靠 composition 状态兜底。
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() => expect(calls).toHaveLength(0))
+    expect(box.value).toBe('nihao')
+
+    fireEvent.compositionEnd(box)
+    // 越过组合结束后的余波窗口（浏览器可能在 compositionend 之后补发一次 Enter）。
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    fireEvent.change(box, { target: { value: '你好' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(box.value).toBe('')
+  })
+
+  test('手机上回车换行、点发送按钮才发送，键帽提示与行为一致', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 375 })
+    const calls = stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    const box = input()
+    expect(box.getAttribute('enterkeyhint')).toBe('enter')
+
+    fireEvent.change(box, { target: { value: '第一行' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() => expect(calls).toHaveLength(0))
+    expect(box.value).toBe('第一行')
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(calls).toHaveLength(1))
+  })
+})
+
+describe('ChatPanel 历史与会话状态', () => {
+  const EMPTY_PROMPT = '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'
+
+  function stub(overrides: {
+    history?: () => Promise<Response>
+    sessions?: () => Promise<Response>
+    models?: () => Promise<Response>
+  }) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input)
+        if (path === '/v1/models') {
+          return overrides.models ? overrides.models() : json({ models: [], default_id: null })
+        }
+        if (path.startsWith('/v1/chat/sessions')) {
+          return overrides.sessions
+            ? overrides.sessions()
+            : json({ sessions: [], total: 0, has_more: false })
+        }
+        if (path.startsWith('/v1/chat/history')) {
+          return overrides.history
+            ? overrides.history()
+            : json({ history: [], has_more: false })
+        }
+        return json({})
+      }),
+    )
+  }
+
+  test('历史还没回来：显示“正在读取历史…”，不提前说“没有记录”', () => {
+    stub({ history: () => new Promise<Response>(() => {}) })
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    expect(screen.getByText('正在读取历史…')).toBeTruthy()
+    expect(screen.queryByText(EMPTY_PROMPT)).toBeNull()
+  })
+
+  test('历史读取失败：给出可点的重试，重试成功后回到正常空态', async () => {
+    let attempts = 0
+    stub({
+      history: () => {
+        attempts += 1
+        if (attempts === 1) return Promise.resolve(new Response('', { status: 500 }))
+        return Promise.resolve(json({ history: [], has_more: false }))
+      },
+    })
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    expect(await screen.findByText(/加载历史失败（500）/)).toBeTruthy()
+    expect(screen.queryByText(EMPTY_PROMPT)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(screen.getByText(EMPTY_PROMPT)).toBeTruthy())
+  })
+
+  test('会话清单读不到：给一行提示与重试，不静默', async () => {
+    stub({ sessions: () => Promise.resolve(new Response('', { status: 500 })) })
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    expect(await screen.findByText(/会话清单没读全/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重试' })).toBeTruthy()
+  })
+
+  test('模型清单读不到：给一行提示与重试，不静默', async () => {
+    stub({ models: () => Promise.resolve(new Response('', { status: 500 })) })
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    expect(await screen.findByText(/模型清单没读到/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重试' })).toBeTruthy()
+  })
+})
+
+/**
+ * 长会话的两条硬约束：
+ * - 600 条历史不一次性渲染（窗口化），按键不再让全部行参与协调；
+ * - 超过 8000 字的粘贴只留摘要预览，大字符串不进 React 状态。
+ * 以及流式时「用户上翻不被拉回底部」。
+ */
+describe('ChatPanel 长会话窗口化与超大输入', () => {
+  const INPUT_PLACEHOLDER = '未配置真实模型：当前发送将得到模拟回复'
+
+  function stub(overrides: { history?: () => Promise<Response>; streamBody?: () => Response }) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input)
+        if (path === '/v1/models') return json({ models: [], default_id: null })
+        if (path.startsWith('/v1/chat/sessions')) {
+          return json({ sessions: [], total: 0, has_more: false })
+        }
+        if (path.startsWith('/v1/chat/history')) {
+          return overrides.history
+            ? overrides.history()
+            : json({ history: [], has_more: false })
+        }
+        if (path === '/v1/chat/stream' && overrides.streamBody) return overrides.streamBody()
+        return json({})
+      }),
+    )
+  }
+
+  test('600 条历史只渲染视口附近窗口，最早的消息不参与挂载', async () => {
+    const history = Array.from({ length: 600 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `消息 ${i}`,
+    }))
+    stub({ history: () => Promise.resolve(json({ history, has_more: false })) })
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    await waitFor(() => expect(document.querySelectorAll('.chat-row').length).toBeGreaterThan(0))
+    const rows = document.querySelectorAll('.chat-row')
+    // 窗口上限 64 + 兜底余量：绝不能是 600。
+    expect(rows.length).toBeLessThanOrEqual(80)
+    // 最新一条在窗口里，最早一条不渲染（滚动上去时窗口会跟着换）。
+    const log = document.querySelector('.chat-log') as HTMLElement
+    expect(screen.getByText('消息 599')).toBeTruthy()
+    expect(within(log).queryByText('消息 0')).toBeNull()
+  })
+
+  test('粘贴 9 万字：输入区只留摘要预览，提示「全文未发送」，且大字符串不参与后续按键', async () => {
+    stub({})
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    const box = screen.getByPlaceholderText(INPUT_PLACEHOLDER) as HTMLTextAreaElement
+    const big = 'A'.repeat(90000)
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: { getData: () => big },
+    })
+    fireEvent(box, pasteEvent)
+
+    // 输入区只显示摘要（约 160 字 + 说明），不是 9 万字。
+    expect(box.value.length).toBeLessThan(400)
+    expect(box.value).not.toContain('A'.repeat(1000))
+    expect(screen.getByText(/全文未发送/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    )
+
+    // 在摘要上继续输入：全文引用作废，草稿退回小字符串，不再有「全文未发送」。
+    fireEvent.change(box, { target: { value: `${box.value}q` } })
+    expect(box.value.length).toBeLessThan(400)
+    expect(screen.queryByText(/全文未发送/)).toBeNull()
+  })
+
+  test('流式时用户上翻不被强行拉回底部；「回到底部」带未读字数', async () => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c
+      },
+    })
+    const encoder = new TextEncoder()
+    stub({
+      streamBody: () =>
+        new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+    })
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText(INPUT_PLACEHOLDER), {
+      target: { value: '你好' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    await act(async () => {
+      controller!.enqueue(encoder.encode('data: {"type":"token","content":"好"}\n\n'))
+    })
+    // 等首个 token 真正落进气泡再上翻：否则它还在 rAF 缓冲里，会被算成未读。
+    await waitFor(() => {
+      const bubbles = Array.from(document.querySelectorAll('.chat-bubble'))
+      expect(bubbles[bubbles.length - 1].textContent).toBe('好')
+    })
+
+    const log = document.querySelector('.chat-log') as HTMLDivElement
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, get: () => 1000 })
+    Object.defineProperty(log, 'clientHeight', { configurable: true, get: () => 200 })
+    log.scrollTop = 100
+    fireEvent.scroll(log)
+
+    // 用户向上翻读后，后续 token 不得把 scrollTop 拉回底部。
+    await act(async () => {
+      controller!.enqueue(encoder.encode('data: {"type":"token","content":"啊"}\n\n'))
+    })
+    await waitFor(() => expect(document.querySelector('.chat-jump-badge')?.textContent).toBe('1'))
+    expect(log.scrollTop).toBe(100)
+
+    // 点「回到底部」：视口落到内容底部（jsdom 不钳制 scrollTop，直接等于 scrollHeight）。
+    fireEvent.click(screen.getByRole('button', { name: /回到底部/ }))
+    expect(log.scrollTop).toBe(1000)
+    await waitFor(() => expect(document.querySelector('.chat-jump-bottom')).toBeNull())
+
+    await act(async () => {
+      controller!.enqueue(encoder.encode('data: {"type":"done","status":"completed"}\n\n'))
+      controller!.close()
+    })
   })
 })

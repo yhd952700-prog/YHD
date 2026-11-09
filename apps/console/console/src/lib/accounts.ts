@@ -376,6 +376,30 @@ export function resetMemberPassword(
   )
 }
 
+/**
+ * 本人改密（自助）。必须带当前密码：只拿到令牌不足以静默换密。
+ * 成功后服务端会吊销本人旧令牌，调用方必须提示重新登录。
+ */
+export function changeOwnPassword(
+  principal: string,
+  currentPassword: string,
+  password: string,
+): Promise<
+  AccountResult<{ ok: boolean; requires_reauth?: boolean; notice?: string }>
+> {
+  return withStub(
+    () =>
+      request<{ ok: boolean; requires_reauth?: boolean; notice?: string }>(
+        `/v1/accounts/${encodeURIComponent(principal)}/password`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ current_password: currentPassword, password }),
+        },
+      ),
+    () => ({ ok: true, requires_reauth: true, notice: '密码已修改，请用新密码重新登录。' }),
+  )
+}
+
 export function grantPermissions(
   principal: string,
   grant: string[],
@@ -499,6 +523,100 @@ export async function exportMemory(
 
 export async function loadMemoryCustody(): Promise<AccountResult<MemoryCustodyPayload>> {
   const data = await request<MemoryCustodyPayload>('/v1/memory/custody')
+  return { data, source: 'live' }
+}
+
+/** 纠正一条属于自己的记忆（`PATCH /v1/memory/entries/{id}`）。 */
+export async function updateMemoryEntry(
+  entryId: string,
+  patch: { text?: string; source?: string; tags?: string[] },
+): Promise<AccountResult<{ entry: MemoryEntry }>> {
+  const data = await request<{ entry: MemoryEntry }>(
+    `/v1/memory/entries/${encodeURIComponent(entryId)}`,
+    { method: 'PATCH', body: JSON.stringify(patch) },
+  )
+  return { data, source: 'live' }
+}
+
+/** 删除一条属于自己的记忆（`DELETE /v1/memory/entries/{id}`，不可恢复）。 */
+export async function deleteMemoryEntry(
+  entryId: string,
+): Promise<AccountResult<{ id: string; deleted: boolean; removed: number }>> {
+  const data = await request<{ id: string; deleted: boolean; removed: number }>(
+    `/v1/memory/entries/${encodeURIComponent(entryId)}`,
+    { method: 'DELETE' },
+  )
+  return { data, source: 'live' }
+}
+
+/** 迁移隔离区一行（`account_memory_quarantine`，只有根账号能读）。 */
+export interface QuarantinedMemoryRow {
+  id: string
+  source: string
+  source_ref: string
+  reason: string
+  owner_hint: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+/** `GET /v1/memory/unassigned`：无归属记忆 + 隔离区（根账号专属）。 */
+export interface UnassignedMemoryPayload {
+  entries: MemoryEntry[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+  quarantined: QuarantinedMemoryRow[]
+  quarantined_count: number
+  quarantined_total: number
+  quarantine_limit: number
+  quarantine_offset: number
+  note: string
+}
+
+export async function loadUnassignedMemory(
+  options: {
+    limit?: number
+    offset?: number
+    quarantineLimit?: number
+    quarantineOffset?: number
+  } = {},
+): Promise<AccountResult<UnassignedMemoryPayload>> {
+  const limit = Math.min(200, Math.max(1, Math.trunc(options.limit ?? 50) || 50))
+  const offset = Math.max(0, Math.trunc(options.offset ?? 0) || 0)
+  const quarantineLimit = Math.min(
+    500,
+    Math.max(1, Math.trunc(options.quarantineLimit ?? 50) || 50),
+  )
+  const quarantineOffset = Math.max(0, Math.trunc(options.quarantineOffset ?? 0) || 0)
+  const data = await request<UnassignedMemoryPayload>(
+    `/v1/memory/unassigned?limit=${limit}&offset=${offset}` +
+      `&quarantine_limit=${quarantineLimit}&quarantine_offset=${quarantineOffset}`,
+  )
+  return { data, source: 'live' }
+}
+
+/** 删除一条无归属记忆（根专属，`DELETE /v1/memory/unassigned/{id}`）。 */
+export async function deleteUnassignedMemory(
+  entryId: string,
+): Promise<AccountResult<{ id: string; deleted: boolean; removed: number }>> {
+  const data = await request<{ id: string; deleted: boolean; removed: number }>(
+    `/v1/memory/unassigned/${encodeURIComponent(entryId)}`,
+    { method: 'DELETE' },
+  )
+  return { data, source: 'live' }
+}
+
+/** 删除一条迁移隔离记录（根专属，`DELETE /v1/memory/quarantine/{id}`）。 */
+export async function deleteQuarantinedMemory(
+  quarantineId: string,
+): Promise<AccountResult<{ id: string; deleted: boolean; removed: number }>> {
+  const data = await request<{ id: string; deleted: boolean; removed: number }>(
+    `/v1/memory/quarantine/${encodeURIComponent(quarantineId)}`,
+    { method: 'DELETE' },
+  )
   return { data, source: 'live' }
 }
 

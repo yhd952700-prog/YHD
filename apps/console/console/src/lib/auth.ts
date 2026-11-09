@@ -58,6 +58,18 @@ export interface AuthConfig {
     recoverable: boolean
     principal: string | null
   }
+  /**
+   * 恢复码的真实可用状态（后端按根账号是否真的持有恢复码判定）。
+   * ``local`` 表示当前请求来自本机（含已配对手机中继），登录页可展示
+   * “在本机生成恢复码”；``remote_allowed`` 表示运维显式开了远程重置。
+   */
+  recovery?: {
+    available: boolean
+    self_service: boolean
+    rotate_recommended: boolean
+    local?: boolean
+    remote_allowed?: boolean
+  }
 }
 
 /** 登录/接口失败。`status` 直接来自后端，用于区分 401 与 429。 */
@@ -67,6 +79,18 @@ export class AuthError extends Error {
     super(message)
     this.status = status
   }
+}
+
+/**
+ * 在正文首行末尾追加下一步，保留"追踪 ID"等附加行不动。
+ *
+ * ``describeFailure`` 会把追踪 ID 单独放一行；直接字符串拼接会得到
+ * "追踪 ID：xxx。请确认账号与密码"，看起来像追踪 ID 的一部分。
+ */
+function withNextStep(message: string, step: string): string {
+  const [first, ...rest] = message.split('\n')
+  const head = /[。！？]$/.test(first) ? first : `${first}。`
+  return [head + step, ...rest].join('\n')
 }
 
 const LOCAL_KEY = 'liuhao.session'
@@ -254,6 +278,11 @@ export function clearSession(): void {
   safeSet(localStorageSafe(), LOCAL_KEY, null)
   safeSet(sessionStorageSafe(), TAB_KEY, null)
   safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
+  // 登出即清账号级缓存：共享电脑上"登出后、下一个人登录前"，开发者工具
+  // 不应还能读到上一位的会话清单/身份/模型选择。不能只靠"下次换账号时
+  // 再清"——那段空窗期正好是别人能翻到的窗口。
+  clearAccountScopedState()
+  safeSet(localStorageSafe(), LAST_PRINCIPAL_KEY, null)
 }
 
 /** 首启完成后待展示的恢复材料。 */
@@ -267,6 +296,14 @@ export interface PendingRecovery {
 const RECOVERY_KEY = 'liuhao.setup.recovery'
 
 /**
+ * 恢复码暂存变化事件：登录页保存后立刻通知已挂载的主界面。
+ *
+ * 主界面只在挂载时读一次 localStorage，注册响应再晚到也不会刷新——用户
+ * 必须手动刷新页面才能看到恢复码。用同标签页事件把“保存”和“展示”接上。
+ */
+export const PENDING_RECOVERY_EVENT = 'liuhao:pending-recovery'
+
+/**
  * 图形化首启成功后把恢复码暂存在本机，供主界面一次性展示。
  *
  * 为什么不在设置页里拦一道"请抄下恢复码"：那会把"提交后直接进入主界面"
@@ -278,6 +315,12 @@ export function savePendingRecovery(value: PendingRecovery): void {
     localStorageSafe()?.setItem(RECOVERY_KEY, JSON.stringify(value))
   } catch {
     // 存储不可用只影响恢复码展示，不影响已经完成的初始化。
+  }
+  // 同一标签页内通知主界面：保存后立即渲染横幅，不需要用户刷新页面。
+  try {
+    window.dispatchEvent(new CustomEvent(PENDING_RECOVERY_EVENT))
+  } catch {
+    // 非浏览器环境（测试/SSR）没有 window，忽略即可。
   }
 }
 
@@ -335,10 +378,15 @@ export function currentToken(): string {
   return getSession()?.token ?? ''
 }
 
-/** 登录页读取元信息的结果。失败时必须带一句能行动的中文，不能静默 null。 */
+/** 登录页读取元信息的结果。失败时必须带一句能行动的中文，不能静默 null。
+ *
+ * `status` 是真实的 HTTP 状态（`null` 表示连不上）。登录页靠它区分「服务还没
+ * 起来」（连接失败 / 5xx，值得重试）与「设备已被移除」（401，重试没有意义）。
+ */
 export interface AuthConfigResult {
   config: AuthConfig | null
   error: string | null
+  status: number | null
 }
 
 /**
@@ -355,6 +403,7 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
     return {
       config: null,
       error: LOCAL_SERVICE_OFFLINE_MANUAL,
+      status: null,
     }
   }
   if (!response.ok) {
@@ -364,18 +413,24 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
       return {
         config: null,
         error:
-          '无法获取登录配置。请确认启动窗口仍在运行；如果服务刚启动，请稍等几秒后刷新本页重试。',
+          '无法获取登录配置。请确认鎏灏仍在运行；如果服务刚启动，请稍等几秒后刷新本页重试。',
+        status: 404,
       }
     }
     const failure = await readError(response)
-    return { config: null, error: failure.message }
+    return { config: null, error: failure.message, status: response.status }
   }
   try {
-    return { config: (await response.json()) as AuthConfig, error: null }
+    return {
+      config: (await response.json()) as AuthConfig,
+      error: null,
+      status: response.status,
+    }
   } catch {
     return {
       config: null,
-      error: '服务没有返回正常的数据。请确认启动窗口仍在运行并完成初始化，然后刷新本页重试。',
+      error: '服务没有返回正常的数据。请确认鎏灏仍在运行并完成初始化，然后刷新本页重试。',
+      status: response.status,
     }
   }
 }
@@ -402,12 +457,32 @@ export async function login(
     throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
-    const message = await readErrorMessage(response)
-    // 403 在本服务里表示"账号被暂停/不可用"，后端会带回实现细节，界面只给中性说明。
-    throw new AuthError(
-      response.status,
-      response.status === 403 ? '该账号当前不可用，无法登录' : message,
-    )
+    const failure = await readError(response)
+    // 403 有多种来源：停用账号（ACCOUNT_UNAVAILABLE）、不可登录的账号（AUTH_NOT_HUMAN）、
+    // 以及网关来源校验失败（origin_not_allowed）。只有业务码明确表示停用时，
+    // 才给出"账号不可用"；其余一律透传后端中文文案，并补一句可执行的下一步，
+    // 避免把"来源被拒/账号类型不对"误报成"账号被封"。
+    let message = failure.message
+    if (response.status === 403) {
+      if (failure.code === 'ACCOUNT_UNAVAILABLE') {
+        message = '该账号当前不可用，请联系设备管理员启用该账号后重试。'
+      } else if (failure.code === 'AUTH_NOT_HUMAN') {
+        message = withNextStep(
+          failure.message || '该账号不是可登录的账号',
+          '请使用成员账号登录，或联系设备管理员。',
+        )
+      } else if (!failure.code) {
+        // 没有业务码的 403 多为来源/CSRF 校验拒绝（例如开发服务器 5173 不在
+        // 网关 Origin 白名单，响应体只有 origin_not_allowed 这样的英文标识）。
+        // 不能编成“账号被封”，也不能把英文标识铺给用户。
+        message =
+          '当前请求被服务拒绝，登录没有完成。' +
+          '请从桌面客户端或本机地址访问；若仍失败，请联系设备管理员。'
+      } else {
+        message = withNextStep(message, '请确认账号与密码，或联系设备管理员。')
+      }
+    }
+    throw new AuthError(response.status, message)
   }
   const body = (await response.json()) as {
     access_token: string

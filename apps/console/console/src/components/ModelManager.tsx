@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Session } from '../lib/auth'
-import { apiFetch, useApi } from '../lib/api'
+import { ApiError, apiFetch, useApi } from '../lib/api'
 import { Dot, Guard } from './ui'
 
 /** 与 `GET /v1/models` 的单条模型一一对应（密钥字段只有脱敏串）。 */
@@ -85,6 +85,8 @@ export interface ProbeResult {
   ok: boolean
   reason: string
   detail: string
+  /** 本次测试过程中是否发生过自动重试（服务端在重试前生成）。 */
+  notice?: string
   latency_ms: number
   provider: string
   model: string
@@ -97,7 +99,19 @@ export interface ProbeResult {
  * 未知原因不猜归因；上游原文（英文报错）只留在服务端日志与诊断包里，
  * 不铺到界面上。
  */
-export function mapProbeReason(reason: string, latencyMs: number, _detail: string): string {
+export function mapProbeReason(
+  reason: string,
+  latencyMs: number,
+  _detail: string,
+  notice = '',
+): string {
+  const base = probeReasonText(reason, latencyMs)
+  // 测试页是单次请求，没有中途通道：重试提示随结果一起显示，避免用户
+  // 对着一块空白等两次超时却不知道发生过重试。
+  return notice ? `${base}（本次已自动重试一次：首次尝试较慢）` : base
+}
+
+function probeReasonText(reason: string, latencyMs: number): string {
   switch (reason) {
     case '':
       return `连接成功（${latencyMs} ms）`
@@ -111,6 +125,22 @@ export function mapProbeReason(reason: string, latencyMs: number, _detail: strin
       return '模型名不存在，或该接口地址不支持这个模型。请核对模型名称后重试。'
     case 'unreachable':
       return '接口地址不可达。请检查地址、端口与网络连接是否正常。'
+    case 'address_rejected':
+      return '接口地址指向内网或本机，已被安全策略拒绝。如需连接局域网自建服务，请改用 Ollama 类型或显式放行该地址。'
+    case 'dns_failed':
+      return '接口地址当前无法解析。请检查主机名拼写、DNS 与网络连接。'
+    case 'endpoint_not_found':
+      return '接口路径不存在（404）。请核对接口地址，常见配置需要以 /v1 结尾。'
+    case 'server_error':
+      return '模型服务端出错（HTTP 5xx）。请稍后重试；持续出现请联系服务提供方。'
+    case 'bad_request':
+      return '请求不合法（HTTP 400）。请检查模型名与参数设置。'
+    case 'proxy_auth':
+      return '代理要求认证（HTTP 407）。请检查代理设置，或暂时关闭代理后重试。'
+    case 'redirect_blocked':
+      return '请求被网关或登录页拦截，返回的不是模型接口。请核对接口地址是否为真实 API 端点。'
+    case 'invalid_response':
+      return '模型服务返回了无法解析的数据（可能是网关或登录页）。请核对接口地址后重试。'
     case 'timeout':
       return '连接超时。请检查网络，或稍后再试。'
     case 'rate_limited':
@@ -227,6 +257,58 @@ export function canBecomeDefault(model: { verified?: boolean } | undefined): boo
   return model?.verified === true
 }
 
+/**
+ * 只认「版本冲突」这一种 409。
+ *
+ * 写接口还有别的 409（例如改端点时 `MODEL_KEY_TARGET_CHANGED` 要求重新输入
+ * Key），那些是普通的业务错误；误当成"另一个窗口改过"会让用户去刷新，而真正
+ * 要做的是把 Key 补上。
+ */
+function isVersionConflict(err: unknown): err is ApiError {
+  return (
+    err instanceof ApiError &&
+    err.status === 409 &&
+    err.code === 'MODEL_VERSION_CONFLICT'
+  )
+}
+
+/**
+ * 另一个窗口保存后的版本 vs 打开表单时的快照 → 可读的差异说明。
+ *
+ * 只陈述"变了什么"，不替用户决定：覆盖还是放弃由用户看完后自己点。
+ */
+export function describeModelDiff(base: ModelRecord, latest: ModelRecord): string {
+  const changes: string[] = []
+  if (base.name !== latest.name) {
+    changes.push(`名称「${base.name}」→「${latest.name}」`)
+  }
+  if (base.provider !== latest.provider) {
+    changes.push(`服务商 ${providerLabel(base.provider)} → ${providerLabel(latest.provider)}`)
+  }
+  if (base.model !== latest.model) {
+    changes.push(`模型名 ${base.model} → ${latest.model}`)
+  }
+  if ((base.base_url ?? '') !== (latest.base_url ?? '')) {
+    changes.push(`端点 ${base.base_url || '（默认）'} → ${latest.base_url || '（默认）'}`)
+  }
+  if (base.timeout !== latest.timeout) {
+    changes.push(`超时 ${base.timeout} 秒 → ${latest.timeout} 秒`)
+  }
+  if (base.enabled !== latest.enabled) {
+    changes.push(`状态 ${base.enabled ? '启用' : '禁用'} → ${latest.enabled ? '启用' : '禁用'}`)
+  }
+  if (base.is_default !== latest.is_default) {
+    changes.push(`默认 ${base.is_default ? '是' : '否'} → ${latest.is_default ? '是' : '否'}`)
+  }
+  if (
+    base.api_key_set !== latest.api_key_set ||
+    (base.api_key_masked ?? '') !== (latest.api_key_masked ?? '')
+  ) {
+    changes.push('API Key 已更新')
+  }
+  return changes.join('；')
+}
+
 type ProbeState =
   | { state: 'idle' }
   | { state: 'testing'; source: string }
@@ -263,6 +345,19 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [editingId, setEditingId] = useState<string | null>(null)
+  /**
+   * 打开编辑时服务端那一行的 `updated_at`。
+   * 保存（PUT）时作为 `base_updated_at` 带回，服务端据此判断是否被别的窗口改过。
+   */
+  const [editingUpdatedAt, setEditingUpdatedAt] = useState<string | null>(null)
+  /** 打开编辑时那一行的快照：冲突后用来告诉用户"对方改了什么"。 */
+  const [editingBase, setEditingBase] = useState<ModelRecord | null>(null)
+  /** 版本冲突（409 `MODEL_VERSION_CONFLICT`）：保留填写内容，等用户决定覆盖还是放弃。 */
+  const [conflict, setConflict] = useState<{
+    message: string
+    base: ModelRecord
+  } | null>(null)
+  const [reloadingLatest, setReloadingLatest] = useState(false)
   const [saving, setSaving] = useState(false)
   const [rowBusy, setRowBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -311,6 +406,9 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
     }
     setForm(formFromModel(match))
     setEditingId(match.id)
+    setEditingUpdatedAt(match.updated_at || null)
+    setEditingBase(match)
+    setConflict(null)
     setError(null)
     setProbe({ state: 'idle' })
     setLastTest(null)
@@ -345,7 +443,12 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
 
   const probeResult = probe.state === 'done' ? probe.result : null
   const probeMessage = probeResult
-    ? mapProbeReason(probeResult.reason, probeResult.latency_ms, probeResult.detail)
+    ? mapProbeReason(
+        probeResult.reason,
+        probeResult.latency_ms,
+        probeResult.detail,
+        probeResult.notice,
+      )
     : ''
   // 云端才需要"对话会发给谁"的说明；本地提供者不显示，避免噪音。
   const cloudName = cloudVendor(form.provider)
@@ -359,6 +462,9 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
     // apiKey 只存在于这份临时状态；重置即清空，避免残留到下一次提交。
     setForm(EMPTY_FORM)
     setEditingId(null)
+    setEditingUpdatedAt(null)
+    setEditingBase(null)
+    setConflict(null)
     setLastTest(null)
     setModelList(null)
   }
@@ -377,6 +483,9 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
   function beginEdit(item: ModelRecord) {
     setForm(formFromModel(item))
     setEditingId(item.id)
+    setEditingUpdatedAt(item.updated_at || null)
+    setEditingBase(item)
+    setConflict(null)
     setError(null)
     setNotice(null)
     setProbe({ state: 'idle' })
@@ -403,6 +512,7 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
     }
     setSaving(true)
     setError(null)
+    setConflict(null)
     setNotice(null)
     try {
       const payload: Record<string, unknown> = {
@@ -420,6 +530,9 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
       if (form.apiKey) payload.api_key = form.apiKey
 
       if (editingId) {
+        // 带上打开表单时读到的版本号：另一窗口先保存过就返回 409，而不是
+        // 用整表单静默覆盖对方的字段。新建（POST）不带这个字段。
+        if (editingUpdatedAt) payload.base_updated_at = editingUpdatedAt
         await apiFetch<ModelRecord>(`/v1/models/${encodeURIComponent(editingId)}`, {
           method: 'PUT',
           body: JSON.stringify(payload),
@@ -436,9 +549,54 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
       setProbe({ state: 'idle' })
       list.reload()
     } catch (err) {
-      fail(err, editingId ? '更新失败' : '添加失败')
+      const base = editingId
+        ? editingBase ?? (list.data?.models ?? []).find((item) => item.id === editingId)
+        : undefined
+      if (editingId && base && isVersionConflict(err)) {
+        // 冲突不是"更新失败"：用户填的内容还在，先给可操作的下一步，
+        // 看完对方改了什么再决定覆盖还是放弃。
+        setConflict({ message: err.message, base })
+      } else {
+        fail(err, editingId ? '更新失败' : '添加失败')
+      }
     } finally {
       setSaving(false)
+    }
+  }
+
+  /**
+   * 冲突后重新读取这一条的最新配置。
+   *
+   * 只更新"用于判断冲突的版本号"与列表，**不覆盖用户正在填的内容** ——
+   * 对方的值通过差异说明展示，用不用它（覆盖还是放弃）由用户自己决定。
+   */
+  async function reloadLatest() {
+    if (!conflict || !editingId) return
+    setReloadingLatest(true)
+    setError(null)
+    try {
+      const data = await apiFetch<ModelsResponse>('/v1/models')
+      const latest = (data.models ?? []).find((item) => item.id === editingId)
+      if (!latest) {
+        setNotice(`「${conflict.base.name}」已被另一个窗口删除，已退出编辑。`)
+        resetForm()
+        list.reload()
+        return
+      }
+      const diff = describeModelDiff(conflict.base, latest)
+      setEditingUpdatedAt(latest.updated_at || null)
+      setEditingBase(latest)
+      setConflict(null)
+      setNotice(
+        diff
+          ? `已加载最新配置，另一个窗口改动了：${diff}。你填写的内容仍在：再点「保存修改」会用你的版本覆盖，点「取消编辑」则放弃。`
+          : '已加载最新配置：字段与你打开表单时相同（只有保存时间变了）。再点「保存修改」即可覆盖。',
+      )
+      list.reload()
+    } catch (err) {
+      fail(err, '重新加载最新配置失败')
+    } finally {
+      setReloadingLatest(false)
     }
   }
 
@@ -507,7 +665,7 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
       setProbe({ state: 'done', source: editingId ? '当前编辑配置' : '表单草稿', result })
       setLastTest({
         ok: result.ok,
-        message: mapProbeReason(result.reason, result.latency_ms, result.detail),
+        message: mapProbeReason(result.reason, result.latency_ms, result.detail, result.notice),
         signature: `${form.provider}|${form.model.trim()}|${form.baseUrl.trim()}`,
       })
     } catch (err) {
@@ -533,7 +691,7 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
       setProbe({ state: 'done', source: `已保存配置「${item.name}」`, result })
       setLastTest({
         ok: result.ok,
-        message: mapProbeReason(result.reason, result.latency_ms, result.detail),
+        message: mapProbeReason(result.reason, result.latency_ms, result.detail, result.notice),
         signature: `${item.provider}|${item.model}|${item.base_url ?? ''}`,
       })
       // 测试结果会落库（verified）：不刷新列表的话"设为默认"按钮与
@@ -618,6 +776,21 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
           <h3 className="os-model-form-title">
             {editingId ? '编辑模型' : '添加模型'}
           </h3>
+          {list.error ? (
+            <div className="os-alert" role="alert">
+              <span>
+                服务商与已有模型没读到：{list.error}。下面的服务商下拉暂时是空的，读回来再选。
+              </span>
+              <button
+                className="os-btn os-btn-ghost"
+                type="button"
+                style={{ width: 'auto', flex: 'none' }}
+                onClick={list.reload}
+              >
+                重试
+              </button>
+            </div>
+          ) : null}
           <form className="os-operator-form" onSubmit={(event) => void save(event)}>
             <div className="os-field">
               <label htmlFor="model-form-name">名称（必填）</label>
@@ -641,9 +814,11 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
                 role="group"
                 aria-labelledby="model-presets-label"
               >
-                {(presets.data?.presets ?? []).map((preset) => (
+                {(presets.data?.presets ?? []).map((preset, index) => (
                   <button
-                    key={preset.id}
+                    // 旧版运行实例的 /v1/models/presets 没有 id 字段：兜底到 label/序号，
+                    // 避免 React "missing unique key" 警告。
+                    key={preset.id ?? preset.label ?? index}
                     className="os-btn os-btn-ghost"
                     type="button"
                     disabled={busy}
@@ -654,6 +829,27 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
                   </button>
                 ))}
               </div>
+              {presets.loading ? (
+                <p className="os-note" role="status">
+                  正在读取服务商预设…
+                </p>
+              ) : presets.error ? (
+                <p className="os-note" role="status">
+                  服务商预设没读到：{presets.error}。不影响手动填写。
+                  <button
+                    className="os-link"
+                    type="button"
+                    style={{ flex: 'none' }}
+                    onClick={presets.reload}
+                  >
+                    重试
+                  </button>
+                </p>
+              ) : (presets.data?.presets ?? []).length === 0 ? (
+                <p className="os-note" role="status">
+                  这次没有内置预设，直接在下面手动填写服务商、端点与模型名即可。
+                </p>
+              ) : null}
               <p className="os-note">
                 内置服务商不再写死：套用预设只是替你填好协议、端点与模型名；
                 任何 OpenAI 兼容服务都可以用「OpenAI 兼容（自定义端点）」接入，
@@ -687,6 +883,15 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
                   ))}
                 </select>
               </div>
+              {providers.length === 0 ? (
+                <p className="os-note" role="status">
+                  {list.loading
+                    ? '正在读取可用服务商…'
+                    : list.error
+                      ? '可用服务商没读到，所以下拉是空的；先点上面的「重试」，读回来再选。'
+                      : '这次没有读到任何可用服务商，下拉暂时选不了；可以先去「诊断」页看看模型服务是否正常。'}
+                </p>
+              ) : null}
               {cloudName && (
                 <p className="os-note" role="note">
                   你选择的是<strong>云端模型</strong>：你发送的对话（问题与上下文）
@@ -856,6 +1061,24 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
         </>
       )}
 
+      {conflict && (
+        <div className="os-alert" role="alert">
+          <span className="os-model-error">
+            {conflict.message}
+            {' '}
+            你填写的内容还没有提交：先点「重新加载最新配置」看清另一个窗口改了什么，再决定用你的版本覆盖，或点「取消编辑」放弃。
+          </span>
+          <button
+            className="os-btn os-btn-ghost"
+            type="button"
+            disabled={busy || reloadingLatest}
+            style={{ width: 'auto', flex: 'none' }}
+            onClick={() => void reloadLatest()}
+          >
+            {reloadingLatest ? '加载中…' : '重新加载最新配置'}
+          </button>
+        </div>
+      )}
       {error && (
         <div className="os-alert" role="alert">
           <span className="os-model-error">{error}</span>

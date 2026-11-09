@@ -61,7 +61,8 @@ export function PermissionMatrix({
   }
 
   const source = accounts.source === 'stub' || roles.source === 'stub' ? 'stub' : 'live'
-  const scopes = roles.data?.scopes ?? []
+  // 后端若因配置重复返回同名作用域，界面不能跟着渲染两列（表头/复选框 key 会重复）。
+  const scopes = [...new Set(roles.data?.scopes ?? [])]
 
   return (
     <div className="os-grid">

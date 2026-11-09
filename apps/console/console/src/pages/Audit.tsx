@@ -191,14 +191,27 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
           data={summary.data}
           isEmpty={(data) => data.total_events === 0}
           emptyTitle="还没有操作记录"
+          emptyHint="先做一次会被记录的操作（登录、发消息、激活插件或修改成员），再回到本页刷新即可看到。"
           onRetry={summary.reload}
         >
           {(data) => (
             <div className="os-kv">
               <div className="os-kv-row">
-                <span className="os-kv-key">记录总数</span>
+                <span className="os-kv-key">你能看到的记录</span>
                 <span className="os-kv-value">{data.total_events}</span>
               </div>
+              {typeof data.store_total_events === 'number' && (
+                <div className="os-kv-row">
+                  <span className="os-kv-key">全库存储</span>
+                  <span className="os-kv-value">{data.store_total_events}</span>
+                </div>
+              )}
+              {typeof data.business_events === 'number' && (
+                <div className="os-kv-row">
+                  <span className="os-kv-key">业务事件（不含内部状态变更）</span>
+                  <span className="os-kv-value">{data.business_events}</span>
+                </div>
+              )}
               <div className="os-kv-row">
                 <span className="os-kv-key">最新编号</span>
                 <span className="os-kv-value">{data.tail_seq}</span>
@@ -317,6 +330,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
           data={summary.data}
           isEmpty={(data) => Object.keys(data.by_action).length === 0}
           emptyTitle="还没有操作记录"
+          emptyHint="先做一次会被记录的操作（登录、发消息、激活插件或修改成员），再回到本页刷新即可看到。"
           onRetry={summary.reload}
         >
           {(data) => (

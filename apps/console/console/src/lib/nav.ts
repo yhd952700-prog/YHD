@@ -117,6 +117,9 @@ export const GOVERNANCE_NAV: NavItem[] = [
   // 成员面：只有含管理范围的账号才出现；更深层默认没有该范围。
   { key: 'my-members', label: '我的账号', icon: IconEmployees, requires: 'manage' },
   { key: 'my-keys', label: '我的 Key', icon: IconLock },
+  // 账号安全：所有人可见。此前后端 `/v1/accounts/{principal}/password` 只被
+  // 管理员重置成员调用，普通用户没有"改自己密码"的入口。
+  { key: 'account', label: '账号安全', icon: IconShield, hint: '修改本人密码；需要当前密码' },
 ]
 
 export const FOOTER_NAV: NavItem[] = [

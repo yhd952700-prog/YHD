@@ -62,6 +62,31 @@ export interface OperationView {
   error_category: string | null
 }
 
+/** 旧默认位置 ``<数据目录>/upgrade-backups`` 的迁移记录。 */
+export interface BackupMigrationView {
+  from: string
+  to: string
+  moved: number
+  skipped: number
+  at: string
+}
+
+/**
+ * 升级备份的落点信息。服务端直接读真实目录，界面不要自己推断：
+ * 备份在哪、是否与数据同盘、最近一次备份，三者缺一，用户就判断不了自己安不安全。
+ */
+export interface BackupView {
+  root: string
+  data_dir: string
+  same_volume: boolean
+  data_drive: string
+  backup_drive: string
+  backup_count: number
+  last_backup_at: string | null
+  last_backup_id: string | null
+  migration: BackupMigrationView | null
+}
+
 export interface UpgradeStatus {
   ok: boolean
   source_configured: boolean
@@ -76,7 +101,9 @@ export interface UpgradeStatus {
   last_operation: OperationView | null
   last_apply: OperationView | null
   last_rollback: OperationView | null
-  error: { category: string; message: string } | null
+  /** 旧网关没有这个字段；有才显示备份三行信息。 */
+  backup?: BackupView | null
+  error: { category: string; message: string; technical_detail?: string | null } | null
   updated_at: string
 }
 

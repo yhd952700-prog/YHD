@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   chatFailureText,
   deleteSession,
@@ -24,8 +24,10 @@ import {
 import type { SessionMeta, SessionSearchResult } from '../lib/chatClient'
 import { useApi } from '../lib/api'
 import { relativeTime } from '../lib/format'
+import { useImeComposition } from '../lib/ime'
+import { detectMode } from '../lib/mode'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
-import { BudgetDenialActions } from './ui'
+import { BudgetDenialActions, Failure } from './ui'
 
 /** 对话页只需要模型列表里可展示/可选的最小字段。 */
 interface ChatModel {
@@ -94,6 +96,8 @@ function toolOutcome(output: unknown): { failed: boolean; message: string } {
 }
 
 interface Message {
+  /** 稳定 ID：窗口化后 React key 与行高缓存都按它索引（追加更早消息时不会串位）。 */
+  id: string
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
@@ -104,9 +108,22 @@ interface Message {
   error?: { text: string; raw: string; action?: 'budget' }
 }
 
+/** 消息 ID 生成器：只在组件内部用，确保能区分「同一内容的两条消息」。 */
+let messageIdSeq = 0
+function nextMessageId(): string {
+  messageIdSeq += 1
+  return `msg-${messageIdSeq}`
+}
+
 /** 首字迟迟不来时的非阻断提示（只更新状态行，不打断输入）。 */
 const SLOW_RESPONSE_NOTICE_MS = 20_000
 const SLOW_RESPONSE_NOTICE = '模型响应较慢，仍在等待…'
+
+/** 把异常折成一句中文提示；对话相关接口的报错本身就是中文，直接透传。 */
+function failureText(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  return '读取失败，请稍后再试。'
+}
 
 /** 快捷指令 chips（点击填入输入框）。 */
 const QUICK = ['市场分析', '销售机会', '客户策略', 'SEO优化', '数据分析']
@@ -119,6 +136,59 @@ const NEAR_LIMIT_CHARS = 6000
 const SESSION_PAGE_SIZE = 50
 /** 单会话历史每页消息数（"加载更早的消息"每次再取 200）。 */
 const HISTORY_PAGE_SIZE = 200
+
+/** 距底多少像素内算「仍在底部」：小于它才自动跟随，否则绝不打断用户向上翻读。 */
+const SCROLL_STICK_THRESHOLD_PX = 24
+/** 消息列表窗口化：只渲染视口附近这些条，长会话不再让 600 行一起参与协调。 */
+const CHAT_WINDOW_MIN = 24
+const CHAT_WINDOW_MAX = 64
+/** 视口上下各多留几条，滚动时不会看到空白。 */
+const CHAT_WINDOW_OVERSCAN = 10
+/** 还没测量过的消息按这个高度估算（只影响滚动条长度，不需要精确）。 */
+const CHAT_ROW_ESTIMATE_PX = 84
+/** 与 App.css 中 `.chat-log-window` 的 gap 保持一致。 */
+const CHAT_ROW_GAP_PX = 10
+/** 超过单条上限的粘贴：输入区只留摘要预览，大字符串不再进入 React 状态。 */
+const OVERSIZED_PREVIEW_CHARS = 160
+
+/** rAF 在 jsdom/老环境里可能不存在：统一走后者的 16ms 定时器。 */
+function scheduleFrame(callback: () => void): number {
+  if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(callback)
+  return window.setTimeout(callback, 16)
+}
+
+function cancelFrame(id: number): void {
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id)
+  else window.clearTimeout(id)
+}
+
+/** 前缀高度：offset[i] = 第 i 条消息顶部相对列表内容顶部的距离（含 gap）。 */
+function buildOffsets(messages: Message[], heights: Map<string, number>): number[] {
+  const offsets = new Array<number>(messages.length + 1)
+  offsets[0] = 0
+  for (let i = 0; i < messages.length; i += 1) {
+    const height = heights.get(messages[i].id) ?? CHAT_ROW_ESTIMATE_PX
+    offsets[i + 1] = offsets[i] + height + CHAT_ROW_GAP_PX
+  }
+  return offsets
+}
+
+function findIndexAt(offsets: number[], y: number): number {
+  let lo = 0
+  let hi = offsets.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (offsets[mid] <= y) lo = mid + 1
+    else hi = mid
+  }
+  return Math.max(0, lo - 1)
+}
+
+interface ScrollAnchor {
+  id: string
+  /** 锚点行顶部相对视口顶部的偏移，恢复时按新 offsetTop 反推 scrollTop。 */
+  delta: number
+}
 
 interface ChatPanelProps {
   /** 模型状态唯一来源（/v1/health → lib/providerStatus）。 */
@@ -158,6 +228,13 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false)
   const [historyHasOlder, setHistoryHasOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [olderError, setOlderError] = useState('')
+  // 历史/会话清单的加载与失败：数据没回来之前不能下“没有记录”的结论。
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState('')
+  const [historyReloadTick, setHistoryReloadTick] = useState(0)
+  const [sessionsError, setSessionsError] = useState('')
+  const [sessionsReloadTick, setSessionsReloadTick] = useState(0)
   // 历史搜索（FTS5 索引；索引建立中/降级为扫描时界面必须如实提示）
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResult, setSearchResult] = useState<SessionSearchResult | null>(null)
@@ -165,9 +242,32 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
   const [searchError, setSearchError] = useState('')
   const searchRetryRef = useRef(0)
   const listRef = useRef<HTMLDivElement>(null)
+  const windowRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const inputChars = input.length
+  const ime = useImeComposition<HTMLTextAreaElement>()
+  // 手机端用软键盘：回车留给换行，发送只走按钮，避免"永远无法输入多行"。
+  // 形态读 `<html data-mode>`（用户覆盖优先），没有时按视口宽度判定。
+  const isMobileLayout = (document.documentElement.dataset.mode ?? detectMode()) === 'mobile'
+  // 窗口化：只渲染 range 内的消息；行高缓存按消息 ID 记，追加更早消息时不串位。
+  const [range, setRange] = useState({ start: 0, end: 0 })
+  const [heightsVersion, setHeightsVersion] = useState(0)
+  const heightsRef = useRef(new Map<string, number>())
+  const heightsRafRef = useRef<number | null>(null)
+  // 只有用户本来就在底部（<24px）才跟随流式输出；否则「回到底部」按钮负责。
+  const stickRef = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
+  const [unreadChars, setUnreadChars] = useState(0)
+  const unreadRef = useRef(0)
+  const anchorRef = useRef<ScrollAnchor | null>(null)
+  // 流式 token 攒到下一帧再一次性 setState。
+  const pendingTokensRef = useRef('')
+  const tokenRafRef = useRef<number | null>(null)
+  // 超大粘贴的全文放在 ref 里：只把摘要预览放进 React 状态。
+  const [oversizedChars, setOversizedChars] = useState<number | null>(null)
+  const fullDraftRef = useRef('')
+  const inputChars = oversizedChars ?? input.length
   const inputTooLong = inputChars > MAX_MESSAGE_CHARS
+
 
   /** 合并写一条会话元数据（标题只在为空时写入，更新时间每次都刷）。 */
   const recordMeta = useCallback((id: string, patch: Partial<SessionMeta>) => {
@@ -184,9 +284,200 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
     })
   }, [])
 
+  /**
+   * 消息总高度前缀表：窗口化用。`heightsVersion` 只在实测行高变化时 +1，
+   * 普通输入不会重算（messages 引用不变时 useMemo 直接命中）。
+   */
+  const offsets = useMemo(
+    () => buildOffsets(messages, heightsRef.current),
+    [messages, heightsVersion],
+  )
+
+  /** 把视口落到最新消息，同时恢复"跟随"状态（用户主动发送/点按钮时用）。 */
   const scrollToBottom = useCallback(() => {
-    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
+    stickRef.current = true
+    setAtBottom(true)
+    unreadRef.current = 0
+    setUnreadChars(0)
+    const box = listRef.current
+    if (box) box.scrollTop = box.scrollHeight
   }, [])
+
+  /** 记录"当前视口顶部那一行"及其偏移，窗口切换/前插后用同一行定位。 */
+  const captureAnchor = useCallback((): ScrollAnchor | null => {
+    const box = listRef.current
+    const win = windowRef.current
+    if (!box || !win) return null
+    const boxTop = box.getBoundingClientRect().top
+    for (const row of win.querySelectorAll<HTMLElement>('[data-mid]')) {
+      const rect = row.getBoundingClientRect()
+      if (rect.bottom >= boxTop + 1) {
+        return { id: row.dataset.mid ?? '', delta: rect.top - boxTop }
+      }
+    }
+    return null
+  }, [])
+
+  /** 按锚点行恢复视口；行没被渲染（窗口变化过大）时放弃，不做错误跳动。 */
+  const restoreAnchor = useCallback((anchor: ScrollAnchor | null) => {
+    if (!anchor) return
+    const box = listRef.current
+    const win = windowRef.current
+    if (!box || !win) return
+    const row = win.querySelector<HTMLElement>(`[data-mid="${anchor.id}"]`)
+    if (!row) return
+    const boxTop = box.getBoundingClientRect().top
+    box.scrollTop += row.getBoundingClientRect().top - boxTop - anchor.delta
+  }, [])
+
+  /** 把一个动画帧内收到的 token 合并成一次 setState。 */
+  const flushTokens = useCallback(() => {
+    if (tokenRafRef.current !== null) {
+      cancelFrame(tokenRafRef.current)
+      tokenRafRef.current = null
+    }
+    const chunk = pendingTokensRef.current
+    if (!chunk) return
+    pendingTokensRef.current = ''
+    setMessages((prev) => {
+      const next = [...prev]
+      const last = next[next.length - 1]
+      if (!last || !last.streaming) return prev
+      next[next.length - 1] = {
+        ...last,
+        content: last.content + chunk,
+        notice: undefined,
+      }
+      return next
+    })
+    // 用户不在底部时才计未读；贴着底部滚动的不算"没看到"。
+    if (!stickRef.current) {
+      unreadRef.current += chunk.length
+      setUnreadChars(unreadRef.current)
+    }
+  }, [])
+
+  const scheduleTokenFlush = useCallback(() => {
+    if (tokenRafRef.current !== null) return
+    tokenRafRef.current = scheduleFrame(() => {
+      tokenRafRef.current = null
+      flushTokens()
+    })
+  }, [flushTokens])
+
+  /** 由 scrollTop 推出应渲染的消息窗口（上下各留 overscan，最多 64 条）。 */
+  const computeWindowRange = useCallback(
+    (box: HTMLDivElement): { start: number; end: number } => {
+      const total = messages.length
+      if (total <= CHAT_WINDOW_MAX) return { start: 0, end: total }
+      const win = windowRef.current
+      const winRect = win?.getBoundingClientRect()
+      const boxRect = box.getBoundingClientRect()
+      // 窗口内容顶相对视口的位移；窗口 padding-top 就是"被省略行"的总高度。
+      const localTop = winRect ? Math.max(0, boxRect.top - winRect.top) : 0
+      const padTop = offsets[Math.min(range.start, total)] ?? 0
+      const globalTop = (offsets[Math.min(range.start, total)] ?? 0) + (localTop - padTop)
+      const first = findIndexAt(offsets, globalTop)
+      const last = findIndexAt(offsets, globalTop + Math.max(0, box.clientHeight))
+      const start = Math.max(0, first - CHAT_WINDOW_OVERSCAN)
+      const end = Math.min(
+        total,
+        Math.max(last + 1 + CHAT_WINDOW_OVERSCAN, start + CHAT_WINDOW_MIN),
+      )
+      return end - start > CHAT_WINDOW_MAX
+        ? { start, end: start + CHAT_WINDOW_MAX }
+        : { start, end }
+    },
+    [messages.length, offsets, range.start],
+  )
+
+  const handleLogScroll = useCallback(() => {
+    const box = listRef.current
+    if (!box) return
+    const distance = box.scrollHeight - box.scrollTop - box.clientHeight
+    const nearBottom = distance <= SCROLL_STICK_THRESHOLD_PX
+    if (nearBottom !== stickRef.current) {
+      stickRef.current = nearBottom
+      setAtBottom(nearBottom)
+    }
+    if (nearBottom && unreadRef.current) {
+      unreadRef.current = 0
+      setUnreadChars(0)
+    }
+    const next = computeWindowRange(box)
+    if (next.start === range.start && next.end === range.end) return
+    if (!nearBottom) {
+      const anchor = captureAnchor()
+      if (anchor) anchorRef.current = anchor
+    }
+    setRange(next)
+  }, [captureAnchor, computeWindowRange, range.start, range.end])
+
+  const jumpToBottom = useCallback(() => {
+    scrollToBottom()
+    const total = messages.length
+    setRange({ start: Math.max(0, total - CHAT_WINDOW_MAX), end: total })
+  }, [messages.length, scrollToBottom])
+
+  // 消息增删后收紧窗口：贴着底部时始终渲染最新一页，否则保持当前位置。
+  useEffect(() => {
+    const total = messages.length
+    if (total === 0) {
+      setRange((prev) => (prev.start === 0 && prev.end === 0 ? prev : { start: 0, end: 0 }))
+      return
+    }
+    setRange((prev) => {
+      if (stickRef.current) {
+        const start = Math.max(0, total - CHAT_WINDOW_MAX)
+        return prev.start === start && prev.end === total ? prev : { start, end: total }
+      }
+      const start = Math.min(prev.start, total - 1)
+      const end = Math.min(total, Math.max(prev.end, start + 1))
+      return start === prev.start && end === prev.end ? prev : { start, end }
+    })
+  }, [messages.length])
+
+  // 实测行高只影响被省略行的估算高度：变化时下一帧再重算，避免每帧同步重排。
+  useLayoutEffect(() => {
+    const box = listRef.current
+    const win = windowRef.current
+    if (!box || !win) return
+    let measured = false
+    win.querySelectorAll<HTMLElement>('[data-mid]').forEach((row) => {
+      const id = row.dataset.mid
+      if (!id) return
+      const height = row.offsetHeight
+      if (height > 0 && Math.abs((heightsRef.current.get(id) ?? -1) - height) > 1) {
+        heightsRef.current.set(id, height)
+        measured = true
+      }
+    })
+    if (measured && heightsRafRef.current === null) {
+      heightsRafRef.current = scheduleFrame(() => {
+        heightsRafRef.current = null
+        setHeightsVersion((v) => v + 1)
+      })
+    }
+    if (stickRef.current) {
+      box.scrollTop = box.scrollHeight
+      anchorRef.current = null
+      return
+    }
+    const anchor = anchorRef.current
+    if (!anchor) return
+    anchorRef.current = null
+    const row = win.querySelector<HTMLElement>(`[data-mid="${anchor.id}"]`)
+    if (!row) return
+    box.scrollTop += row.getBoundingClientRect().top - box.getBoundingClientRect().top - anchor.delta
+  }, [messages, range, heightsVersion])
+
+  useEffect(
+    () => () => {
+      if (tokenRafRef.current !== null) cancelFrame(tokenRafRef.current)
+      if (heightsRafRef.current !== null) cancelFrame(heightsRafRef.current)
+    },
+    [],
+  )
 
   /** 切回本页时刷新模型列表：在设置里保存/删除后回来立刻可见。 */
   const reloadModels = models.reload
@@ -216,18 +507,22 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
   // 只取最近一页（默认 200 条），500 轮的长会话也不整段拉；更早的用按钮续取。
   useEffect(() => {
     let alive = true
+    setHistoryLoading(true)
+    setHistoryError('')
     void (async () => {
       try {
         const data = await loadHistory(sessionId, userId, { limit: HISTORY_PAGE_SIZE })
         if (!alive) return
-        const historyMessages = data.history.map((h) => ({
+        const history = Array.isArray(data.history) ? data.history : []
+        const historyMessages = history.map((h) => ({
+          id: nextMessageId(),
           role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: h.content,
         }))
         setMessages((prev) => (prev.length === 0 ? historyMessages : prev))
         setHistoryHasOlder(Boolean(data.has_more))
         // 只有整段历史都在这一页时，首条用户消息才是真正的"首条"，才可作标题。
-        const title = data.has_more ? '' : titleFromHistory(data.history)
+        const title = data.has_more ? '' : titleFromHistory(history)
         if (title) {
           setMeta((prev) => {
             if (prev[sessionId]?.title) return prev
@@ -238,61 +533,85 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
         }
         // 落在最新一页的底部：刷新后位置合理。
         setTimeout(scrollToBottom, 0)
-      } catch {
-        // 首次加载失败不阻塞输入；发送时仍会给出明确错误。
+      } catch (error) {
+        if (!alive) return
+        // 首次加载失败不阻塞输入；但不能吞掉，否则用户会以为"没有记录"。
+        setHistoryError(failureText(error))
+      } finally {
+        if (alive) setHistoryLoading(false)
       }
     })()
     return () => {
       alive = false
     }
-    // 只在挂载时恢复当前会话。
+    // 只在挂载与手动重试时恢复当前会话。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [historyReloadTick])
 
   /** 续取更早的消息（offset 从最近一条往前数 = 当前已渲染条数）。 */
   const loadOlderMessages = useCallback(async () => {
     if (loadingOlder || sending) return
-    const node = listRef.current
-    const prevHeight = node?.scrollHeight ?? 0
-    const prevTop = node?.scrollTop ?? 0
+    const anchor = captureAnchor()
     setLoadingOlder(true)
+    setOlderError('')
     try {
       const data = await loadHistory(sessionId, userId, {
         limit: HISTORY_PAGE_SIZE,
         offset: messages.length,
       })
-      setMessages((prev) => [
-        ...data.history.map((h) => ({
-          role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
-          content: h.content,
-        })),
-        ...prev,
-      ])
+      const history = Array.isArray(data.history) ? data.history : []
+      const olderMessages = history.map((h) => ({
+        id: nextMessageId(),
+        role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
+        content: h.content,
+      }))
+      const added = olderMessages.length
+      // 前插会改变窗口里的索引：先关掉贴底，避免被动拉回末尾；锚点行保持不动。
+      if (added > 0 && anchor) {
+        stickRef.current = false
+        setAtBottom(false)
+      }
+      setMessages((prev) => [...olderMessages, ...prev])
       setHistoryHasOlder(Boolean(data.has_more))
-      // 保持视口停在原来读到的那一句，而不是跳到顶部。
-      requestAnimationFrame(() => {
-        const box = listRef.current
-        if (box) box.scrollTop = box.scrollHeight - prevHeight + prevTop
-      })
-    } catch {
-      // 加载更早失败：保留现状，用户可再点一次。
+      // 索引整体后移，渲染窗口跟着后移：仍只重排窗口内的行。
+      if (added > 0) {
+        setRange((prev) => ({ start: prev.start + added, end: prev.end + added }))
+      }
+      // 在 rAF 内按锚点恢复滚动位置，避免「前插一屏 + 再滚一屏」的二次全量重排。
+      if (anchor) {
+        scheduleFrame(() => restoreAnchor(anchor))
+      }
+    } catch (error) {
+      // 加载更早失败：保留现状，但要说出来，用户点重试即可再取。
+      setOlderError(failureText(error))
     } finally {
       setLoadingOlder(false)
     }
-  }, [loadingOlder, sending, sessionId, userId, messages.length])
+  }, [
+    loadingOlder,
+    sending,
+    sessionId,
+    userId,
+    messages.length,
+    captureAnchor,
+    restoreAnchor,
+  ])
 
   // 换机/备份迁移后 localStorage 里没有会话清单，但后端已有历史会话：只用本地
   // 清单会让「工作台」看不到导入前的对话。这里按后端列表补全，并给还没有标题
   // 的会话回填首条用户消息作为标题（限 20 个，避免首屏 N+1 拖慢）。
   useEffect(() => {
     let alive = true
+    setSessionsError('')
     void (async () => {
       let page: Awaited<ReturnType<typeof listSessions>>
       try {
         // 只取第一页：1000 个会话时首屏也不拉全量。
         page = await listSessions(SESSION_PAGE_SIZE, 0)
-      } catch {
-        // 未登录/离线：保留本地清单，不阻断对话
+      } catch (error) {
+        if (!alive) return
+        // 本地清单仍可用，但不能吞掉：告诉用户远端清单没读全，并给重试。
+        setSessionsError(failureText(error))
         return
       }
       if (!alive) return
@@ -327,9 +646,9 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
     return () => {
       alive = false
     }
-    // 只在挂载时发现一次；后续清单由本地操作维护。
+    // 只在挂载与手动重试时发现远端会话；后续清单由本地操作维护。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [sessionsReloadTick])
 
   const switchSession = useCallback(
     async (id: string) => {
@@ -338,10 +657,14 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
       setSessionId(id)
       setMessages([])
       setHistoryHasOlder(false)
+      setHistoryError('')
+      setHistoryLoading(true)
       try {
         const data = await loadHistory(id, userId, { limit: HISTORY_PAGE_SIZE })
+        const history = Array.isArray(data.history) ? data.history : []
         setMessages(
-          data.history.map((h) => ({
+          history.map((h) => ({
+            id: nextMessageId(),
             role: h.role === 'user' ? 'user' : ('assistant' as const),
             content: h.content,
           })),
@@ -349,10 +672,13 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
         setHistoryHasOlder(Boolean(data.has_more))
         // 顶替到最新一页底部（与刷新后的落点一致）。
         setTimeout(scrollToBottom, 0)
-        const title = data.has_more ? '' : titleFromHistory(data.history)
+        const title = data.has_more ? '' : titleFromHistory(history)
         if (title) recordMeta(id, { title })
-      } catch {
+      } catch (error) {
         setMessages([])
+        setHistoryError(failureText(error))
+      } finally {
+        setHistoryLoading(false)
       }
     },
     [sessionId, sending, userId, recordMeta, scrollToBottom],
@@ -364,6 +690,9 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
     setSessionId(id)
     setMessages([])
     setHistoryHasOlder(false)
+    // 新会话是确定为空，不走"读取中"，也不该带上一会话的错误。
+    setHistoryLoading(false)
+    setHistoryError('')
     setSessions((prev) => {
       const next = [id, ...prev.filter((s) => s !== id)]
       saveLocalSessions(next)
@@ -466,8 +795,10 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
 
 
   const send = useCallback(
-    async (text: string) => {
-      const value = (text ?? input).trim()
+    async (text?: string) => {
+      // 超大粘贴时全文只放在 ref 里；这里仍用全文做长度校验，保证「未发送」不撒谎。
+      const draft = oversizedChars !== null ? fullDraftRef.current : input
+      const value = (text ?? draft).trim()
       if (!value || sending) return
       if (value.length > MAX_MESSAGE_CHARS) {
         setInputError(
@@ -477,6 +808,8 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
       }
       setInputError('')
       setInput('')
+      fullDraftRef.current = ''
+      setOversizedChars(null)
       // 焦点留在输入框：连续对话可以直接说下一句，不必再从侧栏 Tab 回来。
       inputRef.current?.focus()
       setSending(true)
@@ -486,8 +819,8 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
       })
       setMessages((prev) => [
         ...prev,
-        { role: 'user', content: value },
-        { role: 'assistant', content: '', streaming: true, tools: [] },
+        { id: nextMessageId(), role: 'user', content: value },
+        { id: nextMessageId(), role: 'assistant', content: '', streaming: true, tools: [] },
       ])
       setTimeout(scrollToBottom, 0)
       // 20 秒还没有首个 token 时给一条非阻断提示：只更新状态行，输入框照常可用。
@@ -515,21 +848,14 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
         )) {
           if (evt.type === 'token') {
             clearSlowTimer()
-            setMessages((prev) => {
-              const next = [...prev]
-              const last = next[next.length - 1]
-              next[next.length - 1] = {
-                ...last,
-                content: last.content + evt.content,
-                notice: undefined,
-              }
-              return next
-            })
-            scrollToBottom()
+            // 同一帧内的 token 合并成一次 setState：200 token/s 不再触发 200 次重渲染。
+            pendingTokensRef.current += evt.content
+            scheduleTokenFlush()
           } else if (evt.type === 'notice') {
             // 后端「正在重试」等提示只更新状态行：不追加正文、不改变 streaming、
             // 也不计入 token。
             clearSlowTimer()
+            flushTokens()
             if (evt.message) {
               setMessages((prev) => {
                 const next = [...prev]
@@ -540,7 +866,9 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           } else if (evt.type === 'error') {
             // 错误帧之后后端必补 done；最终由 done 渲染错误卡，这里只清慢提示。
             clearSlowTimer()
+            flushTokens()
           } else if (evt.type === 'tool') {
+            flushTokens()
             setMessages((prev) => {
               const next = [...prev]
               const last = next[next.length - 1]
@@ -558,6 +886,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           } else if (evt.type === 'done') {
             // HTTP 200 + done{status:error} 也是一轮失败：必须渲染失败卡片，
             // 不能把上游的失败文案当成普通回复。
+            flushTokens()
             if (evt.status && evt.status !== 'completed') {
               setMessages((prev) => {
                 const next = [...prev]
@@ -591,6 +920,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           }
         }
         clearSlowTimer()
+        flushTokens()
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
@@ -601,6 +931,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
       } catch (err) {
         // 原始错误（可能是整段后端 JSON）只进"详情"，正文给可行动的中文。
         clearSlowTimer()
+        flushTokens()
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
@@ -614,11 +945,25 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
         })
       } finally {
         clearSlowTimer()
+        flushTokens()
         setSending(false)
-        scrollToBottom()
+        // 用户中途向上翻读时不要被强行拉回底部；贴底时再对齐一次末尾。
+        if (stickRef.current) scrollToBottom()
       }
     },
-    [input, sending, sessionId, userId, modelId, scrollToBottom, recordMeta, meta],
+    [
+      input,
+      oversizedChars,
+      sending,
+      sessionId,
+      userId,
+      modelId,
+      scrollToBottom,
+      recordMeta,
+      meta,
+      flushTokens,
+      scheduleTokenFlush,
+    ],
   )
 
   /** 下拉框标签：首条消息 + 更新时间；没有标题时显示"未命名会话"（绝不显示 ID）。 */
@@ -632,6 +977,23 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
   )
 
   const showModelWarning = !provider.isReal
+  const totalMessages = messages.length
+  // 首次渲染还没跑到收紧窗口的 effect 时，直接展示最新一页，避免闪一帧空白。
+  const rawStart =
+    range.end === 0 && totalMessages > 0
+      ? Math.max(0, totalMessages - CHAT_WINDOW_MAX)
+      : range.start
+  const windowStart = Math.max(0, Math.min(rawStart, Math.max(0, totalMessages - 1)))
+  const windowEnd = Math.max(
+    windowStart,
+    Math.min(range.end === 0 ? totalMessages : range.end, totalMessages),
+  )
+  const visibleMessages = messages.slice(windowStart, windowEnd)
+  // 用 padding 撑起被省略行的总高度：滚动条长度不因窗口化而缩水。
+  const paddingTop = offsets[windowStart] ?? 0
+  const paddingBottom = (offsets[totalMessages] ?? 0) - (offsets[windowEnd] ?? 0)
+  const jumpLabel =
+    unreadChars > 0 ? `回到底部（新收到 ${unreadChars} 字）` : '回到底部'
 
   return (
     <section className="jarvis-zone">
@@ -733,15 +1095,17 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
             )}
 
             {/* role="log" + aria-live：新回复追加时读屏会播报；aria-busy 在流式
-                生成期间为 true，让读屏等整段结束再念，避免逐字刷屏。 */}
-            <div
-              className="chat-log"
-              ref={listRef}
-              role="log"
-              aria-live="polite"
-              aria-relevant="additions text"
-              aria-busy={sending || undefined}
-            >
+                生成期间为 true，让读屏等整段念完，避免逐字刷屏。 */}
+            <div className="chat-log-wrap">
+              <div
+                className="chat-log"
+                ref={listRef}
+                role="log"
+                aria-live="polite"
+                aria-relevant="additions text"
+                aria-busy={sending || undefined}
+                onScroll={handleLogScroll}
+              >
               {historyHasOlder && (
                 <div className="chat-older-row">
                   <button
@@ -752,21 +1116,51 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                   >
                     {loadingOlder ? '加载中…' : '加载更早的消息'}
                   </button>
+                  {olderError && (
+                    <p className="os-note" role="status">
+                      更早的消息没读到：{olderError}。
+                      <button
+                        className="os-link"
+                        type="button"
+                        style={{ flex: 'none' }}
+                        onClick={() => void loadOlderMessages()}
+                      >
+                        重试
+                      </button>
+                    </p>
+                  )}
                 </div>
               )}
               {messages.length === 0 ? (
-                <div className="chat-empty">
-                  {provider.isReal
-                    ? '请下达业务指令，鎏灏管家会实时分析。'
-                    : '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'}
-                </div>
+                historyLoading ? (
+                  <div className="chat-empty" role="status">
+                    正在读取历史…
+                  </div>
+                ) : historyError ? (
+                  <Failure
+                    message={historyError}
+                    onRetry={() => setHistoryReloadTick((n) => n + 1)}
+                  />
+                ) : (
+                  <div className="chat-empty">
+                    {provider.isReal
+                      ? '请下达业务指令，鎏灏管家会实时分析。'
+                      : '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'}
+                  </div>
+                )
               ) : (
-                messages.map((m, i) => (
-                  <div
-                    key={i}
-                    className={`chat-row ${m.role}`}
-                    data-streaming={m.streaming ? 'true' : undefined}
-                  >
+                <div
+                  className="chat-log-window"
+                  ref={windowRef}
+                  style={{ paddingTop, paddingBottom }}
+                >
+                  {visibleMessages.map((m) => (
+                    <div
+                      key={m.id}
+                      data-mid={m.id}
+                      className={`chat-row ${m.role}`}
+                      data-streaming={m.streaming ? 'true' : undefined}
+                    >
                     <div className="chat-avatar">{m.role === 'user' ? '我' : '灏'}</div>
                     <div className="chat-bubble">
                       {/* 建流前被拒（402/403）时正文为空：此时只显示下面的错误卡，
@@ -787,7 +1181,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                             />
                           )}
                           <div className="chat-error-text">
-                            如果一直失败，请确认启动窗口仍在运行，然后重试。
+                            如果一直失败，请确认鎏灏仍在运行，然后重试。
                           </div>
                         </div>
                       )}
@@ -830,7 +1224,28 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                       {m.streaming && <div className="sc-stream-frontier" aria-hidden="true" />}
                     </div>
                   </div>
-                ))
+                  ))}
+                </div>
+              )}
+              </div>
+              {!atBottom && totalMessages > 0 && (
+                <button
+                  type="button"
+                  className="chat-jump-bottom"
+                  onClick={jumpToBottom}
+                  aria-label={jumpLabel}
+                  title={jumpLabel}
+                >
+                  <span className="chat-jump-arrow" aria-hidden="true">
+                    ↓
+                  </span>
+                  回到底部
+                  {unreadChars > 0 && (
+                    <span className="chat-jump-badge" aria-hidden="true">
+                      {unreadChars > 999 ? '999+' : unreadChars}
+                    </span>
+                  )}
+                </button>
               )}
             </div>
 
@@ -840,15 +1255,40 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 value={input}
                 aria-label="业务指令输入框"
                 onChange={(e) => {
+                  // 用户在摘要预览上继续编辑：全文引用作废，按普通草稿处理。
+                  if (oversizedChars !== null) {
+                    fullDraftRef.current = ''
+                    setOversizedChars(null)
+                  }
                   setInput(e.target.value)
                   if (inputError) setInputError('')
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    send(input)
-                  }
+                onPaste={(e) => {
+                  const pasted = e.clipboardData?.getData('text') ?? ''
+                  if (pasted.length <= MAX_MESSAGE_CHARS) return
+                  // 超大粘贴不进入 React 状态：只保留摘要预览，避免大字符串每次按键重渲染。
+                  e.preventDefault()
+                  const flat = pasted.replace(/\s+/g, ' ').trim()
+                  const head = flat.slice(0, OVERSIZED_PREVIEW_CHARS)
+                  fullDraftRef.current = pasted
+                  setOversizedChars(pasted.length)
+                  setInput(
+                    `${head}${flat.length > OVERSIZED_PREVIEW_CHARS ? '…' : ''}\n〔摘要预览：全文 ${pasted.length} 字，未发送〕`,
+                  )
+                  setInputError('')
                 }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return
+                  // 中文输入法组词中的回车是"选词"，不是"发送"：直接放行给输入法。
+                  if (ime.isImeKey(e)) return
+                  // 手机软键盘没有 Shift，回车固定留给换行；发送只走右侧按钮。
+                  if (e.shiftKey || isMobileLayout) return
+                  e.preventDefault()
+                  send()
+                }}
+                onCompositionStart={ime.onCompositionStart}
+                onCompositionEnd={ime.onCompositionEnd}
+                enterKeyHint={isMobileLayout ? 'enter' : 'send'}
                 placeholder={
                   provider.isReal
                     ? '请输入你的业务指令…'
@@ -861,7 +1301,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
               />
               <button
                 className="jarvis-send"
-                onClick={() => send(input)}
+                onClick={() => send()}
                 disabled={sending || !input.trim() || inputTooLong}
               >
                 {sending ? '生成中…' : '发送'}
@@ -870,9 +1310,11 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
             {(inputError || inputTooLong || inputChars > NEAR_LIMIT_CHARS) && (
               <div className="jarvis-input-hint" role={inputError || inputTooLong ? 'alert' : undefined}>
                 {inputError ||
-                  (inputTooLong
-                    ? `消息过长：当前 ${inputChars} 字，单条上限 ${MAX_MESSAGE_CHARS} 字，请精简或分段发送。`
-                    : `${inputChars} / ${MAX_MESSAGE_CHARS} 字`)}
+                  (oversizedChars !== null
+                    ? `已粘贴 ${inputChars} 字，超过单条 ${MAX_MESSAGE_CHARS} 字上限：输入区只保留摘要预览，全文未发送；请分段粘贴发送。`
+                    : inputTooLong
+                      ? `消息过长：当前 ${inputChars} 字，单条上限 ${MAX_MESSAGE_CHARS} 字，请精简或分段发送。`
+                      : `${inputChars} / ${MAX_MESSAGE_CHARS} 字`)}
               </div>
             )}
 
@@ -904,10 +1346,19 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 </option>
               ))}
             </select>
+            {models.error && (
+              <p className="os-note" role="status">
+                模型清单没读到：{models.error}。
+                <button className="os-link" type="button" style={{ flex: 'none' }} onClick={models.reload}>
+                  重试
+                </button>
+              </p>
+            )}
             <select
               className="sess-select"
               value={sessionId}
               onChange={(e) => switchSession(e.target.value)}
+              aria-label="切换会话"
               title="切换会话（按首条消息命名）"
             >
               {sessions.map((id) => (
@@ -916,6 +1367,19 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 </option>
               ))}
             </select>
+            {sessionsError && (
+              <p className="os-note" role="status">
+                会话清单没读全：{sessionsError}。本地记录还能用。
+                <button
+                  className="os-link"
+                  type="button"
+                  style={{ flex: 'none' }}
+                  onClick={() => setSessionsReloadTick((n) => n + 1)}
+                >
+                  重试
+                </button>
+              </p>
+            )}
             <button className="sess-btn" onClick={newSession} title="新会话">
               ＋新会话
             </button>
@@ -946,8 +1410,11 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
               />
             </span>
             <span className="sess-user">
-              <span className="sess-user-label">身份</span>
+              <label className="sess-user-label" htmlFor="sess-user-input">
+                身份
+              </label>
               <input
+                id="sess-user-input"
                 className="sess-user-input"
                 value={userId}
                 onChange={(e) => setUserIdState(e.target.value)}

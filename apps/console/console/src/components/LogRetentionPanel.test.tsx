@@ -39,11 +39,11 @@ describe('系统设置 · 日志与磁盘', () => {
     expect(panel).toContain('正被环境变量覆盖')
   })
 
-  test('成员视角只读，两张卡片都说明由主账号统一管理', () => {
+  test('只读视角两张卡片都说明由系统统一管理，且不出现层级词', () => {
     expect(settings).toContain('const canManageSettings = session.isRoot')
-    expect(settings).toContain('该设置由主账号统一管理')
+    expect(settings).toContain('该设置由系统统一管理，当前账号只读')
     expect(panel).toContain('canManage = true')
     expect(panel).toContain('disabled={!canManage')
-    expect(panel).toContain('该设置由主账号统一管理')
+    expect(panel).toContain('该设置由系统统一管理，当前账号只读')
   })
 })

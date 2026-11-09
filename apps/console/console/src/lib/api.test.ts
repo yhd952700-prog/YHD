@@ -100,7 +100,7 @@ describe('apiFetch 的网络失败文案', () => {
     const error = (await apiFetch('/v1/auth/config').catch((err: unknown) => err)) as ApiError
     expect(error).toBeInstanceOf(ApiError)
     expect(error.message).toContain('服务没有返回正常的数据')
-    expect(error.message).toContain('请确认启动窗口仍在运行')
+    expect(error.message).toContain('请确认鎏灏仍在运行')
     expect(error.message).not.toContain('Unexpected token')
   })
 })

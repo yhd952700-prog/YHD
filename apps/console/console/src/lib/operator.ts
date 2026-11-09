@@ -276,7 +276,15 @@ export interface AuditVerifyResult {
 }
 
 export interface AuditSummary {
+  /** 当前账号子树可读的事件数（本页"你能看到"口径）。 */
   total_events: number
+  /** 全库存储事件数，与 /v1/ready、/v1/dashboard/summary 同源。 */
+  store_total_events?: number
+  /** 全库业务事件（已扣除 state_change 噪声）。 */
+  business_events?: number
+  noise_events?: number
+  visible_events?: number
+  definition?: Record<string, string>
   tail_seq: number
   by_outcome: Record<string, number>
   by_action: Record<string, number>
@@ -422,6 +430,8 @@ export interface GoalSummary {
   scope: string
   created_at: number | null
   error: string | null
+  /** 后端保留的原始失败原因，折叠展示；主位置只显示中文结论。 */
+  technical_detail?: string | null
   replan_suggested: boolean
   task_count: number
   completed_tasks: number
@@ -464,6 +474,8 @@ export interface GoalTask {
   score?: number | null
   result: string | null
   error: string | null
+  /** 后端保留的原始失败原因（英文分类、任务 ID、依赖 ID），折叠展示。 */
+  technical_detail?: string | null
   started_at: string | null
   completed_at: string | null
 }
@@ -474,6 +486,8 @@ export interface GoalDetail {
   natural_language: string
   scope: string
   error: string | null
+  /** 后端保留的原始失败原因，折叠展示；主位置只显示中文结论。 */
+  technical_detail?: string | null
   correlation_id: string | null
   created_at: number | null
   /**
@@ -666,6 +680,8 @@ export interface AppSummary {
   kernel_type: string
   status: string
   active: boolean
+  activatable?: boolean
+  builtin?: boolean
   capabilities: string[]
   scope: string
   error: string | null

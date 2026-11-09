@@ -8,7 +8,7 @@
  *   AI 员工总数  ← EmployeeStore 真实持久化员工（totals.employees）；foot 附带内核/能力层注册表说明
  *   运行中任务    ← 网关进程内活跃会话表
  *   审计事件      ← 审计存储真实计数
- *   系统健康度    ← /v1/ready 的五项依赖检查
+ *   系统健康度    ← /v1/ready 的全部依赖检查（auth、审计、围栏、排程器等）
  *
  * 同理，设计图里的"任务进度百分比"没有真实来源，这里不画进度条；"实时任务流"
  * 展示真实审计事件，"事件分布"用真实的事件类型分布。
@@ -20,6 +20,7 @@ import type {
   AnalyticsPayload,
   DashboardSummary,
   HealthPayload,
+  PreflightPayload,
   RosterPayload,
 } from '../lib/contracts'
 import { useApi } from '../lib/api'
@@ -52,10 +53,13 @@ export function Overview({
   query,
   provider,
   onNavigate,
+  isRoot = false,
 }: {
   query: string
   provider: ActiveProviderStatus
   onNavigate: (key: string) => void
+  /** 预检与告警是根账号可见的运维面；成员不请求，也不显示假数字。 */
+  isRoot?: boolean
 }) {
   const summary = useApi<DashboardSummary>('/v1/dashboard/summary', REFRESH_LIVE)
   const activity = useApi<ActivityPayload>('/v1/dashboard/activity?limit=30', REFRESH_LIVE)
@@ -63,6 +67,16 @@ export function Overview({
   const analytics = useApi<AnalyticsPayload>('/v1/dashboard/analytics?days=14', REFRESH_SLOW)
   // 503 也要接受：降级时响应里带着完整的检查项，那正是健康度最该显示真话的时刻。
   const ready = useApi<HealthPayload>('/v1/ready', 30_000, [503])
+  // 健康度必须和「预检」「告警」说同一套话：只读就绪探针会出现
+  // “总览 100% 健康、预检 SECRET_KEY critical、告警 74 条正在触发”。
+  const preflight = useApi<PreflightPayload>(
+    isRoot ? '/v1/production/preflight' : null,
+    REFRESH_SLOW,
+  )
+  const alerts = useApi<{ firing_count?: number; count?: number }>(
+    isRoot ? '/v1/alerts' : null,
+    REFRESH_SLOW,
+  )
 
   const need = query.trim().toLowerCase()
 
@@ -84,11 +98,44 @@ export function Overview({
     const checks = ready.data?.checks ?? {}
     const names = Object.keys(checks)
     if (names.length === 0) return null
-    const healthy = names.filter((name) => checks[name]?.status === 'healthy').length
+    // 告警级检查（``blocks_readiness=false``，如指标链路、非关键内核）不参与
+    // “依赖正常”的分子/分母，否则会把监控失明算成业务不就绪；它们单独展示。
+    const blockingNames = names.filter(
+      (name) => checks[name]?.blocks_readiness !== false,
+    )
+    const healthy = blockingNames.filter((name) => checks[name]?.status === 'healthy').length
+    const advisories = names.filter(
+      (name) =>
+        checks[name]?.blocks_readiness === false &&
+        checks[name]?.status !== 'healthy',
+    )
+    // 预检与告警各算一项“子系统”：critical>0 / firing>0 就是异常。
+    // 没读到的来源（成员无权限、请求失败）不计入分母，避免把未知当成健康。
+    const critical = preflight.data?.critical_count
+    const warning = preflight.data?.warning_count
+    const firing = alerts.data?.firing_count
+    const preflightKnown = typeof critical === 'number'
+    const alertsKnown = typeof firing === 'number'
+    const extraTotal = (preflightKnown ? 1 : 0) + (alertsKnown ? 1 : 0)
+    const extraHealthy =
+      (preflightKnown && critical === 0 ? 1 : 0) + (alertsKnown && firing === 0 ? 1 : 0)
+    const total = blockingNames.length + extraTotal
+    const healthyTotal = healthy + extraHealthy
     return {
-      healthy,
-      total: names.length,
-      ratio: healthy / names.length,
+      healthy: healthyTotal,
+      readyHealthy: healthy,
+      readyTotal: blockingNames.length,
+      total,
+      ratio: healthyTotal / total,
+      critical: preflightKnown ? critical : null,
+      warning: preflightKnown ? warning ?? 0 : null,
+      firing: alertsKnown ? firing : null,
+      preflightError: preflight.error,
+      alertsError: alerts.error,
+      // 告警级问题单独列在 foot 里，不能因为不参与百分比就彻底隐身。
+      advisories: advisories.map((name) =>
+        safeText(checks[name]?.display_status) || name,
+      ),
       // 审计证据链的判据独立于可用性。分母计入它，这样"依赖全绿但证据链从未被
       // 重新推导"不会显示成 100%——那正是本缺陷在控制台上的原样呈现。
       auditEvidence: checks.audit_store?.evidence_status as
@@ -100,7 +147,7 @@ export function Overview({
         | undefined,
       auditUncovered: checks.audit_store?.uncovered_events as number | undefined,
     }
-  }, [ready.data])
+  }, [ready.data, preflight.data, preflight.error, alerts.data, alerts.error])
 
   const attention = useMemo(() => {
     const checks = ready.data?.checks ?? {}
@@ -120,8 +167,14 @@ export function Overview({
       failed,
       recent: recent.length,
       modelReady: provider.isReal,
+      // 预检/告警与就绪探针是三条独立证据；总览必须同时展示，不能只报一条。
+      critical: health?.critical ?? null,
+      firing: health?.firing ?? null,
+      warning: health?.warning ?? null,
+      preflightError: health?.preflightError ?? '',
+      alertsError: health?.alertsError ?? '',
     }
-  }, [ready.data, activity.data, provider.isReal])
+  }, [ready.data, activity.data, provider.isReal, health])
 
   return (
     <div className="os-grid">
@@ -146,6 +199,24 @@ export function Overview({
             条失败/拒绝（
             {attention.recent > 0 ? `近 ${attention.recent} 条事件` : '暂无事件'}）
           </span>
+          {isRoot && (
+            <span
+              className="os-attention-item"
+              data-tone={attention.critical ? 'warn' : 'ok'}
+            >
+              <strong>{attention.critical === null ? '—' : attention.critical}</strong>
+              条预检严重项
+            </span>
+          )}
+          {isRoot && (
+            <span
+              className="os-attention-item"
+              data-tone={attention.firing ? 'warn' : 'ok'}
+            >
+              <strong>{attention.firing === null ? '—' : attention.firing}</strong>
+              条告警正在触发
+            </span>
+          )}
           <span
             className="os-attention-item"
             data-tone={attention.modelReady ? 'ok' : 'warn'}
@@ -153,16 +224,28 @@ export function Overview({
             <strong>{attention.modelReady ? '真实' : '模拟'}</strong>
             模型状态
           </span>
-          {attention.degraded === 0 &&
+          {ready.error || activity.error || attention.preflightError || attention.alertsError ? (
+            <span className="os-attention-clear">
+              状态没读全，暂时不能判断是否无异常；看下方对应卡片的重试。
+            </span>
+          ) : ready.data === null || activity.data === null ? (
+            <span className="os-attention-clear" role="status">
+              正在检查依赖与近期失败…
+            </span>
+          ) : (
+            attention.degraded === 0 &&
             attention.failed === 0 &&
-            attention.modelReady && (
+            attention.modelReady &&
+            attention.critical === 0 &&
+            attention.firing === 0 && (
               <span className="os-attention-clear">
                 当前无异常
                 {attention.recent === 0
                   ? ' · 下一步：到工作台发起一条任务，或到「系统设置 → 模型管理」确认服务连通。'
                   : ' · 下一步：可在事件流查看明细。'}
               </span>
-            )}
+            )
+          )}
         </div>
       </div>
       {/* ---------- 第一次用：首屏直接给"下一步点哪里" ----------
@@ -242,7 +325,13 @@ export function Overview({
             value={
               summary.data?.audit ? formatCompact(summary.data.audit.total_events) : null
             }
-            foot="真实审计存储累计"
+            foot={
+              summary.data?.audit
+                ? `全部存储 ${numberText(summary.data.audit.total_events)} · 业务事件 ${numberText(
+                    summary.data.audit.business_events,
+                  )} · 你可读 ${numberText(summary.data.audit.visible_events)}`
+                : '审计存储累计'
+            }
             error={summary.error}
           />
           <Kpi
@@ -254,26 +343,35 @@ export function Overview({
             }
             foot={
               health
-                ? health.auditEvidence === 'broken'
-                  ? `${health.healthy}/${health.total} 项依赖正常 · 证据链已断裂（${
-                      health.auditUncovered ?? '?'
-                    } 条事件未覆盖）`
-                  : health.auditEvidence === 'pending'
-                    ? `${health.healthy}/${health.total} 项依赖正常 · ${
-                        health.auditUncovered ?? '?'
-                      } 条新事件待核对（下一轮自检自动补齐）`
-                    : health.auditEvidence && health.auditEvidence !== 'verified'
-                      ? `${health.healthy}/${health.total} 项依赖正常 · 证据链未重新推导（${
-                          health.auditUncovered ?? '?'
-                        } 条事件未覆盖）`
-                      : `${health.healthy}/${health.total} 项依赖正常`
+                ? [
+                    `${health.readyHealthy}/${health.readyTotal} 项依赖正常`,
+                    health.critical === null ? null : `预检严重 ${health.critical}`,
+                    health.firing === null ? null : `告警触发 ${health.firing}`,
+                    health.advisories.length > 0
+                      ? `告警：${health.advisories.join('、')}`
+                      : null,
+                    health.auditEvidence === 'broken'
+                      ? `证据链已断裂（${health.auditUncovered ?? '?'} 条未覆盖）`
+                      : health.auditEvidence === 'pending'
+                        ? `${health.auditUncovered ?? '?'} 条新事件待核对`
+                        : health.auditEvidence && health.auditEvidence !== 'verified'
+                          ? `证据链未重新推导（${health.auditUncovered ?? '?'} 条未覆盖）`
+                          : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
                 : ready.httpStatus === 503
                   ? '服务正在准备，自检完成后自动更新'
                   : '来自就绪探针'
             }
-            error={ready.error}
+            error={ready.error || preflight.error || alerts.error}
             tone={
-              health && (health.ratio < 1 || health.auditEvidence === 'broken')
+              health &&
+              (health.ratio < 1 ||
+                health.advisories.length > 0 ||
+                health.auditEvidence === 'broken' ||
+                (health.critical ?? 0) > 0 ||
+                (health.firing ?? 0) > 0)
                 ? 'warn'
                 : undefined
             }

@@ -25,9 +25,12 @@ export type GoalVerdictKind =
 
 export type GoalVerdictTone = 'ok' | 'warning' | 'danger' | 'muted'
 
+/** 产物可以是相对路径字符串，也可以是后端带存在性标记的对象。 */
+export type ArtifactRef = string | { path?: string | null; exists?: boolean | null }
+
 export interface GoalVerdictInput {
   state?: string | null
-  artifacts?: string[] | null
+  artifacts?: ArtifactRef[] | null
   task_count?: number
   completed_tasks?: number
   failed_tasks?: number
@@ -45,9 +48,14 @@ export interface GoalVerdict {
 
 function artifactCount(input: GoalVerdictInput): number {
   const artifacts = input.artifacts
-  return Array.isArray(artifacts)
-    ? artifacts.filter((path) => typeof path === 'string' && path.trim()).length
-    : 0
+  if (!Array.isArray(artifacts)) return 0
+  return artifacts.filter((item) => {
+    if (typeof item === 'string') return item.trim().length > 0
+    if (!item || typeof item !== 'object') return false
+    // 后端明确说文件不存在时，不能继续算“有产物”。
+    if (item.exists === false) return false
+    return typeof item.path === 'string' && item.path.trim().length > 0
+  }).length
 }
 
 /** 判断一个目标的真实终态。未知状态原样显示，不猜。 */
@@ -116,7 +124,7 @@ export function goalVerdict(input: GoalVerdictInput): GoalVerdict {
       kind: 'failed',
       label: '已停止',
       tone: 'danger',
-      hint: '执行被中止，本次没有产出；需要结果请重新派活。',
+      hint: '执行被中止；已完成的步骤和产物会保留，可查看后再决定是否重新派活。',
       retryable: true,
     }
   }

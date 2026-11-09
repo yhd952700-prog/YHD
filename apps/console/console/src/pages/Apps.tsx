@@ -36,7 +36,10 @@ function statusTone(status: string): 'accent' | 'danger' | 'muted' {
 
 const APP_STATUS_LABELS: Record<string, string> = {
   active: '已启用',
+  registered: '未启用',
+  discovered: '未启用',
   inactive: '未启用',
+  unloaded: '未启用',
   failed: '异常',
   error: '异常',
   loading: '加载中',
@@ -49,6 +52,10 @@ const KERNEL_TYPE_LABELS: Record<string, string> = {
   tool: '工具',
   plugin: '插件',
   kernel: '系统组件',
+  identity: '身份系统',
+  memory: '记忆系统',
+  security: '安全系统',
+  builtin: '内置能力',
 }
 
 export function Apps({
@@ -56,7 +63,7 @@ export function Apps({
   canManage = true,
 }: {
   query: string
-  /** 插件激活是全局动作：成员可看列表，按钮在点击前就说明只能主账号启用。 */
+  /** 插件激活是全局动作：成员可看列表，按钮在点击前就说明需要管理权限。 */
   canManage?: boolean
 }) {
   // 列表：每 30 秒轮询一次真实归类态。
@@ -89,6 +96,8 @@ export function Apps({
                 ? err.message
                 : '激活失败',
         }))
+        // 失败也是真实状态：刷新一次，让该行按 failed 渲染且不再显示可点击按钮。
+        void apps.reload()
       } finally {
         setBusyId(null)
       }
@@ -111,12 +120,23 @@ export function Apps({
     <div className="os-grid">
       <Card title="说明" sub="这个视图能证明什么" span={12}>
         <ul className="os-list">
-          <li>这里是插件与工具：已注册插件由系统列出，激活动作由你触发（真实加载，非占位）。</li>
-          <li>列表如实显示每个插件的真实状态（未启用 / 运行中 / 异常）；激活后状态会变为运行中。</li>
-          <li>没有插件是真没有，显示「暂无应用」；激活失败会带真实原因，不假装成功。</li>
-          {!canManage && <li>激活由主账号统一管理；当前账号可以查看，按钮会保持禁用。</li>}
+          <li>这里是插件与工具：已注册且有真实模块入口的插件由系统列出，激活动作由你触发（真实加载，非占位）。</li>
+          <li>列表如实显示每个插件的真实状态（未启用 / 已启用 / 异常）；激活后状态会变为已启用。</li>
+          <li>没有入口模块的历史占位条目不会出现在启用列表；加载失败的条目只显示中文原因，不再保留永远失败的激活按钮。</li>
+          <li>没有插件是真没有，显示「暂无需要激活的插件」；激活失败会带真实原因，不假装成功。</li>
+          {!canManage && <li>激活需要管理权限；当前账号可以查看，按钮会保持禁用。</li>}
         </ul>
       </Card>
+
+      {(apps.data?.plugins.length ?? 0) > 0 && (apps.data?.plugins.length ?? 0) <= 2 && (
+        <Card title="为什么这里条目很少" sub="内置能力与可加载插件不是一回事" span={12}>
+          <ul className="os-list">
+            <li>身份、记忆、安全与多租户是系统内置能力，随系统启动即生效，不需要在这里激活。</li>
+            <li>这里只列出可以真正加载的插件；没有入口的历史登记不会显示，也不会留下点不动的按钮。</li>
+            <li>下一步：想确认系统已经具备哪些内置能力，打开左侧「能力注册表」；如需接入自己的插件，请按《插件开发指南》实现后重启，再回到本页激活。</li>
+          </ul>
+        </Card>
+      )}
 
       <Card
         title="应用列表"
@@ -125,8 +145,8 @@ export function Apps({
       >
         {shown.length === 0 && !apps.loading && !apps.error ? (
           <Empty
-            title={need ? '没有匹配的应用' : '暂无应用'}
-            hint="系统启动时若没有登记任何内置应用，这里就是空的；登记完成后再刷新即可。"
+            title={need ? '没有匹配的应用' : '暂无需要激活的插件'}
+            hint="身份、记忆、安全与多租户是系统内置能力，随系统启动生效，不需要激活。想查看内置能力清单，打开左侧「能力注册表」；如需接入自有插件，请按《插件开发指南》实现后重启。"
           />
         ) : (
           <Guard
@@ -134,8 +154,8 @@ export function Apps({
             error={apps.error}
             data={apps.data}
             isEmpty={(data) => data.plugins.length === 0}
-            emptyTitle="暂无应用"
-            emptyHint="系统启动时若未注册任何内置插件，这里就是空的。"
+            emptyTitle="暂无需要激活的插件"
+            emptyHint="身份、记忆、安全与多租户是系统内置能力，随系统启动生效，不需要激活。想查看内置能力清单，打开左侧「能力注册表」；如需接入自有插件，请按《插件开发指南》实现后重启。"
             onRetry={apps.reload}
           >
             {() => (
@@ -178,15 +198,26 @@ export function Apps({
                             <button className="os-btn" disabled>
                               已激活
                             </button>
+                          ) : app.activatable === false ? (
+                            <span className="os-hint">
+                              {app.builtin ? '内置能力，无需激活' : '不可激活（缺少模块入口）'}
+                            </span>
+                          ) : app.status === 'failed' ? (
+                            <span
+                              className="os-hint"
+                              title={app.error ? friendlyPluginError(app.error) : undefined}
+                            >
+                              加载失败，请更新插件后重启
+                            </span>
                           ) : (
                             <button
                               className="os-btn os-btn-primary"
                               disabled={!canManage || busyId === app.plugin_id}
-                              title={canManage ? undefined : '由主账号统一管理'}
+                              title={canManage ? undefined : '当前账号暂无此权限'}
                               onClick={() => void handleActivate(app.plugin_id)}
                             >
                               {!canManage
-                                ? '仅主账号可激活'
+                                ? '当前账号暂无此权限'
                                 : busyId === app.plugin_id
                                   ? '激活中…'
                                   : '激活'}

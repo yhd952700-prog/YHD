@@ -26,6 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useApi } from '../lib/api'
+import { useImeComposition } from '../lib/ime'
 import type { EmployeesPayload } from '../lib/contracts'
 import { capabilityLabel, numberText, relativeTime, safeText, taskDescriptionLabel, taskNameLabel, useNow } from '../lib/format'
 import {
@@ -196,6 +197,7 @@ export function Butler({
   onOpenUsage?: () => void
   onConfigureModel?: () => void
 }) {
+  const ime = useImeComposition<HTMLInputElement>()
   // ── 一句话输入 ───────────────────────────────────────────────
   const [prompt, setPrompt] = useState('')
   const [scope, setScope] = useState('L1')
@@ -724,6 +726,16 @@ export function Butler({
             className="os-input os-butler-command-input"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              // 组词中/组词刚结束的回车是选词，不能把半截拼音当目标提交。
+              if (ime.isImeKey(event)) return
+              // 显式接管回车，不再依赖"浏览器可能在组合态抑制默认表单提交"。
+              event.preventDefault()
+              void submit()
+            }}
+            onCompositionStart={ime.onCompositionStart}
+            onCompositionEnd={ime.onCompositionEnd}
             placeholder="比如：把这周的会议记录整理成周报，按项目归档，再给我一份 300 字摘要"
             disabled={submitting}
             autoComplete="off"
@@ -1130,6 +1142,14 @@ export function Butler({
                           <li key={task.id}>
                             <span>{taskNameLabel(task.name)}</span>
                             <span className="os-kb-error">{task.error ?? '未给出原因'}</span>
+                            {task.technical_detail ? (
+                              <details style={{ marginTop: 4 }}>
+                                <summary>技术详情</summary>
+                                <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                  {task.technical_detail}
+                                </code>
+                              </details>
+                            ) : null}
                           </li>
                         ))}
                       </ul>
@@ -1254,7 +1274,9 @@ export function Butler({
                         failed_tasks: item.failed_tasks,
                       }}
                     />
-                    <span className="os-butler-history-text">{item.natural_language}</span>
+                    <span className="os-butler-history-text" title={item.natural_language}>
+                      {item.natural_language}
+                    </span>
                     <span className="os-hint os-butler-history-meta">
                       {relativeTime(item.created_at ?? 0)} · 完成 {item.completed_tasks}/
                       {item.task_count}
@@ -1285,12 +1307,11 @@ export function Butler({
         {pendingApi.status === 403 ? (
           <div className="os-alert" role="alert">
             <div>
-              <strong>当前账号不能在这里批准</strong>
+              <strong>当前账号暂无此权限</strong>
               <p style={{ margin: '4px 0 0' }}>
                 这个列表只对有批准权限的账号开放。它不代表「没有待确认动作」，
-                只是当前账号看不到。请换管理员账号登录后再来。
+                只是当前账号看不到。如需处理，请使用具备批准权限的账号登录。
               </p>
-              {pendingApi.error && <p className="os-hint">{pendingApi.error}</p>}
             </div>
           </div>
         ) : pendingApi.error && !pendingApi.data ? (

@@ -305,6 +305,14 @@ export function Roster({ query }: { query: string }) {
                               ? goal.natural_language.slice(0, 60) + '…'
                               : goal.natural_language}
                             {goal.error ? ` · ${goal.error}` : ''}
+                            {goal.technical_detail ? (
+                              <details style={{ marginTop: 4 }}>
+                                <summary>技术详情</summary>
+                                <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                  {goal.technical_detail}
+                                </code>
+                              </details>
+                            ) : null}
                           </div>
                         </div>
                         <span className="os-badge" data-tone={STATUS_TONE[goal.state] ?? 'muted'}>

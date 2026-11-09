@@ -4,7 +4,7 @@
  * 这里钉住的是"陌生人第一次用会卡住"的四个点：
  *   1. 会话过期 / 已登出时，登录页要明说"需要重新登录"（不在 App 里静默跳转）；
  *   2. 工作台要有一眼能找到的对话入口；
- *   3. 要说明启动后那个黑色命令窗口不能关；
+ *   3. 要说明关窗后只是退到托盘、本地服务继续运行、可从托盘重开；
  *   4. 没配模型时，要说明可以先跳过、之后在设置里补 Key。
  *
  * 只挂载展示组件：对话面板 / 模型管理 / 诊断导出用空壳替代，不联网。
@@ -70,7 +70,7 @@ describe('第一公里提示', () => {
     fireEvent.click(button)
   })
 
-  test('设置页说明黑色命令窗口不能关', () => {
+  test('设置页说明关窗会退到托盘、可从托盘重开', () => {
     render(
       <Settings
         device={device}
@@ -79,8 +79,9 @@ describe('第一公里提示', () => {
         onLogout={() => {}}
       />,
     )
-    expect(screen.getByText(/黑色命令窗口/)).toBeTruthy()
-    expect(screen.getByText(/保持打开/)).toBeTruthy()
+    expect(screen.getByText(/关闭窗口不会退出/)).toBeTruthy()
+    expect(screen.getByText(/退到系统托盘/)).toBeTruthy()
+    expect(screen.getByText(/从托盘重新打开/)).toBeTruthy()
   })
 
   test('设置页说明没配模型可以先跳过、之后补 Key', () => {
@@ -113,8 +114,9 @@ describe('第一公里提示', () => {
     const notice = screen.getByRole('status', { name: '首次使用提示' })
     expect(notice.textContent).toMatch(/先跳过|最后再配/)
     expect(notice.textContent).toMatch(/补上 Key/)
-    expect(notice.textContent).toMatch(/黑色命令窗口/)
-    expect(notice.textContent).toMatch(/保持打开/)
+    expect(notice.textContent).toMatch(/退到系统托盘/)
+    expect(notice.textContent).toMatch(/从托盘重新打开/)
+    expect(notice.textContent).not.toMatch(/黑色命令窗口|保持打开/)
 
     fireEvent.click(screen.getByRole('button', { name: '去配置模型' }))
     expect(scrollIntoView).toHaveBeenCalled()
