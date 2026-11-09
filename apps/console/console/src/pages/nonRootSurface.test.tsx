@@ -93,9 +93,12 @@ describe('成员视角：账号面页面', () => {
   })
 
   test('我的 Key 只写归属，不写来源', () => {
-    render(<MyKeys profile={PROFILE} caps={CAPS} readOnly={false} />)
+    render(<MyKeys profile={PROFILE} caps={CAPS} readOnly={false} session={SESSION} />)
     expect(document.body.textContent).toContain('我的账号')
     expect(document.body.textContent).not.toContain('授权来源')
+    // 成员页必须给出「配置自己的模型与 Key」的入口，而不是一句「暂未开放」。
+    expect(document.body.textContent).toContain('模型与 Key')
+    expect(document.body.textContent).not.toContain('暂未开放')
     expectNoBannedText()
   })
 

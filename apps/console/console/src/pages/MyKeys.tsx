@@ -1,14 +1,17 @@
 /**
  * 我的 Key / 全部 Key。
  *
- * 非根：只出现"Key 归属：我的账号"、授权开关与用量，不出现任何来源或结构字段。
+ * 非根：只出现"Key 归属：我的账号"、授权开关与用量，并在这里直接提供
+ * **自己的**模型与 Key 配置入口（后端默认给成员 `model:manage`，归属只能
+ * 写本人）；不出现任何来源或结构字段。
  * 根：看到每个成员的 Key 授权与真实归属，可代用者标注为"主账号可代用"。
  *
- * 后端目前只有 `key-sharing` 开关，没有 Key 的新增 / 轮换 / 吊销端点；
+ * 后端没有独立的 Key 新增 / 轮换 / 吊销端点；配置入口复用 `/v1/models*`，
  * 页面不伪造这些动作（IA C3）。
  */
 
 import { useState } from 'react'
+import type { Session } from '../lib/auth'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { keyAuthorizationLabel, selfKeyLabel } from '../lib/accountCaps'
 import {
@@ -21,8 +24,10 @@ import {
 } from '../lib/accounts'
 import type { AccountNode } from '../lib/accounts'
 import { numberText } from '../lib/format'
-import { Card, Empty, Guard } from '../components/ui'
+import { Card, Guard } from '../components/ui'
 import { StubBadge } from '../components/AccountChrome'
+import { ModelManager } from '../components/ModelManager'
+import { canManageModels } from '../lib/modelAccess'
 
 /** 成本统一按"元"展示；极小金额保留 6 位，避免显示成 ¥0.00 被误读为免费。 */
 function formatCost(value: number | null | undefined): string {
@@ -35,10 +40,12 @@ export function MyKeys({
   profile,
   caps,
   readOnly,
+  session,
 }: {
   profile: AccountProfile
   caps: AccountCaps
   readOnly: boolean
+  session: Session
 }) {
   const accounts = useAccountData(() =>
     loadAccounts({ principal: profile.principal, isRoot: profile.isRoot }),
@@ -277,13 +284,23 @@ export function MyKeys({
         <p className="os-hint">
           额度由启动配置决定，调整后需要重启鎏灏才会生效；本页只显示已用量。
         </p>
-        {!caps.canAllKeys && (
-          <Empty
-            title="Key 新增与修改暂未开放"
-            hint="暂不支持创建 / 轮换 / 吊销；这里不做假按钮。"
-          />
-        )}
       </Card>
+
+      {!caps.canAllKeys && (
+        <Card
+          title="模型与 Key"
+          sub="配置你自己的模型与密钥；归属与用量都记在你名下"
+          span={12}
+        >
+          {canManageModels(session) ? (
+            <ModelManager session={session} />
+          ) : (
+            <p className="os-hint">
+              你的账号暂时没有配置模型的权限；需要时请让有权限的人为你开通。
+            </p>
+          )}
+        </Card>
+      )}
     </div>
   )
 }

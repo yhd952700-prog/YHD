@@ -585,6 +585,70 @@ def test_explicit_model_selection_cannot_bypass_key_sharing_consent(tree, client
     assert allowed.status_code == 200, allowed.text
 
 
+def test_member_can_maintain_own_key_and_cannot_touch_siblings(tree, client):
+    """成员凭默认 ``model:manage`` 维护自己的 Key；边界只到「自己」名下。
+
+    这是控制台放开写入口的前提：后端本来就允许 ``model:manage``，但**归属**
+    仍由 ``_guard_owner_assign`` / ``_guard_visible`` 收口。用例把"能改自己"
+    与"改不了兄弟"钉在一起，防止以后放开界面时顺手放宽归属。
+    """
+
+    own = _create_model(client, tree.child1, name="own-key")
+    assert own["owner_principal"] == "child1", own
+
+    # 自己的 Key：可以改（成员在控制台里换 Key / 调超时走的就是这条路径）。
+    updated = client.put(
+        f"/v1/models/{own['id']}",
+        json={"timeout": 45.0},
+        headers=tree.child1,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["timeout"] == 45.0
+    assert updated.json()["owner_principal"] == "child1"
+
+    # 兄弟的 Key：读 / 改 / 删都必须是中性 404，不能因为持有 model:manage 就可见。
+    sibling = _create_model(client, tree.child2, name="sibling-key")
+    missing = client.get("/v1/models/no-such-model", headers=tree.child1)
+    _assert_neutral_404(
+        client.get(f"/v1/models/{sibling['id']}", headers=tree.child1),
+        missing=missing,
+    )
+    _assert_neutral_404(
+        client.put(
+            f"/v1/models/{sibling['id']}",
+            json={"timeout": 60.0},
+            headers=tree.child1,
+        )
+    )
+    _assert_neutral_404(
+        client.delete(f"/v1/models/{sibling['id']}", headers=tree.child1)
+    )
+
+    # 归属仍然只能写自己：不能把新模型挂到兄弟名下。
+    steal = client.post(
+        "/v1/models",
+        json={
+            "name": "key-steal-2",
+            "provider": "mock",
+            "model": "m",
+            "owner_principal": "child2",
+        },
+        headers=tree.child1,
+    )
+    assert steal.status_code == 403, steal.text
+    assert _error_code(steal) == "ACCOUNT_KEY_NOT_OWNED", steal.text
+
+    # 中性 404 不等于删成功：兄弟的 Key 必须还在。
+    assert (
+        client.get(f"/v1/models/{sibling['id']}", headers=tree.child2).status_code == 200
+    )
+
+    # 自己的 Key 仍然可以删。
+    assert (
+        client.delete(f"/v1/models/{own['id']}", headers=tree.child1).status_code == 200
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 4) 记忆 / 工件 / 会话
 # --------------------------------------------------------------------------- #

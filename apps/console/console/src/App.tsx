@@ -963,7 +963,9 @@ function App() {
       {shown === 'network' && <Network query={query} />}
       {shown === 'identity' && <Identity query={query} profile={profile} />}
       {shown === 'memory' && <Memory profile={profile} caps={caps} readOnly={readOnly} />}
-      {shown === 'my-keys' && <MyKeys profile={profile} caps={caps} readOnly={readOnly} />}
+      {shown === 'my-keys' && (
+        <MyKeys profile={profile} caps={caps} readOnly={readOnly} session={session} />
+      )}
       {shown === 'account' && <AccountSecurity profile={profile} readOnly={readOnly} />}
       {shown === 'my-data' && <MyData profile={profile} readOnly={readOnly} />}
       {shown === 'members' && (

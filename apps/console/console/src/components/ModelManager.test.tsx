@@ -15,6 +15,7 @@ import {
   ModelManager,
   presetFormPatch,
 } from './ModelManager'
+import { canManageModels } from '../lib/modelAccess'
 import type { ModelRecord } from './ModelManager'
 import type { Session } from '../lib/auth'
 
@@ -381,5 +382,67 @@ describe('乐观并发（P2 前端）', () => {
     fireEvent.click(screen.getByRole('button', { name: '把模型「旧名字」设为默认' }))
     expect(await screen.findByText('该模型尚未通过连通测试，不能设为默认')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '重新加载最新配置' })).toBeNull()
+  })
+})
+
+const MEMBER_SESSION: Session = {
+  token: 't',
+  principal: 'child1',
+  displayName: '账号 B',
+  scope: null,
+  permissions: ['account:read', 'model:use', 'model:manage'],
+  expiresAt: 0,
+  client: 'web',
+  isRoot: false,
+}
+
+describe('canManageModels（与后端 require_model_manager 同口径）', () => {
+  test('管理员令牌 → 可写', () => {
+    expect(canManageModels(SESSION)).toBe(true)
+  })
+
+  test('L0 人类主权 → 可写', () => {
+    expect(
+      canManageModels({ ...SESSION, permissions: [], isRoot: true, scope: 'L0' }),
+    ).toBe(true)
+  })
+
+  test('成员凭默认的 model:manage → 可写', () => {
+    expect(canManageModels(MEMBER_SESSION)).toBe(true)
+  })
+
+  test('只有 model:use 的成员 → 只读（入口不能靠 model:use 放开）', () => {
+    expect(
+      canManageModels({ ...MEMBER_SESSION, permissions: ['account:read', 'model:use'] }),
+    ).toBe(false)
+  })
+})
+
+describe('成员写入入口', () => {
+  function stubModels() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/v1/models/presets')) return Promise.resolve(json({ presets: [] }))
+      return Promise.resolve(json(MODELS_EMPTY))
+    })
+  }
+
+  test('持有 model:manage：渲染添加模型表单，并声明归属只写自己', async () => {
+    stubModels()
+    render(<ModelManager session={MEMBER_SESSION} />)
+    expect(await screen.findByLabelText('名称（必填）')).toBeTruthy()
+    expect(screen.getByText(/只属于你自己的账号/)).toBeTruthy()
+    expect(screen.queryByText(/当前账号没有模型管理权限/)).toBeNull()
+  })
+
+  test('没有 model:manage：保持只读，不渲染表单', async () => {
+    stubModels()
+    render(
+      <ModelManager
+        session={{ ...MEMBER_SESSION, permissions: ['account:read', 'model:use'] }}
+      />,
+    )
+    expect(await screen.findByText(/当前账号没有模型管理权限/)).toBeTruthy()
+    expect(screen.queryByLabelText('名称（必填）')).toBeNull()
   })
 })

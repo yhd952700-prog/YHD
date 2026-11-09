@@ -2,8 +2,10 @@
  * 模型管理 —— 模型配置的读写入口（`/v1/models*`）。
  *
  * 三条硬约束：
- * 1. **写操作只对管理员开放**：后端要求 `admin` 权限或 L0 人类主权；这里用
- *    `session.permissions` / `session.scope` 做同一判断，非管理员只读。
+ * 1. **写入口与后端同一口径**：后端 `require_model_manager` 接受管理员、L0
+ *    人类主权，或账号节点上的 `model:manage`；这里用 `canManageModels()`
+ *    做同一判断。成员凭 `model:manage` 只能维护**自己名下**的 Key，归属
+ *    仍由后端 `_guard_owner_assign` 二次校验；没有该作用域时保持只读。
  * 2. **密钥永不明文上屏**：列表只渲染后端给的 `api_key_masked`；表单里的明文只
  *    存在于受控 input 的临时值，提交后立刻清空，绝不打日志。
  * 3. **错误只显示后端原文**：HTTP 失败用 `ApiError.message`（后端 `detail`），
@@ -14,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Session } from '../lib/auth'
 import { ApiError, apiFetch, useApi } from '../lib/api'
+import { canManageModels } from '../lib/modelAccess'
 import { Dot, Guard } from './ui'
 
 /** 与 `GET /v1/models` 的单条模型一一对应（密钥字段只有脱敏串）。 */
@@ -341,7 +344,7 @@ export interface ModelManagerProps {
 }
 
 export function ModelManager({ session, focusModelId }: ModelManagerProps) {
-  const canWrite = session.permissions.includes('admin') || session.scope === 'L0'
+  const canWrite = canManageModels(session)
   const list = useApi<ModelsResponse>('/v1/models', 0)
   const presets = useApi<PresetsResponse>('/v1/models/presets', 0)
 
@@ -776,6 +779,12 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
               </li>
             </ol>
           </div>
+
+          {!session.isRoot && (
+            <p className="os-note" role="note">
+              这里配置的模型只属于你自己的账号：Key 归属与用量都记在你名下，其他账号看不到、也用不到你的 Key。
+            </p>
+          )}
 
           <h3 className="os-model-form-title">
             {editingId ? '编辑模型' : '添加模型'}
