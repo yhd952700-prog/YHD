@@ -215,6 +215,37 @@ _PROVIDER_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
     },
 }
 
+#: 走 OpenAI 兼容协议的国内厂商：没有独立适配器，但都有 ``/chat/completions``
+#: 兼容端点。与通用入口 ``openai_compatible`` 的唯一差别是"端点预先填好"，
+#: 用户仍然可以改。方舟的 model 是推理接入点 ID，这里留空并在 hint 里说明，
+#: 避免用户把它当成模型显示名去填。
+#:
+#: MiniMax 暂不加入：其 OpenAI 兼容入口的路径形态尚未实测，宁可没有预设，
+#: 也不给一个会 404 的默认端点。
+_OPENAI_COMPATIBLE_PRESETS: List[Dict[str, Optional[str]]] = [
+    {
+        "id": "dashscope",
+        "label": "通义千问（DashScope 兼容模式）",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "hint": "填阿里云百炼/DashScope 的 API Key；模型名可改成 qwen-max 等。",
+    },
+    {
+        "id": "zhipu",
+        "label": "智谱 GLM",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-flash",
+        "hint": "填智谱开放平台的 API Key；模型名可改成 glm-4-plus 等。",
+    },
+    {
+        "id": "volcengine_ark",
+        "label": "豆包 / 火山方舟（模型填接入点 ID）",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "model": "",
+        "hint": "模型名要填方舟的推理接入点 ID（ep-…），不是模型显示名；请先在方舟控制台创建接入点。",
+    },
+]
+
 
 def _normalize_url(value: Optional[str]) -> str:
     return (value or "").strip().rstrip("/")
@@ -611,6 +642,21 @@ def list_provider_presets() -> Dict[str, Any]:
             "custom": True,
         }
     )
+    # 国内 OpenAI 兼容厂商：端点已填好，用户基本只需要填 Key；方舟还要填接入点 ID。
+    for item in _OPENAI_COMPATIBLE_PRESETS:
+        presets.append(
+            {
+                "id": item["id"],
+                "provider": "openai",
+                "label": item["label"],
+                "base_url": item["base_url"],
+                "model": item["model"],
+                "requires_api_key": True,
+                "api_key": None,
+                "custom": True,
+                "hint": item["hint"],
+            }
+        )
     return {
         "presets": presets,
         "note": (

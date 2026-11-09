@@ -73,6 +73,8 @@ export interface ProviderPreset {
   model: string
   requires_api_key: boolean
   custom?: boolean
+  /** 套用后必须知道的一句话（例如方舟要填接入点 ID 而不是模型名）。 */
+  hint?: string
 }
 
 export interface PresetsResponse {
@@ -130,7 +132,7 @@ function probeReasonText(reason: string, latencyMs: number): string {
     case 'dns_failed':
       return '接口地址当前无法解析。请检查主机名拼写、DNS 与网络连接。'
     case 'endpoint_not_found':
-      return '接口路径不存在（404）。请核对接口地址，常见配置需要以 /v1 结尾。'
+      return '接口路径不存在（404）。请核对接口地址是否完整：OpenAI 兼容端点通常以 /v1 结尾；Anthropic 官方地址不带 /v1。'
     case 'server_error':
       return '模型服务端出错（HTTP 5xx）。请稍后重试；持续出现请联系服务提供方。'
     case 'bad_request':
@@ -473,9 +475,11 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
     setForm((prev) => ({ ...prev, ...presetFormPatch(preset) }))
     setModelList(null)
     setNotice(
-      preset.custom
-        ? '已切到 OpenAI 兼容模式：请填写你自己的端点地址与模型名。'
-        : `已套用预设「${preset.label}」，端点与模型名仍可自由修改。`,
+      preset.hint
+        ? `已套用预设「${preset.label}」：${preset.hint}`
+        : preset.custom
+          ? '已切到 OpenAI 兼容模式：请填写你自己的端点地址与模型名。'
+          : `已套用预设「${preset.label}」，端点与模型名仍可自由修改。`,
     )
     setError(null)
   }
@@ -822,7 +826,7 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
                     className="os-btn os-btn-ghost"
                     type="button"
                     disabled={busy}
-                    title="套用后仍可修改端点与模型名"
+                    title={preset.hint ?? '套用后仍可修改端点与模型名'}
                     onClick={() => applyPreset(preset)}
                   >
                     {preset.label}

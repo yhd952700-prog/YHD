@@ -232,6 +232,25 @@ HTTP 服务上验证；真实公网上的"检查 → 下载 → 应用"整链仍
   回环 http 仅限 4 个端口（见 4.2）。
 - **未覆盖**：只有本机桩的协议证据，没有第二家真实厂商 Key 的真实成功记录。
 
+### 4.7 MiniMax 预设待定（未实测端点形态，暂不提供）
+
+**现状**：`GET /v1/models/presets` 已提供通义（DashScope compatible-mode）、
+智谱（`/api/paas/v4`）、火山方舟（`/api/v3`，模型名需填接入点 ID）三家的
+OpenAI 兼容预设；**MiniMax 不在列表里**。
+
+**为什么先不给**：其 OpenAI 兼容入口的路径形态（是否带版本段、`/v1` 还是
+`/v1/text/chatcompletion_v2` 一类）没有实测过。预设会被用户当成"填 Key 就能用"
+的默认值，给错地址只是把 404 提前一步送到用户面前，比没有预设更糟。
+
+**仍可用的路径**：用户选「OpenAI 兼容（自定义端点）」，自行填写 MiniMax 控制台
+给出的完整端点与模型名即可，协议适配器无需改动。
+
+**做完的验收标准**：
+1. 用真实 MiniMax Key 跑通一次 `provider=openai` + 自填 `base_url` 的对话；
+2. 记录最终请求路径与模型名（脱敏，不含 Key）；
+3. 按实测值补 `_OPENAI_COMPATIBLE_PRESETS`（`src/gateway/models.py`）并加
+   `tests/test_gateway_models_api.py` 断言。
+
 ---
 
 # 已明确延后、不得遗忘

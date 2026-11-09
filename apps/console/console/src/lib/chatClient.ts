@@ -559,7 +559,7 @@ export function chatFailureText(reason?: string, fallback?: string): string {
     case 'invalid_response':
       return '模型服务返回了无法解析的数据（可能是网关或登录页），请核对接口地址后重试。';
     case 'endpoint_not_found':
-      return '模型接口地址不存在（HTTP 404），接口路径可能不对；常见配置需要以 /v1 结尾。';
+      return '模型接口地址不存在（HTTP 404），请核对接口地址是否完整、路径是否正确：OpenAI 兼容端点通常以 /v1 结尾；Anthropic 官方地址是 https://api.anthropic.com（不带 /v1）。';
     case 'certificate_untrusted':
       return '无法验证模型服务的证书（自签证书、私有 CA 或公司代理）。本产品不同链路的证书信任来源不同（有的读取系统证书商店，有的只用内置证书列表），在系统里「信任该证书」不一定生效。请改用可直连的网络或地址；若必须走公司代理，请联系网络管理员提供受信任的 HTTPS 入口。';
     case 'certificate_hostname':

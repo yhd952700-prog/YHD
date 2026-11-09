@@ -119,6 +119,11 @@ def test_m7_404_distinguishes_endpoint_from_model(monkeypatch):
         provider.chat([{"role": "user", "content": "hi"}])
     assert info.value.upstream_kind == "endpoint_not_found"
     assert "/v1" in providers_mod.user_facing_failure(info.value, "fake-model")
+    # 不能只说"要补 /v1"：Anthropic 官方地址照做会变成 /v1/v1/messages。
+    # 这里锁住"分厂商说清楚"，同时保留上面那条既有断言。
+    message = providers_mod.user_facing_failure(info.value, "fake-model")
+    assert "Anthropic" in message
+    assert "不带 /v1" in message
 
     provider = _provider(
         monkeypatch,
@@ -307,6 +312,14 @@ def test_m8_retryable_error_switches_with_notice_and_attribution():
 def test_l2_anthropic_does_not_claim_streaming():
     provider = providers_mod.AnthropicProvider(
         name="anthropic", model="claude-3-5-sonnet-20241022", api_key="sk-ant-test"
+    )
+    assert provider.capabilities.supports_streaming is False
+
+
+def test_l2_google_does_not_claim_streaming():
+    """GoogleProvider 只有 generate：声明 True 会让上层以为有原生流式。"""
+    provider = providers_mod.GoogleProvider(
+        name="google", model="gemini-2.5-flash", api_key="test-key"
     )
     assert provider.capabilities.supports_streaming is False
 

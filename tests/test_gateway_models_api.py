@@ -307,6 +307,42 @@ class TestPresets:
         # 内置服务商仍是"预设"，不是封闭枚举。
         assert {"openai", "anthropic", "google", "ollama"} <= set(presets)
 
+    def test_presets_include_domestic_openai_compatible_vendors(
+        self, client, reader_headers
+    ):
+        """通义/智谱/方舟：端点预先填好，仍需用户自己填 Key。
+
+        方舟的模型名是推理接入点 ID（``ep-…``），预设里留空但必须带提示，
+        不能让用户以为是模型显示名。MiniMax 路径形态尚未实测，宁可不给。
+        """
+        response = client.get("/v1/models/presets", headers=reader_headers)
+        assert response.status_code == 200, response.text
+        presets = {p["id"]: p for p in response.json()["presets"]}
+
+        dashscope = presets["dashscope"]
+        assert dashscope["provider"] == "openai"
+        assert dashscope["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert dashscope["model"] == "qwen-plus"
+        assert dashscope["requires_api_key"] is True
+        assert dashscope["api_key"] is None
+        assert dashscope["hint"]
+
+        zhipu = presets["zhipu"]
+        assert zhipu["provider"] == "openai"
+        assert zhipu["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
+        assert zhipu["model"] == "glm-4-flash"
+        assert zhipu["api_key"] is None
+
+        ark = presets["volcengine_ark"]
+        assert ark["provider"] == "openai"
+        assert ark["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+        # 接入点 ID 无法预填，但必须写明"要填接入点 ID"，不能留空让人瞎猜。
+        assert ark["model"] == ""
+        assert "接入点 ID" in ark["hint"]
+
+        # 没实测过端点形态的厂商不进入预设列表。
+        assert "minimax" not in presets
+
 
 class TestConnectionProbe:
     def test_mock_provider_probe_succeeds(self, client, admin_headers):

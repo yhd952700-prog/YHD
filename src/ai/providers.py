@@ -156,8 +156,11 @@ REDIRECT_BLOCKED_MESSAGE = (
     "请核对接口地址是否为真实 API 端点。"
 )
 #: 404 但上游没说"模型不存在"：多半是 base_url 写错（多写 /chat/completions、漏 /v1）。
+#: 不能一句话让所有人"补 /v1"：OpenAI 兼容要带，Anthropic 官方地址偏偏不能带
+#: （SDK 自己会拼 /v1/messages），照着旧文案改只会从 404 变成另一个 404。
 ENDPOINT_NOT_FOUND_MESSAGE = (
-    "模型接口地址不存在（HTTP 404），接口路径可能不对；常见配置需要以 /v1 结尾。"
+    "模型接口地址不存在（HTTP 404），请核对接口地址是否完整、路径是否正确："
+    "OpenAI 兼容端点通常以 /v1 结尾；Anthropic 官方地址是 https://api.anthropic.com（不带 /v1）。"
 )
 #: 输出被长度上限截断：内容真实但没说完，不能算 completed。
 TRUNCATED_RESPONSE_MESSAGE = "回复达到长度上限被截断，请发送「继续」或换用支持更长输出的模型。"
@@ -2536,6 +2539,23 @@ class OpenAIProvider(BaseProvider):
                     logger.debug("closing openai stream failed", exc_info=True)
 
 
+def _anthropic_base_url(raw: Optional[str]) -> str:
+    """把用户/预设填的 Anthropic 端点归一化成 SDK 期望的形式。
+
+    anthropic SDK 的资源路径本身是 ``/v1/messages``，且 base_url 是**字符串拼接**
+    （``base_url.raw_path + "v1/messages"``），不是 URL 解析。所以 ``.../v1``
+    会被拼成 ``.../v1/v1/messages``，直接 404。
+
+    这里统一剥掉尾部 ``/v1``：既救回已保存的旧配置（用户不必重新编辑），也不
+    影响不带 ``/v1`` 的正确写法。拉取模型的 ``_request_target`` 走的是自己的
+    兼容分支，不经过本函数，因此那边不会被改坏。
+    """
+    base = (raw or "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    return base
+
+
 # Anthropic provider (using official anthropic SDK)
 class AnthropicProvider(BaseProvider):
     """Anthropic API provider integration using official anthropic SDK."""
@@ -2589,8 +2609,9 @@ class AnthropicProvider(BaseProvider):
                     # 重试由 generate_with_retry 统一管理，避免 SDK 偷偷放大。
                     "max_retries": 0,
                 }
-                if self.base_url:
-                    options["base_url"] = self.base_url
+                base_url = _anthropic_base_url(self.base_url)
+                if base_url:
+                    options["base_url"] = base_url
                 self._client = anthropic.Anthropic(**options)
             return self._client
 
@@ -2678,7 +2699,10 @@ class GoogleProvider(BaseProvider):
     def __init__(self, name: str, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(name, model, api_key, **kwargs)
         self._capabilities = ProviderCapabilities(
-            supports_streaming=True,
+            # 本类没有实现 chat_stream（只有 generate）。声明 True 会让上层以为
+            # 有原生流式，实际由基类一次性整段返回；这里如实置 False，与
+            # AnthropicProvider 保持同一口径。
+            supports_streaming=False,
             supports_structured_output=True,
             supports_function_calling=True,
             supports_vision=True,
