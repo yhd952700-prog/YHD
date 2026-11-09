@@ -5,7 +5,9 @@
 账本（``src.gateway.account_usage``）只负责"写一行"，但它此前拿到的是
 ``len(text) // 4`` 的估算值：请求侧用的是用户这一句话，响应侧用的是最终
 回复。两者都忽略了 system prompt、历史、工具轮次，也永远不可能等于
-provider 返回的 ``usage``。估算值被标了 ``estimated=1``，但"估算"和
+provider 返回的 ``usage``。现在回退估算统一走
+``src.ai.context_budget.estimate_tokens``（中文按字、ASCII 按 4 字符），
+不再保留第二套口径。估算值被标了 ``estimated=1``，但"估算"和
 "provider 亲口告诉我们"是两回事。
 
 这一层把 provider 的真实 usage 汇总到**当前记账作用域**：

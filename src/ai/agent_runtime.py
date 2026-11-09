@@ -19,6 +19,7 @@ See ``docs/AGENT-RUNTIME-DESIGN.md`` for the full design (Phase 3).
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -393,6 +394,8 @@ class AgentRuntime:
                     pass
         state = AgentRunState.CREATED
         decomposition_source: Optional[str] = None
+        # 取消时也要把已经跑出来的任务快照交回调用方；不能因为异常路径就丢。
+        ctx: Optional[ExecutionContext] = None
         try:
             state = AgentRunState.PLANNING
             goal = Goal(
@@ -490,17 +493,17 @@ class AgentRuntime:
                 goal_id=goal_id,
                 correlation_id=correlation_id,
                 state=AgentRunState.CANCELLED,
-                context=None,
+                # 保留已产生的任务快照与产物，用户才能看到卡在哪一步。
+                context=ctx,
                 evaluation=self._failed_evaluation(
                     goal_id,
                     correlation_id,
                     "已取消：本次执行被用户中止。"
-                    "本次没有生成任何文件，也没有任何可交付的产物路径。"
-                    "需要结果时请重新派活。",
-                    f"goal {goal_id} cancelled: {exc}",
+                    "已完成的步骤和产物会保留在任务列表里，可查看后再决定是否重试。",
+                    f"已取消：用户中止了本次执行（{goal_id}）",
                 ),
                 trace=observer.trace,
-                error=f"goal {goal_id} cancelled: {exc}",
+                error="已取消：用户中止了本次执行。",
                 preflight_notices=preflight_notices,
                 decomposition_source=decomposition_source,
             )
@@ -519,6 +522,22 @@ class AgentRuntime:
                 decomposition_source=decomposition_source,
             )
         finally:
+            # 验收项一：预览服务不留在进程里。任务结束 / 失败 / 取消都统一停掉，
+            # 再叠加空闲超时 watchdog 与进程退出兜底。
+            try:
+                from .preview_server import stop_all_previews
+
+                stopped = stop_all_previews(reason=f"goal_{goal_id}_finished")
+                if stopped:
+                    logging.getLogger("liuhao.ai.agent_runtime").info(
+                        "evt=previews_stopped_on_goal_end goal_id=%s count=%d",
+                        goal_id,
+                        len(stopped),
+                    )
+            except Exception as exc:  # noqa: BLE001 - 清理失败不能吞掉主结果
+                logging.getLogger("liuhao.ai.agent_runtime").debug(
+                    "preview cleanup failed for goal %s: %s", goal_id, exc
+                )
             observer.unsubscribe()
             self._stop_events.pop(goal_id, None)
 
@@ -857,9 +876,12 @@ class AgentRuntime:
         except Exception:
             return None  # memory unavailable => don't block (availability)
 
+        # 写入侧落的是 MID_TERM（见 _persist）；只读 LONG_TERM 会让学习永远
+        # 不生效。两个层级都接受，学习闭环才真正闭合。
         learning_entries = [
             e for e in all_entries
-            if "learning" in e.tags and e.tier == MemoryTier.LONG_TERM
+            if "learning" in e.tags
+            and e.tier in (MemoryTier.LONG_TERM, MemoryTier.MID_TERM)
         ]
 
         if not learning_entries:

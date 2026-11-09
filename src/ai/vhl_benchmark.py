@@ -23,6 +23,7 @@ import os
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
+from ..kernels.execution import ExecutionJournal
 from .collaboration import MultiAgentTeam, Role
 from .economy import BillingEngine, BudgetEngine, EconomyEngine
 from .enoch import MissionRunner, MissionStore, create_mission
@@ -85,6 +86,9 @@ def run_vhl_benchmark(
     output_dir = output_dir or tempfile.mkdtemp(prefix="liuhao_vhl_")
     provider = _DeterministicProvider()
     registry = L10KRegistry()
+    os.makedirs(output_dir, exist_ok=True)
+    # L-Core 直接路由工具，必须显式接账本；否则 multi_tier_memory 会被闸门拒绝。
+    journal = ExecutionJournal(os.path.join(output_dir, "execution_journal.db"))
 
     # 固定 benchmark 集：7 个任务，各对应一个能力层的真实产出。
     task_ids = {
@@ -145,7 +149,7 @@ def run_vhl_benchmark(
                 raise RuntimeError(result.error)
             return result.output
 
-        lcore = LCore(register_local_tools=True)
+        lcore = LCore(register_local_tools=True, journal=journal)
         lcore.register_tool(Tool(
             tool_id="persist-report",
             name="persist_report",
@@ -213,6 +217,7 @@ def run_vhl_benchmark(
 
     finally:
         reset_provider()
+        journal.close()
 
     baseline = registry.baseline_report()
     main_units = baseline["main"]["weighted_units"]

@@ -13,15 +13,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
 import threading
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..common.atomic_write import describe_storage_failure
+from ..common.atomic_write import describe_storage_failure, is_database_busy
+from ..common.data_paths import resolve_store_path
 from .observability import observe
 from .audit import audited
+from .context_budget import SUMMARY_MAX_CHARS, deterministic_summary
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationStoreError(RuntimeError):
@@ -47,10 +53,31 @@ _CONVERSATION_SYNCHRONOUS = (
 ).strip().upper()
 if _CONVERSATION_SYNCHRONOUS not in _SYNC_LEVELS:
     _CONVERSATION_SYNCHRONOUS = "FULL"
-DEFAULT_DB_PATH = os.environ.get(
-    "CONVERSATION_DB_PATH",
-    os.path.join(_PROJECT_ROOT, "conversation_store.db"),
+_LEGACY_DB_PATH = os.path.join(_PROJECT_ROOT, "conversation_store.db")
+
+# 并发写入：读-改-写冲突是「数据库正忙」的瞬时状态，必须显式等待而不是
+# 依赖 sqlite3.connect 的隐式 5s；再叠加有界重试覆盖备份/导入等长写者。
+_CONVERSATION_BUSY_TIMEOUT_MS = int(
+    os.environ.get("LIUHAO_CONVERSATION_BUSY_TIMEOUT_MS") or "15000"
 )
+_CONVERSATION_LOCK_RETRY_ATTEMPTS = 3
+_CONVERSATION_LOCK_RETRY_BASE_SECONDS = 1.5
+
+
+def _default_db_path() -> str:
+    """会话库落盘路径：``CONVERSATION_DB_PATH`` > ``LIUHAO_DATA_DIR`` > 历史默认。
+
+    必须按调用时求值：测试/隔离脚本常常在模块导入之后才设置环境变量，若在
+    导入期算成常量，再设 ``LIUHAO_DATA_DIR`` 也回不到数据目录。
+    """
+    return resolve_store_path(
+        "conversation_store.db",
+        _LEGACY_DB_PATH,
+        env_var="CONVERSATION_DB_PATH",
+    )
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 # ─── 全文搜索（FTS5）────────────────────────────────────────────
 #
@@ -159,7 +186,7 @@ class ConversationStore:
     """
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or DEFAULT_DB_PATH
+        self._db_path = db_path or _default_db_path()
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         # FTS5 能力探测结果：不可用时搜索降级为逐行扫描，并在响应里注明。
@@ -179,6 +206,11 @@ class ConversationStore:
             self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute(f"PRAGMA synchronous={_CONVERSATION_SYNCHRONOUS}")
+            # 显式等待：不要依赖 sqlite3.connect 的隐式 5s，否则备份/导入等
+            # 长写者一多就立刻把 "database is locked" 抛给用户。
+            self._conn.execute(
+                f"PRAGMA busy_timeout={_CONVERSATION_BUSY_TIMEOUT_MS}"
+            )
             self._conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_turns (
@@ -195,7 +227,31 @@ class ConversationStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS conversation_summaries (
+                    principal_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL DEFAULT '',
+                    last_seq INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
                 """
+            )
+            # MEM-007：租户边界必须是精确归属列，而不是 principal_id 的前缀包含
+            #（``prefix`` 会命中 ``prefix-child``）。老库补列 + 回填由
+            # ``_backfill_owner_principals`` 在首次搜索时完成。
+            columns = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(conversation_turns)"
+                ).fetchall()
+            }
+            if "owner_principal" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE conversation_turns "
+                    "ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''"
+                )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conv_owner "
+                "ON conversation_turns(owner_principal, turn, seq)"
             )
             self._conn.commit()
             self._init_search_index()
@@ -423,23 +479,76 @@ class ConversationStore:
     # ------------------------------------------------------------------ #
     # 写入 / 读取
     # ------------------------------------------------------------------ #
+    def _rollback_quietly(self) -> None:
+        """失败后必须回滚，否则半条记录会被下一次成功提交连带写进库。"""
+        try:
+            self._conn.rollback()
+        except sqlite3.Error:
+            pass
+
+    def _retry_on_busy(self, operation) -> Any:
+        """对 ``database is locked/busy`` 做有界重试（3 次，1.5s 起指数退避）。
+
+        只重试瞬时锁冲突；磁盘满、只读、权限错误立即上抛，避免把不可恢复的
+        故障拖成三倍延迟。每次失败先回滚，防止重试把已插入的行重复写入。
+        """
+        delay = _CONVERSATION_LOCK_RETRY_BASE_SECONDS
+        for attempt in range(1, _CONVERSATION_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                return operation()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                if (
+                    not is_database_busy(exc)
+                    or attempt >= _CONVERSATION_LOCK_RETRY_ATTEMPTS
+                ):
+                    raise
+                logger.warning(
+                    "conversation write busy (attempt %d/%d), retry in %.1fs: %s",
+                    attempt,
+                    _CONVERSATION_LOCK_RETRY_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
+                delay *= 2
+
+    def _write_failure_message(self, exc: BaseException) -> str:
+        if is_database_busy(exc):
+            # 锁冲突不是磁盘/权限问题：不给英文原文，也不引导用户去清盘。
+            return (
+                "本轮对话暂时未能保存：数据库正忙，请稍后重试"
+                "（无需清理磁盘或修改目录权限）。已成功写入的历史数据不受影响。"
+            )
+        detail = describe_storage_failure(exc, self._db_path)
+        return "本轮对话未能保存" + detail.removeprefix("无法写入")
+
     @observe("conversation.append")
     @audited("p5.conversation.append", module="src.ai.conversation_store")
-    def append(self, principal_id: str, turn: int, role: str, content: str) -> None:
+    def append(
+        self,
+        principal_id: str,
+        turn: int,
+        role: str,
+        content: str,
+        owner_principal: str = "",
+    ) -> None:
         """追加一条对话消息（user 或 assistant）。"""
         with self._lock:
-            try:
+            def _write():
                 cursor = self._conn.execute(
-                    "INSERT INTO conversation_turns (principal_id, turn, role, content) "
-                    "VALUES (?, ?, ?, ?)",
-                    (principal_id, turn, role, content),
+                    "INSERT INTO conversation_turns "
+                    "(principal_id, turn, role, content, owner_principal) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (principal_id, turn, role, content, str(owner_principal or "")),
                 )
                 self._conn.commit()
+                return cursor
+
+            try:
+                cursor = self._retry_on_busy(_write)
             except (sqlite3.Error, OSError) as exc:
-                raise ConversationStoreError(
-                    "本轮对话未能保存"
-                    + describe_storage_failure(exc, self._db_path).removeprefix("无法写入")
-                ) from exc
+                raise ConversationStoreError(self._write_failure_message(exc)) from exc
             seq = cursor.lastrowid
             if seq is not None:
                 self._index_rows([(int(seq), content)])
@@ -447,7 +556,12 @@ class ConversationStore:
     @observe("conversation.append_turn")
     @audited("p5.conversation.append", module="src.ai.conversation_store")
     def append_turn(
-        self, principal_id: str, turn: int, user_content: str, assistant_content: str
+        self,
+        principal_id: str,
+        turn: int,
+        user_content: str,
+        assistant_content: str,
+        owner_principal: str = "",
     ) -> None:
         """一次写入一轮问答（user + assistant 两行）。
 
@@ -459,7 +573,7 @@ class ConversationStore:
         记录"，不引入新的动作类型。
         """
         with self._lock:
-            try:
+            def _write():
                 seqs = []
                 for role, content in (
                     ("user", user_content),
@@ -467,16 +581,24 @@ class ConversationStore:
                 ):
                     cursor = self._conn.execute(
                         "INSERT INTO conversation_turns "
-                        "(principal_id, turn, role, content) VALUES (?, ?, ?, ?)",
-                        (principal_id, turn, role, content),
+                        "(principal_id, turn, role, content, owner_principal) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            principal_id,
+                            turn,
+                            role,
+                            content,
+                            str(owner_principal or ""),
+                        ),
                     )
                     seqs.append(int(cursor.lastrowid))
                 self._conn.commit()
+                return seqs
+
+            try:
+                seqs = self._retry_on_busy(_write)
             except (sqlite3.Error, OSError) as exc:
-                raise ConversationStoreError(
-                    "本轮对话未能保存"
-                    + describe_storage_failure(exc, self._db_path).removeprefix("无法写入")
-                ) from exc
+                raise ConversationStoreError(self._write_failure_message(exc)) from exc
             self._index_rows(
                 [(seqs[0], user_content), (seqs[1], assistant_content)]
             )
@@ -533,6 +655,83 @@ class ConversationStore:
         # 倒序取回后正序返回，保证时间顺序。
         rows = list(reversed(rows))
         return [{"role": role, "content": content} for role, content in rows]
+
+    def get_summary(self, principal_id: str) -> str:
+        """读取该主体已持久化的「超出窗口」分层摘要（无则空串）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT summary FROM conversation_summaries WHERE principal_id = ?",
+                (principal_id,),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else ""
+
+    def summarize_overflow(self, principal_id: str, keep_messages: int) -> int:
+        """把超过最近 ``keep_messages`` 条的消息增量折进持久化摘要。
+
+        MEM-005：``load_recent`` 只取最近 240 条，更早的消息若不留摘要就会永久
+        丢失（实测「预算三百元」在第 1 轮、第 301 轮已检索不到）。这里按
+        ``last_seq`` 增量推进，摘要带 ``[#seq]`` 可回溯，且第二句关键约束会进
+        「关键事实」层（见 ``deterministic_summary``）。
+        """
+        keep = max(1, int(keep_messages or 1))
+        max_summary_chars = SUMMARY_MAX_CHARS * 3
+        with self._lock:
+            try:
+                max_row = self._conn.execute(
+                    "SELECT MAX(seq) FROM conversation_turns WHERE principal_id = ?",
+                    (principal_id,),
+                ).fetchone()
+                max_seq = int(max_row[0]) if max_row and max_row[0] is not None else 0
+                if max_seq <= keep:
+                    return 0
+                state = self._conn.execute(
+                    "SELECT summary, last_seq FROM conversation_summaries "
+                    "WHERE principal_id = ?",
+                    (principal_id,),
+                ).fetchone()
+                previous = str(state[0]) if state else ""
+                last_seq = int(state[1]) if state else 0
+                cutoff = max_seq - keep
+                rows = self._conn.execute(
+                    "SELECT seq, role, content FROM conversation_turns "
+                    "WHERE principal_id = ? AND seq > ? AND seq <= ? "
+                    "ORDER BY seq ASC",
+                    (principal_id, last_seq, cutoff),
+                ).fetchall()
+                if not rows:
+                    return 0
+                piece = deterministic_summary(
+                    [
+                        {"seq": int(seq), "role": str(role), "content": str(content)}
+                        for seq, role, content in rows
+                    ]
+                )
+                summary = piece if not previous else f"{previous}；{piece}"
+                if len(summary) > max_summary_chars:
+                    half = max_summary_chars // 2
+                    summary = (
+                        summary[:half]
+                        + "\n…（中间摘要已折叠，保留最早关键事实与最近进展）…\n"
+                        + summary[-half:]
+                    )
+                self._conn.execute(
+                    "INSERT INTO conversation_summaries "
+                    "(principal_id, summary, last_seq, updated_at) "
+                    "VALUES (?, ?, ?, strftime('%s', 'now')) "
+                    "ON CONFLICT(principal_id) DO UPDATE SET "
+                    "summary = excluded.summary, last_seq = excluded.last_seq, "
+                    "updated_at = excluded.updated_at",
+                    (principal_id, summary, int(rows[-1][0])),
+                )
+                self._conn.commit()
+                return len(rows)
+            except (sqlite3.Error, OSError) as exc:
+                try:
+                    self._conn.rollback()
+                except sqlite3.Error:
+                    pass
+                logger.warning("conversation summarize failed: %s", exc)
+                return 0
 
     def get_last_turn(self, principal_id: str) -> int:
         """返回该主体已进行到的轮数（无记录返回 0）。"""
@@ -706,15 +905,73 @@ class ConversationStore:
         ).fetchall()
         return total, rows
 
+    def _resolve_owner_principal(
+        self, principal_id: str, known_principals: Sequence[str]
+    ) -> str:
+        """从会话键解析账号归属：按**已知账号最长匹配**，不按前缀猜测。
+
+        ``liuhao-prefix-child-s1`` 同时以 ``liuhao-prefix-`` 开头，但已知账号里
+        有更长的 ``prefix-child``，因此归属是 ``prefix-child`` 而不是 ``prefix``。
+        """
+        pid = str(principal_id or "")
+        if not pid.startswith("liuhao-"):
+            return pid
+        rest = pid[len("liuhao-") :]
+        for candidate in sorted(
+            {str(item) for item in known_principals if item}, key=len, reverse=True
+        ):
+            if rest == candidate or rest.startswith(f"{candidate}-"):
+                return candidate
+        # 无法解析的历史键保持空归属：宁可不可见，也不按前缀错认给别人。
+        return ""
+
+    def _backfill_owner_principals(self, known_principals: Sequence[str]) -> None:
+        """一次性回填老库的 owner_principal；之后搜索只做精确等值比较。
+
+        回填失败不影响搜索：未回填的行保持空归属（不会命中任何账号）。
+        """
+        if not known_principals:
+            return
+        assert self._conn is not None
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT DISTINCT principal_id FROM conversation_turns "
+                    "WHERE owner_principal = ''"
+                ).fetchall()
+                updates = []
+                for row in rows:
+                    owner = self._resolve_owner_principal(
+                        row[0], known_principals
+                    )
+                    if owner:
+                        updates.append((owner, row[0]))
+                if updates:
+                    self._conn.executemany(
+                        "UPDATE conversation_turns SET owner_principal = ? "
+                        "WHERE principal_id = ? AND owner_principal = ''",
+                        updates,
+                    )
+                    self._conn.commit()
+            except sqlite3.Error as exc:
+                try:
+                    self._conn.rollback()
+                except sqlite3.Error:
+                    pass
+                logger.warning("conversation owner backfill failed: %s", exc)
+
     def search(
-        self, principal: Optional[str], query: str, limit: int = 20, offset: int = 0
+        self,
+        principal: Optional[str],
+        query: str,
+        limit: int = 20,
+        offset: int = 0,
+        known_principals: Sequence[str] = (),
     ) -> Dict[str, Any]:
         """在当前账号的会话里全文搜索消息（FTS5 优先，必要时降级并明说）。"""
         text = (query or "").strip()
         limit_i = max(1, min(200, int(limit or 20)))
         offset_i = max(0, int(offset or 0))
-        # 与列表/历史同一键口径：当前版本键 liuhao-{principal}-{session}。
-        scope_prefix = f"liuhao-{principal}-" if principal else "liuhao-"
         status = self.search_status()
         match = _fts_query(text)
         if not text:
@@ -733,12 +990,22 @@ class ConversationStore:
                 "notice": "",
             }
 
+        # MEM-007：账号边界 = 精确 owner_principal 等值；绝不再用
+        # ``instr(principal_id, prefix)=1``（prefix 会命中 prefix-child）。
+        if principal:
+            self._backfill_owner_principals(known_principals)
+            owner_clause = "t.owner_principal = ?"
+            owner_params: List[Any] = [principal]
+        else:
+            owner_clause = "1 = 1"
+            owner_params = []
+
         use_fts = self._fts_available and match is not None and status["indexed"] > 0
         if use_fts:
             mode = "fts5-bigram"
             # FTS5 的 MATCH 左侧必须是表名本身（不能是别名），所以索引表不取别名。
-            where = "conversation_fts MATCH ? AND instr(t.principal_id, ?) = 1"
-            params: List[Any] = [match, scope_prefix]
+            where = f"conversation_fts MATCH ? AND {owner_clause}"
+            params: List[Any] = [match, *owner_params]
             notice = ""
             if not status["ready"]:
                 percent = (
@@ -752,8 +1019,10 @@ class ConversationStore:
                 )
         else:
             mode = "scan"
-            where = "instr(t.principal_id, ?) = 1 AND instr(lower(t.content), lower(?)) > 0"
-            params = [scope_prefix, text]
+            where = (
+                f"{owner_clause} AND instr(lower(t.content), lower(?)) > 0"
+            )
+            params = [*owner_params, text]
             if not self._fts_available:
                 notice = SCAN_DEGRADED_NOTICE
             elif match is None:
@@ -787,10 +1056,10 @@ class ConversationStore:
                 notice = "搜索索引查询失败，本次降级为逐行扫描，会明显变慢。"
                 join = "FROM conversation_turns t"
                 where = (
-                    "instr(t.principal_id, ?) = 1 "
+                    f"{owner_clause} "
                     "AND instr(lower(t.content), lower(?)) > 0"
                 )
-                params = [scope_prefix, text]
+                params = [*owner_params, text]
                 sql = (
                     "SELECT t.seq, t.principal_id, t.turn, t.role, t.content, "
                     "t.created_at " + f"{join} WHERE {where} "
@@ -871,7 +1140,7 @@ def get_conversation_store() -> ConversationStore:
 
                         boot_report.record_db_open_failure(
                             "conversation_store",
-                            DEFAULT_DB_PATH,
+                            _default_db_path(),
                             exc,
                             action=(
                                 "degraded: 多轮对话历史不可用；修复数据目录写权限、"

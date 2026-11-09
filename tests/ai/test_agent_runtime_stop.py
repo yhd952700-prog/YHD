@@ -79,7 +79,11 @@ def test_human_stop_cancels_a_live_run_at_task_boundary():
     # never started, and the run is NOT reported as a success.
     assert len(calls) == 1
     assert result.context is None
-    assert "cancel" in (result.error or "").lower()
+    # 产品面向中文用户：取消原因必须是中文，且明确说明是「用户中止」。
+    # 英文 ``cancel`` 是旧文案的遗留断言，不应继续约束实现语言。
+    error_text = result.error or ""
+    assert "已取消" in error_text
+    assert "中止" in error_text
 
 
 def test_stop_before_run_executes_nothing():

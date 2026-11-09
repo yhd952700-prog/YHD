@@ -31,6 +31,7 @@ GENUINE enforcement (as of p36-wi-safety)
 
 from __future__ import annotations
 
+import codecs
 import glob
 import os
 import shlex
@@ -133,6 +134,36 @@ class WorldAdapter(ABC):
         """Act on the external world (side effect)."""
 
 
+def _decode_text_bytes(raw: bytes, path: str) -> str:
+    """把文件字节按文本解码；非文本/不可识别编码给出中文可操作错误。
+
+    之前固定 ``encoding="utf-8"``：GBK 编码的中文文件直接抛 UnicodeDecodeError，
+    二进制文件则可能读成乱码喂给模型。这里先识别 BOM/UTF-16，再按 UTF-8、
+    GB18030 依次尝试；含 NUL 且不是 UTF-16 的按二进制拒绝。
+    """
+    if not raw:
+        return ""
+    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    if b"\x00" in raw:
+        raise ValueError(
+            f"{path} 不是文本文件（含二进制/NUL 字节），无法按文本读取；"
+            "请改用能解析该格式的工具，或先转换为 UTF-8 文本。"
+        )
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(
+        f"{path} 编码无法识别（既不是 UTF-8 也不是 GB18030）；"
+        "请先把文件转换成 UTF-8 编码后重试。"
+    )
+
+
 class FilesystemAdapter(WorldAdapter):
     """Read/write/list the local filesystem (locally testable).
 
@@ -169,8 +200,8 @@ class FilesystemAdapter(WorldAdapter):
         action = request.action
         path = self._resolve(request.params.get("path"))
         if action == "read":
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
+            with open(path, "rb") as f:
+                return _decode_text_bytes(f.read(), path)
         if action == "list":
             return os.listdir(path)
         raise ValueError(f"filesystem has no observe action {action!r}")

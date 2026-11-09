@@ -149,8 +149,15 @@ class ResearchReport:
 
 # --------------------------------------------------------------------- config
 def _settings_path() -> Path:
-    raw = (os.environ.get(SETTINGS_FILE_ENV) or "").strip()
-    return Path(raw) if raw else _DEFAULT_SETTINGS_PATH
+    from ..common.data_paths import resolve_store_path
+
+    return Path(
+        resolve_store_path(
+            "privacy_settings.json",
+            _DEFAULT_SETTINGS_PATH,
+            env_var=SETTINGS_FILE_ENV,
+        )
+    )
 
 
 def _read_settings() -> Dict[str, Any]:

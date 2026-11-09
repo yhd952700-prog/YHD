@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Optional
 
@@ -36,6 +37,7 @@ __all__ = [
     "workspace_root",
     "is_inside",
     "resolve_in_workspace",
+    "sanitize_workspace_path",
 ]
 
 _ENV_KEY = "LIUHAO_WORKSPACE_ROOT"
@@ -68,6 +70,61 @@ def _norm(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
 
+# Windows 设备名（大小写不敏感，``CON.txt`` 同样会被解释成设备）。
+_DEVICE_NAME_RE = re.compile(
+    r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:$|\.)", re.IGNORECASE
+)
+
+
+def sanitize_workspace_path(path: str) -> str:
+    """在触碰文件系统**之前**收敛入参，返回可用于解析的规范路径。
+
+    * 拒绝 UNC / 设备命名空间（``\\\\server\\share``、``\\\\?\\``、``\\\\.\\``，
+      以及正斜杠写法 ``//server``）：这类路径一旦进入 ``realpath``/``open``，
+      Windows 会先发起 SMB 连接并送出 NTLM 凭据，路径边界检查来不及拦截。
+    * 统一把反斜杠规范成正斜杠（项目只支持 Windows/POSIX 常规路径）。
+    * 去掉每个分量的尾随点与空格：Win32 会把 ``foo.``/``foo `` 别名成 ``foo``，
+      否则写 ``foo.`` 会覆盖 ``foo``。
+    * 拒绝 Windows 设备名（``CON`` / ``NUL`` / ``COM1`` ...），避免写控制台或
+      静默丢数据。
+
+    Raises:
+        WorkspaceViolation: 入参为空、含 NUL 字节、UNC/设备命名空间、设备名，
+            或某个分量去掉尾随点/空格后为空。
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise WorkspaceViolation("路径为空；请给出工作区内的相对路径")
+    text = path.strip()
+    if "\x00" in text:
+        raise WorkspaceViolation("路径包含空字节，拒绝处理。")
+    # 必须在任何 os.path.realpath / open 之前判定 UNC。
+    if text.startswith(("\\\\", "//")):
+        raise WorkspaceViolation(
+            "拒绝 UNC/设备命名空间路径（\\\\server、\\\\?\\、\\\\.\\、//server）："
+            "解析这类路径会先向远端发起认证请求。"
+        )
+    normalized = text.replace("\\", "/")
+    parts = normalized.split("/")
+    cleaned_parts = []
+    for part in parts:
+        if part in ("", ".", ".."):
+            cleaned_parts.append(part)
+            continue
+        cleaned = part.rstrip(" .")
+        if not cleaned:
+            raise WorkspaceViolation(
+                f"路径分量 {part!r} 只有尾随点/空格，拒绝处理。"
+            )
+        cleaned_parts.append(cleaned)
+    normalized = "/".join(cleaned_parts)
+    basename = next((p for p in reversed(cleaned_parts) if p), "")
+    if basename and _DEVICE_NAME_RE.match(basename):
+        raise WorkspaceViolation(
+            f"拒绝写入 Windows 设备名 {basename!r}（CON/NUL/COMx/LPTx 等）。"
+        )
+    return normalized
+
+
 def is_inside(root: str, path: str) -> bool:
     """``path`` 的真实路径是否落在 ``root`` 之内（含根本身）。不抛异常。"""
     try:
@@ -78,7 +135,9 @@ def is_inside(root: str, path: str) -> bool:
 
 def _is_inside(root: str, path: str) -> bool:
     root_real = os.path.realpath(root)
-    candidate = path if os.path.isabs(path) else os.path.join(root_real, path)
+    candidate = sanitize_workspace_path(path)
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(root_real, candidate)
     real = os.path.realpath(candidate)
     root_n = _norm(root_real)
     real_n = _norm(real)
@@ -96,13 +155,11 @@ def resolve_in_workspace(path: str, root: Optional[str] = None) -> str:
         消解 ``..`` / 符号链接后的真实绝对路径。
 
     Raises:
-        WorkspaceViolation: 路径为空、类型非法、或解析后落在根外。
+        WorkspaceViolation: 路径为空、类型非法、UNC/设备名，或解析后落在根外。
     """
-    if not isinstance(path, str) or not path.strip():
-        raise WorkspaceViolation("路径为空；请给出工作区内的相对路径")
+    raw = sanitize_workspace_path(path)
 
     root_real = os.path.realpath(root or workspace_root())
-    raw = path.strip()
     candidate = raw if os.path.isabs(raw) else os.path.join(root_real, raw)
     real = os.path.realpath(candidate)
 

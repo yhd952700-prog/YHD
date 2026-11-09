@@ -26,13 +26,15 @@ Two local tools:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sys
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .tool_registry import Tool, ToolRegistry
-from .workspace import workspace_root, WorkspaceViolation
+from .workspace import sanitize_workspace_path, workspace_root, WorkspaceViolation
 from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
 from . import web_research
 from .llm_support import (
@@ -475,6 +477,132 @@ def llm_synthesis(**inputs: Any) -> Dict[str, Any]:
     }
 
 
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()) + (
+        f".{int(time.time() * 1000) % 1000:03d}"
+    )
+
+
+def _verify_written_artifact(path: str, content: str) -> Dict[str, Any]:
+    """写入后回读核对：存在、大小、SHA256 一律以磁盘元数据为准。
+
+    ``content.encode()`` 只是“提交内容”的摘要；磁盘上的字节才是事实。文本模式
+    写入在 Windows 上会把 ``\\n`` 转成 ``\\r\\n``，因此期望摘要同时接受
+    “原样编码”和“换行转换后编码”两种，避免把正常的换行差异误判成篡改。
+    """
+    declared = content.encode("utf-8")
+    declared_sha = hashlib.sha256(declared).hexdigest()
+    accepted = {declared_sha}
+    translated_sha = None
+    if os.linesep != "\n":
+        translated = content.replace("\n", os.linesep).encode("utf-8")
+        translated_sha = hashlib.sha256(translated).hexdigest()
+        accepted.add(translated_sha)
+    try:
+        if not os.path.isfile(path):
+            return {"ok": False, "path": os.path.abspath(path),
+                    "error": f"写入后回读校验失败：文件不存在：{path}"}
+        stat = os.stat(path)
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        return {"ok": False, "path": os.path.abspath(path),
+                "error": f"写入后回读校验失败：无法读取 {path}（{exc}）"}
+    disk_sha = hashlib.sha256(data).hexdigest()
+    ok = stat.st_size > 0 and disk_sha in accepted
+    verification: Dict[str, Any] = {
+        "ok": ok,
+        "path": os.path.abspath(path),
+        "bytes": int(stat.st_size),
+        "declared_bytes": len(declared),
+        "sha256": disk_sha,
+        "declared_sha256": declared_sha,
+        "newline_translated": bool(translated_sha and disk_sha == translated_sha),
+        "verified_at": _now_iso(),
+    }
+    if not ok:
+        verification["error"] = (
+            "写入后回读校验失败：磁盘上是 "
+            f"{verification['bytes']} 字节 / SHA256 {disk_sha}，"
+            f"与本次提交内容（{len(declared)} 字节 / SHA256 {declared_sha}）不一致；"
+            "该步不能算完成。"
+        )
+    return verification
+
+
+def _make_preview_tools(root: str):
+    """Build ``preview_start`` / ``preview_stop`` bound to a **fixed** workspace root.
+
+    预览不是一个通用执行器：它只能在这个工作区上起内置静态文件服务，
+    路径参数只能是工作区内的相对页面，且启动后会立刻自检一次可访问性。
+    """
+    fs_root = os.path.abspath(root)
+
+    def preview_start(**inputs: Any) -> Dict[str, Any]:
+        # 明确拒绝任何自定义静态根：根在注册时已固定，调用方不能改。
+        for key in ("root", "base", "directory", "dir"):
+            if str(inputs.get(key) or "").strip():
+                return {
+                    "success": False,
+                    "status": "rejected",
+                    "error": (
+                        "preview_start 只以当前任务工作区为静态根，不接受自定义根路径"
+                        f"（收到 {key}={inputs.get(key)!r}）。"
+                    ),
+                }
+        entry = inputs.get("entry") or inputs.get("path") or inputs.get("file") or ""
+        idle_raw = inputs.get("idle_seconds")
+        idle_seconds: Optional[float] = None
+        if idle_raw not in (None, ""):
+            try:
+                idle_seconds = float(idle_raw)
+            except (TypeError, ValueError):
+                return {
+                    "success": False,
+                    "status": "rejected",
+                    "error": f"idle_seconds 必须是数字（收到 {idle_raw!r}）。",
+                }
+        from .preview_server import get_preview_manager
+
+        result = get_preview_manager().start(
+            fs_root, entry=str(entry), idle_seconds=idle_seconds
+        )
+        result["workspace_root"] = fs_root
+        return result
+
+    def preview_stop(**inputs: Any) -> Dict[str, Any]:
+        handle = (
+            inputs.get("handle")
+            or inputs.get("preview_id")
+            or inputs.get("id")
+        )
+        handle_text = str(handle).strip() if handle else None
+        from .preview_server import get_preview_manager
+
+        stopped = get_preview_manager().stop(
+            handle_text or None, reason="tool_request"
+        )
+        if handle_text and not stopped:
+            return {
+                "success": False,
+                "status": "failed",
+                "error": f"没有找到预览句柄 {handle_text!r}（可能已被任务结束清理）。",
+                "stopped": [],
+            }
+        return {
+            "success": True,
+            "status": "executed",
+            "stopped": stopped,
+            "stopped_all": handle_text is None,
+            "message": (
+                f"已停止 {len(stopped)} 个预览服务。"
+                if stopped else "当前没有运行中的预览服务。"
+            ),
+        }
+
+    return preview_start, preview_stop
+
+
 def _make_file_write(root: str):
     """Build the ``file_write`` callable bound to a **fixed** workspace root.
 
@@ -547,7 +675,14 @@ def _make_file_write(root: str):
                     "status": "rejected",
                     "error": "owner_account_id 含有非法路径字符，拒绝写入。",
                 }
-        rel_path = path.strip().lstrip("/")
+        try:
+            rel_path = sanitize_workspace_path(path.strip()).lstrip("/")
+        except WorkspaceViolation as exc:
+            return {
+                "success": False,
+                "status": "rejected",
+                "error": f"路径被拒绝：{exc}",
+            }
         if owner_text and not rel_path.startswith("accounts/"):
             rel_path = f"accounts/{owner_text}/{rel_path}"
 
@@ -578,13 +713,35 @@ def _make_file_write(root: str):
                 written = resolve_in_workspace(rel_path, fs_root)
             except WorkspaceViolation:
                 written = None
+
+        # 验收项二：写完后读回来核对。上报的数字必须来自磁盘，不能来自模型自述。
+        verification = _verify_written_artifact(
+            written or os.path.join(fs_root, rel_path), content
+        )
+        if not verification.get("ok"):
+            return {
+                "success": False,
+                "status": "verification_failed",
+                "error": verification.get("error"),
+                "path": verification.get("path"),
+                "rel_path": rel_path,
+                "owner_account_id": owner_text or None,
+                "workspace_root": fs_root,
+                "verification": verification,
+            }
         return {
             "success": True,
             "status": "executed",
-            "path": written,
+            "path": verification["path"],
             "rel_path": rel_path,
             "owner_account_id": owner_text or None,
-            "bytes": len(content.encode("utf-8")),
+            # 磁盘回读得到的权威元数据（不是提交内容的长度）。
+            "bytes": verification["bytes"],
+            "declared_bytes": verification["declared_bytes"],
+            "sha256": verification["sha256"],
+            "verified": True,
+            "verified_at": verification["verified_at"],
+            "verification": verification,
             "workspace_root": fs_root,
         }
 
@@ -653,6 +810,60 @@ def register_default_local_tools(
         registry.validate("local_file_write")
         registry.approve("local_file_write")
         registry.activate("local_file_write")
+
+    # 受限预览：只把工作区当静态根、只绑 127.0.0.1、端口自动选空闲；
+    # 不执行任何模型/用户给的命令。写文件之后由模型自己调用拿到 URL。
+    if registry.get("local_preview_start") is None:
+        preview_start_fn, _ = _make_preview_tools(fs_root)
+        registry.register(Tool(
+            tool_id="local_preview_start",
+            name="Workspace Static Preview (start)",
+            version="1.0.0",
+            description=(
+                "Start a built-in static file server rooted at the current task "
+                "workspace (127.0.0.1, free port auto-selected). Optional `entry` "
+                "is a workspace-relative page path; it must exist and stay inside "
+                "the workspace — `..`, absolute paths and cross-drive paths are "
+                "refused. No command is executed. Returns `handle`, `url`, "
+                "`entry_url` and a real HTTP self-check (`reachable`, "
+                "`http_status`, `content_bytes`, `sha256`, `title`)."
+            ),
+            capability="preview_start",
+            schema={"entry": "str", "path": "str", "file": "str",
+                    "idle_seconds": "float"},
+            fn=preview_start_fn,
+            risk="LOW",
+            sandbox_policy="workspace_static_server",
+            audit_policy="p9.tool.execute",
+        ))
+        registry.validate("local_preview_start")
+        registry.approve("local_preview_start")
+        registry.activate("local_preview_start")
+
+    if registry.get("local_preview_stop") is None:
+        # Same root-bound callables; ``preview_stop`` works even if the start
+        # tool was registered by an earlier call (idempotent re-register).
+        _, preview_stop_fn = _make_preview_tools(fs_root)
+        registry.register(Tool(
+            tool_id="local_preview_stop",
+            name="Workspace Static Preview (stop)",
+            version="1.0.0",
+            description=(
+                "Stop a preview started by `preview_start`. Supply `handle` to stop "
+                "one preview, or omit it to stop all previews owned by this "
+                "process. Previews are also auto-stopped when the task ends or "
+                "fails, and on idle timeout."
+            ),
+            capability="preview_stop",
+            schema={"handle": "str", "preview_id": "str", "id": "str"},
+            fn=preview_stop_fn,
+            risk="LOW",
+            sandbox_policy="workspace_static_server",
+            audit_policy="p9.tool.execute",
+        ))
+        registry.validate("local_preview_stop")
+        registry.approve("local_preview_stop")
+        registry.activate("local_preview_stop")
 
     # Abstract capabilities that the planner has always been able to emit but
     # nothing could execute. They are backed by the *configured default model*

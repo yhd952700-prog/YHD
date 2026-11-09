@@ -25,6 +25,7 @@ from src.ai.tools_local import register_default_local_tools
 from src.kernels.execution import (
     ExecutionContext,
     ExecutionEngine,
+    ExecutionJournal,
     Goal,
     GoalDecomposer,
     Task,
@@ -417,10 +418,11 @@ class TestSummaryAndTools:
             "result": "项目 A、B、C 值得关注。",
         }
 
-    def test_evaluation_summary_is_synthesized_from_outputs(self):
+    def test_evaluation_summary_is_synthesized_from_outputs(self, tmp_path):
         runtime = AgentRuntime(
             scope="L1",
             capability_executor=self._executor,
+            journal=ExecutionJournal(str(tmp_path / "j.db")),
             model_generator=lambda prompt: "今天值得关注的项目有 A、B、C。建议从 C 开始验证。",
         )
         result = runtime.run_goal("search for cats and plan the rollout", persist=False)
@@ -429,13 +431,14 @@ class TestSummaryAndTools:
         assert result.evaluation.summary.strip(), "summary must not be empty"
         assert "A、B、C" in result.evaluation.summary
 
-    def test_summary_falls_back_deterministically_when_model_fails(self):
+    def test_summary_falls_back_deterministically_when_model_fails(self, tmp_path):
         def _boom(prompt: str) -> str:
             raise RuntimeError("model down")
 
         runtime = AgentRuntime(
             scope="L1",
             capability_executor=self._executor,
+            journal=ExecutionJournal(str(tmp_path / "j.db")),
             model_generator=_boom,
         )
         result = runtime.run_goal("search for cats and plan the rollout", persist=False)
@@ -479,10 +482,11 @@ class TestSummaryAndTools:
         assert synthesis.success, synthesis.error
         assert synthesis.output["result"].strip()
 
-    def test_runtime_reports_model_decomposition_source(self):
+    def test_runtime_reports_model_decomposition_source(self, tmp_path):
         runtime = AgentRuntime(
             scope="L1",
             capability_executor=self._executor,
+            journal=ExecutionJournal(str(tmp_path / "j.db")),
             enable_model_planning=True,
             model_generator=lambda prompt: (
                 _model_plan() if "任务拆解器" in prompt else "汇总：项目 A、B、C。"

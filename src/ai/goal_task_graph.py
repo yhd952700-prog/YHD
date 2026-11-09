@@ -20,6 +20,7 @@ from src.common.atomic_write import (
     exclusive_file_lock,
     read_text_with_retry,
 )
+from src.common.data_paths import resolve_store_path
 
 from .providers import BaseProvider, get_provider
 try:
@@ -771,17 +772,18 @@ Example output format:
     def _default_state_path() -> str:
         """Default location for the persisted planner state.
 
-        Under ``LIUHAO_WORKSPACE_ROOT`` when set (REDIR-able so isolation
-        verifiers never touch the real workspace), else
-        ``<repo>/.planner_state.json``.
+        ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > repo-root fallback
+        (see ``src.common.data_paths``), so isolation runs never write to the
+        shared development tree.
         """
-        root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-        if root:
-            return os.path.join(root, "planner_state.json")
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
-        return os.path.join(repo_root, ".planner_state.json")
+        return resolve_store_path(
+            "planner_state.json",
+            os.path.join(repo_root, ".planner_state.json"),
+            workspace=True,
+        )
 
     def _serialize_goal(self, goal: Optional[GoalDefinition]) -> Optional[Dict[str, Any]]:
         if goal is None:

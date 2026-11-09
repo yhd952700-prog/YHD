@@ -5,7 +5,7 @@ Provides multi-agent coordination framework for complex task execution.
 Supports agent pools, task distribution, result aggregation, and KPI reporting.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import time
@@ -118,6 +118,9 @@ class Agent:
     total_latency_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     checkpoint_state: Optional[Dict[str, Any]] = None
+    #: 执行期按当前配置解析 provider（未显式注入实例时由 Employee 设置）。
+    #: 不长期持有构建时的快照，否则控制台改 Key/改默认模型后仍用旧 Key。
+    provider_resolver: Optional[Callable[[], BaseProvider]] = None
 
     def execute(self, task: str, **kwargs) -> Dict[str, Any]:
         """Execute a task using this agent's provider."""
@@ -141,8 +144,12 @@ class Agent:
             # Build prompt with system prompt
             full_prompt = f"{self.system_prompt}\n\nTask: {task}" if self.system_prompt else task
 
-            # Generate response with retry
-            response = self.provider.generate_with_retry(full_prompt, **kwargs)
+            # Generate response with retry（执行前按当前配置解析：
+            # 控制台改 Key / 改默认模型后无需重启即可生效）。
+            provider = (
+                self.provider_resolver() if self.provider_resolver else self.provider
+            )
+            response = provider.generate_with_retry(full_prompt, **kwargs)
 
             latency_ms = (time.time() - start_time) * 1000
             self.total_latency_ms += latency_ms
@@ -308,6 +315,11 @@ class Employee:
         self.employee_id = employee_id or ""
         self.last_activity: Dict[str, Any] = dict(last_activity or {})
         self.provider = provider or get_provider()
+        # 未显式注入 provider 时，执行期按当前模型配置重新解析：控制台改 Key /
+        # 改默认模型后无需重启，也不会长期持有一个构建时的旧实例。
+        self._provider_resolver: Optional[Callable[[], BaseProvider]] = (
+            None if provider is not None else get_provider
+        )
         self.agent_count = agent_count
         self.agent_types = agent_types or ["general"] * agent_count
         self.system_prompts = system_prompts or {}
@@ -378,6 +390,7 @@ class Employee:
                 agent_type=agent_type,
                 name=f"{self.name}-{agent_type}-{i}",
                 provider=self.provider,
+                provider_resolver=self._provider_resolver,
                 system_prompt=system_prompt,
             )
             self.agents[agent_id] = agent

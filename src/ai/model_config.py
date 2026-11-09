@@ -43,7 +43,17 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..common.data_paths import resolve_store_path
+
 from ..common.windows_acl import secure_delete_file, tighten_current_user_only
+from ..security.encryption import (
+    DPAPI_PREFIX,
+    RAW_PREFIX,
+    MachineBoundKeyError,
+    is_machine_bound_payload,
+    unwrap_machine_bound,
+    wrap_machine_bound,
+)
 
 logger = logging.getLogger("liuhao.ai.model_config")
 
@@ -56,6 +66,24 @@ MODEL_CONFIG_MIGRATE_ENV = "LIUHAO_MODEL_CONFIG_MIGRATE"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = _REPO_ROOT / "data" / "model_registry.sqlite3"
 DEFAULT_KEY_PATH = _REPO_ROOT / "data" / "model_config.key"
+
+#: DPAPI 熵：不同用途的密钥密文不可互换，即使同为本机用户可解。
+KEY_DPAPI_PURPOSE = b"model-config-master-key-v1"
+
+#: 主密钥文件缺失且库里仍有密文时的中文告警（文件已缺失，生成新密钥不会
+#: 覆盖旧文件，但旧 Key 会失效，必须让用户知道后果）。
+_MODEL_KEY_MISSING_TEXT = (
+    "本机密钥无法在此机器解密（模型主密钥文件缺失），"
+    "请用账号备份包恢复或重新生成。\n"
+    "可执行步骤：\n"
+    "  1. 若这是从旧电脑拷贝过来的数据目录，请回到原电脑导出带口令的账号备份包；\n"
+    "  2. 在新电脑导入前，先把旧的 data\\model_config.key（如有）改名保存，"
+    "不要直接删除；\n"
+    "  3. 导入备份包后，模型 Key 会用新电脑的主密钥重新加密；\n"
+    "  4. 若原电脑已不可用，请在「模型管理」逐个重新填写 API Key；\n"
+    "  5. 确认放弃旧 Key 后，删除 data\\model_config.key 再重启，"
+    "系统会生成新的本机密钥（旧密文将永久无法解密）。"
+)
 
 #: 支持的 provider 类型。与 ``ProviderFactory._providers`` 保持一致 —— 这里是
 #: 写入口的校验名单，那里是实例化名单；两处必须同源，新增 provider 时同步。
@@ -308,12 +336,20 @@ class ModelConfigStore:
 
     def __init__(self, db_path: Optional[str] = None, key_path: Optional[str] = None) -> None:
         self._db_path = str(
-            db_path or os.environ.get(MODEL_CONFIG_DB_ENV) or DEFAULT_DB_PATH
+            db_path
+            or resolve_store_path(
+                "model_registry.sqlite3",
+                DEFAULT_DB_PATH,
+                env_var=MODEL_CONFIG_DB_ENV,
+            )
         )
         self._key_path = str(
             key_path
-            or os.environ.get(MODEL_CONFIG_KEY_FILE_ENV)
-            or DEFAULT_KEY_PATH
+            or resolve_store_path(
+                "model_config.key",
+                DEFAULT_KEY_PATH,
+                env_var=MODEL_CONFIG_KEY_FILE_ENV,
+            )
         )
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
@@ -399,15 +435,160 @@ class ModelConfigStore:
                     ("timeout_floor_120", "1"),
                 )
 
-    def _encryption_key(self) -> bytes:
-        """解析/生成 32 字节密钥；无法获得密钥时抛 ``ModelConfigError``。
+    def _db_has_encrypted_rows(self) -> bool:
+        """库里是否还有密文行（密钥文件缺失时据此给出"旧 Key 会失效"的告警）。
 
-        密钥文件规定是 32 个原始字节，必须**原样**使用：早先版本先
-        ``read_bytes().strip()`` 再判断长度，若密钥的首/尾字节恰好落在
-        ASCII 空白（0x09-0x0d/0x20 等，随机密钥约 4-9% 概率），读回时会被
-        裁短、退化成口令派生，得到一个与生成时不同的密钥 —— 已有的密文
-        全部解不开，界面就显示"密文无法解密"。这里精确 32 字节直接使用；
-        只有"32 字节 + 文本换行"才去掉换行；其余才按历史兼容当作口令。
+        用独立只读连接，避免 ``_connect()`` 的建表/迁移副作用；库不存在或暂时
+        读不了时按"没有"处理，让正常的新装流程仍能生成密钥。
+        """
+        db_path = Path(self._db_path)
+        if not db_path.exists():
+            return False
+        try:
+            # 只读查询：库文件已存在时 connect 不会新建库；不执行任何 DDL/DML。
+            conn = sqlite3.connect(str(db_path), timeout=2)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM ai_model_configs "
+                    "WHERE api_key_enc IS NOT NULL AND api_key_enc != '' LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
+    @staticmethod
+    def _interpret_legacy_key(raw: bytes) -> tuple[bytes, str]:
+        """解析历史（无版本头）密钥文件，返回 ``(32 字节密钥, 形态标签)``。
+
+        这里的判定顺序是**升级前真实行为**的确定性复刻，不再靠"长度猜"：
+
+        * 恰好 32 字节 → 原样当密钥（首尾空白也是密钥的一部分）；
+        * 32 字节 + 行尾换行 → 去掉换行当密钥；
+        * 其余（包括 33 字节、文本口令）→ 按历史兼容当作口令 SHA-256 派生。
+
+        33 字节文件曾经落进"当口令"分支；把这条语义固化成显式标签后，
+        迁移到新格式仍能解开旧密文。解析结果长度为 32，调用方再做校验。
+        """
+        if len(raw) == 32:
+            return raw, "legacy-raw-32"
+        trimmed = raw.rstrip(b"\r\n")
+        if len(trimmed) == 32:
+            return trimmed, "legacy-raw-32-newline"
+        return _derive_key(raw.strip().decode("utf-8", "ignore")), "legacy-passphrase"
+
+    def _migrate_legacy_key_file(self, path: Path, key: bytes, label: str) -> bool:
+        """把旧形态密钥文件原子替换为带版本头的机器绑定形态。
+
+        失败只告警并返回 ``False``，调用方继续用内存里的旧密钥完成本次启动；
+        绝不因为迁移失败把用户挡在门外，也绝不覆盖原文件。
+        """
+        tmp: Optional[Path] = None
+        try:
+            payload = wrap_machine_bound(key, purpose=KEY_DPAPI_PURPOSE)
+            check, _mode = unwrap_machine_bound(
+                payload, purpose=KEY_DPAPI_PURPOSE
+            )
+            if check != key:
+                raise ValueError("roundtrip mismatch")
+            tmp = path.with_name(
+                f".{path.name}.migrate-{os.getpid()}-{os.urandom(4).hex()}.tmp"
+            )
+            fd = os.open(
+                str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            try:
+                os.write(fd, payload)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            if not tighten_current_user_only(tmp):
+                raise PermissionError("could not tighten ACL on migration temp file")
+            os.replace(tmp, path)
+            tmp = None
+            logger.info(
+                "模型主密钥文件已从旧格式（%s）迁移为 DPAPI 机器绑定格式：%s",
+                label,
+                path,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - 迁移失败不得阻断启动
+            logger.warning(
+                "模型主密钥文件自动迁移失败（%s）：%s；"
+                "本次继续使用旧密钥运行，原文件未被覆盖。"
+                "下次启动会再次尝试；若持续失败请检查数据目录权限。",
+                path,
+                exc,
+            )
+            if tmp is not None:
+                try:
+                    secure_delete_file(tmp)
+                except Exception:  # noqa: BLE001
+                    pass
+            return False
+
+    def _read_key_file(self, path: Path) -> bytes:
+        """读取密钥文件：新格式解封 / 旧格式迁移。"""
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ModelConfigError(
+                503,
+                "无法读取模型密钥文件，已保存的凭据无法解密。"
+                "请检查数据目录权限，或从备份恢复该密钥文件后重启。"
+                f"（{path.name}）",
+            ) from exc
+
+        if is_machine_bound_payload(raw):
+            try:
+                key, mode = unwrap_machine_bound(
+                    raw, purpose=KEY_DPAPI_PURPOSE
+                )
+            except MachineBoundKeyError as exc:
+                # 换机/换 Windows 用户/密文损坏：给中文提示，不暴露底层异常，
+                # 也绝不生成新密钥把旧密文彻底废掉。
+                logger.error(
+                    "模型主密钥无法在本机解封（reason=%s），已拒绝自动重新生成：%s",
+                    exc.reason,
+                    path,
+                )
+                raise ModelConfigError(503, str(exc)) from None
+            if len(key) != 32:
+                raise ModelConfigError(
+                    503,
+                    "模型密钥文件格式不正确（解出的密钥不是 32 字节），"
+                    "请用账号备份包恢复，或在确认放弃旧 Key 后重新生成。",
+                )
+            if mode == "raw" and os.name == "nt":
+                logger.warning(
+                    "模型密钥文件是 RAW 降级格式（未经 DPAPI 包裹），"
+                    "拷到其它机器仍可解密：%s",
+                    path,
+                )
+            return key
+
+        key, label = self._interpret_legacy_key(raw)
+        if len(key) != 32:
+            raise ModelConfigError(
+                503,
+                "模型密钥文件内容不合法（无法得到 32 字节密钥），"
+                "请用账号备份包恢复，或删除该文件后重新生成。",
+            )
+        self._migrate_legacy_key_file(path, key, label)
+        return key
+
+    def _encryption_key(self) -> bytes:
+        """解析/生成 32 字节主密钥；无法获得密钥时抛 ``ModelConfigError``。
+
+        落盘形态用**显式版本头**区分，不再靠长度猜：
+
+        * ``LIUHAO-DPAPI-1:`` + DPAPI(CurrentUser) 密文 —— Windows 正式形态；
+        * ``LIUHAO-RAW-1:`` + 原文 —— 仅非 Windows 开发/CI 的显式降级；
+        * 无版本头 —— 升级前的历史形态，读取时自动迁移（失败不阻断启动）。
+
+        历史形态的语义固定为：32 字节原样使用；32 字节 + 换行去换行；
+        其它（含 33 字节）当口令派生。这样旧密文在迁移后仍能解开。
         """
         configured = os.environ.get(MODEL_CONFIG_KEY_ENV)
         if configured:
@@ -421,34 +602,24 @@ class ModelConfigStore:
                     "模型密钥文件 ACL 未能收紧为仅当前用户：%s（建议手工修复）",
                     path,
                 )
-            try:
-                raw = path.read_bytes()
-            except OSError as exc:
-                raise ModelConfigError(
-                    503,
-                    "无法读取模型密钥文件，已保存的凭据无法解密。"
-                    "请检查数据目录权限，或从备份恢复该密钥文件后重启。"
-                    f"（{path.name}）",
-                ) from exc
-            if len(raw) == 32:
-                return raw
-            trimmed = raw.rstrip(b"\r\n")
-            if len(trimmed) == 32:
-                # 文本方式保存的 32 字节密钥（多了一个行尾换行）。
-                logger.warning(
-                    "模型密钥文件带有行尾换行（%d 字节），按 32 字节密钥使用",
-                    len(raw),
-                )
-                return trimmed
-            # 兼容"文件里存的是口令"的历史写法。
-            return _derive_key(raw.strip().decode("utf-8", "ignore"))
+            return self._read_key_file(path)
+        if self._db_has_encrypted_rows():
+            # 文件已经不在磁盘上了：这里生成新密钥不会覆盖任何旧密钥文件
+            # （旧密文本就已经解不开），但必须大声说明后果，不能静默。
+            logger.warning(
+                "模型主密钥文件缺失但模型中仍有加密配置，将生成新的本机密钥；"
+                "旧模型 Key 需要重新填写。\n%s",
+                _MODEL_KEY_MISSING_TEXT,
+            )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             key = os.urandom(32)
+            payload = wrap_machine_bound(key, purpose=KEY_DPAPI_PURPOSE)
             fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 # 先落盘再收紧：Windows 上 0o600 不改变 DACL，必须显式设置。
-                os.write(fd, key)
+                os.write(fd, payload)
+                os.fsync(fd)
             finally:
                 os.close(fd)
             if not tighten_current_user_only(path):
@@ -461,6 +632,9 @@ class ModelConfigStore:
                 )
             logger.info("model config encryption key generated at %s", path)
             return key
+        except FileExistsError:
+            # 并发/竞态：别人已经创建，按新格式重新读取，不覆盖对方。
+            return self._read_key_file(path)
         except ModelConfigError:
             raise
         except Exception as exc:  # pragma: no cover - 文件系统故障
@@ -819,7 +993,11 @@ class ModelConfigStore:
         return written
 
     def import_key_material(self, raw: bytes) -> bool:
-        """写回模型主密钥；环境变量已显式配置时不覆盖。"""
+        """写回模型主密钥；环境变量已显式配置时不覆盖。
+
+        旧备份包里的 ``key_material`` 是原始 32 字节；落盘时必须立即包成
+        本机 DPAPI 形态，避免"恢复完成后磁盘上又出现一把可拷走的裸密钥"。
+        """
         if os.environ.get(MODEL_CONFIG_KEY_ENV):
             return False
         if not raw or len(raw) != 32:
@@ -829,11 +1007,23 @@ class ModelConfigStore:
             return True
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(bytes(raw))
+            payload = wrap_machine_bound(bytes(raw), purpose=KEY_DPAPI_PURPOSE)
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, payload)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
             try:
                 os.chmod(str(path), 0o600)
             except OSError:
                 pass
+            if not tighten_current_user_only(path):
+                secure_delete_file(path)
+                logger.warning("restored model key material could not be ACL-tightened")
+                return False
+            return True
+        except FileExistsError:
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not restore model key material: %s", exc)
@@ -1165,7 +1355,23 @@ class ModelConfigStore:
 
     def encryption_posture(self) -> Dict[str, Any]:
         source = "env" if os.environ.get(MODEL_CONFIG_KEY_ENV) else "file"
-        return {"algorithm": "AES-256-GCM", "key_source": source}
+        protection = "env-passphrase" if source == "env" else "missing"
+        if source == "file":
+            try:
+                head = Path(self._key_path).read_bytes()[: len(DPAPI_PREFIX) + 8]
+            except OSError:
+                head = b""
+            if head.startswith(DPAPI_PREFIX.encode("ascii")):
+                protection = "dpapi-current-user"
+            elif head.startswith(RAW_PREFIX.encode("ascii")):
+                protection = "raw-fallback"
+            elif head:
+                protection = "legacy-unmigrated"
+        return {
+            "algorithm": "AES-256-GCM",
+            "key_source": source,
+            "key_protection": protection,
+        }
 
 
 # --------------------------------------------------------------------------- #

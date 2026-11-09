@@ -36,6 +36,64 @@ def _serialize(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def load_known_principals(account: str) -> List[str]:
+    """账号的已知子树主体；身份服务不可用时只返回自己（fail-closed）。"""
+    try:
+        from ...kernels.identity import get_identity_manager
+
+        subtree = list(get_identity_manager().subtree_principals(account))
+        return subtree or [account]
+    except Exception:  # noqa: BLE001 - 无身份服务时绝不能退化成全局视图
+        return [account]
+
+
+def is_root_account(account: str) -> bool:
+    """只有账号树的主账号才允许显式聚合子树记忆。"""
+    try:
+        from ...kernels.identity import get_identity_manager
+
+        root = get_identity_manager().account_root()
+        return bool(root and str(root.principal) == str(account))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _session_account(session_principal: str, known: Tuple[str, ...]) -> str:
+    """``liuhao-{account}-{session}`` -> account（已知账号最长匹配）。"""
+    raw = str(session_principal or "")
+    if not raw.startswith("liuhao-"):
+        return raw
+    rest = raw[len("liuhao-") :]
+    for candidate in sorted({str(item) for item in known if item}, key=len, reverse=True):
+        if rest == candidate or rest.startswith(f"{candidate}-"):
+            return candidate
+    return ""
+
+
+def _memory_visible_to(
+    entry: Any, accounts: set, known: Tuple[str, ...]
+) -> bool:
+    """内核记忆的归属判定：只认明确的 principal 标记，未知条目一律不返回。"""
+    key = str(getattr(entry, "key", "") or "")
+    if key.startswith("profile:"):
+        owner = key.split(":", 2)[1] if len(key.split(":", 2)) > 1 else ""
+        if owner.startswith("user-"):
+            owner = owner[len("user-"):]
+        return owner in accounts
+    if key.startswith("turn:"):
+        rest = key[len("turn:") :]
+        session_principal, _, _turn = rest.partition(":")
+        return _session_account(session_principal, known) in accounts
+    tags = {str(tag) for tag in (getattr(entry, "tags", ()) or ())}
+    for tag in tags:
+        if tag.startswith("agent:liuhao-"):
+            owner = tag[len("agent:liuhao-") :]
+            owner = _session_account(f"liuhao-{owner}", known) if "-" in owner else owner
+            return owner in accounts
+    # 没有归属标记的历史/全局条目：宁可检索不到，也不跨账号泄漏。
+    return False
+
+
 @observe("tools.make_tools")
 def make_tools(
     principal: str,
@@ -49,22 +107,39 @@ def make_tools(
     """
     tools: List[Tool] = []
 
-    def search_memory(query: str = "", **kwargs: Any) -> str:
-        """按关键词搜索本主体在 memory kernel 中的记忆条目。
+    def search_memory(query: str = "", scope: str = "self", **kwargs: Any) -> str:
+        """按关键词搜索**本主体**在 memory kernel 中的记忆条目。
 
         参数做防御性别名兼容：小模型可能输出 ``key``/``text``/``keyword``
         等非规范字段名（schema 声明为 ``query``），统一归一化。
+
+        MEM-003：内核 L1 检索默认按 principal 强制过滤；只有主账号显式传
+        ``scope="subtree"`` 才聚合子树，绝不默认返回全机记忆。
         """
         q = (query or kwargs.get("key") or kwargs.get("text")
              or kwargs.get("keyword") or kwargs.get("q") or "")
         if not q:
             return "请提供 query 参数（要搜索的关键词）。"
+        account = (
+            principal[len("user-"):]
+            if str(principal).startswith("user-")
+            else str(principal)
+        )
+        accounts = {account}
+        subtree = tuple(load_known_principals(account))
+        if str(scope or "self").strip().lower() == "subtree":
+            if is_root_account(account):
+                accounts = set(subtree) or accounts
+            # 成员传 subtree 一律按 self 处理：越权不能由模型一句话打开。
         entries = filter_memory(MemoryScope.L1)
         q = str(q).lower()
         matches = [
             e for e in entries
-            if q in str(e.value).lower()
-            or any(q in t.lower() for t in e.tags)
+            if _memory_visible_to(e, accounts, subtree)
+            and (
+                q in str(e.value).lower()
+                or any(q in t.lower() for t in e.tags)
+            )
         ]
         if not matches:
             return "无匹配记忆。"
@@ -102,7 +177,15 @@ def make_tools(
             capability="memory.search",
             schema={
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {"type": "string"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["self", "subtree"],
+                        "default": "self",
+                        "description": "仅主账号可用 subtree；成员恒为 self",
+                    },
+                },
                 "required": ["query"],
             },
             fn=search_memory,
@@ -196,13 +279,25 @@ def make_tools(
         return _serialize({"status": "ok", "key": p.key, "value": p.value, "confidence": p.confidence})
 
     def personal_add_fact(key: str = "", value: str = "", **kwargs: Any) -> str:
-        """记录用户背景事实（如「公司=鎏灏科技」「所在城市=深圳」）。"""
+        """提议一条用户背景事实，进入待确认区（不直接写长期记忆）。
+
+        MEM-009：模型不得自己给自己写长期记忆（记忆投毒）。只有用户在记忆页
+        确认后，才调用 ``record_fact`` 落为长期事实。
+        """
         k = key or kwargs.get("name") or ""
         v = value or kwargs.get("v") or ""
         if not k or not v:
             return "请提供 key 与 value 参数。"
-        pcm.record_fact(principal, k, v)
-        return _serialize({"status": "ok", "key": k, "value": v})
+        pending = pcm.propose_fact(principal, k, v, source="assistant")
+        return _serialize(
+            {
+                "status": "pending_confirmation",
+                "id": pending["id"],
+                "key": k,
+                "value": v,
+                "message": "已提交待确认，尚未写入长期记忆；请用户在记忆页确认。",
+            }
+        )
 
     def personal_set_display_name(display_name: str = "", **kwargs: Any) -> str:
         """设置用户称呼（之后回复会按此称呼）。"""
@@ -308,6 +403,8 @@ def make_tools(
         if result.get("status") != "observed":
             return f"读取失败：{result.get('error') or result.get('status')}"
         text = str(result.get("data", ""))
+        if not text:
+            return f"（文件 {target} 为空，0 字符）"
         if len(text) > read_limit:
             return f"{text[:read_limit]}\n…（已截断，原文 {len(text)} 字符）"
         return text

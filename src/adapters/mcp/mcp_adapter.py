@@ -151,17 +151,70 @@ class MCPAdapter:
 
     # ------------------------------------------------------------------ config
     def load_config(self) -> None:
-        """Load MCP server configurations from JSON file."""
+        """Load MCP server configurations from JSON file.
+
+        单个坏条目（缺 name、重名、timeout 非法）不再让整份配置加载失败或静默
+        覆盖：跳过坏条目并给出中文可操作日志，其余 server 继续可用。
+        """
         path = Path(self.config_path)
         if not path.exists():
             return
 
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error(
+                "MCP 配置读取失败（%s）：%s。请检查该文件是否为合法 JSON 后重试。",
+                path, exc,
+            )
+            return
+        if not isinstance(data, dict):
+            logger.error(
+                "MCP 配置根节点必须是对象（含 servers 数组），实际是 %s；已跳过。",
+                type(data).__name__,
+            )
+            return
 
-        for server_data in data.get("servers", []):
+        servers = data.get("servers", [])
+        if not isinstance(servers, list):
+            logger.error("MCP 配置 servers 字段必须是数组；已跳过。")
+            return
+
+        for index, server_data in enumerate(servers, start=1):
+            if not isinstance(server_data, dict):
+                logger.error(
+                    "MCP 配置第 %d 个 server 不是对象，已跳过。", index
+                )
+                continue
+            name = str(server_data.get("name") or "").strip()
+            if not name:
+                logger.error(
+                    "MCP 配置第 %d 个 server 缺少 name 字段，已跳过；"
+                    "请为每个 server 补上唯一 name 后重试。", index
+                )
+                continue
+            if name in self.servers:
+                logger.warning(
+                    "MCP 配置存在重名 server %s（第 %d 个），保留先加载的定义并跳过重复项；"
+                    "请改成唯一 name 以免调用落到非预期 server。",
+                    name, index,
+                )
+                continue
+
+            try:
+                timeout = float(server_data.get("timeout", 30.0))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "MCP server %s 的 timeout=%r 不是数字，已使用默认 30 秒。",
+                    name, server_data.get("timeout"),
+                )
+                timeout = 30.0
+            if timeout <= 0:
+                timeout = 30.0
+
             config = MCPServerConfig(
-                name=server_data["name"],
+                name=name,
                 command=server_data.get("command", ""),
                 args=server_data.get("args", []),
                 env=server_data.get("env"),
@@ -171,7 +224,7 @@ class MCPAdapter:
                 url=server_data.get("url"),
                 headers=server_data.get("headers"),
                 auth=server_data.get("auth"),
-                timeout=float(server_data.get("timeout", 30.0)),
+                timeout=timeout,
             )
             self.servers[config.name] = config
 
@@ -264,10 +317,16 @@ class MCPAdapter:
         CONNECT 之一，同时以结构化日志告警。
         """
         if name not in self.servers:
-            raise ValueError(f"Server '{name}' not configured")
+            raise MCPConnectionError(
+                name, MCPFailureReason.NOT_FOUND,
+                "未在 MCP 配置中找到该 server；请先在 servers.json 中配置后重试",
+            )
 
         if not self.servers[name].enabled:
-            raise ValueError(f"Server '{name}' is disabled")
+            raise MCPConnectionError(
+                name, MCPFailureReason.CONNECT,
+                "该 server 在配置中被禁用（enabled=false）；请改为 true 后重试",
+            )
 
         if name in self.sessions:
             return True  # Already connected
@@ -385,12 +444,63 @@ class MCPAdapter:
     async def call_tool(
         self, server_name: str, tool_name: str, arguments: Dict[str, Any]
     ) -> CallToolResult:
-        """Call a tool on a specific server."""
+        """Call a tool on a specific server.
+
+        断线/超时不再以裸异常冒泡：
+        * 未连接时先尝试自动连接一次（配置存在且 enabled）；
+        * 调用失败时按原因分类，并断开后重连（只修复后续调用的会话状态，
+          **不自动重放本次调用**，避免有副作用工具被执行两次）；
+        * 抛出的 ``MCPConnectionError`` 带中文 ``detail``，调用方可直接展示。
+        """
         client = self.sessions.get(server_name)
         if not client:
-            raise ValueError(f"Not connected to server '{server_name}'")
+            if server_name in self.servers:
+                await self.connect_server(server_name)
+                client = self.sessions.get(server_name)
+            if not client:
+                stored = self._connection_errors.get(server_name)
+                if stored is not None:
+                    raise stored
+                raise MCPConnectionError(
+                    server_name, MCPFailureReason.CONNECT,
+                    "尚未连接该 server，且自动连接失败；请检查配置或先调用 connect_server",
+                )
 
-        result = await client.call_tool(tool_name, arguments)
+        config = self.servers.get(server_name)
+        try:
+            result = await client.call_tool(tool_name, arguments)
+        except Exception as exc:  # noqa: BLE001 - 必须分类并尝试恢复会话
+            if config is not None:
+                error = await self._classify_failure(config, exc)
+            else:
+                error = MCPConnectionError(
+                    server_name, MCPFailureReason.CONNECT, _exception_text(exc)
+                )
+            self._connection_errors[server_name] = error
+            logger.warning(
+                "MCP 工具调用失败",
+                extra={
+                    "event": "mcp.call.failed",
+                    "mcp_server": server_name,
+                    "mcp_tool": tool_name,
+                    "reason": error.reason.value,
+                    "detail": _redact_text(error.detail),
+                },
+            )
+            # 断开坏会话并尝试重连，让下一次调用可用；本次不重放。
+            await self.disconnect_server(server_name)
+            reconnected = False
+            if config is not None and config.enabled:
+                try:
+                    reconnected = await self.connect_server(server_name)
+                except Exception:  # noqa: BLE001 - 重连失败原因已记录
+                    reconnected = False
+            detail = (
+                f"{error.detail}；已{'自动重连成功' if reconnected else '尝试自动重连失败'}，"
+                "请重试本次工具调用（本次未自动重放，避免副作用重复执行）"
+            )
+            raise MCPConnectionError(server_name, error.reason, detail) from exc
+
         # FastMCP 客户端返回其自有结果类型；转换回 mcp.types.CallToolResult，
         # 保持本适配器对外契约不变。
         return CallToolResult(

@@ -39,9 +39,10 @@ from src.common.atomic_write import (
     atomic_write_bytes,
     exclusive_file_lock,
 )
+from src.common.data_paths import resolve_store_path
 
 from .employee import Agent, AgentStatus, Employee, Task, TaskStatus
-from .providers import BaseProvider, get_provider
+from .providers import BaseProvider
 
 logger = logging.getLogger(__name__)
 
@@ -112,17 +113,18 @@ class EmployeeStore:
     def _default_store_path() -> str:
         """Default location of the employee store.
 
-        ``LIUHAO_WORKSPACE_ROOT/liuhao_employees.json`` when that env var is
-        set (so isolation verifiers never write to the real workspace), else
-        ``<repo_root>/.liuhao_employees.json``.
+        ``LIUHAO_WORKSPACE_ROOT/liuhao_employees.json`` when set (isolation
+        verifiers, and the installed launcher's ``<data>/workspace``), then
+        ``LIUHAO_DATA_DIR/liuhao_employees.json``, else the repo root.
         """
-        root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-        if root:
-            return os.path.join(root, "liuhao_employees.json")
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
-        return os.path.join(repo_root, ".liuhao_employees.json")
+        return resolve_store_path(
+            "liuhao_employees.json",
+            os.path.join(repo_root, ".liuhao_employees.json"),
+            workspace=True,
+        )
 
     # ------------------------------------------------------------------ #
     # Low-level file IO
@@ -412,7 +414,8 @@ class EmployeeStore:
     def _deserialize_employee(
         self, data: Dict[str, Any], provider: Optional[BaseProvider] = None
     ) -> Employee:
-        provider = provider or get_provider()
+        # 未显式传入 provider 时保持 None：Employee 会在执行期按当前模型配置
+        # 重新解析，避免名册长期持有构建时的旧 Key（改 Key 免重启）。
         emp = Employee(
             name=data["name"],
             provider=provider,
@@ -441,7 +444,8 @@ class EmployeeStore:
                 id=ad["id"],
                 agent_type=ad["agent_type"],
                 name=ad["name"],
-                provider=provider,
+                provider=emp.provider,
+                provider_resolver=getattr(emp, "_provider_resolver", None),
                 system_prompt=ad.get("system_prompt", ""),
                 status=AgentStatus(ad["status"]),
                 current_task=ad.get("current_task"),
@@ -493,6 +497,55 @@ class EmployeeStore:
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
+    def _seed_builtin_employees(
+        self, store: Dict[str, Any], owner_account_id: str = ""
+    ) -> List[str]:
+        """把仓库内置角色补进**当前事务里的** store 文档（不落盘）。
+
+        必须在 ``_write_transaction`` 内调用：这样“检查是否已存在 + 写入”
+        和调用方的员工创建是同一个原子操作。返回本次新建的角色名。
+        """
+        from .builtin_employees import builtin_employee_specs
+
+        employees = store.setdefault("employees", {})
+        added: List[str] = []
+        for spec in builtin_employee_specs():
+            name = str(spec["name"])
+            if name in employees:
+                continue
+            employee = Employee(
+                name=name,
+                agent_count=int(spec.get("agent_count", 1)),
+                agent_types=list(spec.get("agent_types") or []) or None,
+                enable_observability=bool(
+                    spec.get("enable_observability", False)
+                ),
+                role_description=str(spec.get("role_description", "")),
+                default_capabilities=list(spec.get("default_capabilities") or []),
+                owner_account_id=str(owner_account_id or ""),
+                employee_id=uuid.uuid4().hex,
+            )
+            data = self._serialize_employee(employee)
+            employees[name] = data
+            # 与 create_employee 保持同一口径：内存对象也有基线，后续 save 才能
+            # 正确计算增量而不是覆盖。
+            self._remember_baseline(employee, data)
+            added.append(name)
+        return added
+
+    def ensure_builtin_employees(self, owner_account_id: str = "") -> List[str]:
+        """幂等写入仓库内置角色；返回本次新建的角色名（已存在则为空列表）。"""
+        with self._write_transaction():
+            store = self._load_store(strict=True)
+            added = self._seed_builtin_employees(store, owner_account_id)
+            if added:
+                self._write_store(store)
+                logger.info(
+                    "evt=builtin_employees_seeded names=%s owner=%s",
+                    ",".join(added), owner_account_id or "-",
+                )
+        return added
+
     def create_employee(
         self,
         name: str,
@@ -519,6 +572,12 @@ class EmployeeStore:
             store = self._load_store(strict=True)
             existing = store.get("employees", {}).get(name)
             if existing is not None:
+                # 验收项三：即使请求的角色已存在，也保证产品内置角色在位。
+                # 只在有归属账号时自动补齐：内置角色属于账号，不属于匿名临时库。
+                if owner_account_id and self._seed_builtin_employees(
+                    store, owner_account_id
+                ):
+                    self._write_store(store)
                 return self._deserialize_employee(existing)
             emp = Employee(
                 name=name,
@@ -535,6 +594,8 @@ class EmployeeStore:
             )
             data = self._serialize_employee(emp)
             store.setdefault("employees", {})[name] = data
+            if owner_account_id:
+                self._seed_builtin_employees(store, owner_account_id)
             self._write_store(store)
             self._remember_baseline(emp, data)
             return emp

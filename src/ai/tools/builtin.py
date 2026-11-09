@@ -12,6 +12,7 @@ Provides a set of ready-to-use tools that cover common operations:
 from __future__ import annotations
 
 import math
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -798,7 +799,9 @@ class FileTool(BaseTool):
             self._base_dir = Path(base_dir).resolve()
         else:
             import tempfile
-            self._base_dir = Path(tempfile.mkdtemp(prefix="liuhao_filetool_")).resolve()
+            self._base_dir = Path(
+                tempfile.mkdtemp(prefix=f"liuhao_filetool_{os.getpid()}_")
+            ).resolve()
 
         # Ensure base directory exists
         self._base_dir.mkdir(parents=True, exist_ok=True)

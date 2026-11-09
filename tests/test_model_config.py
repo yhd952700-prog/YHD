@@ -263,7 +263,9 @@ class TestUndecryptableCredential:
         )
         assert created["api_key_status"] == "ok"
         assert created["api_key_masked"] == "sk-a…mnop"
-        assert key_path.read_bytes() == key
+        raw = key_path.read_bytes()
+        assert raw.startswith(b"LIUHAO-DPAPI-1:"), "密钥必须以机器绑定形态落盘"
+        assert key not in raw, "落盘不得残留裸密钥"
 
         reopened = self._new_store(tmp_path, key_path)
         public = reopened.get_public(created["id"])

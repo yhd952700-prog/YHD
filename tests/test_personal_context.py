@@ -14,10 +14,20 @@ class _FakeMemoryKernel:
 
     def __init__(self):
         self.stored = []
+        self.deleted_keys = []
+        self.deleted_prefixes = []
 
     def store(self, key, value, tier=None, scope=None, tags=None):
         self.stored.append((key, value, set(tags or ())))
         return None
+
+    def delete_by_key(self, key):
+        self.deleted_keys.append(key)
+        return 1
+
+    def delete_by_key_prefix(self, prefix):
+        self.deleted_prefixes.append(prefix)
+        return 2
 
 
 @pytest.fixture
@@ -176,6 +186,66 @@ class TestMemoryPermissionSync:
         mgr.record_fact("u1", "city", "Shanghai")
         assert len(fake.stored) == 1
         assert "profile:u1:fact:city" in fake.stored[0][0]
+
+
+class TestDeleteSingleRecord:
+    """删单条事实/偏好必须精确到 key，不能按前缀连带删同族兄弟 key。"""
+
+    def test_delete_fact_uses_exact_key(self, manager_with_fake_memory):
+        mgr, fake = manager_with_fake_memory
+        mgr.record_fact("u1", "city", "Shanghai")
+        mgr.record_fact("u1", "city_code", "021")
+        assert mgr.delete_fact("u1", "city") is True
+        assert fake.deleted_keys == ["profile:u1:fact:city"]
+        assert fake.deleted_prefixes == []
+        assert mgr.get_fact("u1", "city_code") == "021"
+
+    def test_delete_preference_uses_exact_key(self, manager_with_fake_memory):
+        mgr, fake = manager_with_fake_memory
+        mgr.set_preference("u1", "tone", "formal")
+        mgr.set_preference("u1", "tone_style", "short")
+        assert mgr.delete_preference("u1", "tone") is True
+        assert fake.deleted_keys == ["profile:u1:preference:tone"]
+        assert fake.deleted_prefixes == []
+        assert mgr.get_preference("u1", "tone_style").value == "short"
+
+    def test_clear_still_uses_prefix_for_whole_profile(self, manager_with_fake_memory):
+        mgr, fake = manager_with_fake_memory
+        mgr.record_fact("u1", "city", "Shanghai")
+        assert mgr.clear("u1") == 2
+        assert fake.deleted_prefixes == ["profile:u1:"]
+        assert fake.deleted_keys == []
+        assert mgr.get_facts("u1") == {}
+
+    def test_real_kernel_delete_fact_keeps_sibling(self, tmp_path):
+        # 端到端回归：真实内核 + 真实 PersonalContextManager。
+        from src.kernels.memory import MemoryKernel
+
+        kernel = MemoryKernel(db_path=":memory:")
+        mgr = PersonalContextManager(
+            db_path=str(tmp_path / "pc-real.db"), memory_kernel=kernel
+        )
+        mgr.record_fact("user-alice", "city", "Shanghai")
+        mgr.record_fact("user-alice", "city_code", "021")
+        assert mgr.delete_fact("user-alice", "city") is True
+        assert kernel.recall("profile:user-alice:fact:city") is None
+        kept = kernel.recall("profile:user-alice:fact:city_code")
+        assert kept is not None and kept.value == "021"
+        assert mgr.get_facts("user-alice") == {"city_code": "021"}
+
+    def test_real_kernel_clear_still_removes_whole_profile(self, tmp_path):
+        from src.kernels.memory import MemoryKernel
+
+        kernel = MemoryKernel(db_path=":memory:")
+        mgr = PersonalContextManager(
+            db_path=str(tmp_path / "pc-real-clear.db"), memory_kernel=kernel
+        )
+        mgr.record_fact("user-alice", "city", "Shanghai")
+        mgr.record_fact("user-alice", "city_code", "021")
+        assert mgr.clear("user-alice") == 2
+        assert kernel.recall("profile:user-alice:fact:city") is None
+        assert kernel.recall("profile:user-alice:fact:city_code") is None
+        assert mgr.get_facts("user-alice") == {}
 
 
 class TestSingleton:

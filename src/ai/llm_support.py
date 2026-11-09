@@ -193,7 +193,13 @@ def _output_text(value: Any) -> str:
         path = value.get("rel_path") or value.get("path") or value.get("saved_path")
         if isinstance(path, str) and path.strip():
             size = value.get("bytes")
-            suffix = f"（{size} 字节）" if isinstance(size, int) else ""
+            if isinstance(size, int) and value.get("verified") is True:
+                # 数字来自 file_write 的磁盘回读，不是模型自述。
+                suffix = f"（磁盘回读 {size} 字节）"
+            elif isinstance(size, int):
+                suffix = f"（{size} 字节）"
+            else:
+                suffix = ""
             return f"已写入文件 {path.strip()}{suffix}"
         if value.get("success") is False:
             for key in ("error", "message", "reason"):
@@ -337,12 +343,14 @@ def task_output_facts(result: Any, *, require_artifact: bool = False) -> tuple:
 
 
 #: 目标要求"落到文件"的句式：动作词 + 近距离的产物名词。
-#: 只匹配「产出/生成/整理成/写出/导出/保存/写入 + 文件/文档」，
-#: 刻意不匹配裸「文件」——「读取这个文件」不是要产物。
+#: 除了「文件/文档」，报告、表格、PDF/CSV/Excel/PPT、图片/截图同样是交付物；
+#: 漏掉它们会让整条产物校验被跳过。刻意不匹配裸「文件」——「读取这个文件」
+#: 不是要产物。
 _ARTIFACT_REQUEST_PATTERN = re.compile(
     r"(?:产出|生成|整理成|写出|导出|保存|写入|输出)"
     r"[^。；;，,\n]{0,20}"
-    r"(?:文件|文档)"
+    r"(?:文件|文档|报告|报表|PDF|CSV|Excel|表格|PPT|幻灯片|图片|截图)",
+    re.IGNORECASE,
 )
 
 
@@ -354,6 +362,68 @@ def goal_requires_artifact(goal_text: str) -> bool:
 #: 兼容别名：有调用方/并行改动仍在用私有名。公开名与私有名指向同一个
 #: 函数，任何一侧改名都不会让另一侧的 `from ... import` 在启动时炸成 503。
 _goal_requires_artifact = goal_requires_artifact
+
+
+#: 汇总里出现的“字节 / bytes”数字。这些数字必须能在磁盘回读元数据里找到；
+#: 找不到就说明是模型自己估的，不能当结论发出去。
+_SIZE_CLAIM_RE = re.compile(r"(\d[\d,，]*)\s*(?:字节|bytes?\b)", re.IGNORECASE)
+
+
+def _verified_disk_facts(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """只收集**写入后回读核验通过**的产物元数据（path / bytes / sha256）。"""
+    facts: List[Dict[str, Any]] = []
+    for record in records:
+        value = record.get("result")
+        if not isinstance(value, dict) or value.get("success") is False:
+            continue
+        path = value.get("rel_path") or value.get("path")
+        size = value.get("bytes")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or not isinstance(size, int)
+            or value.get("verified") is not True
+        ):
+            continue
+        facts.append({
+            "path": path.strip(),
+            "bytes": int(size),
+            "sha256": str(value.get("sha256") or ""),
+        })
+    return facts
+
+
+def _disk_fact_line(records: Sequence[Dict[str, Any]]) -> str:
+    """给汇总附一行磁盘核验事实，让所有数字都有可复查的来源。"""
+    facts = _verified_disk_facts(records)
+    if not facts:
+        return ""
+    bits = []
+    for fact in facts[:5]:
+        bit = f"{fact['path']}：{fact['bytes']} 字节"
+        if fact["sha256"]:
+            bit += f"，SHA256 {fact['sha256'][:16]}…"
+        bits.append(bit)
+    return "磁盘核验（写入后回读）：" + "；".join(bits) + "。"
+
+
+def _conflicting_disk_size_claims(
+    summary: str, records: Sequence[Dict[str, Any]]
+) -> List[str]:
+    """模型结论里自报的字节数，只要不在磁盘元数据里，就算冲突。"""
+    allowed = {fact["bytes"] for fact in _verified_disk_facts(records)}
+    if not allowed:
+        return []
+    conflicts: List[str] = []
+    for match in _SIZE_CLAIM_RE.finditer(summary or ""):
+        raw = match.group(1).replace(",", "").replace("，", "")
+        try:
+            claimed = int(raw)
+        except ValueError:
+            continue
+        if claimed not in allowed:
+            conflicts.append(f"{claimed}字节")
+    return conflicts
 
 
 def compose_execution_summary(
@@ -389,6 +459,10 @@ def compose_execution_summary(
     ]
 
     deterministic = _deterministic_summary(goal_text, completed, failed, skipped)
+    disk_line = _disk_fact_line(completed)
+    if disk_line:
+        # 确定性兜底也要带上磁盘核验行：任何一条汇总都能追溯到一个真实文件。
+        deterministic = deterministic.rstrip() + "\n" + disk_line
     trusted = _trusted_compute_values(completed)
     real_sources, _fetched_at = _collect_source_dicts(completed)
     real_urls = {str(item["url"]) for item in real_sources}
@@ -438,7 +512,9 @@ def compose_execution_summary(
         "写法要求：\n"
         "1. 第一句先给结论：目标完成到什么程度（全部完成 / 部分完成 / 未完成）。\n"
         "2. 再说分工：哪件事由谁做；记录里有「指派理由」时，用一句话说明为什么派给他。\n"
-        "3. 有产物就把产物路径原样写出来（照抄，不要改写或推测路径）。\n"
+        "3. 有产物就把产物路径原样写出来（照抄，不要改写或推测路径）；"
+        "记录里标了「磁盘回读 / 磁盘核验」的字节数和 SHA256 必须原样照抄，"
+        "禁止自己估算或改写任何数字。\n"
         "4. 有失败任务必须单独写清楚：哪件失败、失败原因是什么、是否建议重试。"
         "记录里没有依据就不要猜原因，也不要把失败说成成功。\n"
         "5. 不要把子任务的原始输出整段粘贴过来；用自己的话概括结论和关键结果。\n"
@@ -535,6 +611,17 @@ def compose_execution_summary(
             conflicts[:3],
         )
         return deterministic
+    disk_conflicts = _conflicting_disk_size_claims(summary, completed)
+    if disk_conflicts:
+        # 验收项二：汇总里的字节数必须来自磁盘回读，不能是模型自述/估算。
+        logger.warning(
+            "model summary quoted size(s) absent from disk metadata (%s); "
+            "using deterministic summary",
+            disk_conflicts[:3],
+        )
+        return deterministic
+    if disk_line:
+        summary = summary.rstrip() + "\n\n" + disk_line
     return summary[:2500]
 
 
@@ -934,7 +1021,18 @@ def _deterministic_summary(
         )
     if produced:
         names = "、".join(str(r.get("name") or "未命名任务") for r in produced[:5])
-        parts.append(f"已完成 {len(produced)} 项任务（均已产出）：{names}。")
+        with_files = sum(
+            1 for r in produced if task_output_facts(r.get("result"))[1]
+        )
+        if not goal_requires_artifact(goal_text) or with_files == len(produced):
+            # 纯文案目标：非空文本本身就是产出（``produced`` 已排除空结果/失败
+            # 回执），与「要文件」的目标分开判定；后者要求每一项都有真实路径。
+            basis = "（均已产出）"
+        elif with_files:
+            basis = f"（其中 {with_files} 项有产物）"
+        else:
+            basis = ""
+        parts.append(f"已完成 {len(produced)} 项任务{basis}：{names}。")
     if empty_completed:
         names = "、".join(
             str(r.get("name") or "未命名任务") for r in empty_completed[:5]

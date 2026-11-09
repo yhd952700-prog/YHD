@@ -10,7 +10,9 @@ Usage:
    provider = get_provider()  # Auto-detects from env config
 """
 
+import hashlib
 import os
+import random
 import re
 import json
 import logging
@@ -18,7 +20,7 @@ import threading
 import warnings
 from typing import Optional, Dict, Any, Sequence
 
-from .net_guard import assert_safe_runtime_target
+from .net_guard import RuntimeTargetRejected, assert_safe_runtime_target
 from .observability import observe
 
 logger = logging.getLogger("liuhao.ai.providers")
@@ -82,6 +84,27 @@ _UPSTREAM_MODEL_MISSING_TOKENS = (
     "not_found_error",
 )
 
+#: 上下文超限：上游明确说"这一轮的历史/输入太长"。
+#:
+#: 它不是网络问题，也不是密钥问题，重试不会让历史变短；混进 ``upstream_error``
+#: 会把用户引向"检查密钥与网络"，方向完全相反。OpenAI 兼容服务、Anthropic、
+#: Google、Ollama 的原话都要认出来（关键词按小写匹配）。
+_UPSTREAM_CONTEXT_TOKENS = (
+    "context_length_exceeded",
+    "context length exceeded",
+    "maximum context length",
+    "max context length",
+    "context window exceeded",
+    "exceeds the maximum number of tokens",
+    "prompt is too long",
+    "input is too long",
+    "request too large",
+    "reduce the length of the messages",
+    "string_above_max_length",
+    "上下文长度",
+    "上下文超限",
+)
+
 
 # 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
 # 绝不直接展示给用户，也不写进会话历史。
@@ -116,6 +139,83 @@ INVALID_KEY_MESSAGE = (
 QUOTA_EXHAUSTED_MESSAGE = "模型账户的额度或余额不足，请到提供方控制台充值后重试。"
 MODEL_NOT_FOUND_MESSAGE = "模型不存在或已下线，请核对模型名（可点「测试连接」查看服务端返回）。"
 RATE_LIMITED_MESSAGE = "请求被上游限流（短时间内调用过多），请稍后重试。"
+#: 上下文超限：动作是"缩短这一轮"，不是"改 Key / 查网络 / 再试一次"。
+CONTEXT_LENGTH_EXCEEDED_MESSAGE = (
+    "对话太长，请新开会话或分段发送（当前这一轮包含的历史太多了）。"
+)
+
+#: 上游自身故障（5xx）：动作是"稍后重试 / 联系服务提供方"，不是检查 Key。
+SERVER_ERROR_MESSAGE = "模型服务端出错了（HTTP 5xx），请稍后重试；持续出现请联系服务提供方。"
+#: 400 是请求本身不合法（模型名、参数、接口形态），与 Key 无关。
+BAD_REQUEST_MESSAGE = "模型服务认为请求不合法（HTTP 400），请检查模型名与参数设置。"
+#: 407 只可能是代理认证，不能让用户在 Key 上兜圈子。
+PROXY_AUTH_MESSAGE = "代理要求认证（HTTP 407），请检查代理地址/账号，或暂时关闭代理后重试。"
+#: 3xx 与 200+HTML 同一类：请求被网关/登录页拦截，根本没到模型接口。
+REDIRECT_BLOCKED_MESSAGE = (
+    "模型服务返回了重定向或网页（不是模型接口），疑似被网关或登录页拦截；"
+    "请核对接口地址是否为真实 API 端点。"
+)
+#: 404 但上游没说"模型不存在"：多半是 base_url 写错（多写 /chat/completions、漏 /v1）。
+ENDPOINT_NOT_FOUND_MESSAGE = (
+    "模型接口地址不存在（HTTP 404），接口路径可能不对；常见配置需要以 /v1 结尾。"
+)
+#: 输出被长度上限截断：内容真实但没说完，不能算 completed。
+TRUNCATED_RESPONSE_MESSAGE = "回复达到长度上限被截断，请发送「继续」或换用支持更长输出的模型。"
+#: 证书问题与"服务没启动"是两回事，方向不能给反。
+#:
+#: 信任来源按链路分叉：OpenAI/Anthropic/Google 走 httpx，默认上下文在 Windows
+#: 下加载系统「受信任的根证书颁发机构」（实测 cert_store_stats 有 35 张 CA，
+#: 且尊重 ``SSL_CERT_FILE``）；Ollama/Moonshot/DeepSeek 走 requests，只认内置
+#: certifi 列表。所以界面不能断言"一定读"或"一定不读"系统商店——两种说法都会
+#: 在另一半链路上骗人。文案只说"来源不同 + 可执行动作"，具体对照进日志/文档。
+_CERT_TRUST_LIST_NOTE = (
+    "本产品不同链路的证书信任来源不同"
+    "（有的读取系统证书商店，有的只用内置证书列表），"
+    "在系统里「信任该证书」不一定生效。"
+)
+CERTIFICATE_UNTRUSTED_MESSAGE = (
+    "无法验证模型服务的证书（自签证书、私有 CA 或公司代理）。"
+    + _CERT_TRUST_LIST_NOTE
+    + "请改用可直连的网络或地址；若必须走公司代理，"
+    "请联系网络管理员提供受信任的 HTTPS 入口。"
+)
+CERTIFICATE_HOSTNAME_MESSAGE = (
+    "模型服务的证书与访问地址不匹配（证书上的域名/主机名和填写的地址不一致）。"
+    "常见原因是接口地址填错，或公司代理把请求转给了别的站点；"
+    "请核对接口地址，必要时联系网络管理员。"
+)
+CERTIFICATE_EXPIRED_MESSAGE = (
+    "模型服务的证书已过期（也可能是本机时间不正确）。"
+    "请先核对系统时间；若时间正确，请联系服务提供方或网络管理员更新证书。"
+)
+CERTIFICATE_NOT_YET_VALID_MESSAGE = (
+    "模型服务的证书尚未生效（也可能是本机时间不正确）。"
+    "请先核对系统时间；若时间正确，请联系服务提供方或网络管理员。"
+)
+#: 兜底：认不出具体原因时仍不能退回"检查网络"。
+CERTIFICATE_FAILURE_MESSAGE = (
+    "模型服务证书校验失败（自签证书或证书链不受信任）。"
+    + _CERT_TRUST_LIST_NOTE
+    + "请改用可直连的网络或地址，或联系网络管理员。"
+)
+
+_CERT_KIND_MESSAGES = {
+    "certificate_untrusted": CERTIFICATE_UNTRUSTED_MESSAGE,
+    "certificate_hostname": CERTIFICATE_HOSTNAME_MESSAGE,
+    "certificate_expired": CERTIFICATE_EXPIRED_MESSAGE,
+    "certificate_not_yet_valid": CERTIFICATE_NOT_YET_VALID_MESSAGE,
+    "certificate": CERTIFICATE_FAILURE_MESSAGE,
+}
+
+#: 上游明确表示"因长度/过滤而停止"的 finish_reason：这些不是正常收尾。
+TRUNCATED_FINISH_REASONS = ("length", "max_tokens", "max_output_tokens", "max_completion_tokens")
+
+#: 200 但返回 HTML 时写进「技术详情」的说明（主文案不能拼接英文原文）。
+HTML_RESPONSE_DETAIL = "返回非 JSON（可能是 HTML 页面），疑似被网关或登录页拦截"
+#: 200 但响应体完全不可解析（乱码/HTML/空壳）：同样是"没到模型接口"。
+INVALID_RESPONSE_MESSAGE = (
+    "模型服务返回的不是可解析的接口数据（可能是网关或登录页），请核对接口地址后重试。"
+)
 
 #: 判断"连不上"用的异常类名片段（SDK 常把连接失败包成自己的类型）。
 _CONNECT_ERROR_NAMES = ("connection", "connect", "network", "unreachable")
@@ -125,8 +225,41 @@ DEFAULT_GENERATION_TIMEOUT = 120.0
 #: 首字等待的默认值：只在用户**没有配置**超时时使用。
 DEFAULT_FIRST_TOKEN_TIMEOUT = 180.0
 
+#: 低于这个超时值就不再自动重试（秒）。
+#:
+#: 为什么是 5 秒：一次超时重试 = 两次等待 + 一次退避（0.8~1.2 秒），实测
+#: ``timeout=2`` 总共要 4992ms（约 2.5 倍）。用户把超时写到 5 秒以下，表达的
+#: 就是"宁可失败也别让我等"；再重试只是把同一句错话推迟 2.5 倍才送到。
+#: 5 秒以上的配置还留有一次冷启动重试的余地，这才是重试想救的场景。
+DEFAULT_RETRY_MIN_TIMEOUT = 5.0
+#: 覆盖上面阈值的环境变量（秒）。设为 0 表示"任何超时都照常重试"。
+RETRY_MIN_TIMEOUT_ENV = "LIUHAO_RETRY_MIN_TIMEOUT_SECONDS"
+
+
+def _retry_min_timeout_from_env() -> float:
+    """读取重试阈值；非法值退回默认值，坏配置不能让所有请求都不可用。"""
+    raw = os.environ.get(RETRY_MIN_TIMEOUT_ENV)
+    if raw is None or not str(raw).strip():
+        return DEFAULT_RETRY_MIN_TIMEOUT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "invalid %s=%r, falling back to %ss",
+            RETRY_MIN_TIMEOUT_ENV,
+            raw,
+            DEFAULT_RETRY_MIN_TIMEOUT,
+        )
+        return DEFAULT_RETRY_MIN_TIMEOUT
+    return value if value >= 0 else DEFAULT_RETRY_MIN_TIMEOUT
+
 #: 自动重试时给用户看的可见反馈（由流式链路作为 notice 事件下发）。
 RETRY_NOTICE_MESSAGE = "生成较慢，正在重试（模型：{model}）…"
+#: 跨厂商静默切换是最危险的"看不见"：用户以为还是主模型，账本也该记在主模型上。
+#: 切换必须显式告知，并按实际应答的模型计费。
+FAILOVER_NOTICE_MESSAGE = (
+    "主模型未成功，已自动切换到备用模型（{model}）；本轮按备用模型计费。"
+)
 
 
 def _with_model(message: str, model: Any) -> str:
@@ -153,6 +286,161 @@ class ProviderStreamIncompleteError(RuntimeError):
         self.detail = detail
         self.upstream_kind = "incomplete_stream"
         super().__init__(f"{INCOMPLETE_STREAM_MESSAGE}（{label}：{detail}）")
+
+
+class ProviderTruncatedError(RuntimeError):
+    """上游明确表示输出被长度上限截断（``finish_reason=length/max_tokens``）。
+
+    这不是成功：用户看到的是一个没有结尾的回答。调用方必须保留已产出的
+    文本，但状态记 ``truncated``（不能记 ``completed``），并给出中文提示。
+    """
+
+    def __init__(self, label: str, finish_reason: str, partial_text: str = ""):
+        self.label = label
+        self.finish_reason = finish_reason
+        self.partial_text = partial_text or ""
+        self.upstream_kind = "truncated"
+        super().__init__(f"{TRUNCATED_RESPONSE_MESSAGE}（{label}：finish_reason={finish_reason}）")
+
+
+def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
+    """沿 ``__cause__`` / ``__context__`` 取异常链（去重、限深）。"""
+    seen: list[BaseException] = []
+    current: Optional[BaseException] = exc
+    while current is not None and len(seen) < limit:
+        if any(current is item for item in seen):
+            break
+        seen.append(current)
+        current = current.__cause__ or current.__context__
+    return seen
+
+
+def _is_certificate_failure(exc: BaseException) -> bool:
+    """TLS 证书校验失败（SDK 常包成 ``APIConnectionError``，方向极易误诊）。"""
+    for err in _exception_chain(exc):
+        name = type(err).__name__.lower()
+        if "ssl" in name or "cert" in name:
+            return True
+        text = str(err).lower()
+        if "certificate" in text or "self signed" in text or "self-signed" in text:
+            return True
+    return False
+
+
+def is_address_rejected_error(exc: BaseException) -> bool:
+    """net_guard 的运行时目标拒绝（DNS 不可解析 / 私网端点）。"""
+    return isinstance(exc, RuntimeTargetRejected) or "runtimetargetrejected" in type(
+        exc
+    ).__name__.lower()
+
+
+def is_certificate_error(exc: BaseException) -> bool:
+    """TLS 证书校验失败（SDK 常包成 ``APIConnectionError``，方向极易误诊）。"""
+    for err in _exception_chain(exc):
+        name = type(err).__name__.lower()
+        if "ssl" in name or "cert" in name:
+            return True
+        text = str(err).lower()
+        if "certificate" in text or "self signed" in text or "self-signed" in text:
+            return True
+    return False
+
+
+# 兼容内部调用点的短名字（对外统一用上面的公开名）。
+_is_address_rejected = is_address_rejected_error
+_is_certificate_failure = is_certificate_error
+
+
+#: OpenSSL ``X509_V_ERR_*`` → 用户下一步该做什么。只映射动作明确的几类，
+#: 其余（吊销 / 策略拒绝）走兜底文案，不硬猜。
+_CERT_VERIFY_CODE_KINDS = {
+    9: "certificate_not_yet_valid",
+    10: "certificate_expired",
+    18: "certificate_untrusted",  # self signed certificate
+    19: "certificate_untrusted",  # self signed certificate in chain
+    20: "certificate_untrusted",  # unable to get local issuer certificate
+    21: "certificate_untrusted",  # unable to verify the first certificate
+    62: "certificate_hostname",  # hostname mismatch
+}
+
+#: 拿不到 ``verify_code`` 时（部分 SDK 只保留文案）按顺序匹配关键词：
+#: 过期/未生效/域名在前，最后才是"不受信任"——它们的原文都含
+#: "certificate verify failed"，先判窄的才不会把过期误报成自签。
+_CERT_TEXT_RULES = (
+    (
+        "certificate_expired",
+        ("certificate has expired", "expired certificate", "certificate_expired"),
+    ),
+    (
+        "certificate_not_yet_valid",
+        ("not yet valid", "certificate is not yet"),
+    ),
+    (
+        "certificate_hostname",
+        (
+            "hostname mismatch",
+            "ip address mismatch",
+            "certificate is not valid for",
+            "doesn't match",
+            "does not match",
+        ),
+    ),
+    (
+        "certificate_untrusted",
+        (
+            "self signed",
+            "self-signed",
+            "unable to get local issuer",
+            "unable to get issuer certificate",
+            "unable to verify the first certificate",
+            "unknown ca",
+        ),
+    ),
+)
+
+
+def certificate_failure_kind(exc: BaseException) -> Optional[str]:
+    """把 TLS 失败细分到"用户下一步该做什么"的一类。
+
+    优先读异常链上 ``ssl.SSLCertVerificationError`` 的 ``verify_code`` /
+    ``verify_message``（精确），再退回原文字符串。返回值：
+
+    - ``certificate_untrusted`` 自签 / 私有 CA / 公司代理
+    - ``certificate_hostname`` 证书域名与访问地址不一致
+    - ``certificate_expired`` 证书过期
+    - ``certificate_not_yet_valid`` 证书未生效（多为本机时间错）
+    - ``certificate`` 是证书问题但认不出具体原因
+    - ``None`` 不是证书问题
+    """
+    if not is_certificate_error(exc):
+        return None
+    fragments: list[str] = []
+    for err in _exception_chain(exc):
+        code = getattr(err, "verify_code", None)
+        if isinstance(code, int) and not isinstance(code, bool):
+            kind = _CERT_VERIFY_CODE_KINDS.get(code)
+            if kind:
+                return kind
+        message = getattr(err, "verify_message", None)
+        if isinstance(message, str) and message.strip():
+            fragments.append(message.lower())
+    fragments.extend(str(err).lower() for err in _exception_chain(exc))
+    text = " ".join(fragments)
+    for kind, tokens in _CERT_TEXT_RULES:
+        if any(token in text for token in tokens):
+            return kind
+    return "certificate"
+
+
+def certificate_failure_message(exc: BaseException, model: Any = None) -> str:
+    """证书失败的中文可行动文案（技术原文只进日志）。"""
+    kind = certificate_failure_kind(exc) or "certificate"
+    return _with_model(_CERT_KIND_MESSAGES.get(kind, CERTIFICATE_FAILURE_MESSAGE), model)
+
+
+def _looks_like_html(text: Any) -> bool:
+    lowered = str(text or "").lower()
+    return "<html" in lowered or "<!doctype html" in lowered
 
 
 class TurnCancelled(Exception):
@@ -267,6 +555,13 @@ def technical_detail_for(exc: BaseException) -> str:
     「技术详情」里。只保留 ``error.message``——``type``、完整响应体、
     请求头一律不进，避免把英文错误码与内部信息当正文展示。
     """
+    if isinstance(exc, ProviderChainError):
+        # 多模型回落失败：主文案只有中文分类，逐模型的上游原文汇总到这里。
+        return "\n".join(
+            f"{item.get('model', '未知模型')}: {item['detail']}"
+            for item in exc.attempts
+            if isinstance(item.get("detail"), str) and item["detail"]
+        )
     return sanitize_upstream_detail(_server_detail_text(exc))
 
 
@@ -284,6 +579,8 @@ def user_facing_failure(exc: BaseException, model: Optional[str] = None) -> str:
         return str(exc)
     if isinstance(exc, ProviderEmptyResponseError):
         return _with_model(EMPTY_RESPONSE_MESSAGE, model)
+    if isinstance(exc, ProviderTruncatedError):
+        return _with_model(TRUNCATED_RESPONSE_MESSAGE, model)
     if isinstance(exc, ProviderStreamIncompleteError):
         return _with_model(INCOMPLETE_STREAM_MESSAGE, model)
     if isinstance(exc, ProviderTimeoutError):
@@ -296,6 +593,18 @@ def user_facing_failure(exc: BaseException, model: Optional[str] = None) -> str:
         )
     if isinstance(exc, TimeoutError):
         return _with_model(TIMEOUT_MESSAGE, model)
+    # net_guard 已经写好了可直接展示的中文（"地址当前无法解析"/"指向内网"）。
+    # 旧实现把它落到通用文案，等于把最准确的一句诊断丢掉了。
+    if _is_address_rejected(exc):
+        message = str(exc).strip() or CONNECTION_FAILURE_MESSAGE
+        if "内网" in message or "本机" in message:
+            message += "如需连接局域网自建服务，请改用 Ollama 类型，或在配置中显式放行该地址。"
+        return _with_model(message, model)
+    # SDK 把 TLS 失败包成 APIConnectionError（类名含 connection）：必须在
+    # "连不上，请确认服务已启动"之前拦下来，否则方向完全相反。再细分到
+    # 不受信任 / 域名不匹配 / 过期，用户才知道下一步该做什么。
+    if _is_certificate_failure(exc):
+        return certificate_failure_message(exc, model)
     name = type(exc).__name__.lower()
     is_connect = (
         isinstance(exc, (ConnectionError, OSError))
@@ -310,15 +619,29 @@ def user_facing_failure(exc: BaseException, model: Optional[str] = None) -> str:
         return _with_model(TIMEOUT_MESSAGE, model)
     kind = getattr(exc, "upstream_kind", None)
     status = getattr(exc, "status_code", None)
+    if kind == "context_length_exceeded":
+        return _with_model(CONTEXT_LENGTH_EXCEEDED_MESSAGE, model)
     if kind == "quota_exhausted" or status == 402:
         return _with_model(QUOTA_EXHAUSTED_MESSAGE, model)
     if kind in ("invalid_key", "key_revoked") or status in (401, 403):
         return _with_model(INVALID_KEY_MESSAGE, model)
-    if kind == "model_not_found" or status == 404:
+    if kind == "model_not_found":
         # 名字写错时上游原话有用，但只能进「技术详情」（见 technical_detail_for）。
         return _with_model(MODEL_NOT_FOUND_MESSAGE, model)
+    if kind == "endpoint_not_found" or status == 404:
+        return _with_model(ENDPOINT_NOT_FOUND_MESSAGE, model)
     if kind == "rate_limited" or status == 429:
         return _with_model(RATE_LIMITED_MESSAGE, model)
+    if kind == "server_error" or (isinstance(status, int) and status >= 500):
+        return _with_model(SERVER_ERROR_MESSAGE, model)
+    if kind == "bad_request" or status == 400:
+        return _with_model(BAD_REQUEST_MESSAGE, model)
+    if kind == "proxy_auth" or status == 407:
+        return _with_model(PROXY_AUTH_MESSAGE, model)
+    if kind == "redirect_blocked" or (isinstance(status, int) and 300 <= status < 400):
+        return _with_model(REDIRECT_BLOCKED_MESSAGE, model)
+    if kind == "invalid_response":
+        return _with_model(INVALID_RESPONSE_MESSAGE, model)
     if kind == "unreachable":
         return _with_model(CONNECTION_FAILURE_MESSAGE, model)
     if kind == "upstream_error":
@@ -334,6 +657,12 @@ def _is_timeout_or_connection(exc: BaseException) -> bool:
     """
     if isinstance(exc, ProviderTimeoutError):
         return True
+    # DNS 不可解析 / 私网拒绝 / 证书不受信任：重试不会变得可解析、可信任，
+    # 旧实现把这类 RuntimeError 当"连接问题"重试 4 次，白等约 7 秒。
+    if _is_address_rejected(exc) or _is_certificate_failure(exc):
+        return False
+    if isinstance(exc, ProviderTruncatedError):
+        return False
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return True
     name = type(exc).__name__.lower()
@@ -347,10 +676,10 @@ class ProviderHTTPError(RuntimeError):
     绝不拼进异常消息（异常消息会进入诊断与部分用户可见路径）。
 
     ``upstream_kind`` 是**脱敏之前**按状态码 + 上游错误码/关键词算好的分类
-    （``quota_exhausted`` / ``key_revoked`` / ``invalid_key`` / ``rate_limited``
-    / ``model_not_found`` / ``upstream_error``）。消费方必须优先读它：
-    中性文案里已经没有 ``insufficient_quota``、``revoked`` 这些词，
-    只看文案会把"去充值"错报成"请稍后重试"。
+    （``context_length_exceeded`` / ``quota_exhausted`` / ``key_revoked`` /
+    ``invalid_key`` / ``rate_limited`` / ``model_not_found`` / ``upstream_error``）。
+    消费方必须优先读它：中性文案里已经没有 ``insufficient_quota``、
+    ``revoked`` 这些词，只看文案会把"去充值"错报成"请稍后重试"。
     """
 
     def __init__(
@@ -362,9 +691,12 @@ class ProviderHTTPError(RuntimeError):
         upstream_detail: Optional[str] = None,
         upstream_code: Optional[str] = None,
         upstream_type: Optional[str] = None,
+        retry_after: Optional[float] = None,
     ):
         super().__init__(message)
         self.status_code = status_code
+        #: 上游 ``Retry-After``（秒）；退避时取 ``max(retry_after, 基础退避)``。
+        self.retry_after = retry_after
         #: 服务端错误体里的 ``message``（已脱敏、已截断，≤120 字符）。
         #: 只用于界面「技术详情」；主文案不得拼接它。
         self.upstream_detail = upstream_detail or ""
@@ -454,21 +786,43 @@ def classify_upstream_error(
     if exc is not None:
         body = f"{body} {_upstream_error_text(exc)}"
     body = body.lower()
+    # 上下文超限要先于其它分类：OpenAI 兼容服务的原话里常同时出现
+    # "maximum"、token 数与 "request"，掉进通用分支就再也分不出来。
+    if any(token in body for token in _UPSTREAM_CONTEXT_TOKENS):
+        return "context_length_exceeded"
     if any(token in body for token in _UPSTREAM_QUOTA_TOKENS):
         return "quota_exhausted"
     if code == 402:
         return "quota_exhausted"
+    # 代理认证、请求不合法、网关重定向/网页、上游自身故障：四类各有独立的
+    # 可行动文案，不能再被压成同一句"请检查密钥与网络"。
+    if code == 407:
+        return "proxy_auth"
+    if isinstance(code, int) and 300 <= code < 400:
+        return "redirect_blocked"
+    if isinstance(code, int) and 500 <= code <= 599:
+        return "server_error"
+    if code == 400:
+        return "bad_request"
     if code in (401, 403):
         if any(token in body for token in _UPSTREAM_REVOKED_TOKENS):
             return "key_revoked"
         return "invalid_key"
     if code == 404:
-        return "model_not_found"
+        # 404 不一定是模型名写错：base_url 多写 /chat/completions、漏 /v1
+        # 也会 404。只有上游明确说"模型不存在"才报模型问题。
+        if any(token in body for token in _UPSTREAM_MODEL_MISSING_TOKENS):
+            return "model_not_found"
+        return "endpoint_not_found"
     if code == 429:
         return "rate_limited"
     # 没有 HTTP 状态码的"假 200"：Ollama / Moonshot / DeepSeek 会把错误写进
     # 200 响应体。只能按错误体关键词判类，否则额度耗尽会退化成通用失败。
     if code in (None, 200):
+        # 200 + HTML 优先：登录页/网关拦截页里也常出现 "unauthorized" 等词，
+        # 先按关键词判会把"被拦截"错报成"Key 无效"。
+        if "<html" in body or "<!doctype html" in body:
+            return "redirect_blocked"
         if any(token in body for token in _UPSTREAM_RATE_TOKENS):
             return "rate_limited"
         if any(token in body for token in _UPSTREAM_REVOKED_TOKENS):
@@ -536,6 +890,7 @@ def _raise_upstream_http(label: str, response: Any) -> None:
         upstream_detail=sanitize_upstream_detail(raw_text),
         upstream_code=code,
         upstream_type=error_type,
+        retry_after=_retry_after_seconds(getattr(response, "headers", None)),
     )
 
 
@@ -552,6 +907,20 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
         # google-genai 的 APIError 只暴露 ``code``（HTTP 状态码）。
         status = getattr(exc, "code", None)
     if not isinstance(status, int):
+        # 200 但响应体不是 JSON（HTML 登录页/网关页）：SDK 抛解析错误，没有
+        # HTTP 状态码。必须在这里判断，否则用户只会看到"无法解析"且技术详情为空。
+        if _response_validation_error(exc):
+            response = getattr(exc, "response", None)
+            text = getattr(response, "text", None)
+            if isinstance(text, str) and _looks_like_html(text):
+                logger.info("%s returned HTML instead of JSON (status=200)", label)
+                _raise_invalid_response(
+                    label,
+                    exc,
+                    kind="redirect_blocked",
+                    detail=HTML_RESPONSE_DETAIL,
+                )
+            _raise_invalid_response(label, exc)
         return
     kind = classify_upstream_error(exc, status=status)
     detail = ""
@@ -568,9 +937,13 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
     if not detail:
         detail = sanitize_upstream_detail(getattr(exc, "message", "") or str(exc))
     code, error_type = _error_code_type(body)
+    response = getattr(exc, "response", None)
     if not code and not error_type:
-        response = getattr(exc, "response", None)
         code, error_type = _error_code_type(getattr(response, "text", None))
+    # 200 + HTML 即便 SDK 给了状态码也要标注真实原因（被网关/登录页拦截）。
+    if _looks_like_html(detail):
+        kind = "redirect_blocked"
+        detail = HTML_RESPONSE_DETAIL
     logger.info("%s upstream HTTP failure status=%s kind=%s", label, status, kind)
     raise ProviderHTTPError(
         _neutral_http_message(label, status),
@@ -579,6 +952,7 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
         upstream_detail=detail,
         upstream_code=code,
         upstream_type=error_type,
+        retry_after=_retry_after_seconds(getattr(response, "headers", None)),
     ) from exc
 
 
@@ -596,8 +970,16 @@ def _is_retryable_failure(exc: BaseException) -> bool:
         return False
     if isinstance(exc, ProviderEmptyResponseError):
         return True
+    if _is_address_rejected(exc) or _is_certificate_failure(exc):
+        # 解析不了的主机名 / 不受信任的证书，重试只会让用户多等 7 秒。
+        return False
+    if isinstance(exc, ProviderTruncatedError):
+        return False
     status = getattr(exc, "status_code", None)
     kind = getattr(exc, "upstream_kind", None)
+    # 上下文超限重试 4 次只会让用户多等 4 次同一句错话，历史不会因此变短。
+    if kind == "context_length_exceeded":
+        return False
     if isinstance(status, int):
         if status == 429:
             return kind != "quota_exhausted"
@@ -678,6 +1060,33 @@ def _extract_openai_payload_text(payload: Any) -> str:
     return _extract_openai_message_text(first.get("message"))
 
 
+def _openai_finish_reason(payload: Any) -> str:
+    """取 OpenAI 响应的 ``finish_reason``（dict / SDK 对象 / 原始 JSON 文本）。
+
+    非流式路径旧实现完全不读它，``finish_reason=length`` 的截断回答会被
+    当成正常完成；这里统一取值，供调用方判定 ``truncated``。
+    """
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            return ""
+    if isinstance(payload, dict):
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        value = first.get("finish_reason")
+    else:
+        choices = getattr(payload, "choices", None)
+        if not isinstance(choices, list) or not choices:
+            return ""
+        value = getattr(choices[0], "finish_reason", None)
+    return str(value or "").strip().lower()
+
+
 def _embedded_error(payload: Any) -> Any:
     """取出 200 响应体里夹带的 ``error`` 对象（没有则返回 ``None``）。"""
     if isinstance(payload, dict):
@@ -718,7 +1127,13 @@ def _raise_embedded_upstream_error(
     )
 
 
-def _raise_invalid_response(label: str, exc: Optional[BaseException] = None) -> None:
+def _raise_invalid_response(
+    label: str,
+    exc: Optional[BaseException] = None,
+    *,
+    kind: str = "invalid_response",
+    detail: str = "",
+) -> None:
     """上游返回了无法解析的响应（HTML / 空 body / 非 JSON）。"""
     logger.info(
         "%s returned an unparseable response: %s",
@@ -727,8 +1142,46 @@ def _raise_invalid_response(label: str, exc: Optional[BaseException] = None) -> 
     )
     raise ProviderHTTPError(
         f"{label}返回了无法解析的响应，请稍后重试。",
-        upstream_kind="upstream_error",
+        upstream_kind=kind,
+        upstream_detail=detail or HTML_RESPONSE_DETAIL,
     ) from exc
+
+
+def _retry_after_seconds(headers: Any) -> Optional[float]:
+    """读取 ``Retry-After``（秒数或 HTTP-date），无效值一律忽略。"""
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("retry-after")
+    except Exception:  # noqa: BLE001 - 头部读取失败不影响主流程
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    try:
+        seconds = float(text)
+    except (TypeError, ValueError):
+        try:
+            from email.utils import parsedate_to_datetime
+            import time as _time
+
+            delta = parsedate_to_datetime(text).timestamp() - _time.time()
+            seconds = delta
+        except Exception:  # noqa: BLE001
+            return None
+    if seconds <= 0:
+        return None
+    return min(seconds, 60.0)
+
+
+def _response_validation_error(exc: BaseException) -> bool:
+    """SDK 在 200 但响应体非 JSON 时抛的解析错误（含 HTML 登录页）。"""
+    name = type(exc).__name__.lower()
+    return (
+        isinstance(exc, (json.JSONDecodeError, ValueError))
+        or "responsevalidation" in name
+        or "jsondecode" in name
+    )
 
 
 def _require_nonempty_text(label: str, text: str, detail: str = "模型返回为空") -> str:
@@ -782,6 +1235,63 @@ def _iter_with_cancel(iterable, cancel_token: Optional[TurnCancelToken]):
         yield item
 
 
+#: 流式产出合并窗口（秒）。上游按 token 级推送（200 token/s ≈ 每 5ms 一帧），
+#: 逐 token 转一帧会让下游把大部分时间花在帧开销上。40ms 落在 30–50ms 目标
+#: 区间；设为 0 可关闭合并（排障或基准对比用）。
+STREAM_COALESCE_SECONDS = 0.04
+#: 单帧字符上限：上游极快时不能为了等时间窗口把一帧撑得无限大。
+STREAM_COALESCE_MAX_CHARS = 2048
+
+
+def _coalesce_stream(tokens, *, interval: Optional[float] = None):
+    """把相邻的 ``str`` token 按时间窗口合并后再产出。
+
+    * **首帧立即发出**：合并不能牺牲首字延迟；
+    * 非字符串事件（``{"type": "notice"}`` 等）先刷出缓冲区再原样透传，
+      保证"正在重试"不会排到已产出的正文后面；
+    * 流结束时残余必发，不丢最后一段。
+    """
+    import time
+
+    window = float(STREAM_COALESCE_SECONDS if interval is None else interval)
+    if window <= 0:
+        yield from tokens
+        return
+
+    buffer: list[str] = []
+    buffered_chars = 0
+    last_flush = time.monotonic()
+    sent_any = False
+    for item in tokens:
+        if not isinstance(item, str):
+            if buffer:
+                yield "".join(buffer)
+                buffer.clear()
+                buffered_chars = 0
+            yield item
+            sent_any = True
+            last_flush = time.monotonic()
+            continue
+        buffer.append(item)
+        buffered_chars += len(item)
+        if not sent_any:
+            # 首帧不等待：用户要尽快看到第一个字。
+            yield "".join(buffer)
+            buffer.clear()
+            buffered_chars = 0
+            sent_any = True
+            last_flush = time.monotonic()
+            continue
+        now = time.monotonic()
+        if now - last_flush >= window or buffered_chars >= STREAM_COALESCE_MAX_CHARS:
+            yield "".join(buffer)
+            buffer.clear()
+            buffered_chars = 0
+            last_flush = now
+    if buffer:
+        yield "".join(buffer)
+
+
 def _iter_sse_text(
     lines,
     *,
@@ -813,7 +1323,11 @@ def _iter_sse_text(
     saw_done = False
     saw_finish = False
     content_chars = 0
+    truncated_reason = ""
     non_sse: list[str] = []
+    # SSE 允许一个事件跨多行 ``data:``，直到空行才算一帧。旧实现逐行
+    # json.loads，合法多行帧会被切坏、内容丢失并误判"不完整"。
+    data_lines: list[str] = []
 
     def _idle_check() -> None:
         # 首字之前用 first_wait（本地模型冷启动可达 1 分钟），首字之后用 idle：
@@ -825,12 +1339,55 @@ def _iter_sse_text(
                 label, limit, before_first_token=before_first
             )
 
+    def _handle_chunk(chunk: dict):
+        nonlocal usage, saw_finish, content_chars, last_valid, truncated_reason
+        error_payload = chunk.get("error")
+        if error_payload:
+            _raise_embedded_upstream_error(label, error_payload, status=200)
+        chunk_usage = chunk.get("usage")
+        if chunk_usage:
+            usage = chunk_usage
+        for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            finish = str(choice.get("finish_reason") or "").strip().lower()
+            if finish:
+                saw_finish = True
+                # length / max_tokens 不是成功收尾：内容真实但没说完。
+                if finish in TRUNCATED_FINISH_REASONS:
+                    truncated_reason = finish
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                continue
+            token = _coerce_content_text(delta.get("content"))
+            if token:
+                content_chars += len(token)
+                last_valid = time.monotonic()
+                yield token
+
+    def _flush_data_frame() -> Any:
+        if not data_lines:
+            return None
+        joined = "\n".join(data_lines)
+        data_lines.clear()
+        try:
+            chunk = json.loads(joined)
+        except json.JSONDecodeError as exc:
+            raise ProviderStreamIncompleteError(
+                label, "流中出现无法解析的数据帧"
+            ) from exc
+        return chunk
+
     try:
         for raw in lines:
             _idle_check()
             text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
             text = text.strip()
             if not text:
+                # 空行是 SSE 的事件分隔符：此刻才把多行 data 聚合成一帧。
+                chunk = _flush_data_frame()
+                if isinstance(chunk, dict):
+                    yield from _handle_chunk(chunk)
                 continue
             # SSE 注释 / 事件名：都不是内容，不能重置空闲计时。
             if text.startswith(":") or text.startswith("event:"):
@@ -840,37 +1397,23 @@ def _iter_sse_text(
                 continue
             payload = text[5:].strip()
             if payload == "[DONE]":
+                chunk = _flush_data_frame()
+                if isinstance(chunk, dict):
+                    yield from _handle_chunk(chunk)
                 saw_done = True
                 break
             if not payload:
                 continue
+            data_lines.append(payload)
+            # 单行帧立即解析（不牺牲首字延迟）；跨行帧首次解析失败时继续
+            # 累积，等空行/下一行拼成完整 JSON。
             try:
-                chunk = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise ProviderStreamIncompleteError(
-                    label, "流中出现无法解析的数据帧"
-                ) from exc
-            if not isinstance(chunk, dict):
+                chunk = json.loads("\n".join(data_lines))
+            except json.JSONDecodeError:
                 continue
-            error_payload = chunk.get("error")
-            if error_payload:
-                _raise_embedded_upstream_error(label, error_payload, status=200)
-            chunk_usage = chunk.get("usage")
-            if chunk_usage:
-                usage = chunk_usage
-            for choice in chunk.get("choices") or []:
-                if not isinstance(choice, dict):
-                    continue
-                if choice.get("finish_reason"):
-                    saw_finish = True
-                delta = choice.get("delta") or {}
-                if not isinstance(delta, dict):
-                    continue
-                token = _coerce_content_text(delta.get("content"))
-                if token:
-                    content_chars += len(token)
-                    last_valid = time.monotonic()
-                    yield token
+            data_lines.clear()
+            if isinstance(chunk, dict):
+                yield from _handle_chunk(chunk)
     except (ProviderHTTPError, ProviderStreamIncompleteError, ProviderTimeoutError):
         raise
     except Exception as exc:
@@ -886,6 +1429,12 @@ def _iter_sse_text(
     finally:
         if usage is not None and on_usage is not None:
             on_usage(usage)
+
+    # 流结束时仍有一个未闭合的多行帧：能解析就按帧处理，不能解析就判不完整。
+    if data_lines:
+        chunk = _flush_data_frame()
+        if isinstance(chunk, dict):
+            yield from _handle_chunk(chunk)
 
     # 非 SSE 响应体（HTML / 纯 JSON / 网关忽略 stream 参数）。
     if non_sse:
@@ -904,17 +1453,32 @@ def _iter_sse_text(
             token = _extract_openai_payload_text(parsed)
             if token:
                 content_chars += len(token)
+                last_valid = time.monotonic()
                 yield token
+            # 上游忽略 stream:true、直接返回整段 JSON：内容完整，且带
+            # finish_reason 时必须按正常结束处理，不能再抛"不完整"。
+            finish = _openai_finish_reason(parsed)
+            if finish:
+                saw_finish = True
+                if finish in TRUNCATED_FINISH_REASONS:
+                    truncated_reason = finish
         else:
-            lowered = blob.lower()
-            if "<html" in lowered or "bad gateway" in lowered:
+            if _looks_like_html(blob):
                 logger.info("%s returned HTML instead of SSE", label)
+                _raise_invalid_response(
+                    label,
+                    kind="redirect_blocked",
+                    detail=HTML_RESPONSE_DETAIL,
+                )
             _raise_invalid_response(label)
 
     if content_chars == 0:
         from error_types import ProviderEmptyResponseError
 
         raise ProviderEmptyResponseError(label, detail="流式响应没有产生任何文本")
+    if truncated_reason:
+        # 已产出的文本由上层保留；这里明确告知"被截断"，不能静默当成功。
+        raise ProviderTruncatedError(label, truncated_reason)
     if not saw_done and not saw_finish:
         raise ProviderStreamIncompleteError(label, "流在没有结束标记的情况下关闭")
 
@@ -939,6 +1503,7 @@ def _iter_ndjson_text(
     last_valid = time.monotonic()
     saw_done = False
     content_chars = 0
+    truncated_reason = ""
     usage: Optional[dict] = None
     non_json: list[str] = []
 
@@ -983,6 +1548,10 @@ def _iter_ndjson_text(
                 yield token
             if chunk.get("done"):
                 saw_done = True
+                # Ollama 用 done_reason 表达停止原因；length 同样是截断。
+                done_reason = str(chunk.get("done_reason") or "").strip().lower()
+                if done_reason in TRUNCATED_FINISH_REASONS:
+                    truncated_reason = done_reason
                 usage = {
                     "prompt_tokens": chunk.get("prompt_eval_count") or 0,
                     "completion_tokens": chunk.get("eval_count") or 0,
@@ -1005,13 +1574,18 @@ def _iter_ndjson_text(
 
     if non_json:
         blob = "\n".join(non_json).strip()
-        if "<html" in blob.lower() or "bad gateway" in blob.lower():
+        if _looks_like_html(blob):
             logger.info("%s returned HTML instead of NDJSON", label)
+            _raise_invalid_response(
+                label, kind="redirect_blocked", detail=HTML_RESPONSE_DETAIL
+            )
         _raise_invalid_response(label)
     if content_chars == 0:
         from error_types import ProviderEmptyResponseError
 
         raise ProviderEmptyResponseError(label, detail="流式响应没有产生任何文本")
+    if truncated_reason:
+        raise ProviderTruncatedError(label, truncated_reason)
     if not saw_done:
         raise ProviderStreamIncompleteError(label, "流在没有 done 标记的情况下关闭")
 
@@ -1076,6 +1650,7 @@ class BaseProvider:
         retry_base_delay: float = 1.0,
         base_url: Optional[str] = None,
         first_token_timeout: Optional[float] = None,
+        proxy: Optional[str] = None,
     ):
         self.name = name
         self.model = model
@@ -1088,6 +1663,9 @@ class BaseProvider:
         # 模型配置中心保存的 base_url 需要随实例走：各 provider 的 ``generate``
         # 历史上只读 ``os.environ``/kwargs，导致"界面上填的 base_url"不生效。
         self.base_url = base_url or None
+        # 所有 provider 都接受 proxy：旧实现只有 OpenAIProvider 在 **kwargs 里读，
+        # 构造时传 proxy 会一路冒到 BaseProvider 并抛 TypeError。
+        self.proxy = str(proxy).strip() if isinstance(proxy, str) and proxy.strip() else None
         # ``None`` = 调用方没配，用类默认值；显式值（哪怕比默认值短）是硬约束，
         # 任何默认下限都不许盖过它。验收脚本用 2 秒超时验证"超时轮不入账"，
         # 静默抬高会让该轮变成"慢成功"。
@@ -1112,6 +1690,8 @@ class BaseProvider:
         self.timeout_source = "default"
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        # 短超时（< 阈值）不再重试：用户已经把"别让我等"写进配置了。
+        self.retry_min_timeout = _retry_min_timeout_from_env()
         self._capabilities = ProviderCapabilities()
 
     @property
@@ -1170,6 +1750,18 @@ class BaseProvider:
         import time
         from error_types import ProviderEmptyResponseError
 
+        # 非流式路径没有 SSE 通道，界面拿不到"正在重试"：调用方可以传一个
+        # 同步回调，由上层转成进度提示（不能传给 generate，它不认识这个参数）。
+        on_retry = kwargs.pop("on_retry", None)
+
+        def _notify_retry() -> None:
+            if not callable(on_retry):
+                return
+            try:
+                on_retry(RETRY_NOTICE_MESSAGE.format(model=self.model))
+            except Exception:  # noqa: BLE001 - 提示失败不能影响生成
+                logger.debug("retry notification failed", exc_info=True)
+
         last_error: Optional[BaseException] = None
         last_empty_detail = ""
         for attempt in range(self.max_retries + 1):
@@ -1181,12 +1773,15 @@ class BaseProvider:
                     raise
                 # 超时/连接类只重试一次：第一次多半是模型还在加载，第二次
                 # 还超时就应尽快把"较慢"的结论交给用户，而不是再等 4 轮。
-                allowed = (
-                    min(self.max_retries, 1)
-                    if _is_timeout_or_connection(e)
-                    else self.max_retries
-                )
+                # 短超时（默认 < 5 秒）连这一次都不做，直接报错。
+                if _is_timeout_or_connection(e):
+                    if not self._retry_allowed(e):
+                        raise
+                    allowed = min(self.max_retries, 1)
+                else:
+                    allowed = self.max_retries
                 if attempt < allowed:
+                    _notify_retry()
                     delay = self._retry_delay(e, attempt)
                     time.sleep(delay)
                     continue
@@ -1202,6 +1797,7 @@ class BaseProvider:
                     f"length={len(response) if isinstance(response, str) else 'n/a'}"
                 )
                 if attempt < self.max_retries:
+                    _notify_retry()
                     delay = self.retry_base_delay * (2 ** attempt)
                     time.sleep(delay)
                     continue
@@ -1218,9 +1814,29 @@ class BaseProvider:
             detail=last_empty_detail or "no response produced",
         )
 
+    def _retry_allowed(self, exc: BaseException) -> bool:
+        """这一次失败是否值得再试一次（只针对超时/连接类）。
+
+        两个条件同时成立才重试：
+        1. 失败是"再来一次可能就好"（超时 / 连接被回收）；证书、DNS、
+           地址拒绝重试不会变好，直接排除。
+        2. 配置的超时不低于阈值（默认 5 秒）。用户把超时压到 2 秒，是在
+           明确要求"宁可失败也别让我等"，重试会把 2 秒拖成近 5 秒。
+        """
+        if not _is_timeout_or_connection(exc):
+            return False
+        if not self.retry_min_timeout:
+            return True
+        return self.timeout >= self.retry_min_timeout
+
     def _retry_delay(self, exc: BaseException, attempt: int) -> float:
-        """指数退避；如果上游给了 ``Retry-After``，尊重但不小于基础退避。"""
-        delay = self.retry_base_delay * (2 ** attempt)
+        """指数退避 + 抖动；上游给了 ``Retry-After`` 时取两者较大值。
+
+        抖动（0.8~1.2）避免多个会话在同一时刻一起重试；``Retry-After``
+        是上游明确要求的等待时间，旧实现从不读取它（``retry_after`` 恒为
+        None，分支实际是死代码），导致 ``Retry-After: 2`` 被无视。
+        """
+        delay = self.retry_base_delay * (2 ** attempt) * random.uniform(0.8, 1.2)
         retry_after = getattr(exc, "retry_after", None)
         if isinstance(retry_after, (int, float)) and retry_after > 0:
             delay = max(delay, min(float(retry_after), 60.0))
@@ -1276,12 +1892,18 @@ class BaseProvider:
         """
         import time
 
+        on_retry = kwargs.pop("on_retry", None)
         for attempt in range(2):
             try:
                 return self.chat(messages, **kwargs)
             except Exception as exc:
-                if attempt >= 1 or not _is_timeout_or_connection(exc):
+                if attempt >= 1 or not self._retry_allowed(exc):
                     raise
+                if callable(on_retry):
+                    try:
+                        on_retry(RETRY_NOTICE_MESSAGE.format(model=self.model))
+                    except Exception:  # noqa: BLE001 - 提示失败不能影响生成
+                        logger.debug("retry notification failed", exc_info=True)
                 time.sleep(self._retry_delay(exc, attempt))
         raise RuntimeError("chat_with_retry: unreachable")
 
@@ -1301,8 +1923,8 @@ class BaseProvider:
         for attempt in range(2):
             produced = False
             try:
-                for token in self.chat_stream(
-                    messages, cancel_token=cancel_token, **kwargs
+                for token in _coalesce_stream(
+                    self.chat_stream(messages, cancel_token=cancel_token, **kwargs)
                 ):
                     if cancel_token is not None:
                         cancel_token.raise_if_cancelled()
@@ -1312,7 +1934,7 @@ class BaseProvider:
             except Exception as exc:
                 if cancel_token is not None and cancel_token.cancelled:
                     raise TurnCancelled(cancel_token.mode or "client_disconnected")
-                if produced or attempt >= 1 or not _is_timeout_or_connection(exc):
+                if produced or attempt >= 1 or not self._retry_allowed(exc):
                     raise
                 yield {
                     "type": "notice",
@@ -1367,11 +1989,28 @@ class MockProvider(BaseProvider):
 #: 逐模型失败原因的**用户可读**说法。上游原文（英文报错/内网地址）只进日志，
 #: 这里只按脱敏前算好的 ``upstream_kind`` 翻成一句能指导下一步的中文。
 _CHAIN_REASON_TEXT = {
+    "context_length_exceeded": "对话太长，请新开会话或分段发送",
     "quota_exhausted": "额度不足或余额不足，请充值后重试",
     "key_revoked": "API Key 已被停用或吊销，请更换密钥",
     "invalid_key": "API Key 无效或已失效，请更新密钥",
     "rate_limited": "被上游限流，请稍后重试",
     "model_not_found": "模型名不存在或未开通，请核对模型名称",
+    "endpoint_not_found": "接口路径不存在，常见需要以 /v1 结尾，请核对接口地址",
+    "server_error": "模型服务端出错（HTTP 5xx）",
+    "bad_request": "请求被上游判为不合法（HTTP 400）",
+    "proxy_auth": "代理要求认证（HTTP 407），请检查代理设置",
+    "certificate_untrusted": (
+        "证书不受信任（自签/私有 CA/公司代理）；不同链路信任来源不同，"
+        "在系统里信任证书不一定生效，请改用可直连地址或联系网络管理员"
+    ),
+    "certificate_hostname": "证书域名与接口地址不匹配，请核对接口地址",
+    "certificate_expired": "证书已过期或本机时间不正确，请核对系统时间",
+    "certificate_not_yet_valid": "证书尚未生效或本机时间不正确，请核对系统时间",
+    "certificate": "服务证书校验失败（自签证书或证书链不受信任）",
+    "redirect_blocked": "请求被网关/登录页拦截，返回的不是模型接口",
+    "invalid_response": "模型服务返回了不可解析的数据（可能是网关或登录页）",
+    "truncated": "回复达到长度上限被截断",
+    "address_rejected": "接口地址指向内网或无法解析，已被安全策略拒绝",
     "unreachable": "接口地址不可达，请检查地址、端口与网络",
     "upstream_error": "上游返回错误",
 }
@@ -1408,6 +2047,8 @@ def _attempt_failure_reason(exc: BaseException) -> Dict[str, str]:
 
     if isinstance(exc, ProviderEmptyResponseError):
         return {"reason": "模型没有返回内容，请重试或换一个模型", "kind": "empty_response"}
+    if isinstance(exc, ProviderTruncatedError):
+        return {"reason": "回复达到长度上限被截断", "kind": "truncated"}
     if isinstance(exc, ProviderStreamIncompleteError):
         return {"reason": "回复不完整（连接提前结束）", "kind": "incomplete_stream"}
     if isinstance(exc, ProviderTimeoutError) or isinstance(exc, TimeoutError):
@@ -1415,11 +2056,20 @@ def _attempt_failure_reason(exc: BaseException) -> Dict[str, str]:
     if isinstance(exc, ProviderHTTPError):
         base = _CHAIN_REASON_TEXT.get(exc.upstream_kind or "", "上游返回错误")
         # ``exc`` 的消息已中性化（只有状态码与"详情见服务端日志"），可安全展示。
-        reason = f"{base}；{exc}"
-        detail = _server_detail_text(exc)
-        if detail:
-            reason += f"；服务端返回：{detail}"
-        return {"reason": reason, "kind": exc.upstream_kind or "upstream_error"}
+        # 上游原文只经 ``technical_detail`` 进可展开的技术详情，绝不拼进主文案。
+        return {
+            "reason": f"{base}；{exc}",
+            "kind": exc.upstream_kind or "upstream_error",
+            "detail": _server_detail_text(exc),
+        }
+    if _is_address_rejected(exc):
+        return {"reason": _CHAIN_REASON_TEXT["address_rejected"], "kind": "address_rejected"}
+    if _is_certificate_failure(exc):
+        kind = certificate_failure_kind(exc) or "certificate"
+        return {
+            "reason": _CHAIN_REASON_TEXT.get(kind, _CHAIN_REASON_TEXT["certificate"]),
+            "kind": kind,
+        }
     name = type(exc).__name__.lower()
     if isinstance(exc, (ConnectionError, OSError)) or any(
         token in name for token in _CONNECT_ERROR_NAMES
@@ -1469,6 +2119,12 @@ class FailoverProvider(BaseProvider):
         self.model_config_id = getattr(primary, "model_config_id", "")
         self.owner_principal = getattr(primary, "owner_principal", "")
         self.timeout_source = getattr(primary, "timeout_source", "default")
+        #: 最近一次成功应答的**实际**模型/归属（跨厂商切换后按它记账）。
+        self.last_served_model = self.model
+        self.last_served_owner = self.owner_principal
+        #: 最近一次切换的前序模型标签（供 done 帧 ``fell_back_from``）。
+        self.last_fell_back_from: list[str] = []
+        self.last_failover_notice = ""
 
     @property
     def models(self) -> list[str]:
@@ -1487,13 +2143,38 @@ class FailoverProvider(BaseProvider):
         )
         return {"model": self._labels[index], **item}
 
+    def _reset_failover_state(self) -> None:
+        self.last_fell_back_from = []
+        self.last_failover_notice = ""
+        self.last_served_model = str(
+            getattr(self._providers[0], "model", "") or self.model
+        )
+        self.last_served_owner = getattr(self._providers[0], "owner_principal", "") or ""
+
+    def _mark_served(self, index: int) -> None:
+        provider = self._providers[index]
+        self.last_served_model = str(getattr(provider, "model", "") or self.model)
+        self.last_served_owner = getattr(provider, "owner_principal", "") or ""
+        if index > 0:
+            self.last_fell_back_from = list(self._labels[:index])
+            self.last_failover_notice = FAILOVER_NOTICE_MESSAGE.format(
+                model=self.last_served_model
+            )
+
     def _run(self, call) -> str:
         attempts: list[dict[str, str]] = []
+        self._reset_failover_state()
         for index, provider in enumerate(self._providers):
             try:
-                return call(provider)
-            except Exception as exc:  # noqa: BLE001 - 逐条记录后换下一个
+                result = call(provider)
+                self._mark_served(index)
+                return result
+            except Exception as exc:  # noqa: BLE001 - 逐条记录
                 attempts.append(self._record(index, exc))
+                if not _is_retryable_failure(exc):
+                    # 401/403/404/400/上下文超限换模型也不会变好；而"跨厂商
+                    # 静默切走"会让用户以为还是主模型。这类错误直接抛出。
+                    raise
         raise ProviderChainError(attempts)
 
     def generate(self, prompt: str, **kwargs) -> str:
@@ -1506,6 +2187,7 @@ class FailoverProvider(BaseProvider):
         attempts: list[dict[str, str]] = []
         produced = False
         cancel_token = kwargs.get("cancel_token")
+        self._reset_failover_state()
         for index, provider in enumerate(self._providers):
             try:
                 for token in provider.chat_stream(messages, **kwargs):
@@ -1513,6 +2195,7 @@ class FailoverProvider(BaseProvider):
                         cancel_token.raise_if_cancelled()
                     produced = True
                     yield token
+                self._mark_served(index)
                 return
             except Exception as exc:  # noqa: BLE001
                 if cancel_token is not None and cancel_token.cancelled:
@@ -1521,6 +2204,17 @@ class FailoverProvider(BaseProvider):
                     # 已经吐过字：这一段是真实内容，抛给上层按"断流/不完整"处理。
                     raise
                 attempts.append(self._record(index, exc))
+                if not _is_retryable_failure(exc):
+                    raise
+                # 切换前显式告知：不允许"悄悄换成另一家厂商"。
+                if index + 1 < len(self._providers):
+                    yield {
+                        "type": "notice",
+                        "code": "failover",
+                        "message": FAILOVER_NOTICE_MESSAGE.format(
+                            model=self._labels[index + 1]
+                        ),
+                    }
         raise ProviderChainError(attempts)
 
     def close(self) -> None:
@@ -1597,7 +2291,9 @@ class OpenAIProvider(BaseProvider):
 
     def _guard_target(self) -> None:
         """每次真实请求前重新校验目标（防 DNS rebinding/私网端点）。"""
-        assert_safe_runtime_target(self.base_url, context="模型服务")
+        assert_safe_runtime_target(
+            self.base_url, context="模型服务", has_credential=bool(self.api_key)
+        )
 
     def _guard_upstream_error(self, exc: BaseException) -> None:
         """把 SDK 的 HTTP 错误转成中性消息；非 HTTP 错误交给调用方原样抛出。"""
@@ -1646,11 +2342,37 @@ class OpenAIProvider(BaseProvider):
             return ""
         return _extract_openai_message_text(getattr(choices[0], "message", None))
 
+    def _max_tokens_param(self, kwargs: dict) -> Optional[int]:
+        """``max_tokens`` 的真实上限：显式配置 > 环境变量 > 不传（交给模型）。
+
+        旧实现默认写死 1000，长回答会静默截断；这里不再用 1000 卡死：
+        * 调用方显式传 ``max_tokens`` → 原样使用；
+        * ``AI_PROVIDER_MAX_TOKENS`` → 全局可配置上限；
+        * 都没有 → **省略该参数**，由模型/服务端按自身最大输出处理。
+        """
+        explicit = kwargs.get("max_tokens")
+        if explicit is not None:
+            try:
+                value = int(explicit)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+        env = _provider_env("AI_PROVIDER_MAX_TOKENS")
+        if env.strip():
+            try:
+                value = int(env)
+            except ValueError:
+                value = 0
+            if value > 0:
+                return value
+        return None
+
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via OpenAI API (1.x SDK compatible)."""
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
-        max_tokens = kwargs.get("max_tokens", 1000)
+        max_tokens = self._max_tokens_param(kwargs)
         # Support new OpenAI SDK response_format for structured output
         response_format = kwargs.get("response_format")
 
@@ -1661,8 +2383,9 @@ class OpenAIProvider(BaseProvider):
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
-                "max_tokens": max_tokens,
             }
+            if max_tokens is not None:
+                create_params["max_tokens"] = max_tokens
             # Add response_format if specified (structured output support)
             if response_format:
                 create_params["response_format"] = response_format
@@ -1675,6 +2398,9 @@ class OpenAIProvider(BaseProvider):
                 usage = getattr(response, "usage", None)
                 if usage is not None:
                     self._note_usage(model, *_usage_counts(usage))
+                finish = _openai_finish_reason(response)
+                if finish in TRUNCATED_FINISH_REASONS:
+                    raise ProviderTruncatedError("模型服务", finish, partial_text=text)
             return text
         except ProviderHTTPError:
             raise
@@ -1694,20 +2420,26 @@ class OpenAIProvider(BaseProvider):
         """
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
-        max_tokens = kwargs.get("max_tokens", 1000)
+        max_tokens = self._max_tokens_param(kwargs)
         self._guard_target()
         try:
-            response = self._get_client().chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            params = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if max_tokens is not None:
+                params["max_tokens"] = max_tokens
+            response = self._get_client().chat.completions.create(**params)
             text = self._response_text(response)
             _require_nonempty_text(self.name, text)
             usage = getattr(response, "usage", None)
             if usage is not None:
                 self._note_usage(model, *_usage_counts(usage))
+            finish = _openai_finish_reason(response)
+            if finish in TRUNCATED_FINISH_REASONS:
+                # 内容真实但没说完：保留部分文本，同时明确标记 truncated。
+                raise ProviderTruncatedError("模型服务", finish, partial_text=text)
             return text
         except ProviderHTTPError:
             raise
@@ -1763,15 +2495,16 @@ class OpenAIProvider(BaseProvider):
         """
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
-        max_tokens = kwargs.get("max_tokens", 1000)
+        max_tokens = self._max_tokens_param(kwargs)
         cancel_token = kwargs.get("cancel_token")
         self._guard_target()
         params = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
         response_cm = None
         try:
             try:
@@ -1810,7 +2543,10 @@ class AnthropicProvider(BaseProvider):
     def __init__(self, name: str, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(name, model, api_key, **kwargs)
         self._capabilities = ProviderCapabilities(
-            supports_streaming=True,
+            # 本类没有实现 chat_stream（只有 generate）：声明 True 会让上层
+            # 以为有原生流式，实际是一次性整段返回。这里如实置 False，让上层
+            # 走"非流式 + 进度提示"，而不是假装流式。
+            supports_streaming=False,
             supports_structured_output=True,
             supports_function_calling=True,
             supports_vision=True,
@@ -1906,7 +2642,9 @@ class AnthropicProvider(BaseProvider):
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via Anthropic API."""
         model = kwargs.get("model", self.model)
-        assert_safe_runtime_target(self.base_url, context="Anthropic 服务")
+        assert_safe_runtime_target(
+            self.base_url, context="Anthropic 服务", has_credential=bool(self.api_key)
+        )
         try:
             client = self._get_client()
             response = client.messages.create(
@@ -1950,12 +2688,49 @@ class GoogleProvider(BaseProvider):
             rate_limit_rpm=60,
             rate_limit_tpm=32000,
         )
+        # 每次 generate 都新建 genai.Client 会持续泄漏连接/句柄且从不关闭；
+        # 按 base_url 复用一个 client，close() 时统一释放。
+        self._client = None
+        self._client_base_url = ""
+        self._client_lock = threading.Lock()
+
+    def _get_client(self, base_url: str):
+        from google import genai
+        from google.genai import types
+
+        with self._client_lock:
+            if self._client is not None and self._client_base_url == base_url:
+                return self._client
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except Exception:  # noqa: BLE001 - 关闭旧 client 不能影响新建
+                    logger.debug("closing google client failed", exc_info=True)
+            if base_url:
+                self._client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(base_url=base_url),
+                )
+            else:
+                self._client = genai.Client(api_key=self.api_key)
+            self._client_base_url = base_url
+            return self._client
+
+    def close(self) -> None:
+        """Close the cached Gemini SDK client (idempotent)."""
+        with self._client_lock:
+            client, self._client = self._client, None
+            self._client_base_url = ""
+        if client is not None:
+            try:
+                client.close()
+            except Exception as exc:  # noqa: BLE001 - closing must not raise
+                logger.warning("GoogleProvider close failed: %s", exc)
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via Google Gemini API (``google-genai`` SDK)."""
         try:
-            from google import genai
-            from google.genai import types
+            from google.genai import types  # noqa: F401 - 提前暴露依赖缺失
         except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
             raise RuntimeError(
                 "GoogleProvider requires the 'google-genai' package "
@@ -1968,15 +2743,11 @@ class GoogleProvider(BaseProvider):
         base_url = (kwargs.get("base_url") or self.base_url or "").strip()
         if base_url:
             # 自定义 base_url（含本地兼容桩/代理）必须过同一条运行时目标校验。
-            assert_safe_runtime_target(base_url, context="Gemini 服务")
+            assert_safe_runtime_target(
+                base_url, context="Gemini 服务", has_credential=bool(self.api_key)
+            )
         try:
-            if base_url:
-                client = genai.Client(
-                    api_key=self.api_key,
-                    http_options=types.HttpOptions(base_url=base_url),
-                )
-            else:
-                client = genai.Client(api_key=self.api_key)
+            client = self._get_client(base_url)
             response = client.models.generate_content(model=model, contents=prompt)
             usage = getattr(response, "usage_metadata", None)
             if usage is not None:
@@ -2023,7 +2794,14 @@ class OllamaProvider(BaseProvider):
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
         assert_safe_runtime_target(
-            base_url, context="Ollama 服务", allow_private_service=True
+            base_url,
+            context="Ollama 服务",
+            allow_private_service=True,
+            allow_loopback=True,
+            # OllamaProvider 的默认 api_key 是 "[REDACTED]" 哨兵，不是真凭据：
+            # 若按 bool() 判定，会把 http://127.0.0.1:<自定义端口> 误判成
+            # "带 Key 的明文请求"，直接打断 Ollama 用户的正常用法。
+            has_credential=bool(self.api_key) and self.api_key != "[REDACTED]",
         )
 
         try:
@@ -2083,7 +2861,14 @@ class OllamaProvider(BaseProvider):
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
         assert_safe_runtime_target(
-            base_url, context="Ollama 服务", allow_private_service=True
+            base_url,
+            context="Ollama 服务",
+            allow_private_service=True,
+            allow_loopback=True,
+            # OllamaProvider 的默认 api_key 是 "[REDACTED]" 哨兵，不是真凭据：
+            # 若按 bool() 判定，会把 http://127.0.0.1:<自定义端口> 误判成
+            # "带 Key 的明文请求"，直接打断 Ollama 用户的正常用法。
+            has_credential=bool(self.api_key) and self.api_key != "[REDACTED]",
         )
 
         try:
@@ -2140,7 +2925,14 @@ class OllamaProvider(BaseProvider):
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
         assert_safe_runtime_target(
-            base_url, context="Ollama 服务", allow_private_service=True
+            base_url,
+            context="Ollama 服务",
+            allow_private_service=True,
+            allow_loopback=True,
+            # OllamaProvider 的默认 api_key 是 "[REDACTED]" 哨兵，不是真凭据：
+            # 若按 bool() 判定，会把 http://127.0.0.1:<自定义端口> 误判成
+            # "带 Key 的明文请求"，直接打断 Ollama 用户的正常用法。
+            has_credential=bool(self.api_key) and self.api_key != "[REDACTED]",
         )
 
         cancel_token = kwargs.get("cancel_token")
@@ -2210,7 +3002,11 @@ class MoonshotProvider(BaseProvider):
         )
         api_key = self.api_key or os.environ.get("MOONSHOT_API_KEY", "[REDACTED]")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key != "[REDACTED]" else {}
-        assert_safe_runtime_target(base_url, context="Moonshot 服务")
+        assert_safe_runtime_target(
+            base_url,
+            context="Moonshot 服务",
+            has_credential=api_key != "[REDACTED]",
+        )
         try:
             response = requests.post(
                 f"{base_url}/chat/completions",
@@ -2313,7 +3109,11 @@ class DeepSeekProvider(BaseProvider):
         headers = {"Authorization": f"Bearer {api_key}"} if api_key != "[REDACTED]" else {}
 
         # 地址由用户填写：每次请求前复核一次，堵住保存后改 DNS 的绕过路径。
-        assert_safe_runtime_target(base_url, context="DeepSeek 服务")
+        assert_safe_runtime_target(
+            base_url,
+            context="DeepSeek 服务",
+            has_credential=api_key != "[REDACTED]",
+        )
         try:
             response = requests.post(
                 f"{base_url}/chat/completions",
@@ -2592,6 +3392,11 @@ class ProviderFactory:
 
 # Global provider instance
 _provider_instance: BaseProvider = None
+#: env 兜底实例的缓存键（模型配置指纹 + env 组成）。配置一变键就变，实例自动重建。
+_provider_cache_key: Optional[str] = None
+#: ``set_provider()`` 显式注入的实例：优先返回，且不被配置变更清掉。
+_provider_explicit: bool = False
+_provider_cache_lock = threading.RLock()
 
 #: 每个 provider 认可的密钥环境变量别名（与名册 ``PROVIDER_KEY_ENVS`` 同源）。
 #: ``AI_PROVIDER_KEY`` 是通用兜底，优先级最高；别名只在通用键缺失时才读，
@@ -2652,6 +3457,62 @@ def _provider_env(key: str, default: str = "") -> str:
     return default
 
 
+def _model_config_fingerprint() -> str:
+    """模型配置中心的轻量指纹：默认模型 id + 行数 + 最新 ``updated_at``。
+
+    新增/删除/改 Key/设默认都会改变其中至少一项，用来判断 env 兜底实例
+    是否还能复用。存储异常时返回固定串（回退到"按 env 重建"，不阻塞调用）。
+    """
+    try:
+        from .model_config import get_model_config_store
+
+        store = get_model_config_store()
+        rows = store.list_models()
+        latest = max((str(r.get("updated_at") or "") for r in rows), default="")
+        return f"{store.default_id() or ''}|{len(rows)}|{latest}"
+    except Exception:  # noqa: BLE001 - 存储故障时降级为每次都重建
+        return "unavailable"
+
+
+def _provider_env_cache_key(
+    provider_type: str,
+    name: str,
+    model: str,
+    api_key: str,
+    timeout_raw: str,
+    first_token_raw: str,
+) -> str:
+    """env 兜底实例的缓存键：只留在内存里，不打印、不落盘。"""
+    try:
+        key_digest = hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001 - 摘要失败只影响缓存命中率
+        key_digest = "?"
+    return "|".join(
+        [
+            _model_config_fingerprint(),
+            str(provider_type),
+            str(name),
+            str(model),
+            key_digest,
+            str(timeout_raw),
+            str(first_token_raw),
+        ]
+    )
+
+
+def invalidate_provider_cache() -> None:
+    """模型配置写入成功后调用：让 env 兜底实例失效。
+
+    显式注入的实例（``set_provider``）保持不变；注册表非空时 ``get_provider``
+    本来就每次重建，这里主要清掉"启动时走了 env 分支"留下的旧实例。
+    """
+    global _provider_instance, _provider_cache_key
+    with _provider_cache_lock:
+        _provider_cache_key = None
+        if not _provider_explicit:
+            _provider_instance = None
+
+
 @observe("provider.get_provider")
 def get_provider() -> BaseProvider:
     """Get the global provider instance, auto-detecting from environment.
@@ -2671,10 +3532,10 @@ def get_provider() -> BaseProvider:
         export AI_PROVIDER_TYPE=openai
         export AI_PROVIDER_KEY=[REDACTED]
     """
-    global _provider_instance
+    global _provider_instance, _provider_cache_key
 
     # 显式注入的实例（测试与嵌入场景）永远优先，不会被注册表覆盖。
-    if _provider_instance is not None:
+    if _provider_explicit and _provider_instance is not None:
         return _provider_instance
 
     cfg = _registry_config()
@@ -2732,9 +3593,20 @@ def get_provider() -> BaseProvider:
                 first_token_raw,
             )
 
-    _provider_instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
-    if "timeout" in create_kwargs:
-        _provider_instance.timeout_source = "env"
+    # env 兜底实例只在"配置指纹 + env 组成"完全没变时复用；任一模型配置
+    # 写入都会让指纹变化，从而自动重建（不再出现"第一次建实例就永久返回"）。
+    cache_key = _provider_env_cache_key(
+        provider_type, name, model, api_key, timeout_raw, first_token_raw
+    )
+    with _provider_cache_lock:
+        if _provider_instance is not None and _provider_cache_key == cache_key:
+            return _provider_instance
+
+        instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
+        if "timeout" in create_kwargs:
+            instance.timeout_source = "env"
+        _provider_instance = instance
+        _provider_cache_key = cache_key
 
     # Provider info (no key material — not even a prefix: stdout/stderr commonly
     # end up in CI logs and support bundles).
@@ -2746,7 +3618,7 @@ def get_provider() -> BaseProvider:
         "configured" if api_key else "none",
     )
 
-    return _provider_instance
+    return instance
 
 
 def provider_from_config(cfg: Dict[str, Any]) -> BaseProvider:
@@ -2871,14 +3743,20 @@ def _registry_config(
 
 def set_provider(provider: BaseProvider) -> None:
     """Set the global provider instance explicitly."""
-    global _provider_instance
-    _provider_instance = provider
+    global _provider_instance, _provider_cache_key, _provider_explicit
+    with _provider_cache_lock:
+        _provider_instance = provider
+        _provider_cache_key = None
+        _provider_explicit = True
 
 
 def reset_provider() -> None:
     """Reset the global provider instance."""
-    global _provider_instance
-    _provider_instance = None
+    global _provider_instance, _provider_cache_key, _provider_explicit
+    with _provider_cache_lock:
+        _provider_instance = None
+        _provider_cache_key = None
+        _provider_explicit = False
 
 # Provider type detection helper
 

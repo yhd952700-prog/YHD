@@ -13,6 +13,8 @@ What this file pins down
   own (longer) threshold **only when the timeout is not configured**;
 * only timeout/connection failures are retried, and only once -- a 401/400 is
   a permanent answer that must not burn retries;
+* a timeout shorter than 5 s (``DEFAULT_RETRY_MIN_TIMEOUT``) is not retried at
+  all: the user already said "fail fast", and one retry turns 2 s into ~5 s;
 * the streamed retry is VISIBLE (a ``notice`` event) instead of a silent gap;
 * a timeout never turns into "your API Key is invalid" copy, and the failure
   names the actual model.
@@ -20,18 +22,25 @@ What this file pins down
 
 from __future__ import annotations
 
+import ssl
 import time
 
 import pytest
 
+from src.ai.net_guard import RuntimeTargetRejected
 from src.ai.providers import (
     BaseProvider,
+    CONTEXT_LENGTH_EXCEEDED_MESSAGE,
+    DEFAULT_RETRY_MIN_TIMEOUT,
     INVALID_KEY_MESSAGE,
     ProviderHTTPError,
     ProviderTimeoutError,
+    RETRY_MIN_TIMEOUT_ENV,
     RETRY_NOTICE_MESSAGE,
     TIMEOUT_MESSAGE,
+    _is_retryable_failure,
     _iter_sse_text,
+    classify_upstream_error,
     provider_from_config,
     user_facing_failure,
 )
@@ -162,6 +171,29 @@ class _InvalidKeyProvider(BaseProvider):
         yield ""  # pragma: no cover - never reached
 
 
+class _AlwaysFailingProvider(BaseProvider):
+    """同一种失败连续抛：数"到底试了几次"，比看总耗时更可靠。"""
+
+    def __init__(self, *, timeout: float, exc: BaseException):
+        super().__init__(
+            "stub", "stub-model", timeout=timeout, retry_base_delay=0.0
+        )
+        self._exc = exc
+        self.calls = 0
+
+    def generate(self, prompt, **kwargs):
+        self.calls += 1
+        raise self._exc
+
+    def chat(self, messages, **kwargs):
+        return self.generate("chat")
+
+    def chat_stream(self, messages, **kwargs):
+        self.calls += 1
+        raise self._exc
+        yield ""  # pragma: no cover - never reached
+
+
 class TestRetryPolicy:
     def test_generate_retries_a_timeout_once_then_succeeds(self):
         provider = _TimeoutOnceProvider()
@@ -208,6 +240,79 @@ class TestRetryPolicy:
         with pytest.raises(ProviderHTTPError):
             list(provider.stream_with_retry([{"role": "user", "content": "hi"}]))
         assert provider.calls == 1
+
+    # 短超时收敛（b）：用户把 timeout 压到 5 秒以下，就是在说"宁可失败也别等"。
+    def test_short_timeout_is_not_retried(self, monkeypatch):
+        monkeypatch.delenv(RETRY_MIN_TIMEOUT_ENV, raising=False)
+        provider = _AlwaysFailingProvider(timeout=2, exc=ProviderTimeoutError("模型服务", 2.0))
+        notices: list[str] = []
+        with pytest.raises(ProviderTimeoutError):
+            provider.chat_with_retry(
+                [{"role": "user", "content": "hi"}], on_retry=notices.append
+            )
+        assert provider.calls == 1, "2 秒超时不许再重试，否则要等近 5 秒才看到同一句错"
+        assert notices == [], "没有第二次尝试就不该出现『正在重试』"
+
+    def test_short_timeout_stream_is_not_retried(self, monkeypatch):
+        monkeypatch.delenv(RETRY_MIN_TIMEOUT_ENV, raising=False)
+        provider = _AlwaysFailingProvider(timeout=2, exc=ProviderTimeoutError("模型服务", 2.0))
+        events: list[object] = []
+        with pytest.raises(ProviderTimeoutError):
+            for event in provider.stream_with_retry([{"role": "user", "content": "hi"}]):
+                events.append(event)
+        assert provider.calls == 1
+        assert events == []
+
+    def test_short_timeout_keeps_the_same_chinese_copy(self, monkeypatch):
+        """不重试只影响等待时长，文案与分类不能跟着变。"""
+        monkeypatch.delenv(RETRY_MIN_TIMEOUT_ENV, raising=False)
+        exc = ProviderTimeoutError("模型服务", 2.0, before_first_token=True)
+        text = user_facing_failure(exc, model="qwen2.5:7b")
+        assert TIMEOUT_MESSAGE in text and "qwen2.5:7b" in text
+        assert "Key" not in text
+
+    def test_timeout_at_threshold_still_retries_once_with_notice(self, monkeypatch):
+        monkeypatch.delenv(RETRY_MIN_TIMEOUT_ENV, raising=False)
+        provider = _AlwaysFailingProvider(
+            timeout=DEFAULT_RETRY_MIN_TIMEOUT,
+            exc=ProviderTimeoutError("模型服务", DEFAULT_RETRY_MIN_TIMEOUT),
+        )
+        notices: list[str] = []
+        with pytest.raises(ProviderTimeoutError):
+            provider.chat_with_retry(
+                [{"role": "user", "content": "hi"}], on_retry=notices.append
+            )
+        assert provider.calls == 2, "阈值本身仍保留一次重试（>= 5 秒）"
+        assert len(notices) == 1 and "重试" in notices[0]
+
+    def test_retry_threshold_is_configurable(self, monkeypatch):
+        """阈值不是魔法数：设 0 恢复"任何超时都重试"，设大则更早放弃。"""
+        monkeypatch.setenv(RETRY_MIN_TIMEOUT_ENV, "0")
+        provider = _AlwaysFailingProvider(timeout=2, exc=ProviderTimeoutError("模型服务", 2.0))
+        with pytest.raises(ProviderTimeoutError):
+            provider.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert provider.calls == 2
+
+        monkeypatch.setenv(RETRY_MIN_TIMEOUT_ENV, "10")
+        provider = _AlwaysFailingProvider(timeout=8, exc=ProviderTimeoutError("模型服务", 8.0))
+        with pytest.raises(ProviderTimeoutError):
+            provider.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert provider.calls == 1
+
+    def test_certificate_and_rejected_targets_never_retry_regardless_of_timeout(self):
+        """证书 / DNS / 地址拒绝重试不会变好，与超时长短无关，始终 attempt=1。"""
+        cert = ssl.SSLCertVerificationError(
+            "certificate verify failed: self-signed certificate"
+        )
+        for exc in (
+            cert,
+            RuntimeTargetRejected("模型服务地址当前无法解析"),
+            RuntimeTargetRejected("模型服务地址指向内网/本机，已按安全策略拒绝。"),
+        ):
+            provider = _AlwaysFailingProvider(timeout=60, exc=exc)
+            with pytest.raises(type(exc)):
+                provider.chat_with_retry([{"role": "user", "content": "hi"}])
+            assert provider.calls == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -375,8 +480,9 @@ def test_double_timeout_stops_after_one_retry():
 
     class _AlwaysTimeout(BaseProvider):
         def __init__(self):
+            # 用 >= 阈值（5 秒）的配置，验证的是"只重试一次"而不是短超时收敛。
             super().__init__(
-                "stub", "stub-model", timeout=0.5, retry_base_delay=0.0
+                "stub", "stub-model", timeout=30.0, retry_base_delay=0.0
             )
             self.calls = 0
 
@@ -386,7 +492,7 @@ def test_double_timeout_stops_after_one_retry():
             def _gen():
                 time.sleep(0.5)
                 raise ProviderTimeoutError(
-                    "模型服务", 0.5, before_first_token=True
+                    "模型服务", 30.0, before_first_token=True
                 )
                 yield ""
 
@@ -484,6 +590,76 @@ def test_migration_runs_only_once(tmp_path):
     rows, _meta = _read_db(db)
     conn.close()
     assert rows == {"old": 30.0}, "迁移标记已存在时不得再改第二次"
+
+
+# --------------------------------------------------------------------------- #
+# 6. Context-length overflow: own class, actionable copy, never retried
+# --------------------------------------------------------------------------- #
+class _ContextOverflowProvider(BaseProvider):
+    def __init__(self):
+        super().__init__("stub", "stub-model", timeout=120.0, retry_base_delay=0.0)
+        self.calls = 0
+
+    def _fail(self):
+        self.calls += 1
+        raise ProviderHTTPError(
+            "模型服务返回 HTTP 400",
+            status_code=400,
+            upstream_kind="context_length_exceeded",
+        )
+
+    def generate(self, prompt, **kwargs):
+        self._fail()
+
+    def chat(self, messages, **kwargs):
+        self._fail()
+
+    def chat_stream(self, messages, **kwargs):
+        self._fail()
+        yield ""  # pragma: no cover - never reached
+
+
+class TestContextLengthExceeded:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            '{"error": {"code": "context_length_exceeded", "message": "too long"}}',
+            (
+                "This model's maximum context length is 8192 tokens. "
+                "However, your messages resulted in 9000 tokens."
+            ),
+            "prompt is too long: 213456 tokens > 200000 maximum",
+            "input token count exceeds the maximum number of tokens allowed",
+            '{"error": "context length exceeded"}',
+        ],
+    )
+    def test_classified_separately_from_upstream_error(self, raw):
+        assert classify_upstream_error(status=400, text=raw) == "context_length_exceeded"
+
+    def test_copy_tells_the_user_to_shorten_the_conversation(self):
+        exc = ProviderHTTPError(
+            "模型服务返回 HTTP 400",
+            status_code=400,
+            upstream_kind="context_length_exceeded",
+        )
+        text = user_facing_failure(exc, model="gpt-4o-mini")
+        assert CONTEXT_LENGTH_EXCEEDED_MESSAGE in text
+        assert "对话太长" in text and "新开会话" in text and "分段发送" in text
+        # 不能把用户引去改一个完全正确的 Key / 网络。
+        assert "密钥" not in text
+        assert "网络连接" not in text
+        assert "gpt-4o-mini" in text, "失败文案必须说明是哪个模型"
+
+    def test_never_retried_even_when_status_looks_transient(self):
+        exc = ProviderHTTPError(
+            "上游 500", status_code=500, upstream_kind="context_length_exceeded"
+        )
+        assert _is_retryable_failure(exc) is False
+
+        provider = _ContextOverflowProvider()
+        with pytest.raises(ProviderHTTPError):
+            provider.generate_with_retry("hi")
+        assert provider.calls == 1, "上下文超限重试不会让历史变短，只会多等几轮"
 
 
 def test_migration_is_atomic_when_it_fails(tmp_path):

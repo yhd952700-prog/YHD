@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import ast
+import contextvars
 import json
 import logging
 import os
@@ -26,11 +27,11 @@ import urllib.parse
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from .employee import Agent
 from .agent_factory import (
-    CHARS_PER_TOKEN,
     DEFAULT_MAX_OUTPUT_TOKENS,
     MAX_OUTPUT_TOKENS_CEILING,
     AgentMemory,
@@ -41,13 +42,24 @@ from .providers import (
     BaseProvider,
     GENERATION_FAILURE_MESSAGE,
     ProviderStreamIncompleteError,
+    ProviderTruncatedError,
+    TRUNCATED_RESPONSE_MESSAGE,
     TurnCancelToken,
     TurnCancelled,
+    certificate_failure_kind,
+    is_address_rejected_error,
+    is_certificate_error,
     resolve_provider,
     technical_detail_for,
     user_facing_failure,
 )
 from .conversation_store import get_conversation_store
+from .context_budget import (
+    DEFAULT_KEEP_RECENT_TURNS,
+    estimate_tokens,
+    resolve_context_window,
+    trim_history,
+)
 from .tool_registry import ToolRegistry
 from .tools import make_tools, build_tool_prompt, parse_tool_call
 from ..kernels.identity import get_identity_manager
@@ -70,8 +82,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "请用简洁、准确、有帮助的中文回答。"
 )
 
-# 多轮上下文中保留的历史消息条数（user+assistant 各算一条）。
-MAX_HISTORY_MESSAGES = 20
+# 会话构造时读取的历史条数上限（user+assistant 各算一条）。
+# 240 条只是"裁剪源"：真正发给模型多少由 ``context_budget.trim_history``
+# 按模型窗口决定，留出足够早期历史供摘要使用。
+CONTEXT_SOURCE_MESSAGES = 240
 
 # 单轮对话中最多允许的工具调用轮数（防 LLM 死循环请求工具）。
 MAX_TOOL_ROUNDS = 3
@@ -99,17 +113,22 @@ def _tool_cache_max() -> int:
     return max(1, value)
 
 #: 当前正在执行工具调用的 assistant。工具表共享后，``system_status`` 不能再把
-#: 某一个 assistant 的 ``stats`` 绑死在闭包里；执行时按线程解析当前会话。
-_TURN_CONTEXT = threading.local()
+#: 某一个 assistant 的 ``stats`` 绑死在闭包里；执行时按当前上下文解析会话。
+#: 用 ``ContextVar`` 而不是 ``threading.local``：工具在独立 worker 线程执行时，
+#: 注册表会 ``copy_context()`` 把该上下文带过去，``system_status`` 才不会退化成
+#: "provider=unknown"。
+_TURN_CONTEXT: "contextvars.ContextVar[Optional[Any]]" = contextvars.ContextVar(
+    "liuhao_turn_assistant", default=None
+)
 
 
 def current_turn_stats() -> Dict[str, Any]:
-    """返回**当前线程正在执行工具的那个 assistant** 的 stats。
+    """返回**当前上下文正在执行工具的那个 assistant** 的 stats。
 
     非对话路径（例如直接调用工具）没有上下文时返回占位值，绝不抛异常：
     状态查询失败不能反过来打断工具本身。
     """
-    assistant = getattr(_TURN_CONTEXT, "assistant", None)
+    assistant = _TURN_CONTEXT.get()
     stats = getattr(assistant, "stats", None)
     if callable(stats):
         try:
@@ -197,6 +216,15 @@ def _turn_failure_reason(exc: BaseException) -> Optional[str]:
     kind = getattr(exc, "upstream_kind", None)
     if isinstance(kind, str) and kind:
         return kind
+    # net_guard 的运行时拒绝原样抛出（没有 upstream_kind）：界面要能区分
+    # "域名解析不了"与"地址指向内网"，否则只能落回通用文案。
+    if is_address_rejected_error(exc):
+        text = str(exc)
+        return "dns_failed" if "解析" in text else "address_rejected"
+    if is_certificate_error(exc):
+        # 三类证书失败的动作不同（换网络/核对地址/核对时间），界面按
+        # 细分类渲染，不能都落回一句"证书校验失败"。
+        return certificate_failure_kind(exc) or "certificate"
     # 空回复没有 upstream_kind（不是 HTTP 失败），但界面需要知道"模型什么都没说"，
     # 而不是笼统的"网络异常"。
     if getattr(exc, "error_code", None) == "EMPTY_RESPONSE":
@@ -220,7 +248,9 @@ def _turn_failure_reason(exc: BaseException) -> Optional[str]:
 #: 「钱不够」，后者是「不允许」，把两者都写成「权限不足」会让用户去改错地方。
 BUDGET_DENIAL_REASON = "budget_exceeded"
 PERMISSION_DENIAL_REASON = "permission_denied"
-BUDGET_DENIAL_MESSAGE = "本次调用会超出你设定的预算，请调整额度或换更便宜的模型。"
+BUDGET_DENIAL_MESSAGE = (
+    "本次调用会超出可用预算（按保守 token 估算），请调整额度或换更便宜的模型。"
+)
 PERMISSION_DENIAL_MESSAGE = "权限不足：当前账号未被授权执行对话操作。"
 
 
@@ -416,6 +446,83 @@ def _tool_output_text(value: Any) -> str:
         return str(value)
 
 
+#: 回喂模型的单条工具结果上限（字符）。可用 ``LIUHAO_TOOL_OUTPUT_LIMIT`` 覆盖。
+DEFAULT_TOOL_OUTPUT_LIMIT = 32000
+
+
+def _tool_output_limit() -> int:
+    raw = (os.environ.get("LIUHAO_TOOL_OUTPUT_LIMIT") or "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_TOOL_OUTPUT_LIMIT
+    except ValueError:
+        value = DEFAULT_TOOL_OUTPUT_LIMIT
+    return max(1000, min(1_000_000, value))
+
+
+def _persist_tool_output(text: str, tool_name: str) -> Optional[str]:
+    """把超限结果完整落盘，返回路径；落盘失败返回 None（不阻断本轮）。"""
+    try:
+        from .workspace import workspace_root
+
+        base = Path(workspace_root()) / "artifacts" / "tool_outputs"
+        base.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^0-9A-Za-z_.-]+", "_", tool_name)[:40] or "tool"
+        filename = (
+            f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_name}-"
+            f"{uuid.uuid4().hex[:8]}.txt"
+        )
+        path = base / filename
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+    except Exception as exc:  # noqa: BLE001 - 落盘失败只降级为纯截断
+        _log.warning("工具结果落盘失败（tool=%s）：%s", tool_name, exc)
+        return None
+
+
+def _limit_tool_output(text: str, tool_name: str) -> str:
+    """统一结果大小上限：超限截断并落盘，给模型一个可读引用。"""
+    limit = _tool_output_limit()
+    if len(text) <= limit:
+        return text
+    reference = _persist_tool_output(text, tool_name)
+    head = text[:limit]
+    if reference:
+        return (
+            f"{head}\n\n…[结果已截断] 原始 {len(text)} 字符，仅前 {limit} 字符进入上下文；"
+            f"完整结果已保存到：{reference}"
+            "（需要细节时可用 read_file 读取该路径）"
+        )
+    return (
+        f"{head}\n\n…[结果已截断] 原始 {len(text)} 字符，仅前 {limit} 字符进入上下文；"
+        "完整结果落盘失败，请缩小查询范围后重试。"
+    )
+
+
+def _empty_tool_output_hint(tool_name: str, value: Any) -> Optional[str]:
+    """工具返回空值时给模型一条明确提示，避免它把空响应当成"没有答案"。"""
+    if value is None:
+        return (
+            f"[工具 {tool_name} 返回空结果] 工具没有返回值（null）。"
+            "请检查参数是否命中数据，或用一句话告诉用户没有找到内容，不要编造。"
+        )
+    if isinstance(value, str) and not value.strip():
+        return (
+            f"[工具 {tool_name} 返回空结果] 输出为空字符串（0 字符）。"
+            "这通常表示目标存在但没有内容或查询无匹配；请如实告知用户，不要编造。"
+        )
+    if isinstance(value, (list, tuple)) and len(value) == 0:
+        return (
+            f"[工具 {tool_name} 返回空结果] 输出为空列表（0 条）。"
+            "请如实告知用户没有匹配项，不要编造。"
+        )
+    if isinstance(value, dict) and len(value) == 0:
+        return (
+            f"[工具 {tool_name} 返回空结果] 输出为空对象。"
+            "请如实告知用户没有内容，不要编造。"
+        )
+    return None
+
+
 def _tool_feedback_text(tool_name: str, value: Any) -> str:
     """把工具结果回喂模型时，失败/需澄清必须是"人话指令"，不是 JSON 原文。
 
@@ -446,32 +553,22 @@ def _tool_feedback_text(tool_name: str, value: Any) -> str:
                 f"[工具 {tool_name} 执行失败]\n原因：{reason}\n"
                 "请用一句中文告诉用户失败原因和下一步怎么做，不要复述 JSON 原文。"
             )
-    return _tool_output_text(value)
+    empty_target = payload if isinstance(payload, (dict, list)) else value
+    empty_hint = _empty_tool_output_hint(tool_name, empty_target)
+    if empty_hint is not None:
+        return empty_hint
+    return _limit_tool_output(_tool_output_text(value), tool_name)
 
 
-def _safe_text_len(value: Any) -> int:
-    """Length of ``value`` as prompt text, **never raising**.
+def _history_token_count(history: Any) -> int:
+    """Total prompt tokens in a (possibly malformed) history list.
 
-    This runs on the authorization path. ``self.history`` is loaded from the
-    conversation store (``conversation_store.load_recent``), i.e. from
-    external persisted data that can be corrupt, truncated by a crash, or
-    hand-edited -- a non-``str`` ``content``, a non-dict entry, or an object
-    whose ``__len__``/``__str__`` throws. A malformed entry must not escalate
-    an availability hiccup into an unhandled 500 out of ``chat``: it simply
-    contributes 0 to the estimate here.
+    This runs on the authorization path over externally persisted data, so it
+    must never raise. :func:`estimate_tokens` is the project's single token
+    heuristic and already degrades non-strings to 0; a raw non-dict entry that
+    happens to be text is still prompt material, so it is counted rather than
+    dropped.
     """
-    if value is None:
-        return 0
-    if isinstance(value, str):
-        return len(value)
-    try:
-        return len(str(value))
-    except Exception:  # pragma: no cover - defensive, hostile __str__
-        return 0
-
-
-def _history_char_count(history: Any) -> int:
-    """Total prompt characters in a (possibly malformed) history list."""
     try:
         entries = list(history)
     except Exception:  # pragma: no cover - defensive, non-iterable history
@@ -479,11 +576,9 @@ def _history_char_count(history: Any) -> int:
     total = 0
     for entry in entries:
         if isinstance(entry, dict):
-            total += _safe_text_len(entry.get("content"))
+            total += estimate_tokens(entry.get("content"))
         else:
-            # A non-dict entry is not a well-formed message, but it may still be
-            # raw prompt text -- count it conservatively rather than dropping it.
-            total += _safe_text_len(entry)
+            total += estimate_tokens(entry)
     return total
 
 
@@ -577,6 +672,8 @@ class LiuHaoAssistant:
         #: 供界面折叠展示；主文案必须是可行动的中文。
         self.last_turn_technical_detail: Optional[str] = None
         self.last_turn_correlation_id: str = ""
+        #: 非流式路径的"正在重试"提示（由 provider 的重试回调写入）。
+        self.last_turn_retry_notice: Optional[str] = None
 
         # 1. Identity — 复用 identity kernel（复用已有主体，或新建带信任分）。
         manager = get_identity_manager()
@@ -606,7 +703,7 @@ class LiuHaoAssistant:
         #    内存态不落盘，对话历史走独立 ConversationStore，风格对齐 audit）。
         self._conv_store = get_conversation_store()
         self.history: List[Dict[str, str]] = self._conv_store.load_recent(
-            self.principal, MAX_HISTORY_MESSAGES
+            self.principal, CONTEXT_SOURCE_MESSAGES
         )
         self.turn = self._conv_store.get_last_turn(self.principal)
 
@@ -734,16 +831,16 @@ class LiuHaoAssistant:
         *omitted*, never as a fabricated zero (see ``economy_inputs``); the
         policy decision then records the rule as an unapplied control.
 
-        This is on the authorization path, so it must not raise: prompt and
-        output estimates go through the non-raising helpers above rather than
-        raw ``len()``/``int()`` over externally-sourced data.
+        This is on the authorization path, so it must not raise: prompt
+        estimates go through :func:`estimate_tokens` (the single project-wide
+        implementation) over externally-sourced data, never raw ``len()``.
         """
-        prompt_chars = (
-            _safe_text_len(self.system_prompt)
-            + _history_char_count(self.history)
-            + _safe_text_len(message)
+        tokens_in = max(
+            1,
+            estimate_tokens(self.system_prompt)
+            + _history_token_count(self.history)
+            + estimate_tokens(message),
         )
-        tokens_in = max(1, prompt_chars // CHARS_PER_TOKEN)
         tokens_out = _declared_max_output_tokens(self.provider)
         inputs = economy_inputs(
             principal=self.audit_principal,
@@ -772,9 +869,17 @@ class LiuHaoAssistant:
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
         self.last_turn_correlation_id = correlation_id
+        self.last_turn_retry_notice = None
         # 把本轮回话 id 透传到能力层日志（供追踪"哪一轮触发了哪些 kernel action"）。
         TraceContext.set(correlation_id=correlation_id)
         return correlation_id
+
+    def _on_retry_notice(self, notice: str) -> None:
+        """provider 重试回调（非流式路径）：记录本轮正在重试，供网关外发。"""
+        self.last_turn_retry_notice = str(notice or "") or None
+        self._log.info(
+            "chat retry notice turn=%s notice=%s", self.turn, notice
+        )
 
     def _authorize_chat(self, message: str, *, phase: str) -> Optional[Dict[str, Any]]:
         """跑一次对话授权；拒绝时写审计并返回可直接外发的拒绝结果。
@@ -859,17 +964,33 @@ class LiuHaoAssistant:
         if denial is not None:
             return denial
 
-        # 2. 构建 messages（system + 历史 + 当前）。
-        messages = self._build_messages(message)
-
-        # 3. 生成（真实 LLM / mock）+ 工具调用 loop。
+        # 2-3. 构建 messages（system + 历史 + 当前）+ 生成（真实 LLM / mock）。
+        #    构建也放进 try：历史裁剪超出模型窗口时抛 ``ContextBudgetExceeded``
+        #    （带 ``upstream_kind=context_length_exceeded``），要按统一的失败文案
+        #    与 ``reason`` 收口，而不是冒成 500。
         _gen_started = time.perf_counter()
         reason: Optional[str] = None
         technical_detail: Optional[str] = None
         try:
+            messages = self._build_messages(message)
             reply = self._generate_with_tools(messages)
             status = "completed"
             error_text: Optional[str] = None
+        except ProviderTruncatedError as exc:
+            # 非流式：内容真实但没说完。保留已产出的正文，状态必须是
+            # truncated（不是 completed），并附上中文提示。
+            _log_llm_call_failure(
+                self._log,
+                exc,
+                self.provider,
+                correlation_id=correlation_id,
+                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
+            )
+            reply = exc.partial_text or TRUNCATED_RESPONSE_MESSAGE
+            status = "truncated"
+            error_text = TRUNCATED_RESPONSE_MESSAGE
+            reason = "truncated"
+            technical_detail = technical_detail_for(exc)
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             # 原始异常只进日志/诊断；用户侧与状态字段只保留中性中文说明。
             _log_llm_call_failure(
@@ -1034,6 +1155,21 @@ class LiuHaoAssistant:
                         ),
                     }
                 )
+        except ProviderTruncatedError as exc:
+            # 流式：已 yield 的 token 是真内容，必须保留；但不能算 completed，
+            # 也不能把提示文案塞进正文（由 done 帧的 truncated/error 表达）。
+            status = "truncated"
+            _log_llm_call_failure(
+                self._log,
+                exc,
+                self.provider,
+                correlation_id=correlation_id,
+                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
+            )
+            error_text = TRUNCATED_RESPONSE_MESSAGE
+            final_reply = "".join(round_chunks) if round_chunks else exc.partial_text
+            reason = "truncated"
+            technical_detail = technical_detail_for(exc)
         except ProviderStreamIncompleteError as exc:
             if _cancelled():
                 # 取消导致的"断流"不是上游故障：不写失败日志、不给错误文案。
@@ -1105,11 +1241,12 @@ class LiuHaoAssistant:
         """
         for _ in range(MAX_TOOL_ROUNDS):
             chat_call = getattr(self.provider, "chat_with_retry", None)
-            reply = (
-                chat_call(messages)
-                if callable(chat_call)
-                else self.provider.chat(messages)
-            )
+            if callable(chat_call):
+                # 非流式路径没有 SSE 通道：把"正在重试"经回调写到本轮状态上，
+                # 由网关放进响应体的 notice 字段（流式路径由 provider yield）。
+                reply = chat_call(messages, on_retry=self._on_retry_notice)
+            else:
+                reply = self.provider.chat(messages)
             tool_call = parse_tool_call(reply)
             if tool_call is None:
                 return reply
@@ -1137,18 +1274,29 @@ class LiuHaoAssistant:
         for tool in self._tool_list:
             if tool.name == tool_name:
                 # 工具表是跨会话共享的：``system_status`` 需要看到"当前这一轮"
-                # 的 turn/history，因此把 assistant 放进线程本地，执行完即还原
+                # 的 turn/history，因此把 assistant 放进上下文中，执行完即还原
                 # （保留外层上下文，避免嵌套调用时被清空）。
-                previous = getattr(_TURN_CONTEXT, "assistant", None)
-                _TURN_CONTEXT.assistant = self
+                token = _TURN_CONTEXT.set(self)
                 try:
-                    result = self.tools.execute(tool.tool_id, args)
+                    result = self.tools.execute(
+                        tool.tool_id, args,
+                        principal_id=self.audit_principal,
+                        correlation_id=self.last_turn_correlation_id or None,
+                    )
                 finally:
-                    _TURN_CONTEXT.assistant = previous
+                    _TURN_CONTEXT.reset(token)
                 if result.success:
                     return coerce_tool_output(result.output)
-                return {"success": False, "error": str(result.error)}
-        return {"success": False, "error": f"未知工具: {tool_name}"}
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "error": str(result.error),
+                }
+        return {
+            "success": False,
+            "status": "unknown_tool",
+            "error": f"未知工具: {tool_name}",
+        }
 
     def _commit_turn(
         self, message: str, reply: str, correlation_id: str, status: str
@@ -1161,7 +1309,9 @@ class LiuHaoAssistant:
         """
         # ``interrupted``（客户端断开）既不是成功也不是失败：不记账、不写历史、
         # 不写记忆，只留一条审计说明"这一轮是用户中断的"。
-        if status == "completed":
+        # ``truncated`` 是"内容真实但没说完"：照常落盘/记账（token 确实被上游
+        # 消耗了，正文也确实产出了），但审计结果单独记为 truncated，不记成功。
+        if status in ("completed", "truncated"):
             self._account_turn_spend()
             # 失败轮次不进入历史、不写会话存储、不写记忆：否则用户会在下一轮
             # 上下文里反复看到失败文案，而"这次没拿到回复"并不属于对话内容。
@@ -1170,13 +1320,41 @@ class LiuHaoAssistant:
             # user/assistant 两行一次事务写入 + 一条审计：此前两次 append 各自
             # commit 并各写一条审计，把一轮里的固定落盘成本翻倍且没有额外语义。
             self._conv_store.append_turn(
-                self.principal, self.turn, message, reply
+                self.principal,
+                self.turn,
+                message,
+                reply,
+                owner_principal=self.audit_principal,
             )
-            self.memory.store(
-                f"turn:{self.principal}:{self.turn}",
-                {"user": message, "assistant": reply},
-                tags={"conversation", "assistant:liuhao"},
-            )
+            # MEM-005：把滑出 240 条窗口的消息增量折进持久化摘要，避免早期
+            # 约束（预算/期限/禁用词）在长会话里彻底消失。
+            try:
+                self._conv_store.summarize_overflow(
+                    self.principal, CONTEXT_SOURCE_MESSAGES
+                )
+            except Exception as exc:  # noqa: BLE001 - 摘要失败不否决已保存的对话
+                self._log.warning(
+                    "evt=context.summary_update_failed principal=%s error=%s",
+                    self.principal,
+                    exc,
+                )
+            try:
+                self.memory.store(
+                    f"turn:{self.principal}:{self.turn}",
+                    {"user": message, "assistant": reply},
+                    tags={"conversation", "assistant:liuhao"},
+                )
+            except Exception as exc:  # noqa: BLE001
+                # 会话正文已经提交成功：memory 只是附属索引，失败不能把整轮
+                # 报成失败，否则用户重试会写出重复轮次。这里只留警告，正文仍
+                # 可从 conversation_store 读回。
+                _log.warning(
+                    "memory store failed after conversation committed "
+                    "(principal=%s turn=%s): %s",
+                    self.principal,
+                    self.turn,
+                    exc,
+                )
         # 事件类型按结果如实选择：
         # - completed → ACCESS_ALLOWED（授权通过且本轮成功）
         # - interrupted → STATE_CHANGE + outcome="interrupted"（用户中断，不是失败）
@@ -1189,13 +1367,23 @@ class LiuHaoAssistant:
         if status == "completed":
             event_type = AuditEventType.ACCESS_ALLOWED
             outcome = "allow"
+        elif status == "truncated":
+            # 不是成功：如实记成"被长度上限截断"，避免驾驶舱把它算成完成。
+            event_type = AuditEventType.STATE_CHANGE
+            outcome = "truncated"
         elif status == "interrupted":
             event_type = AuditEventType.STATE_CHANGE
             outcome = "interrupted"
         else:
             event_type = AuditEventType.STATE_CHANGE
             outcome = "error"
-        key_owner = str(getattr(self.provider, "owner_principal", "") or self.audit_principal)
+        # 跨模型 failover 后，真正消耗额度的是"实际应答"的那家：优先取
+        # provider 记录的 last_served_owner，而不是链路里的主模型归属。
+        key_owner = str(
+            getattr(self.provider, "last_served_owner", "")
+            or getattr(self.provider, "owner_principal", "")
+            or self.audit_principal
+        )
         details = {
             "turn": self.turn,
             "action": "chat",
@@ -1262,12 +1450,18 @@ class LiuHaoAssistant:
             )
 
     def _build_messages(self, message: str) -> List[Dict[str, str]]:
-        """拼出给 provider 的 messages：system + 截断历史 + 当前输入。
+        """拼出给 provider 的 messages：system + 裁剪后的历史 + 当前输入。
 
         system 段由三部分组成（按优先级叠加）：
         1. ``DEFAULT_SYSTEM_PROMPT``（人格 + 能力边界）
         2. 工具描述段（``build_tool_prompt``）
         3. KAREN 用户画像摘要（如果存在）—— 让 LLM 按真实偏好/背景个性化回复
+
+        历史不再按固定条数截断（固定 20 条与模型真实窗口无关）：改由
+        ``context_budget.trim_history`` 按模型上下文窗口算 token 预算，保留
+        最近 6 轮、最低 2 轮；system 段与当前这一句永不裁，被裁掉的早期历史
+        折成确定性摘要挂回 system 段。装不下时抛 ``ContextBudgetExceeded``
+        （``upstream_kind=context_length_exceeded``），调用方按「对话太长」收口。
         """
         from .personal_context import get_personal_context
 
@@ -1280,11 +1474,60 @@ class LiuHaoAssistant:
             system_content += (
                 "\n\n## 用户画像（来自 KAREN Personal Intelligence）\n" + summary
             )
-        messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
-        recent = self.history[-MAX_HISTORY_MESSAGES:]
-        messages.extend(recent)
-        messages.append({"role": "user", "content": message})
-        return messages
+
+        window_tokens, window_source = resolve_context_window(
+            # ModelConfig 目前没有 context_window 字段（由模型配置线负责），
+            # 先把 None 传进去：解析顺序退化为「内置家族表 → 保守 8192」。
+            configured=None,
+            provider=str(getattr(self.provider, "name", "") or ""),
+            model=str(getattr(self.provider, "model", "") or ""),
+        )
+        # MEM-005：超出 240 条窗口的早期历史由持久化分层摘要兜底；摘要读取
+        # 失败只降级（不阻断本轮对话），但会记 warn 方便定位。
+        early_summary = ""
+        if self._conv_store is not None:
+            try:
+                early_summary = self._conv_store.get_summary(self.principal)
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning(
+                    "evt=context.summary_load_failed principal=%s error=%s",
+                    self.principal,
+                    exc,
+                )
+        plan = trim_history(
+            self.history,
+            window_tokens=window_tokens,
+            system_text=system_content,
+            current_message=message,
+            keep_recent_turns=DEFAULT_KEEP_RECENT_TURNS,
+            window_source=window_source,
+            early_summary=early_summary,
+        )
+        # 可观测性：裁剪发生时留一条结构化日志，便于用户反馈"它怎么忘了我前面
+        # 说的"时回查是不是被裁掉了。只记计数与预算，不打印任何消息内容。
+        if plan.dropped_turns:
+            self._log.info(
+                "evt=context.trim principal=%s kept_turns=%s dropped_turns=%s "
+                "dropped_messages=%s estimated_tokens=%s window_tokens=%s source=%s",
+                self.principal,
+                plan.kept_turns,
+                plan.dropped_turns,
+                plan.dropped_messages,
+                plan.estimated_tokens,
+                plan.window_tokens,
+                plan.window_source,
+            )
+        else:
+            self._log.debug(
+                "evt=context.keep principal=%s kept_turns=%s estimated_tokens=%s "
+                "window_tokens=%s source=%s",
+                self.principal,
+                plan.kept_turns,
+                plan.estimated_tokens,
+                plan.window_tokens,
+                plan.window_source,
+            )
+        return plan.messages
 
     def reset(self) -> None:
         """清空会话历史（记忆与身份保留）。"""

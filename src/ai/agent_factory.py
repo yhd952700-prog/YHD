@@ -40,11 +40,6 @@ from .audit import audited
 
 _log = logging.getLogger(__name__)
 
-#: Rough prompt->token heuristic (~4 characters per token). This feeds a
-#: *budget guard*, not a tokenizer: it only needs to be the right order of
-#: magnitude so a wildly over-budget action is caught before the call.
-CHARS_PER_TOKEN = 4
-
 #: Assumed output length when the provider does not declare one. Matches the
 #: ``ProviderCapabilities.max_output_tokens`` default in ``providers.py``.
 DEFAULT_MAX_OUTPUT_TOKENS = 1024

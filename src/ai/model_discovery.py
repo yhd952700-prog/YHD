@@ -158,7 +158,10 @@ def fetch_model_list(
 
     try:
         assert_safe_runtime_target(
-            url, context="模型服务", allow_private_service=is_ollama
+            url,
+            context="模型服务",
+            allow_private_service=is_ollama,
+            allow_loopback=is_ollama,
         )
     except RuntimeTargetRejected:
         return _failure("rejected_target")

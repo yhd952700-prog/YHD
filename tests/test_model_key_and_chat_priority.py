@@ -31,6 +31,7 @@ from src.ai.providers import (
     ProviderHTTPError,
     ProviderStreamIncompleteError,
     provider_from_config,
+    technical_detail_for,
     user_facing_failure,
 )
 
@@ -137,7 +138,17 @@ class _Upstream:
                 self.end_headers()
                 self.wfile.write(raw)
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # 带 Key 的 http 只允许本机推理端口（net_guard 的安全策略）：测试上游
+        # 必须落在 11434/1234/8000/8080 之一，否则请求会在发出去之前被拒绝，
+        # 分类断言测的就变成护栏本身了。逐端口尝试，全占用才退回临时端口。
+        self._server = None
+        for port in (11434, 1234, 8000, 8080, 0):
+            try:
+                self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+                break
+            except OSError:
+                continue
+        assert self._server is not None, "无法绑定本地测试上游端口"
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -331,13 +342,15 @@ class TestChatHonoursTheDefaultModel:
         assert store.get_public(cloud["id"])["is_default"] is False
 
     def test_all_failures_report_each_model_and_reason(self, store, upstream):
+        # 非可重试错误（401/404/context）按策略直接抛出、不静默切换；
+        # 「每个模型各报一次原因」只对可重试失败成立（500/超时/空回复）。
         first = _create(
             store,
-            name="first-bad-key",
+            name="first-down",
             provider="openai",
             model="gpt-4o-mini",
-            base_url=f"{upstream.url('bad')}/v1",
-            api_key="sk-first-bad-abcdefgh",
+            base_url=f"{upstream.url('down')}/v1",
+            api_key="sk-first-down-abcdefgh",
         )
         second = _create(
             store,
@@ -354,17 +367,48 @@ class TestChatHonoursTheDefaultModel:
             provider.chat([{"role": "user", "content": "你好"}])
 
         message = str(info.value)
-        assert "first-bad-key" in message
+        assert "first-down" in message
         assert "second-down" in message
-        assert "API Key 无效" in message  # 401 → 具体原因，不是通用失败
         assert "HTTP 500" in message
-        assert "sk-first-bad" not in message  # 密钥不得进用户可见文案
+        assert "sk-first-down" not in message  # 密钥不得进用户可见文案
         # 展示层直接使用这条消息，不再套"这次没有拿到回复"。
         assert user_facing_failure(info.value) == message
         assert [call["path"] for call in upstream.calls] == [
-            "/bad/v1/chat/completions",
+            "/down/v1/chat/completions",
             "/down/api/chat",
         ]
+
+
+def test_chain_failure_never_echoes_upstream_detail():
+    """链式回落的主文案只放中文分类；带盘符路径的上游原文只进技术详情。"""
+    leak = "Internal Server Error: C:\\srv\\gateway.py line 42"
+
+    class _Leaky(BaseProvider):
+        def __init__(self) -> None:
+            super().__init__("leaky", "leaky-model")
+
+        def chat(self, messages, **kwargs):
+            raise ProviderHTTPError(
+                "模型服务返回 HTTP 500，详情已记录到服务端日志。",
+                status_code=500,
+                upstream_kind="upstream_error",
+                upstream_detail=leak,
+            )
+
+    chain = FailoverProvider([_Leaky()], labels=["坏模型"])
+    with pytest.raises(ProviderChainError) as info:
+        chain.chat([{"role": "user", "content": "你好"}])
+
+    message = str(info.value)
+    assert "HTTP 500" in message
+    assert "C:\\srv" not in message
+    assert "gateway.py" not in message
+    assert "Internal Server Error" not in message
+    assert user_facing_failure(info.value) == message
+
+    technical = technical_detail_for(info.value)
+    assert leak in technical
+    assert "坏模型" in technical
 
 
 class TestStreamFailureAfterFirstTokenDoesNotSwitchModel:

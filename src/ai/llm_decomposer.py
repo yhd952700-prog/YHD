@@ -39,6 +39,8 @@ KNOWN_CAPABILITIES: tuple = (
     "python_compute",
     "network_bus",
     "execution_pipeline",
+    "preview_start",
+    "preview_stop",
 )
 
 #: Capabilities that call the model to generate prose. A timeout there is not a
@@ -55,6 +57,10 @@ CAPABILITY_INPUT_CONTRACT: Dict[str, tuple] = {
     "python_compute": ("code", "expression"),
     "network_bus": ("query", "goal", "instruction"),
     "execution_pipeline": ("instruction", "goal", "query"),
+    # 预览的静态根在工具注册时已固定，因此没有必填输入；``entry`` 只是
+    # 工作区内可选的页面路径。``preview_stop`` 不填 handle 表示停止全部。
+    "preview_start": (),
+    "preview_stop": (),
 }
 
 MAX_TASKS = 8
@@ -373,7 +379,13 @@ class LLMTaskDecomposer:
             "8. python_compute 只在用户明确给出代码或算式时使用；只是提到 Python  "
             "（例如「查 Python 新特性」）时不要生成计算任务。\n"
             "9. file_write 的 inputs.content 必须是要落盘的完整正文（例如完整 HTML），"
-            "不能只写「某某的代码」这类占位说明；path 用相对路径。\n\n"
+            "不能只写「某某的代码」这类占位说明；path 用相对路径。\n"
+            "10. 交付可在浏览器打开的网页（HTML/CSS/JS）时，必须在 file_write 任务之后"
+            "增加一个 preview_start 任务：depends_on 包含写入任务名，inputs 填 "
+            "{\"entry\": \"刚写入页面的相对路径\"}。它会在工作区起本地静态预览，"
+            "并把真实可访问性自检结果（HTTP 状态、响应字节、SHA256、页面标题）回传。\n"
+            "11. preview_start 只读工作区、不执行任何命令、不出网；它只接受工作区内的"
+            "相对入口路径。预览结束用 preview_stop（不填 handle 表示停止全部）。\n\n"
             + (
                 "上一次输出的计划被校验拒绝，错误原文："
                 f"{retry_error}\n"

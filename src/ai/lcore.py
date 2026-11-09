@@ -25,8 +25,17 @@ from ..kernels.execution import (
     Verifier,
     ActionResult,
     VerifyResult,
+    ExecutionJournal,
+    IDEMPOTENCY_UNKNOWN_MESSAGE,
+    capability_is_reentrant,
+    evaluate_ledger_gate,
+    ledger_unavailable_error,
+    make_action_id,
+    replay_from_journal,
+    settle_idempotency,
 )
 from ..kernels.context import create_context_kernel, ContextInput, ContextInputType
+from ..kernels.event import publish_event, EventScope, EventPriority
 from .tool_registry import ToolRegistry, ToolRouter, ToolStatus
 from .observability import observe, get_logger
 
@@ -40,10 +49,15 @@ class LCore:
         scope: str = "L1",
         authorize: Optional[Callable[[Goal, ExecutionPlan], bool]] = None,
         register_local_tools: bool = False,
+        journal: Optional[ExecutionJournal] = None,
     ) -> None:
         self.scope = scope
         self.tools = tools or ToolRegistry()
         self.router = ToolRouter(self.tools)
+        # 幂等账本：与 ExecutionEngine 同一道闸门（``evaluate_ledger_gate``）。
+        # None = 没接账本，``handle_intent`` 直接路由工具，所以必须在这里也
+        # fail-closed 硬副作用，否则就绕过了执行内核的拒绝逻辑。
+        self.journal = journal
         # Opt-in: wire the real, locally-executable tools (RestrictedPython-backed
         # python_compute, etc.) into this Core's registry. Off by default so existing
         # callers/tests that depend on an empty registry keep behaving as before.
@@ -121,8 +135,26 @@ class LCore:
         intent: str,
         verification_criteria: Optional[Dict[str, Any]] = None,
         plan_mode: str = "parallel",
+        action_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run the full §21 pipeline for a single human intent."""
+        """Run the full §21 pipeline for a single human intent.
+
+        ``action_id``（调用方给的稳定幂等键）
+        ----------------------------------
+        传入时，它被当作这次意图的稳定标识：goal id 直接用它，每个任务的账本
+        键由 ``make_action_id(goal_id, task_name)`` 派生（与 ExecutionEngine 同一
+        个函数）。于是「同一意图被投递两次 / 重试 / 重启后续跑」会命中同一个
+        占坑：第二次不再执行副作用，而是回放首次结果（输出带 ``replayed_from``）。
+
+        调用方只在**确认是同一个意图**时才复用同一个值；两次真实不同的请求
+        必须给不同值，否则会被当成重复而只执行一次（这是幂等键的定义，不是
+        缺陷）。
+
+        ``action_id`` 缺省（``None``）时行为与以前一致：每次生成新的 goal id，
+        **不复用、不占坑**，因此跨调用没有重复保护（只保留了「账本缺席时硬
+        副作用拒绝」这一道静态闸门）。脚本/演示入口属于这一类，若要重复保护
+        请显式传 ``action_id``。
+        """
         # 1. Context
         self.context_kernel.add_input(ContextInput(
             type=ContextInputType.GOAL,
@@ -132,7 +164,14 @@ class LCore:
         ))
 
         # 2. Goal
-        goal = Goal(id=str(uuid.uuid4())[:8], natural_language=intent, scope=self.scope)
+        # 有调用方给的稳定键时，goal id 由它决定（= 跨调用幂等的前提）；
+        # 否则保持旧行为：随机 id、不复用。
+        stable_key = (action_id or "").strip()
+        goal = Goal(
+            id=stable_key or str(uuid.uuid4())[:8],
+            natural_language=intent,
+            scope=self.scope,
+        )
 
         # 3. Plan
         tasks = self.decomposer.decompose(goal)
@@ -150,9 +189,54 @@ class LCore:
             }
 
         # 5. Execution — route each task's capability to a real tool.
+        # 与 ExecutionEngine 共用同一道闸门：账本缺席时硬副作用拒绝、只读放行，
+        # 否则 ``router.execute`` 就是绕过执行内核的那扇常开的门。
         results: Dict[str, ActionResult] = {}
         for task in plan.tasks:
-            results[task.id] = self.router.execute(task.capability_id, task.inputs)
+            gate = evaluate_ledger_gate(
+                task.capability_id, journal_available=self.journal is not None
+            )
+            if not gate.allowed:
+                results[task.id] = self._refused_result(
+                    goal, task, gate.status, gate.error
+                )
+                continue
+
+            idem_key = self._idempotency_key(goal, task, reuse=bool(stable_key))
+            if idem_key is not None:
+                try:
+                    claimed = self.journal.claim_idempotency(
+                        idem_key, goal.id, task_name=task.name
+                    )
+                except Exception as exc:
+                    # 账本写不进去：与内核一致，不可重入动作 fail-closed。
+                    self._log.warning(
+                        "evt=idempotency_ledger_write_failed entry=lcore "
+                        "capability=%s task_id=%s error=%s",
+                        task.capability_id,
+                        task.id,
+                        exc,
+                    )
+                    results[task.id] = self._refused_result(
+                        goal,
+                        task,
+                        "idempotency_ledger_unavailable",
+                        ledger_unavailable_error(task.capability_id),
+                    )
+                    continue
+                if not claimed:
+                    results[task.id] = self._replayed_result(goal, task, idem_key)
+                    continue
+
+            result = self.router.execute(task.capability_id, task.inputs)
+            settle_idempotency(
+                self.journal,
+                idem_key,
+                ok=bool(result.success),
+                output=result.output,
+                raw=result.output if isinstance(result.output, dict) else None,
+            )
+            results[task.id] = result
 
         # 6. Verify
         verifications = {}
@@ -163,6 +247,95 @@ class LCore:
 
         # 7. Response
         return self._synthesize(goal, plan, results, verifications)
+
+    def _idempotency_key(self, goal: Goal, task, *, reuse: bool) -> Optional[str]:
+        """任务的稳定账本键；``None`` = 这条任务不走占坑/回放。
+
+        只对不可重入能力建键（与内核的 ``_action_idempotency_key`` 同口径）：
+        给天然幂等能力建键只会把一次无害重试误报成「重放」。``reuse`` 为 False
+        表示调用方没给稳定 ``action_id``，此时派生出来的键每次都不同，建了也
+        没有意义，只是往账本里堆垃圾行。
+        """
+        if self.journal is None or not reuse:
+            return None
+        if capability_is_reentrant(task.capability_id):
+            return None
+        return make_action_id(goal.id, task.name)
+
+    def _refused_result(self, goal: Goal, task, status: str, error: str) -> ActionResult:
+        """执行前被闸门拒绝：发布事件并返回失败结果（不发成功、不留白）。"""
+        self._log.warning(
+            "evt=idempotency_hard_side_effect_refused entry=lcore "
+            "capability=%s task_id=%s status=%s",
+            task.capability_id,
+            task.id,
+            status,
+        )
+        publish_event(
+            type="action_failed",
+            source="lcore",
+            data={
+                "task_id": task.id,
+                "capability_id": task.capability_id,
+                "status": status,
+                "error": error,
+            },
+            correlation_id=goal.correlation_id,
+            scope=EventScope(self.scope),
+            priority=EventPriority.HIGH,
+        )
+        return ActionResult(
+            action_id="",
+            success=False,
+            output={
+                "success": False,
+                "status": status,
+                "executed": False,
+                "capability": task.capability_id,
+            },
+            error=error,
+        )
+
+    def _replayed_result(self, goal: Goal, task, idem_key: str) -> ActionResult:
+        """已占坑：回放首次结果，绝不再执行一次副作用。"""
+        output, unknown = replay_from_journal(self.journal, idem_key)
+        if unknown:
+            publish_event(
+                type="action_replayed_unknown",
+                source="lcore",
+                data={"action_id": idem_key, "task_id": task.id},
+                correlation_id=goal.correlation_id,
+                scope=EventScope(self.scope),
+                priority=EventPriority.HIGH,
+            )
+            return ActionResult(
+                action_id=idem_key,
+                success=False,
+                output={
+                    "success": False,
+                    "status": "replayed_unknown",
+                    "replayed_from": idem_key,
+                    "capability": task.capability_id,
+                },
+                error=IDEMPOTENCY_UNKNOWN_MESSAGE,
+                replayed=True,
+            )
+        output["replayed_from"] = idem_key
+        output.setdefault("success", True)
+        output["replayed"] = True
+        publish_event(
+            type="action_replayed",
+            source="lcore",
+            data={"action_id": idem_key, "task_id": task.id},
+            correlation_id=goal.correlation_id,
+            scope=EventScope(self.scope),
+        )
+        return ActionResult(
+            action_id=idem_key,
+            success=bool(output.get("success", True)),
+            output=output,
+            replayed=True,
+        )
 
     def _authorize(self, goal: Goal, plan: ExecutionPlan) -> bool:
         if self.authorize is None:
@@ -195,7 +368,14 @@ class LCore:
             "plan_id": plan.id,
             "task_count": len(plan.tasks),
             "results": {
-                tid: {"success": r.success, "output": r.output, "error": r.error}
+                tid: {
+                    "success": r.success,
+                    "output": r.output,
+                    "error": r.error,
+                    # 重复投递被账本拦下时这里为 True，界面上必须能区分
+                    # 「复用首次结果」和「这次真的执行了」。
+                    "replayed": bool(getattr(r, "replayed", False)),
+                }
                 for tid, r in results.items()
             },
             "verifications": {
