@@ -143,7 +143,7 @@ _CONSOLE_DIST_ENV = "LIUHAO_CONSOLE_DIST"
 #: 每条故障结论给非开发者的下一步动作。只对 detected / inconclusive 输出，
 #: 让"看不懂 evidence 的人"也知道该点什么、该找谁。
 _NEXT_STEPS = {
-    "service_not_running": "点桌面窗口的「重新启动服务」；仍失败就点「生成诊断包」，把 zip 发给技术支持。",
+    "service_not_running": "点托盘菜单的「重新启动服务」；仍失败就点「生成诊断包」，把 zip 发给技术支持。",
     "installation_incomplete": "用同一个安装包重新安装（或重新解压）补齐缺失文件；若杀毒软件隔离了文件，先从隔离区恢复。",
     "directory_not_writable": "把数据目录改到当前用户可写的位置（例如 %LOCALAPPDATA%\\LiuHao\\data），或让管理员给该目录写权限。",
     "port_conflict": "在任务管理器结束占用该端口的程序后重试；不确定是哪个程序时，生成诊断包，ports.json 会写明进程名和 PID。",
@@ -1122,10 +1122,20 @@ def _collect_db_check(data_dir: Path) -> dict[str, Any]:
 
 
 def _configured_api_port(default: int = 8080) -> int:
+    """与 ``GatewayService`` 同一优先级：环境变量 > 持久化配置 > 默认端口。"""
+    raw = (os.environ.get("LIUHAO_API_PORT") or "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
     try:
-        return int((os.environ.get("LIUHAO_API_PORT") or "").strip() or default)
-    except ValueError:
-        return default
+        from .service import load_saved_port
+
+        saved = load_saved_port()
+    except Exception:  # noqa: BLE001 - 诊断包不能因为读配置失败而中断
+        saved = None
+    return saved or default
 
 
 def _error_text(exc: BaseException | None) -> str | None:
@@ -1522,10 +1532,11 @@ def service_guidance(
     requested_port: int | None = None,
     stopped_by_user: bool = False,
     data_dir_writable: bool | None = None,
+    process_alive: bool = False,
 ) -> dict[str, str]:
     """把网关状态翻译成"发生了什么 + 下一步做什么"。
 
-    桌面窗口在服务被杀、端口占满、数据目录只读这三种情况下都必须给出
+    托盘菜单/桌面窗口在服务被杀、端口占满、数据目录只读这三种情况下都必须给出
     中文解释和可执行动作，而不是只显示一个状态词或空白。
     """
     if running:
@@ -1546,7 +1557,16 @@ def service_guidance(
     if stopped_by_user:
         return {
             "service": "网关：已按你的要求停止",
-            "next": "点「重新启动服务」可再次启动；排障时可直接生成诊断包。",
+            "next": "点托盘菜单的「重新启动服务」可再次启动；排障时可直接生成诊断包。",
+        }
+    if process_alive:
+        # 进程在、健康接口不通：和"进程不存在"必须分开说，否则用户会去杀一个已经在跑的进程。
+        return {
+            "service": "网关：进程在，但健康接口不通",
+            "next": (
+                "网关进程还在，但 /v1/health 没有响应。点托盘菜单的「重新启动服务」原地重启；"
+                "仍不行就生成诊断包，里面的 health.json 会写明超时原因。"
+            ),
         }
     if data_dir_writable is False:
         return {
@@ -1584,7 +1604,7 @@ def service_guidance(
             "next": "先点「重新启动服务」重试一次；仍失败就生成诊断包发给技术支持，包里的 diagnosis.json 会指出原因。",
         }
     return {
-        "service": "网关：已停止（未探测到运行中的网关进程）",
+        "service": "网关：已停止（进程不存在）",
         "next": "点「重新启动服务」恢复；若反复停止，生成诊断包发给技术支持。",
     }
 
@@ -2233,7 +2253,7 @@ def _build_summary(
         action = "打开 logs/liuhao.log 与 logs/launcher.log 的末尾 50 行，找最后一个 evt= 事件。"
         extra_actions.extend(
             [
-                "点桌面窗口的「重新启动服务」试一次",
+                "点托盘菜单的「重新启动服务」试一次",
                 "仍失败就生成诊断包发给技术支持（附上出错时间点）",
             ]
         )

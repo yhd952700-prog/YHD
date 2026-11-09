@@ -48,7 +48,9 @@ DIAGNOSE_HINT = "python -m src.desktop diagnose --verify"
 
 
 def _base(base_url: str) -> str:
-    return (base_url or "http://127.0.0.1:8080").rstrip("/")
+    # 不写死 8080 兜底：调用方没给地址时宁可按连接失败处理，也不能去探测
+    # 端口上可能属于别的程序的页面。
+    return (base_url or "").rstrip("/")
 
 
 def probe_startup(base_url: str, timeout: float = 2.0) -> dict[str, Any]:
@@ -58,9 +60,15 @@ def probe_startup(base_url: str, timeout: float = 2.0) -> dict[str, Any]:
     if isinstance(body, dict) and body.get("state") in {"starting", "ready", "degraded"}:
         return {"reachable": True, "state": str(body["state"]), "body": body, "error": None, "legacy": False}
     if info.get("status") == 404:
-        # 旧版网关没有这个端点：退回 /v1/health，已通就算 ready。
+        # 旧版网关没有这个端点：退回 /v1/health，但必须核对身份 ——
+        # 端口上别人的服务也会对 /v1/health 回 200，不能因此把用户放进去。
         health = http_json(f"{_base(base_url)}{HEALTH_PATH}", timeout=timeout)
-        if health.get("ok"):
+        body = health.get("body")
+        if (
+            health.get("ok")
+            and isinstance(body, dict)
+            and body.get("service") == "liuhao-gateway"
+        ):
             return {"reachable": True, "state": "ready", "body": None, "error": None, "legacy": True}
         return {
             "reachable": False,
@@ -251,6 +259,19 @@ def wait_until_ready(
                 }
             )
         if snapshot["state"] in ENTER_STATES:
+            # 就绪响应到了不代表进程还活着：网关可能在返回后立刻崩溃。
+            # 先确认进程，再报"已就绪"，避免把用户送进一个正在死的页面。
+            if is_alive is not None and not is_alive():
+                return _build_result(
+                    snapshot,
+                    state="exited",
+                    elapsed=elapsed,
+                    polls=polls,
+                    timeout=timeout,
+                    log_dir=log_dir,
+                    log_hint=log_hint,
+                    diagnose_hint=diagnose_hint,
+                )
             return _build_result(
                 snapshot,
                 state=snapshot["state"],

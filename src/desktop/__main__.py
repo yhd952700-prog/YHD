@@ -1,6 +1,8 @@
 """桌面层命令行入口。
 
-    python -m src.desktop                      # 默认：状态窗口 + 托盘 + 启动网关
+    python -m src.desktop                      # 默认：鎏灏原生窗口 + 托盘 + 启动网关
+    python -m src.desktop app --web            # 网页模式：不建窗口，网关就绪后开浏览器
+    python -m src.desktop app --status-window  # 排障：旧 tkinter 状态窗口
     python -m src.desktop app --hidden         # 只驻留托盘（自启时使用）
     python -m src.desktop about [--json]       # 关于页数据源
     python -m src.desktop autostart status|enable|disable
@@ -18,10 +20,11 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
-from . import REPO_ROOT
 from ..brand import BRAND_LOCKUP
+from . import REPO_ROOT
 from .probe import discover_service, http_json
 
 
@@ -36,12 +39,29 @@ def _add_app_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help=(
-            "网关端口（默认 8080，可用环境变量 LIUHAO_API_PORT 覆盖）。"
+            "网关端口（默认 8080，可用环境变量 LIUHAO_API_PORT 或上次保存的端口覆盖）。"
             "被占用时默认拒绝启动并说明原因；只有自动恢复模式才会换端口并记警告。"
             "0 表示系统随机分配，桌面壳不支持（地址必须稳定），会直接报错"
         ),
     )
-    parser.add_argument("--open-browser", action="store_true", help="启动后打开浏览器（自启场景不要加）")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="网页模式：不创建原生窗口，网关就绪后用系统浏览器打开（带 mode=web 标识）",
+    )
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help=(
+            "历史参数：旧快捷方式（含安装器生成的桌面/开始菜单快捷方式）仍会传入。"
+            "桌面入口照常创建原生窗口，不再因此切到浏览器；需要网页模式请显式使用 --web"
+        ),
+    )
+    parser.add_argument(
+        "--status-window",
+        action="store_true",
+        help="排障用的旧 tkinter 状态窗口（不是默认入口）",
+    )
     parser.add_argument("--hidden", action="store_true", help="启动后只驻留托盘，不显示窗口")
     parser.add_argument("--autostart", action="store_true", help="自启模式：等价于 --hidden 且不打开浏览器")
 
@@ -65,8 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_auto = sub.add_parser("autostart", help="开机自启登记（仅 HKCU，默认关闭）")
     p_auto.add_argument("action", choices=("status", "enable", "disable"))
-    p_auto.add_argument("--open-browser", action="store_true", help="自启时也自动打开浏览器（默认不打开）")
     p_auto.add_argument("--value-name", default=None, help="登记值名（测试或自定义用，默认 LiuHaoAIOS）")
+    p_auto.add_argument("--root", default=None,
+                        help="安装根：disable 时连所有指向该目录的 Run 值一并删除（卸载用）")
 
     p_stop = sub.add_parser("stop", help="停止安装目录下的托盘与网关进程（幂等）")
     p_stop.add_argument("--root", default=None, help="安装目录（默认当前源码/安装根）")
@@ -103,9 +124,10 @@ def _cmd_autostart(args: argparse.Namespace) -> int:
         _emit({"supported": False, "error": "开机自启仅支持 Windows（HKCU Run）"})
         return 2
     if args.action == "enable":
-        result = autostart.enable(REPO_ROOT, open_browser=args.open_browser, value_name=value_name)
+        result = autostart.enable(REPO_ROOT, value_name=value_name)
     elif args.action == "disable":
-        result = autostart.disable(value_name)
+        root = Path(args.root) if getattr(args, "root", None) else None
+        result = autostart.disable(value_name, root=root)
     else:
         result = autostart.read(value_name)
     _emit(result)
@@ -189,7 +211,7 @@ def _cmd_tray_demo(args: argparse.Namespace) -> int:
     print("托盘已启动。请在任务栏通知区找到「鎏灏」图标（可能收在 ^ 折叠区）：", flush=True)
     for _id, name, label in MENU_ITEMS:
         print(f"  - [{_id}] {label} -> {name}", flush=True)
-    print("右键应出现以上四项；单击 / 双击应分别触发 toggle_status / open_console。", flush=True)
+    print("右键应出现以上菜单项；单击 / 双击应分别触发 toggle_status / open_console。", flush=True)
     print("选中后本进程会打印 action。选择「退出」或按 Ctrl+C 结束。", flush=True)
     states = (STATE_RUNNING, STATE_ERROR, STATE_STOPPED)
     state_index = 0
@@ -226,12 +248,28 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 def _cmd_app(args: argparse.Namespace) -> int:
     from .app import DesktopApp
 
+    # 桌面壳启动同样是一次低频"进程入口"：先有界清掉上次被强杀留下的自产
+    # 临时产物，再拉起窗口与网关。判据 / 上限 / pid 策略与网关启动同一套实现。
+    from ..common.temp_sweep import run_startup_temp_sweep
+
+    run_startup_temp_sweep()
+
     hidden = bool(args.hidden or args.autostart)
+    if args.autostart:
+        # 自启永远静默：不建网页模式、不自动开浏览器，原生窗口保持隐藏。
+        mode = "native"
+    elif args.status_window:
+        mode = "status"
+    elif args.web:
+        mode = "browser"
+    else:
+        mode = "native"
     app = DesktopApp(
         host=args.host,
         port=args.port,
-        open_browser=bool(args.open_browser and not args.autostart),
+        open_browser=mode == "browser",
         hidden=hidden,
+        window_mode=mode,
     )
     return app.run()
 

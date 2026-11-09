@@ -1,4 +1,4 @@
-﻿"""六类故障的一键修复动作：幂等、可回退、每次都留证据与日志。
+"""六类故障的一键修复动作：幂等、可回退、每次都留证据与日志。
 
 设计约束（与排障线同一套要求）
 ----------------------------
@@ -184,7 +184,14 @@ def _read_config() -> dict[str, Any]:
     path = desktop_config_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}  # 首次使用还没有配置，属正常
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "桌面配置读取失败（%s：%s）：按默认数据目录继续，若数据实际在自定义目录，本次修复会找错位置",
+            mask_user_path(str(path)),
+            exc,
+        )
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -458,8 +465,10 @@ def model_settings_target(service: Any, model_id: str | None = None) -> dict[str
     所以这里只做**真跳转**（``?p=settings`` 是构建产物里真实支持的路由），并
     如实说明不能自动聚焦，不假装已经聚焦。
     """
-    base = (service.base_url if service is not None else None) or "http://127.0.0.1:8080"
-    url = f"{base.rstrip('/')}/?p=settings"
+    # 不写死 8080：网关未启动/未分配端口时宁可返回空地址，由调用方拦截，
+    # 也不能把 8080 上别人的页面当成"设置页"打开。
+    base = (getattr(service, "base_url", None) or "").rstrip("/")
+    url = f"{base}/?p=settings" if base else ""
     return {
         "url": url,
         "model": model_id or "",
@@ -467,7 +476,9 @@ def model_settings_target(service: Any, model_id: str | None = None) -> dict[str
         "note": (
             "已打开「系统设置」页并在剪贴板放入模型名；当前驾驶舱构建产物没有"
             "“定位到某个模型编辑框”的深链，需要在该页手动点「编辑」后填写 Key。"
-        ),
+        )
+        if url
+        else "网关尚未启动，无法打开设置页；请先在托盘菜单点「重新启动服务」。",
     }
 
 
@@ -506,7 +517,7 @@ def open_model_settings(
         + ("模型名已放入剪贴板。" if copied else "")
         + "这一版界面不能自动把光标放进 Key 输入框，需要点「编辑」后填写。"
         if opened
-        else f"没能自动打开浏览器（{error}）；请手动访问 {target['url']}。"
+        else f"没能自动打开鎏灏窗口（{error}）；请在鎏灏窗口里手动进入设置页。"
     )
     return _result(
         "open_model_settings",
@@ -861,13 +872,22 @@ def recover_database(
             if not source.exists():
                 continue
             target = root / relative
-            with contextlib.suppress(OSError):
-                target.unlink()
-            with contextlib.suppress(OSError):
+            try:
+                target.unlink(missing_ok=True)
                 for suffix in _SQLITE_SIDECARS:
                     target.with_name(target.name + suffix).unlink(missing_ok=True)
                 shutil.move(str(source), str(target))
                 restored_count += 1
+            except OSError as exc:
+                # 回滚是逐文件尽力而为：单个库恢复失败不影响其余库，但必须
+                # 留下失败对象与原因，否则用户只看到「恢复数量不对」。
+                _log(
+                    "recover_database",
+                    "revert_failed",
+                    log_dir=log_dir,
+                    file=relative,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
         restarted_ok = None
         if service is not None:
             restarted_ok = service.start(timeout=timeout, allow_port_fallback=False)

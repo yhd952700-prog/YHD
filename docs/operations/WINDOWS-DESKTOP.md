@@ -154,8 +154,8 @@ stdin 管道协议**：
 
 ### 2.6 首启：启动门（不给用户看错误页）
 
-网关在导入路由、跑完 lifespan 之后才绑定端口；在此之前浏览器只能拿到
-**连接失败**。所以"启动完再打开浏览器"不能只看进程是否拉起，必须看网关自己
+网关在导入路由、跑完 lifespan 之后才绑定端口；在此之前浏览器/原生窗口只能拿到
+**连接失败**。所以"启动完再进控制台"不能只看进程是否拉起，必须看网关自己
 的 `GET /v1/startup`（契约见 `docs/startup-profile.md`）。
 
 | 探测结果 | 用户看到 | 是否进控制台 |
@@ -181,40 +181,45 @@ stdin 管道协议**：
 
 | 入口 | 实际链路 | 可见反馈 | 启动门 |
 |---|---|---|---|
-| 桌面 / 开始菜单快捷方式、安装完成页「立即启动」 | `{app}\LiuHao.bat` → `runtime\python.exe scripts\launch_installed.py` →（首次运行向导）→ `scripts/start_liuhao.py` | **控制台窗口**（阶段与进度逐行打印） | 是（`/v1/startup`，ready/degraded 才开浏览器） |
-| 托盘 / 开机自启 | `scripts/liuhao_desktop.py` → `src.desktop app` | 状态窗口 + 托盘图标 | 是（同一模块 `src/desktop/startup.py`） |
+| 桌面 / 开始菜单快捷方式、安装完成页「立即启动」 | `{app}\runtime\pythonw.exe` + `{app}\scripts\liuhao_desktop.py app` → `src.desktop app`（原生 WebView2 窗口 + 托盘） | **原生窗口**（无控制台黑窗；关窗最小化到托盘，服务继续） | 是（`/v1/startup`，ready/degraded 后才加载控制台） |
+| 托盘 / 开机自启 | `scripts/liuhao_desktop.py --autostart` → `src.desktop app`（`--hidden`） | 仅托盘图标，窗口隐藏 | 是（同一模块 `src/desktop/startup.py`） |
+| 命令行排障 | `{app}\LiuHao.bat --console` → `runtime\python.exe scripts\launch_installed.py` →（首跑向导）→ `scripts\start_liuhao.py` | **控制台窗口**（阶段与进度逐行打印；失败时 `pause` 留住窗口） | 是（`/v1/startup`，ready/degraded 才继续） |
 
 证据（当前代码）：
 
 * `installer/liuhao.iss` 的 `[Icons]`（开始菜单）、桌面快捷方式与 `[Run]`
-  的「立即启动」三项都指向 `{app}\LiuHao.bat`；
+  的「立即启动」三项都指向 `{app}\runtime\pythonw.exe` +
+  `{app}\scripts\liuhao_desktop.py app`；即便命令行里出现
+  `--open-browser`（历史参数）也不会切换到浏览器模式，网页模式一律用 `--web`（见 8.2）；
 * `packaging/stage_payload.py` 生成的 `LiuHao.bat` 内容是
-  `runtime\python.exe scripts\launch_installed.py %*`；
+  `runtime\python.exe scripts\launch_installed.py %*`，只作 `--console` 排障入口，
+  **不是**快捷方式目标；
 * `scripts/launch_installed.py` 的 `main()` 把参数原样交给
   `scripts.start_liuhao.main()`（首次运行时先跑 `first_run_wizard`）；
 * `src/desktop/autostart.py` 的 `_entry()` 优先取 `scripts/liuhao_desktop.py`，
   该脚本已在 `PAYLOAD_SCRIPTS` 里，因此安装版自启也是托盘壳。
 
-两条壳共用 `src/desktop/startup.py` 里的同一套判定（连接失败=`starting`、
+三条入口共用 `src/desktop/startup.py` 里的同一套判定（连接失败=`starting`、
 250→500ms 退避、ready/degraded 才放行、超时给日志与诊断命令），不会出现
-"快捷方式正常、托盘报错页"的分裂。差异只在**外壳形态**：快捷方式是控制台
-（首次运行向导需要交互），托盘是状态窗口。
+"快捷方式正常、托盘报错页"的分裂。差异只在**外壳形态**：快捷方式与自启是
+原生窗口（自启隐藏），`LiuHao.bat` 是排障用的控制台窗口。
 
-启动器侧的日志提示指向它真正写的文件（`logs/liuhao.log`、`logs/error.log`，
-安装版在数据目录下的 `logs`，默认 `D:\LiuHaoData\logs`，回退时为
-`%LOCALAPPDATA%\LiuHao\data\logs`，实际位置见程序目录 `data-dir.txt`），诊断命令统一走
+日志文件名随外壳不同：桌面壳写 `logs/desktop.log`、`logs/desktop-gateway.log`；
+`LiuHao.bat --console` 写 `logs/liuhao.log`、`logs/error.log`。两者都在数据目录的
+`logs` 下（默认 `D:\LiuHaoData\logs`，回退 `%LOCALAPPDATA%\LiuHao\data\logs`，
+实际位置见程序目录 `data-dir.txt`）。诊断命令统一走
 `scripts\liuhao_desktop.py diagnose --verify`——该入口会先把日志目录切到安装版
 布局，不会把用户指到空目录。
-
-**没有覆盖到的**：`LiuHao.bat` 本身仍是控制台启动器，不是托盘壳；改成托盘
-需要在打包侧换快捷方式目标，且首次运行向导会失去交互宿主，暂不做。
 
 ## 3. 开机自启
 
 * 只写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，
   值名 `LiuHaoAIOS`；**不写 HKLM**，**不请求管理员权限**。
 * 默认**关闭**，由用户显式开启。
-* 默认「自启但不自动打开浏览器」；确实需要开机弹浏览器时才加 `--open-browser`。
+* 默认「自启但不自动打开浏览器」，原生窗口隐藏；**app 入口**的 `--open-browser`
+  仍被接受，但只作历史兼容、不再改变行为（自启始终静默、不弹浏览器）。
+  `autostart` 子命令已**不再接受**该参数：旧的 `autostart enable --open-browser`
+  会被 argparse 直接拒绝。
 * 使用 `pythonw.exe` 启动，避免开机闪控制台窗口。解释器与入口按**真实目录布局**解析：
 
   | 布局 | 解释器 | 入口 | 行为 |
@@ -229,10 +234,10 @@ stdin 管道协议**：
   `build_command` 对两种布局都有单元测试（含路径带空格的引用）。
 
 ```powershell
-# 开启（默认不打开浏览器）
+# 开启（自启始终静默：原生窗口隐藏、不打开浏览器）
 .venv\Scripts\python.exe -m src.desktop autostart enable
-# 开启且自启时打开浏览器
-.venv\Scripts\python.exe -m src.desktop autostart enable --open-browser
+# 注：autostart 子命令不接受 --open-browser（传了会被 argparse 拒绝）
+#     app 级 --open-browser 仍被接受，但只作历史兼容、不切浏览器
 # 查看 / 关闭
 .venv\Scripts\python.exe -m src.desktop autostart status
 .venv\Scripts\python.exe -m src.desktop autostart disable
@@ -251,6 +256,26 @@ stdin 管道协议**：
 # 旧载荷没有桌面入口脚本时的退路（自启网关 + 控制台，不弹浏览器）
 "C:\...\app\runtime\pythonw.exe" "C:\...\app\scripts\launch_installed.py" --no-browser
 ```
+
+**按安装目录批量清理**：`autostart disable --root "<安装目录>"` 除删默认值名
+`LiuHaoAIOS` 外，还会枚举 HKCU Run，删掉**命令行指向该安装根**的所有值——旧安装器、
+手工登记或便携副本留下的别名也在内。枚举时同时申请
+`KEY_SET_VALUE | KEY_QUERY_VALUE`：旧实现只申请写权限，`EnumValue` 会报「拒绝访问」
+且异常被吞，批量清理等于没生效；现在双权限打开后实际可用，回归见
+`tests/desktop/test_desktop_system_layer.py::test_autostart_legacy_value_with_open_browser_is_recognized_and_removed`。
+安装器卸载步骤就是 `-m src.desktop autostart disable --root "{app}"`
+（顺序：停进程 → 关自启 → 清缓存），所以正常卸载（运行器仍可执行时）不会留下
+指向已删目录的 Run 值。
+
+**看到自启清理日志怎么办**（`autostart disable --root ...` 的终端输出 / `logs/desktop.log`）：
+
+| 日志 | 含义 | 怎么办 |
+|---|---|---|
+| `枚举开机自启项在第 N 项中断（…）：批量清理可能漏删指向 … 的旧注册项` | 读到第 N 项时 `EnumValue` 失败（权限/句柄/安全软件）；已删的项已生效，但**后面的项没被扫到** | 到「任务管理器 → 启动」或 `regedit` 的 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 手工核对，删掉仍指向旧安装目录的值 |
+| `删除开机自启项 <name> 失败（…）：该值仍指向 …，卸载后可能仍会自启旧副本` | 项存在但 `DeleteValue` 被拒（权限/被锁定） | 以当前用户重新打开终端再跑一次 `autostart disable --root <安装目录>`；仍失败就到 `regedit` 手工删该值 |
+
+这两条都是**告警不是致命错误**：CLI 不因单项失败整体退出，但也不能据此认为「已清干净」——
+看到它们就按上表人工确认剩下的 Run 值。
 
 **安装版的入口选择**：`packaging/stage_payload.py` 的 `PAYLOAD_SCRIPTS` 已收录
 `scripts/liuhao_desktop.py`，`src/desktop/autostart.py` 的 `_entry()` 会优先选
@@ -495,10 +520,23 @@ pytest tests/desktop -q        → 30 passed, 4 skipped in 16.17s
 **无法自动化的部分（手工一遍即可）**：真实窗口/真实浏览器。
 
 1. 冷启动（建议先 `autostart disable` 避免开机干扰）：
-   `.\venv\Scripts\python.exe -m src.desktop app --open-browser`
+   `.\venv\Scripts\python.exe -m src.desktop app`
 2. 窗口应**立刻出现**并显示「启动：等待网关端口就绪…」，期间不应弹出浏览器；
-3. 「启动：已就绪（Xs）」出现后才打开控制台，页面不是错误页；
+3. 「启动：已就绪（Xs）」出现后才在窗口内加载控制台，页面不是错误页；
 4. 托盘气泡依次为「鎏灏 · 正在启动…」（tooltip）→「鎏灏已就绪」。
+
+**桌面端与网页端不是两套页面。** 它们跑的是同一个网关、同一个地址
+`http://127.0.0.1:<端口>`、同一套控制台产物，区别只在**容器**：
+
+| 形态 | 怎么进 | 容器 | 地址 |
+|---|---|---|---|
+| 桌面端（默认） | `-m src.desktop app` | pywebview + Edge **WebView2 原生窗口** | `http://127.0.0.1:<端口>` |
+| 网页端 | `-m src.desktop app --web` | 系统默认**浏览器** | 同一地址，URL 额外带 `?mode=web` |
+
+快捷方式目标为 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py app`；即便命令行里
+出现 `--open-browser`（历史参数）也不会切换到浏览器模式，网页模式一律用 `--web`。
+保留这个空参数是为了兼容已经写进旧快捷方式与注册表自启项里的命令行。手动在浏览器里
+打开同一地址，看到的也是同一套控制台页面（只是没有 `?mode=web` 标识）。
 
 degraded / 超时的真实窗口表现见上表（自动化已覆盖文案与"是否叫浏览器"的决策，
 窗口渲染本身需要真人看一遍）。
@@ -512,6 +550,10 @@ degraded / 超时的真实窗口表现见上表（自动化已覆盖文案与"�
 |---|---|---|---|
 | 桌面 / 开始菜单快捷方式、安装完成页「立即启动」 | `installer/liuhao.iss` → `{app}\LiuHao.bat` → `runtime\python.exe scripts\launch_installed.py` →（首跑向导）→ `scripts/start_liuhao.py` | 等 `/v1/health` 200 后开浏览器；degraded 的后台失败原因看不到；超时只说"详见上方进程输出" | 等 `/v1/startup`：连接失败=启动中，ready/degraded 才开浏览器，degraded 原样打印 `background.errors`，超时/退出给日志路径 + 诊断命令 |
 | 托盘 / 开机自启 | `scripts/liuhao_desktop.py` → `src.desktop app` | 已有启动门 | 不变（与上面共用 `src/desktop/startup.py`） |
+
+> 注：本表是 2026-11-06 的中间态（当时快捷方式还是控制台启动器）。当前安装器
+> 快捷方式已改为桌面壳（`runtime\pythonw.exe` + `scripts\liuhao_desktop.py app`），
+> 以 §2.7 为准。
 
 **改动**
 

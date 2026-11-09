@@ -1,15 +1,28 @@
-"""桌面壳：状态窗口 + 系统托盘 + 网关子进程。
+"""桌面壳：原生窗口 + 系统托盘 + 网关子进程。
+
+三种窗口形态（互斥，由 ``window_mode`` 决定）
+------------------------------------------
+  * ``native``（默认）：pywebview + Edge WebView2 的原生窗口，标题栏是品牌名，
+    没有地址栏/标签页/书签栏；加载的是网关托管的控制台，首屏即登录页。
+  * ``status``（``--status-window``）：旧 tkinter 状态窗口，仅排障使用。
+  * ``browser``（``--web``）：不创建桌面窗口，等网关就绪后由**显式**参数打开
+    系统浏览器；只有这种模式才保留托盘菜单「在浏览器中打开」，原生窗口不提供
+    任何浏览器自降级入口。
+  * 原生窗口通过自定义 User-Agent（``LiuHaoDesktopShell/1.0``）向前端标明
+    "我在桌面壳里"，前端据此固定走桌面端形态，不靠窗口尺寸猜。
 
 窗口关闭语义（明确，不留歧义）
 ------------------------------
-  * 点标题栏关闭按钮 = **最小化到托盘**，网关继续运行。
-  * 真正退出只有两条路：托盘菜单「退出」，或窗口里的「退出程序」。
+  * 点标题栏关闭按钮 = **隐藏到托盘**，网关继续运行。
+  * 真正退出只有两条路：托盘菜单「退出」，或状态窗口里的「退出程序」。
   * 托盘菜单「停止服务」只停网关，窗口与托盘仍驻留，便于排障或重启。
+  * 默认启动路径**不会自动打开系统浏览器**；浏览器只由托盘菜单项或 ``--web``
+    触发，并在 URL 上带 ``?mode=web`` 供前端做模式标识。
 
 线程模型：
-  * tkinter 主循环：主线程（窗口与所有 UI 更新）。
+  * GUI 主循环：主线程（``webview.start()`` 或 tkinter ``mainloop``）。
   * 托盘 Win32 消息循环：``SystemTray`` 自己的线程。
-  * 状态轮询：后台线程，只把结果放进 ``queue``，由 UI 线程消费。
+  * 事件队列：启动结果/托盘动作都进 ``queue``，由 GUI 线程或独立分发线程消费。
   * 网关：独立子进程（``GatewayService``）。
   * 「停止服务」与「退出」都走 ``GatewayService.stop()``：先发 stdin 停止
     指令让 uvicorn 优雅收尾（最多 ``GRACEFUL_TIMEOUT`` 秒），超时才强杀；
@@ -25,6 +38,7 @@ import logging
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from logging.handlers import RotatingFileHandler
@@ -34,13 +48,20 @@ from typing import Any
 from . import CONSOLE_DIST, DATA_DIR, LOG_DIR, dpi
 from .about import APP_NAME
 from .diagnostics import format_bytes, probe_directory_writable, service_guidance
-from .probe import describe_port_owner, http_json, port_is_free
-from .service import DEFAULT_PORT, GRACEFUL_TIMEOUT, GatewayService
+from .probe import describe_port_owner, http_json, pick_port, port_is_free
+from .service import (
+    GRACEFUL_TIMEOUT,
+    GatewayService,
+    effective_port,
+    save_saved_port,
+)
 from .startup import STARTUP_TIMEOUT, unavailable_gate, wait_until_ready
 from .tray import (
+    ACTION_OPEN_BROWSER,
     ACTION_OPEN_CONSOLE,
     ACTION_OPEN_LOGS,
     ACTION_QUIT,
+    ACTION_RESTART_SERVICE,
     ACTION_SHOW_STATUS,
     ACTION_STOP_SERVICE,
     ACTION_TOGGLE_STATUS,
@@ -56,6 +77,13 @@ from .tray import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: 三种窗口形态；默认 ``native``（原生窗口）。
+WINDOW_NATIVE = "native"
+WINDOW_STATUS = "status"
+WINDOW_BROWSER = "browser"
+#: 浏览器模式在 URL 上带的参数：前端据此显示「· 浏览器模式」标识。
+WEB_MODE_QUERY = "mode=web"
 
 
 def _configure_logging() -> None:
@@ -249,6 +277,49 @@ def _format_provider(health: dict[str, Any]) -> str:
     return f"Provider：{provider}"
 
 
+def _with_web_mode(url: str) -> str:
+    """给浏览器模式的地址带上 ``mode=web``（放在 fragment 之前）。
+
+    前端据此显示「· 浏览器模式」标识；原生窗口加载的地址**不带**这个参数，
+    两端因此可区分。
+    """
+    if not url:
+        return ""
+    base, _, fragment = url.partition("#")
+    joiner = "&" if "?" in base else "?"
+    suffix = f"#{fragment}" if fragment else ""
+    return f"{base}{joiner}{WEB_MODE_QUERY}{suffix}"
+
+
+def _windows_message(title: str, message: str, *, warning: bool = False) -> None:
+    """原生窗口/无 tkinter 场景的轻量系统对话框（只在启动前冲突时用）。"""
+    if os.name == "nt":
+        import ctypes
+
+        icon = 0x00000030 if warning else 0x00000040  # MB_ICONWARNING / MB_ICONINFORMATION
+        with contextlib.suppress(Exception):
+            ctypes.windll.user32.MessageBoxW(None, message, title, icon)
+        return
+    print(f"[message] {title}: {message}", flush=True)
+
+
+class _NativeBridge:
+    """窗口内本地页面可调用的 JS API：只把动作放进事件队列，不阻塞 UI 线程。"""
+
+    def __init__(self, app: DesktopApp) -> None:
+        self._app = app
+
+    def retry(self) -> None:
+        self._app.events.put(("native", {"action": "retry"}))
+
+    def use_port(self, port: Any = None) -> None:
+        try:
+            value = int(port)
+        except (TypeError, ValueError):
+            value = 0
+        self._app.events.put(("native", {"action": "use_port", "port": value}))
+
+
 def _raise_foreground(widget_id: int) -> None:
     """把状态窗口真正提到前台（Windows）。
 
@@ -288,7 +359,20 @@ def _raise_foreground(widget_id: int) -> None:
 
 
 class DesktopApp:
-    """装配状态窗口、托盘与网关服务。"""
+    """装配鎏灏窗口、托盘与网关服务。"""
+
+    #: 类级默认值：单元测试会用 ``__new__`` 造"裸对象"只测个别方法，
+    #: 这些新增字段必须有默认值，不能让方法因缺属性而 AttributeError。
+    window_mode: str = WINDOW_NATIVE
+    open_browser: bool = False
+    _native: Any = None
+    _native_conflict_port: int = 0
+    _drainer: threading.Thread | None = None
+    _boot_pending: bool = False
+    #: 「重新启动服务」在停止阶段先置位，停止完成后再启动（不并发起两份）。
+    _restart_after_stop: bool = False
+    #: 最近一次健康轮询结论：True=健康，False=进程在但接口不通，None=未探测。
+    _last_health_ok: bool | None = None
 
     def __init__(
         self,
@@ -297,13 +381,19 @@ class DesktopApp:
         port: int | None = None,
         open_browser: bool = False,
         hidden: bool = False,
+        window_mode: str | None = None,
     ) -> None:
         self.service = GatewayService(host=host, port=port)
-        self.open_browser = open_browser
+        #: ``open_browser=True`` 是历史入口，等价于浏览器模式（``--web``）。
+        self.window_mode = window_mode or (WINDOW_BROWSER if open_browser else WINDOW_NATIVE)
+        if self.window_mode not in (WINDOW_NATIVE, WINDOW_STATUS, WINDOW_BROWSER):
+            raise ValueError(f"未知的窗口形态：{window_mode}")
+        self.open_browser = self.window_mode == WINDOW_BROWSER
         self.hidden = hidden
         #: 用户期望的端口；被占用时 ``GatewayService`` 默认拒绝启动并给出原因，
         #: 只有显式自动恢复模式（``allow_port_fallback``）才会换端口。
-        self._requested_port = port if port is not None else DEFAULT_PORT
+        #: 与 ``GatewayService`` 同一优先级：显式 > 环境变量 > 持久化配置 > 8080。
+        self._requested_port = effective_port(port)
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._stop_event = threading.Event()
         self._closing = False
@@ -320,11 +410,19 @@ class DesktopApp:
         self._port_dialog_open = False
         #: 本次启动是否因端口被占而失败（用于恢复成功后写一条 resolved 日志）。
         self._port_conflict_pending = False
+        #: 「重新启动服务」先停后起；停止结果回来后才真正启动新的网关。
+        self._restart_after_stop = False
         self._diagnostics_path: str | None = None
         self._diagnostics_busy = False
         #: 修复面板（懒加载；None 表示当前没开）。
         self._repair_dialog: Any = None
         self._tray: SystemTray | None = None
+        #: 原生窗口（``native`` 形态下才有；pywebview 对象，避免模块级强依赖）。
+        self._native: Any = None
+        #: 原生窗口里正在展示的端口冲突（供「换端口继续」回填旧端口）。
+        self._native_conflict_port = 0
+        #: 非 tkinter 形态下的事件分发线程。
+        self._drainer: threading.Thread | None = None
         self._root: tk.Tk | None = None
         self._labels: dict[str, tk.Label] = {}
         self._scroll: dpi.ScrollableFrame | None = None
@@ -363,6 +461,17 @@ class DesktopApp:
         if self._foreign_gateway_holds_data():
             self._handoff_to_running()
             return 0
+        if self.window_mode == WINDOW_BROWSER:
+            return self._run_browser_mode()
+        if self.window_mode == WINDOW_STATUS:
+            return self._run_status_window()
+        return self._run_native_window()
+
+    # ------------------------------------------------------------------ #
+    # 三种形态
+    # ------------------------------------------------------------------ #
+    def _run_status_window(self) -> int:
+        """旧 tkinter 状态窗口（``--status-window``，仅排障用）。"""
         self._root = tk.Tk()
         dpi.apply_tk_scaling(self._root)
         self._root.title(APP_NAME)
@@ -372,16 +481,7 @@ class DesktopApp:
         self._dpi_watcher = dpi.DpiWatcher(self._root, self._on_dpi_changed)
         self._dpi_watcher.start()
 
-        self._tray = SystemTray(
-            lambda action: self.events.put(("action", action)),
-            tooltip=self._tooltip_text(),
-            instance_key=str(DATA_DIR),
-        )
-        if not self._tray.start():
-            logger.warning("系统托盘未启动：%s", self._tray.error)
-            self._labels["tray"].config(text="托盘：不可用（" + (self._tray.error or "未知原因") + "）")
-        else:
-            self._labels["tray"].config(text="托盘：已启用（右键菜单可用）")
+        self._start_tray(update_label=True)
 
         # 窗口先显示"正在启动…"，网关启动与启动门放在后台线程：
         # 冷启动期间用户看到的是进度，而不是空白窗口，更不是浏览器的错误页。
@@ -394,11 +494,131 @@ class DesktopApp:
         self._root.after(300, self._drain_events)
         if self.hidden:
             self._root.withdraw()
+        self._start_boot()
+        self._root.mainloop()
+        return 0 if (self._boot_result or {}).get("started") else 1
+
+    def _run_browser_mode(self) -> int:
+        """网页模式：只驻留托盘，网关就绪后**显式**打开系统浏览器。"""
+        logger.info("以浏览器模式启动（未创建桌面窗口）")
+        self._start_tray()
+        self._start_event_drainer()
+        self._start_boot()
+        while not self._closing and not self._stop_event.is_set():
+            time.sleep(0.5)
+        return 0 if (self._boot_result or {}).get("started") else 1
+
+    def _run_native_window(self) -> int:
+        """默认形态：原生窗口渲染控制台，首屏即登录页。"""
+        from .native_window import (
+            WEBVIEW2_BOOTSTRAPPER_URL,
+            NativeWindow,
+            ask_missing_webview2,
+            show_install_help,
+            webview2_version,
+        )
+
+        version = webview2_version()
+        if not version:
+            logger.warning("evt=webview2.missing 未检测到 WebView2 Runtime，无法创建原生窗口")
+            choice = ask_missing_webview2()
+            if choice == "install":
+                opened = False
+                with contextlib.suppress(Exception):
+                    opened = bool(webbrowser.open(WEBVIEW2_BOOTSTRAPPER_URL))
+                if not opened:
+                    logger.warning("evt=webview2.install_open_failed 浏览器未能打开下载页")
+                    # 桌面端不由这里自降级到浏览器：装好 WebView2 再重新打开。
+                    _windows_message(
+                        "鎏灏：无法打开下载页",
+                        "没能打开 WebView2 下载页（可能没有网络，或默认浏览器不可用）。\n"
+                        "鎏灏桌面窗口依赖 WebView2；请先解决网络/安装问题，装好后重新打开鎏灏。",
+                        warning=True,
+                    )
+                    return 1
+                show_install_help()
+                return 0
+            logger.info("evt=webview2.cancelled 用户取消了缺少 WebView2 的提示")
+            return 0
+
+        logger.info("webview2 版本：%s", version)
+        try:
+            self._native = NativeWindow(
+                title=APP_NAME,
+                storage_dir=DATA_DIR / "webview",
+                js_api=_NativeBridge(self),
+                hidden=self.hidden,
+            )
+            self._native.create()
+        except Exception:  # noqa: BLE001 - 缺包/初始化失败都不能静默退出
+            logger.exception("原生窗口创建失败")
+            _windows_message(
+                "鎏灏：无法创建窗口",
+                "原生窗口组件初始化失败，鎏灏没有启动。\n"
+                "请安装/修复 WebView2 后重新打开；如仍失败，请把日志发给维护者：\n"
+                f"{LOG_DIR}\\desktop.log",
+                warning=True,
+            )
+            return 1
+
+        self._start_tray()
+        self._start_event_drainer()
+        self._start_boot()
+        try:
+            self._native.start()
+        except Exception:  # noqa: BLE001 - WebView2 初始化失败时给出明确出路
+            logger.exception("原生窗口运行失败")
+            _windows_message(
+                "鎏灏：窗口启动失败",
+                "鎏灏窗口没能启动（WebView2 可能未正确安装）。\n"
+                "请安装/修复 WebView2 后重新打开鎏灏。",
+                warning=True,
+            )
+        return 0 if (self._boot_result or {}).get("started") else 1
+
+    def _start_tray(self, *, update_label: bool = False) -> None:
+        from .tray import menu_items_for
+
+        # 原生窗口的托盘不出现「在浏览器中打开」：桌面端不做浏览器自降级；
+        # 浏览器模式（--web）才保留这一项，因为它本身就是网页入口。
+        self._tray = SystemTray(
+            lambda action: self.events.put(("action", action)),
+            tooltip=self._tooltip_text(),
+            instance_key=str(DATA_DIR),
+            menu_items=menu_items_for(include_browser=self.window_mode == WINDOW_BROWSER),
+        )
+        started = self._tray.start()
+        if not started:
+            logger.warning("系统托盘未启动：%s", self._tray.error)
+            if update_label and "tray" in self._labels:
+                self._labels["tray"].config(
+                    text="托盘：不可用（" + (self._tray.error or "未知原因") + "）"
+                )
+        elif update_label and "tray" in self._labels:
+            self._labels["tray"].config(text="托盘：已启用（右键菜单可用）")
+
+    def _start_boot(self) -> None:
+        # 首次启动同样要置灰「重新启动服务」：启动中连点会叠出第二份启动流程。
+        self._sync_tray_state(running=False)
         self._boot_thread = threading.Thread(target=self._boot, name="liuhao-boot", daemon=True)
         self._boot_thread.start()
 
-        self._root.mainloop()
-        return 0 if (self._boot_result or {}).get("started") else 1
+    def _start_event_drainer(self) -> None:
+        """非 tkinter 形态：独立线程消费事件队列（窗口方法本身线程安全）。"""
+        if self._drainer is not None and self._drainer.is_alive():
+            return
+        self._drainer = threading.Thread(
+            target=self._drain_events_loop, name="liuhao-ui-dispatch", daemon=True
+        )
+        self._drainer.start()
+
+    def _drain_events_loop(self) -> None:
+        while not self._stop_event.is_set() and not self._closing:
+            try:
+                kind, payload = self.events.get(timeout=0.3)
+            except queue.Empty:
+                continue
+            self._dispatch_event(kind, payload)
 
     def _boot(self) -> None:
         """后台启动网关并过启动门；结果经 ``events`` 交回 UI 线程。"""
@@ -440,9 +660,10 @@ class DesktopApp:
         stage = snapshot.get("last_stage") or (
             "端口尚未监听" if not snapshot.get("reachable") else "等待核心就绪"
         )
-        self._labels["startup"].config(
-            text=f"启动：{stage}（已 {snapshot.get('elapsed', 0)}s；连接失败按启动中处理）"
-        )
+        if "startup" in self._labels:
+            self._labels["startup"].config(
+                text=f"启动：{stage}（已 {snapshot.get('elapsed', 0)}s；连接失败按启动中处理）"
+            )
 
     def _apply_boot_result(self, result: dict[str, Any]) -> None:
         """把启动门结论写进界面与托盘（ready / degraded / 超时 / 失败）。"""
@@ -453,10 +674,12 @@ class DesktopApp:
         if self._stop_result is not None and not started:
             # 用户在启动过程中点了「停止」/「退出」：以停止结论为准，不要
             # 再弹"启动失败"把真实原因盖掉。
-            self._labels["startup"].config(text="启动：启动过程被中断（见「最近停止」）")
+            if "startup" in self._labels:
+                self._labels["startup"].config(text="启动：启动过程被中断（见「最近停止」）")
             self._sync_tray_state(running=False)
             return
-        self._labels["startup"].config(text=f"启动：{gate.get('detail') or '未完成'}")
+        if "startup" in self._labels:
+            self._labels["startup"].config(text=f"启动：{gate.get('detail') or '未完成'}")
         if not started:
             self._data_dir_writable = self._probe_data_dir_writable()
         else:
@@ -466,10 +689,10 @@ class DesktopApp:
         if self._tray is not None and not self._closing:
             self._tray.set_tooltip(self._tooltip_text())
 
-        # 换过端口后地址会变：窗口上的「控制台」必须同步刷新，不能只写在日志里。
+        # 桌面语境只说「鎏灏窗口」，地址只属于浏览器模式（不写进状态窗口）。
         if started:
             if "console" in self._labels:
-                self._labels["console"].config(text=f"控制台：{self._console_url()}")
+                self._labels["console"].config(text="鎏灏窗口：已就绪（首屏为登录页）")
             if self._stop_result is None and "stop" in self._labels:
                 # _begin_boot 写的是"正在重新启动"；启动成功后不能留在窗口里。
                 self._labels["stop"].config(text="最近停止：—（本次尚未停止过）")
@@ -483,7 +706,11 @@ class DesktopApp:
             if isinstance(conflict, dict) and conflict.get("port"):
                 self._port_conflict_pending = True
 
-        if gate.get("console_ok"):
+        conflict = getattr(self.service, "port_conflict", None)
+        has_conflict = bool(isinstance(conflict, dict) and conflict.get("port"))
+        console_ready = bool(gate.get("console_ok"))
+
+        if console_ready:
             # 只在"能进门"之后才开始健康轮询，避免启动中把文案覆盖成"未探测"。
             # 重启时复用已有轮询线程，避免多个线程同时往队列里写状态。
             if self._health_thread is None or not self._health_thread.is_alive():
@@ -491,14 +718,28 @@ class DesktopApp:
                     target=self._poll_health, name="liuhao-health", daemon=True
                 )
                 self._health_thread.start()
-            if self.open_browser:
-                webbrowser.open(self._console_url_with_proof())
+            if self.window_mode == WINDOW_NATIVE and self._native is not None:
+                # 健康检查 200 之后才加载控制台：不会出现白屏或"无法连接"页。
+                self._native.load_console(
+                    self._console_url_with_proof(), show=not self.hidden
+                )
+            elif self.open_browser:
+                # 浏览器模式只在显式参数 ``--web`` 下由这里打开；打开前同样做
+                # 健康校验，端口上是别人的服务时绝不开页（P0-1）。
+                self._open_in_browser()
+        elif self._native is not None and not self._closing and not has_conflict:
+            state = gate.get("state")
+            title = "鎏灏启动超时" if state == "timeout" else "鎏灏暂时无法启动"
+            detail = str(gate.get("detail") or "").strip() or "网关没有在预期时间内就绪。"
+            if not started and self.service.last_error:
+                detail = f"{detail}\n最近一次错误：{self.service.last_error}"
+            self._native.show_error(title, detail, show=not self.hidden)
 
         if self._tray is not None and not self._closing:
             state = gate.get("state")
             detail = str(gate.get("detail") or "")[:250]
             if state == "ready":
-                self._tray.notify("鎏灏已就绪", f"服务运行在 {self._console_url()}")
+                self._tray.notify("鎏灏已就绪", "双击托盘图标，或选「打开鎏灏窗口」。")
             elif state == "degraded":
                 self._tray.notify("鎏灏已启动（部分组件未就绪）", detail, warning=True)
             elif state == "timeout":
@@ -506,10 +747,8 @@ class DesktopApp:
             else:
                 self._tray.notify("鎏灏启动失败", detail, warning=True)
 
-        if not started and not self._closing:
-            conflict = getattr(self.service, "port_conflict", None)
-            if isinstance(conflict, dict) and conflict.get("port"):
-                self._prompt_port_conflict(conflict)
+        if not started and not self._closing and has_conflict:
+            self._prompt_port_conflict(conflict)
 
     def _probe_data_dir_writable(self) -> bool | None:
         """启动失败时探测数据目录：区分"权限问题"和"代码/端口问题"。"""
@@ -530,6 +769,7 @@ class DesktopApp:
             requested_port=self._requested_port,
             stopped_by_user=self._stop_result is not None,
             data_dir_writable=self._data_dir_writable,
+            process_alive=bool(self.service.is_running()),
         )
         if "service" in self._labels:
             self._labels["service"].config(text=guidance["service"])
@@ -555,7 +795,7 @@ class DesktopApp:
             ("startup", "启动："),
             ("health", "健康："),
             ("provider", "Provider："),
-            ("console", "控制台："),
+            ("console", "鎏灏窗口："),
             ("data", "数据目录："),
             ("tray", "托盘："),
             ("stop", "最近停止："),
@@ -565,7 +805,7 @@ class DesktopApp:
             self._labels[key] = row
 
         self._labels["data"].config(text=f"数据目录：{DATA_DIR}")
-        self._labels["console"].config(text=f"控制台：{self._console_url()}")
+        self._labels["console"].config(text="鎏灏窗口：正在启动…")
         self._labels["stop"].config(text="最近停止：—（本次尚未停止过）")
         self._labels["next"].config(text="下一步：正在启动，通常几秒内完成…")
 
@@ -598,6 +838,7 @@ class DesktopApp:
         primary = tk.Frame(buttons)
         primary.pack(anchor="w")
         tk.Button(primary, text=LABEL_OPEN_CONSOLE, command=self._open_console).pack(side=tk.LEFT, padx=(0, 8))
+        # 不再提供「在浏览器中打开」：桌面端（含旧排障窗口）不做浏览器自降级。
         tk.Button(primary, text=LABEL_OPEN_LOGS, command=self._open_logs).pack(side=tk.LEFT, padx=(0, 8))
         tk.Button(primary, text="重新启动服务", command=self._restart_service).pack(side=tk.LEFT, padx=(0, 8))
         tk.Button(primary, text="隐藏到托盘", command=self._hide_to_tray).pack(side=tk.LEFT)
@@ -638,7 +879,7 @@ class DesktopApp:
         if not (CONSOLE_DIST / "index.html").is_file():
             tk.Label(
                 content,
-                text=f"注意：未找到驾驶舱构建产物 {CONSOLE_DIST}，控制台页面会 404（API 仍可用）。",
+                text=f"注意：未找到控制台构建产物 {CONSOLE_DIST}，鎏灏窗口的登录页会 404（API 仍可用）。",
                 fg="#a33a00",
                 wraplength=460,
                 justify=tk.LEFT,
@@ -702,10 +943,15 @@ class DesktopApp:
     # 动作
     # ------------------------------------------------------------------ #
     def _console_url(self) -> str:
-        return (self.service.base_url or "http://127.0.0.1:8080").rstrip("/") + "/"
+        # 不写死 8080 兜底：端口未分配时宁可返回空串，也不能拼出一个可能是
+        # 别人服务的地址（P0：8080 被占用时会把占用者的页面当成鎏灏打开）。
+        base = self.service.base_url
+        return base.rstrip("/") + "/" if base else ""
 
     def _with_local_proof(self, url: str) -> str:
         """把本机恢复码交接的一次性令牌放进 URL fragment（不进日志/历史）。"""
+        if not url:
+            return ""
         try:
             from ..common.local_proof_ipc import console_fragment
 
@@ -725,22 +971,143 @@ class DesktopApp:
     def _tooltip_text(self) -> str:
         if self._boot_pending:
             return f"{APP_NAME} · 正在启动…"
+        if self._stopping:
+            return f"{APP_NAME} · 正在停止…"
         if self.service.is_running():
-            return f"{APP_NAME} · 运行中 · {self._console_url()}"
+            if self._last_health_ok is False:
+                # 进程在但健康接口不通：不能显示成"运行中"（图标同时是红色）。
+                suffix = " · 浏览器模式" if self.window_mode == WINDOW_BROWSER else ""
+                return f"{APP_NAME} · 进程在，健康检查不通{suffix}（详见日志/诊断包）"
+            if self.window_mode == WINDOW_BROWSER:
+                return f"{APP_NAME} · 运行中 · 浏览器模式"
+            return f"{APP_NAME} · 运行中"
+        if self._stop_result is not None:
+            return f"{APP_NAME} · 服务已停止"
         if self.service.last_error:
-            return f"{APP_NAME} · 启动失败（详见桌面窗口）"
+            return f"{APP_NAME} · 启动失败（详见日志/诊断包）"
         return f"{APP_NAME} · 服务已停止"
 
+    def _browser_url(self) -> str:
+        """网页模式地址：带 ``mode=web``，前端据此显示浏览器模式标识。"""
+        return _with_web_mode(self._console_url_with_proof())
+
+    def _gateway_status(self) -> tuple[bool, str]:
+        """打开任何页面前的身份校验：进程在、端口有、健康接口认鎏灏。
+
+        只看 ``console_ok`` 或端口号是不够的：8080 可能被代理/Node/别的应用
+        占着，直接打开会把占用者的页面当鎏灏展示（P0-1）。
+        """
+        if not self.service.is_running():
+            return False, "网关进程未运行（服务已停止或启动失败）"
+        base = self.service.base_url
+        if not base:
+            return False, "网关尚未分配端口（服务未启动）"
+        if self._service_healthy(base + "/"):
+            return True, ""
+        port = self.service.port
+        owner = ""
+        if port:
+            with contextlib.suppress(Exception):
+                owner = describe_port_owner(int(port)) or ""
+        detail = f"（占用者：{owner}）" if owner else ""
+        return (
+            False,
+            f"端口 {port} 上的服务没有通过鎏灏健康校验{detail}；"
+            "可能被其他程序占用，或网关正在退出。",
+        )
+
+    def _notify_unavailable(self, action: str, reason: str) -> None:
+        """打开动作被拦下时的统一中文反馈（状态窗口/托盘/无窗口三种形态都覆盖）。"""
+        text = f"{action}已取消：{reason}\n请先启动网关（托盘菜单「重新启动服务」），或查看日志/诊断包。"
+        logger.warning("已阻止打开动作：%s（原因：%s）", action, reason)
+        if "next" in self._labels:
+            self._labels["next"].config(text=f"下一步：{text}")
+        elif self._tray is not None:
+            with contextlib.suppress(Exception):
+                self._tray.notify("鎏灏：服务未就绪", text, warning=True)
+        else:
+            _windows_message("鎏灏：服务未就绪", text, warning=True)
+
+    def _open_in_browser(self) -> None:
+        """显式动作：只有托盘菜单或 ``--web`` 才会走到这里。"""
+        ok, reason = self._gateway_status()
+        if not ok:
+            self._notify_unavailable("在浏览器中打开", reason)
+            return
+        url = self._browser_url()
+        if not url:
+            self._notify_unavailable("在浏览器中打开", "网关没有可用的发布地址")
+            return
+        logger.info("用户选择在浏览器中打开鎏灏（网页模式）：%s", url.split("#", 1)[0])
+        try:
+            webbrowser.open(url)
+        except Exception as exc:  # noqa: BLE001 - 打开失败不能静默
+            logger.warning("打开系统浏览器失败：%s", exc)
+            if "next" in self._labels:
+                self._labels["next"].config(text="下一步：浏览器没能打开，请检查默认浏览器设置。")
+            else:
+                _windows_message(
+                    "鎏灏：浏览器没能打开",
+                    "系统默认浏览器没有响应。请检查默认浏览器设置，"
+                    "或从开始菜单重新打开鎏灏。",
+                    warning=True,
+                )
+
     def _open_console(self) -> None:
-        webbrowser.open(self._console_url_with_proof())
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            ok, reason = self._gateway_status()
+            if not ok and self._boot_pending:
+                # 启动中：窗口里本来就是启动页，直接显示，不覆盖成"失败"。
+                self._native.show()
+                return
+            if not ok:
+                # 不打开任何外部页面；窗口本身是我们的，只展示明确的状态说明。
+                self._native.show_error(
+                    "鎏灏服务未就绪",
+                    reason + "\n\n可从托盘菜单「重新启动服务」再试。",
+                    show=True,
+                )
+                self._notify_unavailable("打开鎏灏窗口", reason)
+                return
+            gate = (self._boot_result or {}).get("gate") or {}
+            if self._native.loaded_url is None and gate.get("console_ok"):
+                self._native.load_console(self._console_url_with_proof(), show=False)
+            self._native.show()
+            return
+        if self.window_mode == WINDOW_STATUS and self._root is not None:
+            self._show_window()
+            return
+        self._open_in_browser()
+
+    def _show_console_window(self) -> None:
+        """双击/菜单「查看状态」：原生窗口直接显示；浏览器模式显式打开浏览器。"""
+        if self.window_mode == WINDOW_BROWSER:
+            if self._revive_if_dead():
+                return  # 网关已死：原地重启，就绪后由启动流程自动打开浏览器
+            self._open_in_browser()
+            return
+        self._show_window()
+        self._revive_if_dead()
+
+    def _revive_if_dead(self) -> bool:
+        """双击图标时网关已死且本实例持有锁：原地重启，不显示幻影窗口。"""
+        if self._closing or self._boot_pending or self._stopping:
+            return False
+        if self.service.is_running() or self._stop_result is not None:
+            return False  # 用户主动停掉的服务不自动拉回，避免“停不掉”
+        logger.info("窗口请求到达时网关未运行，原地重新启动（未 handoff）")
+        self._begin_boot(note="正在重新启动")
+        return True
 
     def _handoff_to_running(self) -> None:
         """第二个桌面实例：唤起已运行的状态窗口 + 给用户一句人话。
 
         三个层次的降级，全部失败也不会静默退出：
-        1. 请已运行的托盘窗口显示状态窗口（等价于点菜单「查看状态」）；
-        2. 找不到窗口（例如上一实例正处在启动竞态里）→ 打开它已发布的控制台地址；
-        3. 两者都没有 → 明确告诉用户去通知区找图标。
+        1. 请已运行的托盘窗口显示鎏灏窗口（等价于点菜单「打开鎏灏窗口」）；
+        2. 找不到窗口（例如上一实例正处在启动竞态里）→ 告诉用户去通知区找图标；
+        3. 两者都不可达 → 明确说明服务无响应与处理办法。
+
+        **不自动打开浏览器**：浏览器只由显式动作（托盘菜单）或 ``--web`` 触发。
 
         与 ``scripts/start_liuhao.py`` 的双开分支保持同一套判断：服务活着 /
         服务卡死 / 完全没有发布地址，三种情况说的话不同，且都不启动第二个服务。
@@ -752,17 +1119,15 @@ class DesktopApp:
         healthy = bool(url) and self._service_healthy(url)
         if shown:
             if healthy:
-                summary = "鎏灏已经在运行，已为你切换到正在运行的状态窗口。"
+                summary = "鎏灏已经在运行，已为你唤起鎏灏窗口。"
             else:
                 summary = (
                     "鎏灏已经在运行，但服务暂时没有响应。\n\n"
-                    "已为你切换到状态窗口，可在其中查看状态或重新启动服务；"
+                    "已尝试唤起鎏灏窗口；若没有出现，请从托盘菜单选「重新启动服务」，"
                     "本次没有启动第二个服务。"
                 )
         elif healthy:
-            summary = f"鎏灏已经在运行，已为你打开控制台：{url}"
-            with contextlib.suppress(Exception):
-                webbrowser.open(self._with_local_proof(url))
+            summary = "鎏灏已经在运行。请用任务栏通知区的托盘图标打开鎏灏窗口。"
         elif url:
             pid = self._published_holder().get("pid")
             who = f"（pid={pid}）" if pid else ""
@@ -850,20 +1215,27 @@ class DesktopApp:
                 webbrowser.open(LOG_DIR.as_uri())
         except OSError as exc:
             logger.warning("打开日志目录失败：%s", exc)
-            with contextlib.suppress(Exception):
-                messagebox.showinfo(
-                    "无法自动打开日志目录",
-                    f"日志目录：{LOG_DIR}\n请手动复制上面的路径打开。",
-                )
+            text = f"日志目录：{LOG_DIR}\n请手动复制上面的路径打开。"
+            if self._root is not None:
+                with contextlib.suppress(Exception):
+                    messagebox.showinfo("无法自动打开日志目录", text)
+            else:
+                _windows_message("无法自动打开日志目录", text, warning=True)
 
     def _hide_to_tray(self) -> None:
-        if self._root is None:
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            self._native.hide()
+        elif self._root is not None:
+            self._root.withdraw()
+        else:
             return
-        self._root.withdraw()
         if self._tray is not None:
             self._tray.set_tooltip(self._tooltip_text())
 
     def _show_window(self) -> None:
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            self._native.show()
+            return
         if self._root is None:
             return
         self._root.deiconify()
@@ -877,6 +1249,12 @@ class DesktopApp:
             _raise_foreground(self._root.winfo_id())
 
     def _toggle_window(self) -> None:
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            if self._native.visible:
+                self._hide_to_tray()
+            else:
+                self._show_window()
+            return
         if self._root is None:
             return
         if self._root.state() == "normal":
@@ -885,14 +1263,15 @@ class DesktopApp:
             self._show_window()
 
     def _restart_service(self) -> None:
-        """服务被杀 / 启动失败后，给用户一个当场可点的恢复动作。"""
+        """托盘「重新启动服务」：网关活着就先停后起，死了就直接原地启动。"""
         if self._closing or self._boot_pending or self._stopping:
             return
         if self.service.is_running():
-            if "next" in self._labels:
-                self._labels["next"].config(text="下一步：网关已经在运行，无需重新启动。")
+            logger.info("用户从托盘请求重新启动网关：先停止，再启动")
+            self._restart_after_stop = True
+            self._stop_service()
             return
-        logger.info("用户从桌面壳请求重新启动网关")
+        logger.info("用户从托盘请求启动网关（当前未运行）")
         self._begin_boot(note="正在重新启动")
 
     def _begin_boot(self, *, note: str) -> None:
@@ -902,6 +1281,7 @@ class DesktopApp:
         self._boot_pending = True
         self._boot_result = None
         self._stop_result = None
+        self._last_health_ok = None
         self._data_dir_writable = None
         if "service" in self._labels:
             self._labels["service"].config(text=f"网关：{note}…")
@@ -911,6 +1291,10 @@ class DesktopApp:
             self._labels["next"].config(text=f"下一步：{note}，通常几秒内完成…")
         if "stop" in self._labels:
             self._labels["stop"].config(text="最近停止：—（正在重新启动）")
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            self._native.retry_splash(show=not self.hidden)
+        # 启动中置灰「重新启动服务」，防止用户连点叠出两份启动流程。
+        self._sync_tray_state(running=bool(self.service.is_running()))
         self._boot_thread = threading.Thread(target=self._boot, name="liuhao-boot", daemon=True)
         self._boot_thread.start()
 
@@ -935,8 +1319,49 @@ class DesktopApp:
 
     def _prompt_port_conflict(self, conflict: dict[str, Any]) -> None:
         """端口被占用时弹二选一；两个动作都在当前窗口内原地恢复。"""
-        if self._closing or self._root is None or self._port_dialog_open:
+        if self._closing or self._port_dialog_open:
             return
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            # 原生窗口里用一页 HTML 做二选一，不创建第二个 tkinter 窗口。
+            old_port = int(conflict.get("port") or 0)
+            self._native_conflict_port = old_port
+            self._log_port_event(
+                f"evt=port.prompt port={old_port} owner={conflict.get('description')}"
+            )
+            self._native.show_conflict(
+                old_port,
+                str(conflict.get("description") or ""),
+                show=not self.hidden,
+            )
+            return
+        if self._root is None:
+            # 浏览器模式没有状态窗口：用临时 Tk 承载同一个二选一对话框。
+            # 打不开 Tk 时退回 Win32 消息框（仍给「换端口继续」的出路），
+            # 绝不静默 return —— 否则用户只知道"启动失败"却无处可点。
+            self._port_dialog_open = True
+            self._log_port_event(
+                f"evt=port.prompt port={conflict.get('port')} owner={conflict.get('description')}"
+            )
+            holder: tk.Tk | None = None
+            try:
+                holder = tk.Tk()
+                holder.withdraw()
+                with contextlib.suppress(tk.TclError):
+                    holder.attributes("-topmost", True)
+                action, new_port = ask_port_choice(holder, conflict)
+            except Exception:  # noqa: BLE001 - 无桌面/Tk 缺失时用系统消息框兜底
+                logger.exception("无窗口形态下端口二选一窗口打开失败，改用系统消息框")
+                action, new_port = self._ask_port_conflict_message(conflict)
+            finally:
+                if holder is not None:
+                    with contextlib.suppress(Exception):
+                        holder.destroy()
+                self._port_dialog_open = False
+            if self._closing:
+                return
+            self._apply_port_choice(action, new_port, conflict)
+            return
+
         self._port_dialog_open = True
         self._log_port_event(
             f"evt=port.prompt port={conflict.get('port')} owner={conflict.get('description')}"
@@ -953,6 +1378,46 @@ class DesktopApp:
 
         if self._closing:
             return
+        self._apply_port_choice(action, new_port, conflict)
+
+    def _ask_port_conflict_message(
+        self, conflict: dict[str, Any]
+    ) -> tuple[str, int | None]:
+        """无 tkinter 时的 Win32 二选一出路：是否改用下一个空闲端口继续。"""
+        port = int(conflict.get("port") or 0)
+        owner = str(conflict.get("description") or "")
+        if os.name != "nt":
+            return "cancel", None
+        suggested = 0
+        with contextlib.suppress(Exception):
+            suggested = pick_port(port + 1 if port < 65535 else 1)
+        detail = f"\n占用者：{owner}" if owner else ""
+        if not suggested:
+            _windows_message(
+                "鎏灏：网关端口被占用",
+                f"端口 {port} 已被占用{detail}\n\n"
+                "找不到可用的替代端口。请关掉占用程序后，从托盘菜单选「重新启动服务」；"
+                "或查看日志/诊断包。",
+                warning=True,
+            )
+            return "cancel", None
+        import ctypes
+
+        result = ctypes.windll.user32.MessageBoxW(
+            None,
+            (
+                f"端口 {port} 已被占用{detail}\n\n"
+                f"是否改用空闲端口 {suggested} 继续启动？\n"
+                f"（选「否」可先关掉占用程序，再从托盘菜单选「重新启动服务」。）"
+            ),
+            "鎏灏：网关端口被占用",
+            0x00000004 | 0x00000020,  # MB_YESNO | MB_ICONQUESTION
+        )
+        return ("use", suggested) if result == 6 else ("cancel", None)
+
+    def _apply_port_choice(
+        self, action: str, new_port: int | None, conflict: dict[str, Any]
+    ) -> None:
         old_port = int(conflict.get("port") or 0)
         if action == "retry":
             self._log_port_event(f"evt=port.retry port={old_port} action=retry")
@@ -978,11 +1443,16 @@ class DesktopApp:
         self._requested_port = new_port
         # 与首启向导同一口径：向导/托盘/重启都读这个变量，不能只改内存。
         os.environ["LIUHAO_API_PORT"] = str(new_port)
+        # 持久化到 <数据目录>/config/desktop_port.json：第二次启动不会再回落 8080。
+        try:
+            saved = save_saved_port(new_port)
+            logger.info("端口偏好已保存：%s", saved)
+        except (OSError, ValueError):
+            logger.warning("端口偏好保存失败（本次仍生效，重开可能回落）", exc_info=True)
         self._log_port_event(f"evt=port.switch old={old_port} new={new_port} action=use")
         if "console" in self._labels:
-            self._labels["console"].config(
-                text=f"控制台：http://127.0.0.1:{new_port}/（正在启动…）"
-            )
+            # 桌面语境不展示 URL；真实端口只用于网关本身，不再让用户记地址。
+            self._labels["console"].config(text=f"鎏灏窗口：正在改用端口 {new_port} 启动…")
         self._begin_boot(note=f"正在改用端口 {new_port}")
 
     def _generate_diagnostics(self) -> None:
@@ -1085,7 +1555,15 @@ class DesktopApp:
         open_repair_dialog(self)
 
     def _open_url(self, url: str) -> None:
-        webbrowser.open(url)
+        """修复面板里的"打开设置页"：桌面端一律回到鎏灏窗口，不走系统浏览器。"""
+        ok, reason = self._gateway_status()
+        if not ok:
+            self._notify_unavailable("打开设置页", reason)
+            return
+        if self.window_mode == WINDOW_NATIVE and self._native is not None:
+            self._native.load_console(url, show=not self.hidden)
+            return
+        webbrowser.open(_with_web_mode(url))
 
     def _on_data_dir_changed(self, path: str) -> None:
         """修复面板改过数据目录后同步窗口上的展示，避免两处说法不一致。"""
@@ -1105,8 +1583,13 @@ class DesktopApp:
             self._refresh_status_text(running=False)
             if "stop" in self._labels:
                 self._labels["stop"].config(text="最近停止：服务本来未运行")
+            if self._restart_after_stop and not self._closing:
+                # 用户点「重新启动服务」的瞬间进程刚好自己死了：直接原地启动。
+                self._restart_after_stop = False
+                self._begin_boot(note="正在重新启动")
             return
         self._stopping = True
+        self._sync_tray_state(running=False)
         if "stop" in self._labels:
             self._labels["stop"].config(
                 text=f"最近停止：正在优雅停止（最多 {GRACEFUL_TIMEOUT:.0f} 秒，超时才强杀）…"
@@ -1128,7 +1611,16 @@ class DesktopApp:
         logger.info("网关停止结果：%s", result)
         if "stop" in self._labels:
             self._labels["stop"].config(text=f"最近停止：{_describe_stop(result)}")
+        if "startup" in self._labels:
+            # 「启动：」不能停在"就绪"与下面的"已停止"并存 —— 服务停了就一并改写。
+            self._labels["startup"].config(text="启动：已停止（网关已关闭）")
+        if "console" in self._labels:
+            self._labels["console"].config(
+                text="鎏灏窗口：服务已停止；点托盘菜单「重新启动服务」可恢复。"
+            )
         self._refresh_status_text(running=False)
+        restart = self._restart_after_stop and not self._closing
+        self._restart_after_stop = False
         if self._tray is not None and not self._closing:
             self._tray.set_tooltip(f"{APP_NAME} · 服务已停止（托盘仍在运行）")
             if result.get("forced"):
@@ -1145,6 +1637,9 @@ class DesktopApp:
                 )
             elif result.get("graceful"):
                 self._tray.notify("服务已停止", f"已优雅退出（{result.get('elapsed')}s）")
+        if restart:
+            # 停止完成后才启动新的网关：「重新启动服务」不会并发起两份。
+            self._begin_boot(note="正在重新启动")
 
     def _quit(self) -> None:
         if self._closing:
@@ -1192,6 +1687,10 @@ class DesktopApp:
         if self._dpi_watcher is not None:
             # 先还原窗口过程再销毁窗口：避免销毁过程中回调进已卸载的 Python 状态。
             self._dpi_watcher.stop()
+        if self._native is not None:
+            # 先放行关闭再销毁窗口：_quit 是唯一的"真正退出"路径。
+            self._native.destroy()
+            self._native = None
         if self._root is not None:
             with contextlib.suppress(Exception):
                 self._root.destroy()
@@ -1216,30 +1715,39 @@ class DesktopApp:
         try:
             while True:
                 kind, payload = self.events.get_nowait()
-                if kind == "status":
-                    self._render_status(payload)
-                elif kind == "startup":
-                    self._render_startup_progress(payload)
-                elif kind == "boot":
-                    self._apply_boot_result(payload)
-                elif kind == "stopped":
-                    self._stopping = False
-                    self._apply_stop_result(payload)
-                elif kind == "diagnostics":
-                    self._apply_diagnostics_result(payload)
-                elif kind == "action":
-                    self._handle_action(str(payload))
+                self._dispatch_event(kind, payload)
         except queue.Empty:
             pass
         self._root.after(300, self._drain_events)
 
+    def _dispatch_event(self, kind: str, payload: Any) -> None:
+        if kind == "status":
+            self._render_status(payload)
+        elif kind == "startup":
+            self._render_startup_progress(payload)
+        elif kind == "boot":
+            self._apply_boot_result(payload)
+        elif kind == "stopped":
+            self._stopping = False
+            self._apply_stop_result(payload)
+        elif kind == "diagnostics":
+            self._apply_diagnostics_result(payload)
+        elif kind == "native":
+            self._handle_native_action(payload)
+        elif kind == "action":
+            self._handle_action(str(payload))
+
     def _handle_action(self, action: str) -> None:
         if action == ACTION_OPEN_CONSOLE:
             self._open_console()
+        elif action == ACTION_OPEN_BROWSER:
+            self._open_in_browser()
         elif action == ACTION_SHOW_STATUS:
-            self._show_window()
+            self._show_console_window()
         elif action == ACTION_TOGGLE_STATUS:
             self._toggle_window()
+        elif action == ACTION_RESTART_SERVICE:
+            self._restart_service()
         elif action == ACTION_STOP_SERVICE:
             self._stop_service_and_show()
         elif action == ACTION_OPEN_LOGS:
@@ -1247,25 +1755,95 @@ class DesktopApp:
         elif action == ACTION_QUIT:
             self._quit()
 
+    def _handle_native_action(self, payload: dict[str, Any]) -> None:
+        """窗口内本地页面的按钮（重试 / 换端口）。"""
+        action = str((payload or {}).get("action") or "")
+        if self._native is None or self._closing:
+            return
+        if action == "retry":
+            old_port = self._native_conflict_port
+            self._native_conflict_port = 0
+            self._native.retry_splash(show=not self.hidden)
+            if self.service.is_running():
+                self._begin_recheck()
+            else:
+                self._begin_boot(
+                    note=f"正在重新检测端口 {old_port}" if old_port else "正在重新启动"
+                )
+            return
+        if action == "use_port":
+            new_port = int((payload or {}).get("port") or 0)
+            old_port = self._native_conflict_port or int(self.service.port or 0)
+            self._native_conflict_port = 0
+            if 0 < new_port < 65536:
+                self._switch_port(new_port, old_port=old_port)
+            else:
+                logger.warning("窗口里提交了非法端口：%s", new_port)
+
+    def _begin_recheck(self) -> None:
+        """网关仍在运行但启动门没过：只重新过启动门，不重启进程。"""
+        if self._closing or self._boot_pending or self._stopping:
+            return
+        self._boot_pending = True
+        self._boot_result = None
+        self._stop_result = None
+        self._last_health_ok = None
+        self._sync_tray_state(running=bool(self.service.is_running()))
+        self._boot_thread = threading.Thread(
+            target=self._recheck_worker, name="liuhao-recheck", daemon=True
+        )
+        self._boot_thread.start()
+
+    def _recheck_worker(self) -> None:
+        gate = wait_until_ready(
+            self.service.base_url or "",
+            timeout=STARTUP_TIMEOUT,
+            log_dir=LOG_DIR,
+            is_alive=self.service.is_running,
+            on_progress=self._on_startup_progress,
+        )
+        self._boot_result = {"started": bool(self.service.is_running()), "gate": gate}
+        self.events.put(("boot", self._boot_result))
+
     def _render_status(self, payload: dict[str, Any]) -> None:
         health = payload.get("health")
         ready = payload.get("ready")
         running = bool(payload.get("running")) and isinstance(health, dict) and bool(health.get("ok"))
+        self._last_health_ok = running if payload.get("running") else False
         self._refresh_status_text(running=running, health=health, ready=ready)
         if self._tray is not None and not self._closing:
             self._tray.set_tooltip(self._tooltip_text())
 
     def _sync_tray_state(self, *, running: bool) -> None:
-        """托盘图标三态：运行中 / 有错误 / 已停止（用户一眼看得出）。"""
-        if self._tray is None or self._stopping or self._closing:
+        """托盘图标三态：运行中 / 有错误 / 已停止（用户一眼看得出）。
+
+        **无条件同步**：即使没有状态窗口（浏览器模式）也必须更新图标，
+        否则网关死了图标还是绿的。停止后固定显示"已停止"，不被上一次启动
+        的 ``last_error`` 带成红色。
+        """
+        if self._tray is None or self._closing:
             return
         if running:
             state = STATE_RUNNING
+        elif self._stopping or self._stop_result is not None:
+            state = STATE_STOPPED
         elif self.service.is_running() or self.service.last_error:
             state = STATE_ERROR
         else:
             state = STATE_STOPPED
         self._tray.set_state(state)
+        # 启动/停止中置灰「重新启动服务」，防止连点；服务没运行时「停止服务」
+        # 也没有意义，一并置灰。
+        disabled: set[str] = set()
+        if self._boot_pending or self._stopping:
+            disabled.add(ACTION_RESTART_SERVICE)
+        if not self.service.is_running() and not self._boot_pending:
+            disabled.add(ACTION_STOP_SERVICE)
+        setter = getattr(self._tray, "set_disabled_actions", None)
+        if setter is not None:
+            setter(disabled)
+        with contextlib.suppress(Exception):
+            self._tray.set_tooltip(self._tooltip_text())
 
     def _refresh_status_text(
         self,
@@ -1274,9 +1852,10 @@ class DesktopApp:
         health: dict[str, Any] | None = None,
         ready: dict[str, Any] | None = None,
     ) -> None:
+        # 托盘三态在三种形态下都要更新（native/browser 没有 _labels）。
+        self._sync_tray_state(running=running)
         if "service" not in self._labels:
             return
-        self._sync_tray_state(running=running)
         self._update_service_guidance(running=running)
         if isinstance(health, dict):
             status = health.get("status")

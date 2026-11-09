@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import socket
@@ -983,19 +984,65 @@ def _bare_desktop_app(port: int = 18099) -> app_mod.DesktopApp:
     return app
 
 
-def test_port_conflict_switch_restarts_in_place_with_new_address(
+def test_tray_restart_service_stops_then_starts_without_double_boot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """选「换一个端口继续」：改内存端口 + 环境变量并原地重启，不要求关窗。"""
+    """托盘「重新启动服务」：网关活着时先停后起，不会并发起两份启动。"""
+    app = _bare_desktop_app(18099)
+    app.service.is_running = lambda: True
+    stopped: list[bool] = []
+    monkeypatch.setattr(app, "_stop_service", lambda: stopped.append(True))
+
+    app._restart_service()
+
+    assert stopped == [True]
+    assert app._restart_after_stop is True
+
+
+def test_browser_mode_port_conflict_offers_switch_without_any_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P0-2：浏览器模式没有状态窗口时，冲突也必须给出可操作出路。"""
+    app = _bare_desktop_app(18099)
+    app._root = None
+    monkeypatch.setenv("LIUHAO_DESKTOP_PORT_FILE", str(tmp_path / "port.json"))
+    monkeypatch.setattr(app_mod, "ask_port_choice", lambda *a, **k: ("use", 18100))
+
+    class _Holder:
+        def withdraw(self) -> None:
+            pass
+
+        def attributes(self, *args: object) -> None:
+            pass
+
+        def destroy(self) -> None:
+            pass
+
+    monkeypatch.setattr(app_mod.tk, "Tk", lambda: _Holder())
+
+    app._prompt_port_conflict({"port": 18099, "description": "PID 1 python.exe"})
+
+    assert app.service.port == 18100
+    assert any("evt=port.switch" in message for _, message in app._port_events)
+
+
+def test_port_conflict_switch_restarts_in_place_with_new_address(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """选「换一个端口继续」：改内存端口 + 环境变量 + 持久化并原地重启。"""
     app = _bare_desktop_app(18099)
     monkeypatch.setattr(app_mod, "ask_port_choice", lambda *a, **k: ("use", 18100))
     monkeypatch.setenv("LIUHAO_API_PORT", "18099")
+    port_file = tmp_path / "desktop_port.json"
+    monkeypatch.setenv("LIUHAO_DESKTOP_PORT_FILE", str(port_file))
 
     app._prompt_port_conflict({"port": 18099, "description": "PID 1 python.exe"})
 
     assert app.service.port == 18100
     assert app._requested_port == 18100
     assert os.environ["LIUHAO_API_PORT"] == "18100"
+    # P0-3：用户选的端口必须落盘，否则第二次启动又回落到 8080/原端口。
+    assert json.loads(port_file.read_text(encoding="utf-8"))["port"] == 18100
     assert any(kind == "boot" and "18100" in text for kind, text in app._port_events)
     assert any(
         kind == "log" and "evt=port.switch old=18099 new=18100" in text
@@ -1078,7 +1125,13 @@ def test_port_choice_dialog_has_exactly_two_clickable_actions() -> None:
             root, {"port": 18099, "description": "PID 1 python.exe"}
         )
     finally:
+        # 清理顺序是有意的：先在 Tcl 解释器仍存活时回收控件/变量，
+        # 再销毁解释器，最后释放 Tkapp。反过来做会让控件/变量在已删除的
+        # 解释器上 dealloc —— 实测在 tcl86t.dll 里触发 native 访问违例（page error）。
+        gc.collect()
         root.destroy()
+        del root
+        gc.collect()
 
     assert action == "retry"
     assert port is None
@@ -1221,7 +1274,8 @@ def test_port_is_free_treats_time_wait_as_usable() -> None:
 
 
 @WINDOWS_ONLY
-def test_autostart_roundtrip_hkcu() -> None:
+def test_autostart_enable_writes_command_without_open_browser() -> None:
+    """新写出的自启命令只含必要参数：不得再写 ``--open-browser``。"""
     value_name = f"LiuHaoAIOS_pytest_{os.getpid()}"
     assert autostart.read(value_name)["enabled"] is False
     try:
@@ -1231,12 +1285,87 @@ def test_autostart_roundtrip_hkcu() -> None:
         assert "--open-browser" not in enabled["command"]
         assert "liuhao_desktop.py" in enabled["command"]
         assert autostart.read(value_name)["open_browser"] is False
-
-        with_browser = autostart.enable(REPO_ROOT, open_browser=True, value_name=value_name)
-        assert with_browser["open_browser"] is True
     finally:
         assert autostart.disable(value_name)["enabled"] is False
         assert autostart.read(value_name)["enabled"] is False
+
+
+@WINDOWS_ONLY
+def test_autostart_legacy_value_with_open_browser_is_recognized_and_removed(
+    tmp_path: Path,
+) -> None:
+    """机器上已有的旧注册值（含 ``--open-browser``）仍能识别，卸载时带/不带参数都能清理。"""
+    import winreg
+
+    legacy = f"LiuHaoAIOS_pytest_legacy_{os.getpid()}"
+    plain = f"{legacy}_plain"
+    control = f"OtherApp_pytest_{os.getpid()}"
+    root = tmp_path / "LiuHaoLegacy"
+    entry = root / "scripts" / "liuhao_desktop.py"
+    other_root = tmp_path / "OtherApp"
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, autostart.RUN_KEY, 0, winreg.KEY_SET_VALUE
+    ) as key:
+        winreg.SetValueEx(
+            key, legacy, 0, winreg.REG_SZ,
+            f'"pythonw.exe" "{entry}" --autostart --open-browser',
+        )
+        winreg.SetValueEx(
+            key, plain, 0, winreg.REG_SZ,
+            f'"pythonw.exe" "{entry}" --autostart',
+        )
+        winreg.SetValueEx(
+            key, control, 0, winreg.REG_SZ,
+            f'"other.exe" "{other_root / "other.exe"}" /background',
+        )
+    try:
+        old = autostart.read(legacy)
+        assert old["enabled"] is True
+        assert old["open_browser"] is True
+        current = autostart.read(plain)
+        assert current["enabled"] is True
+        assert current["open_browser"] is False
+
+        # 按安装根清理：两种写法都指向该根，必须一起删掉。
+        result = autostart.disable(legacy, root=root)
+        assert result["enabled"] is False
+        assert legacy in result["removed_values"]
+        assert plain in result["removed_values"]
+        assert autostart.read(legacy)["enabled"] is False
+        assert autostart.read(plain)["enabled"] is False
+        # 指向别处的其他程序项一根不动。
+        assert autostart.read(control)["enabled"] is True
+    finally:
+        autostart.disable(legacy, root=root)
+        autostart.disable(plain)
+        autostart.disable(control)
+
+
+def test_autostart_opens_native_window_not_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """自启入口恒为原生窗口：新命令与旧命令（含 --open-browser）都不切浏览器。"""
+    from src.desktop import __main__ as desktop_main
+
+    captured: dict[str, object] = {}
+
+    class _FakeApp:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> int:
+            return 0
+
+    monkeypatch.setattr(app_mod, "DesktopApp", _FakeApp)
+
+    assert desktop_main.main(["app", "--autostart"]) == 0
+    assert captured["window_mode"] == "native"
+    assert captured["open_browser"] is False
+    assert captured["hidden"] is True
+
+    captured.clear()
+    assert desktop_main.main(["app", "--autostart", "--open-browser"]) == 0
+    assert captured["window_mode"] == "native"
+    assert captured["open_browser"] is False
+    assert captured["hidden"] is True
 
 
 def test_autostart_command_quotes_pythonw_path(tmp_path: Path) -> None:
@@ -1263,10 +1392,8 @@ def test_autostart_command_uses_installed_runtime(tmp_path: Path) -> None:
     assert f'"{app / "runtime" / "pythonw.exe"}"' in command
     assert f'"{app / "scripts" / "launch_installed.py"}"' in command
     assert "--no-browser" in command
+    assert "--open-browser" not in command
     assert "--autostart" not in command
-
-    with_browser = autostart.build_command(app, open_browser=True)
-    assert "--no-browser" not in with_browser
 
 
 def test_autostart_command_refuses_when_entry_missing(tmp_path: Path) -> None:
@@ -1733,7 +1860,8 @@ def test_tray_recovers_icon_after_taskbar_created() -> None:
         assert widget.taskbar_recoveries == before[1] + 1
         assert widget.icon_adds == before[0] + 1
         assert widget.icon_present() is True
-        assert len(widget.menu_items) == 5
+        assert len(widget.menu_items) == len(tray.MENU_ITEMS)
+        assert any(item[1] == tray.ACTION_RESTART_SERVICE for item in widget.menu_items)
 
         win32gui.PostMessage(widget.hwnd, widget._message_id, 0, win32con.WM_LBUTTONDBLCLK)
         deadline = time.monotonic() + 3.0
@@ -1781,7 +1909,20 @@ def test_port_zero_gui_shows_chinese_failure(
         startup_text = app._labels["startup"].cget("text")
         service_text = app._labels["service"].cget("text")
     finally:
+        # 清理顺序是有意的：先在 Tcl 解释器仍存活时断开 app 对控件的引用并回收，
+        # 再销毁解释器，最后释放 Tkapp。反过来做会让控件/变量在已删除的解释器上
+        # dealloc —— 实测在 tcl86t.dll 里触发 native 访问违例（page error）。
+        app._root = None
+        app._labels.clear()
+        app._scroll = None
+        app._wrapped_labels.clear()
+        app._diagnostics_button = None
+        app._copy_path_button = None
+        del app
+        gc.collect()
         root.destroy()
+        del root
+        gc.collect()
 
     assert "端口 0 无效" in startup_text
     assert "系统随机分配" in startup_text
@@ -1867,7 +2008,8 @@ def test_handoff_opens_published_console_when_window_missing(
     monkeypatch.setattr(app_module.DesktopApp, "_service_healthy", lambda *_a, **_k: True)
 
     app_module.DesktopApp(hidden=True)._handoff_to_running()
-    assert opened == ["http://127.0.0.1:18099/"]
+    # 第二实例不再自动打开浏览器：浏览器只由显式动作触发。
+    assert opened == []
 
 
 def test_open_logs_action_dispatches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1891,11 +2033,33 @@ def test_open_console_action_uses_service_url(monkeypatch: pytest.MonkeyPatch) -
 
     opened: list[str] = []
     monkeypatch.setattr(app_module.webbrowser, "open", opened.append)
-    desktop = app_module.DesktopApp(port=18123)
+    desktop = app_module.DesktopApp(port=18123, window_mode="browser")
     desktop.service.port = 18123
+    monkeypatch.setattr(desktop.service, "is_running", lambda: True)
+    monkeypatch.setattr(desktop, "_service_healthy", lambda _url: True)
 
     desktop._handle_action(tray.ACTION_OPEN_CONSOLE)
-    assert opened == ["http://127.0.0.1:18123/"]
+    assert opened == ["http://127.0.0.1:18123/?mode=web"]
+
+
+def test_open_is_blocked_when_port_is_owned_by_someone_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-1：端口上不是鎏灏时，任何打开动作都必须被拦下。"""
+    from src.desktop import app as app_module
+
+    opened: list[str] = []
+    monkeypatch.setattr(app_module.webbrowser, "open", opened.append)
+    desktop = app_module.DesktopApp(port=18124, window_mode="browser")
+    desktop.service.port = 18124
+    desktop._labels = {"next": _FakeWidget()}
+    monkeypatch.setattr(desktop.service, "is_running", lambda: True)
+    monkeypatch.setattr(desktop, "_service_healthy", lambda _url: False)
+
+    desktop._handle_action(tray.ACTION_OPEN_BROWSER)
+
+    assert opened == []
+    assert desktop._labels["next"].text.startswith("下一步：在浏览器中打开已取消")
 
 
 @WINDOWS_ONLY

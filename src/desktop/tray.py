@@ -40,7 +40,11 @@ from ..brand import BRAND_LOCKUP
 
 #: 菜单动作（对外稳定名称）。
 ACTION_OPEN_CONSOLE = "open_console"
+#: 「在浏览器中打开」：网页模式的唯一桌面入口（默认启动路径不会自动打开浏览器）。
+ACTION_OPEN_BROWSER = "open_browser"
 ACTION_SHOW_STATUS = "show_status"
+#: 「重新启动服务」：网关死掉后不必"退出再重开"，原地重启；启动中置灰防连点。
+ACTION_RESTART_SERVICE = "restart_service"
 ACTION_STOP_SERVICE = "stop_service"
 ACTION_QUIT = "quit"
 
@@ -69,22 +73,39 @@ TRAY_CLASS_PREFIX = "LiuHaoTray"
 #: 菜单文案的唯一定义处。状态窗口的按钮直接复用这些常量：同一个功能在托盘
 #: 与界面里必须写同一句话，改一处两边同时生效，不会再出现"停服务"和"停止
 #: 服务（仅停网关）"两种说法。
-LABEL_OPEN_CONSOLE = "打开控制台"
+LABEL_OPEN_CONSOLE = "打开鎏灏窗口"
+LABEL_OPEN_BROWSER = "在浏览器中打开"
 LABEL_SHOW_STATUS = "查看状态"
+LABEL_RESTART_SERVICE = "重新启动服务"
 LABEL_OPEN_LOGS = "打开日志目录"
 LABEL_STOP_SERVICE = "停止服务（仅停网关，托盘保留）"
 LABEL_QUIT = "退出（停止网关并关闭托盘）"
 
-#: 菜单项顺序即产品要求：打开控制台 / 查看状态 / 打开日志目录 / 停止服务 / 退出。
-#: 「停止服务」只停网关（托盘与窗口仍在）；「退出」才会停止网关并移除托盘 ——
-#: 标签里写清楚，避免用户把"停止"当成"退出"。
+#: 菜单项顺序即产品要求：打开窗口 / 查看状态 / 在浏览器中打开 / 打开日志目录 /
+#: 停止服务 / 退出。「停止服务」只停网关（托盘与窗口仍在）；「退出」才会停止
+#: 网关并移除托盘 —— 标签里写清楚，避免用户把"停止"当成"退出"。
+#: 「在浏览器中打开」是网页模式的入口；默认启动不会自动打开浏览器。
 MENU_ITEMS: tuple[tuple[int, str, str], ...] = (
     (1001, ACTION_OPEN_CONSOLE, LABEL_OPEN_CONSOLE),
     (1002, ACTION_SHOW_STATUS, LABEL_SHOW_STATUS),
+    (1007, ACTION_RESTART_SERVICE, LABEL_RESTART_SERVICE),
+    (1006, ACTION_OPEN_BROWSER, LABEL_OPEN_BROWSER),
     (1005, ACTION_OPEN_LOGS, LABEL_OPEN_LOGS),
     (1003, ACTION_STOP_SERVICE, LABEL_STOP_SERVICE),
     (1004, ACTION_QUIT, LABEL_QUIT),
 )
+
+
+def menu_items_for(*, include_browser: bool) -> tuple[tuple[int, str, str], ...]:
+    """按窗口形态裁剪菜单项。
+
+    原生窗口不出现「在浏览器中打开」——桌面端不做浏览器自降级；只有浏览器
+    模式（``--web``）才保留，因为它本身就是网页入口。
+    """
+    if include_browser:
+        return MENU_ITEMS
+    return tuple(item for item in MENU_ITEMS if item[1] != ACTION_OPEN_BROWSER)
+
 
 #: 图标状态：运行中（绿）/ 有错误（红）/ 已停止（灰）。
 STATE_RUNNING = "running"
@@ -295,8 +316,10 @@ class SystemTray:
         *,
         tooltip: str = BRAND_LOCKUP,
         instance_key: str | None = None,
+        menu_items: tuple[tuple[int, str, str], ...] | None = None,
     ) -> None:
         self._on_action = on_action
+        self._menu_items = MENU_ITEMS if menu_items is None else tuple(menu_items)
         self._tooltip = tooltip[:_TIP_MAX]
         #: 稳定的实例键：第二个桌面实例据此找到本窗口并请求显示状态窗口。
         self._instance_key = instance_key or ""
@@ -319,6 +342,10 @@ class SystemTray:
         self.last_notify_error: str | None = None
         self._state = ""
         self._icon_cache: dict[str, Any] = {}
+        #: 置灰动作（启动/停止进行中时「重新启动服务」不可点）；从 UI 线程写、
+        #: 托盘线程读，用短锁保护。
+        self._disabled_actions: set[str] = set()
+        self._menu_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -369,7 +396,7 @@ class SystemTray:
     @property
     def menu_items(self) -> tuple[tuple[int, str, str], ...]:
         """右键菜单内容（重建后仍读这一份，验收断言项数用）。"""
-        return MENU_ITEMS
+        return self._menu_items
 
     def icon_present(self) -> bool:
         """Shell 是否仍持有本图标：``NIM_MODIFY`` 成功即说明通知区里有它。
@@ -691,8 +718,13 @@ class SystemTray:
         _, win32con, win32gui = self._w32
         menu = win32gui.CreatePopupMenu()
         try:
-            for menu_id, _action, label in MENU_ITEMS:
-                win32gui.AppendMenu(menu, win32con.MF_STRING, menu_id, label)
+            with self._menu_lock:
+                disabled = set(self._disabled_actions)
+            for menu_id, action, label in self._menu_items:
+                flags = win32con.MF_STRING
+                if action in disabled:
+                    flags |= win32con.MF_GRAYED
+                win32gui.AppendMenu(menu, flags, menu_id, label)
             x, y = win32gui.GetCursorPos()
             if self._hwnd:
                 win32gui.SetForegroundWindow(self._hwnd)
@@ -712,9 +744,14 @@ class SystemTray:
         finally:
             win32gui.DestroyMenu(menu)
 
+    def set_disabled_actions(self, actions: set[str] | frozenset[str] | None) -> None:
+        """设置右键菜单里要置灰的动作（启动/停止进行中防连点）。"""
+        with self._menu_lock:
+            self._disabled_actions = set(actions or ())
+
     def handle_command(self, menu_id: int) -> None:
         """菜单命令入口（右键菜单与 ``WM_COMMAND`` 共用；测试直接调用它）。"""
-        for candidate, action, _label in MENU_ITEMS:
+        for candidate, action, _label in self._menu_items:
             if candidate == menu_id:
                 self._dispatch(action)
                 return
@@ -725,18 +762,23 @@ class SystemTray:
 
 
 __all__ = [
+    "ACTION_OPEN_BROWSER",
     "ACTION_OPEN_CONSOLE",
     "ACTION_OPEN_LOGS",
     "ACTION_QUIT",
+    "ACTION_RESTART_SERVICE",
     "ACTION_SHOW_STATUS",
     "ACTION_STOP_SERVICE",
     "ACTION_TOGGLE_STATUS",
+    "LABEL_OPEN_BROWSER",
     "LABEL_OPEN_CONSOLE",
     "LABEL_OPEN_LOGS",
     "LABEL_QUIT",
+    "LABEL_RESTART_SERVICE",
     "LABEL_SHOW_STATUS",
     "LABEL_STOP_SERVICE",
     "MENU_ITEMS",
+    "menu_items_for",
     "SHOW_MESSAGE_NAME",
     "STATE_COLORS",
     "STATE_ERROR",

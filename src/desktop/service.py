@@ -26,12 +26,14 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import subprocess
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ from ..common.redaction import redact_log_text
 from ..logging_config import (
     RotatingTextWriter,
     prune_log_retention,
+    resolve_data_dir,
     resolve_log_file,
     rotate_backups,
     scrub_legacy_log_leaks,
@@ -78,6 +81,65 @@ def _env_port() -> int | None:
     except ValueError:
         return None
     return value if 1 <= value <= 65535 else None
+
+
+#: 持久化端口配置的落点覆盖变量（测试/演练用来隔离真实用户目录）。
+PORT_FILE_ENV = "LIUHAO_DESKTOP_PORT_FILE"
+
+
+def desktop_port_file() -> Path:
+    """用户选定的端口写到 ``<数据目录>/config/desktop_port.json``。
+
+    为什么落数据目录而不是程序目录：安装版的程序目录可能只读，而且
+    ``config/`` 下的业务凭据不能和机器级 UI 偏好混在一起。数据目录是每台
+    机器/每个用户可写且随卸载清理的位置。
+
+    格式固定为 ``{"port": 8081, "updated_at": "..."}``；读取时只认 ``port``
+    字段且必须在 1–65535，其余内容一律忽略。
+    """
+    raw = (os.environ.get(PORT_FILE_ENV) or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path(resolve_data_dir()) / "config" / "desktop_port.json"
+
+
+def load_saved_port() -> int | None:
+    """读取上次选定的端口；文件不存在/损坏/非法时返回 None（绝不抛异常）。"""
+    try:
+        payload = json.loads(desktop_port_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        value = int(payload.get("port"))
+    except (TypeError, ValueError):
+        return None
+    return value if 1 <= value <= 65535 else None
+
+
+def save_saved_port(port: int) -> Path:
+    """原子写入端口配置；失败抛 ``OSError``，由调用方决定是否只记日志。"""
+    value = int(port)
+    if not 1 <= value <= 65535:
+        raise ValueError(f"端口 {port} 超出合法范围（1-65535）")
+    target = desktop_port_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp")
+    payload = {
+        "port": value,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, target)
+    return target
+
+
+def effective_port(explicit: int | None = None) -> int:
+    """端口优先级：显式 ``--port`` > ``LIUHAO_API_PORT`` > 持久化配置 > 8080。"""
+    if explicit is not None:
+        return explicit
+    return _env_port() or load_saved_port() or DEFAULT_PORT
 
 
 #: 父进程等待子进程自行退出的上限（秒）。超过才强杀并记录。
@@ -128,10 +190,23 @@ def _rotate_capture_if_large(path: Path, max_bytes: int = GATEWAY_LOG_MAX_BYTES)
     try:
         if path.stat().st_size < max_bytes:
             return
-    except OSError:
+    except FileNotFoundError:
+        return  # 首次启动还没有抓取文件，属正常
+    except OSError as exc:
+        logger.warning(
+            "检查网关抓取文件大小失败（%s：%s）：跳过启动前轮转，停止时可能读不到 shutdown 标记",
+            path,
+            exc,
+        )
         return
-    with contextlib.suppress(OSError):
+    try:
         rotate_backups(str(path), GATEWAY_LOG_BACKUP_COUNT)
+    except OSError as exc:
+        logger.warning(
+            "网关抓取文件轮转失败（%s：%s）：旧内容会继续追加，停止确认可能落空",
+            path,
+            exc,
+        )
 
 
 def _no_window_flags() -> int:
@@ -431,7 +506,11 @@ class GatewayService:
         directories = [LOG_DIR]
         try:
             data_logs = resolve_log_file(Path("logs") / "liuhao.log").parent
-        except Exception:  # noqa: BLE001 - 数据目录解析失败不影响桌面日志清理
+        except Exception as exc:  # noqa: BLE001 - 数据目录解析失败不影响桌面日志清理
+            logger.warning(
+                "数据目录日志位置解析失败（%s）：本轮只清理桌面日志目录，数据目录日志不会被裁剪",
+                exc,
+            )
             data_logs = None
         if data_logs is not None and data_logs not in directories:
             directories.append(data_logs)
@@ -553,7 +632,7 @@ class GatewayService:
                 self.host,
             )
 
-        requested = self.port if self.port is not None else (_env_port() or DEFAULT_PORT)
+        requested = effective_port(self.port)
         if not 1 <= requested <= 65535:
             # 端口 0 的语义是"让系统随机分配"，但桌面壳的书签、托盘和局域网入口
             # 都依赖地址不变，随机端口无法回填给 UI。与其静默退回 8080 造成
@@ -616,7 +695,14 @@ class GatewayService:
         self._log_path = log_path
         try:
             self._capture = _GatewayLogCapture(log_path)
-        except OSError:
+        except OSError as exc:
+            # 没有抓取文件时网关的 stdout/stderr 会退化为 DEVNULL：崩溃栈与
+            # 启动失败原因会彻底丢失，必须留下可读记录。
+            logger.warning(
+                "无法创建网关日志抓取文件（%s：%s）：网关输出将被丢弃，启动崩溃时将只剩退出码",
+                log_path,
+                exc,
+            )
             self._capture = None
         self._log_offset = self._capture.size if self._capture is not None else 0
 
@@ -669,12 +755,29 @@ class GatewayService:
         return False
 
     def _venv_python(self) -> str:
+        """网关子进程的解释器：Windows 上优先 ``pythonw.exe``。
+
+        ``python.exe`` 是控制台子系统程序：即使父进程传了 CREATE_NO_WINDOW，
+        控制台宿主（conhost.exe）仍会挂进子进程树 —— 用户虽然看不到黑框，
+        但"双击图标后不该有命令行进程"这条验收会失败。``pythonw.exe`` 是
+        GUI 子系统，同样的 stdin/stdout 管道照常可用（``_runner`` 的优雅
+        停止与日志抓取都不依赖真实控制台）。
+
+        非 Windows / 没有 pythonw 时退回原行为。
+        """
         import sys
 
         venv_dir = self._root / ".venv"
         scripts_dir = "Scripts" if os.name == "nt" else "bin"
-        candidate = venv_dir / scripts_dir / "python.exe"
-        return str(candidate) if candidate.is_file() else sys.executable
+        candidates = (
+            (venv_dir / scripts_dir / "pythonw.exe", venv_dir / scripts_dir / "python.exe")
+            if os.name == "nt"
+            else (venv_dir / scripts_dir / "python",)
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+        return sys.executable
 
     def _wait_health(self, timeout: float) -> bool:
         base = self.base_url
@@ -689,8 +792,14 @@ class GatewayService:
                 return False
             # 2s 而不是 1s：机器繁忙时 /v1/health 自身可能超过 1s，误判成"没起来"。
             info = http_json(f"{base}/v1/health", timeout=2.0)
-            if info["ok"]:
-                return True
+            body = info.get("body")
+            # 只看 2xx 会把端口上别人的服务当成就绪；必须核对我们自己的身份。
+            if info["ok"] and isinstance(body, dict) and body.get("service") == "liuhao-gateway":
+                # 身份对上后再确认进程没死：进程刚好退出时，不能报"已就绪"。
+                with self._lock:
+                    proc = self._proc
+                if proc is not None and proc.poll() is None:
+                    return True
             time.sleep(0.5)
         return False
 
