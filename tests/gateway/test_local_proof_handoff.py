@@ -1,7 +1,9 @@
 """“本机”不再等于“本人”：进程级证明的回归测试。
 
 覆盖：
-* 只有回环、没有桌面端一次性证明 → 一律 403（取码 / 重置 / 半初始化补全）；
+* 回环来源即产品声明的本机信任边界：``/recovery/local`` 与 ``/recovery/reset``
+  按现行契约允许无桌面端令牌的自助取码/重置（依据
+  ``docs/account-hierarchy.md`` §S3b），但非回环来源必须 403；
 * 伪造、过期、绑定到已退出进程、绑定到其他用户 SID 的令牌全部被拒；
 * 交接令牌取用即焚，重放失败；同一令牌并发只成功一次；
 * 重置令牌“占用后成功才消费”：失败可重试，并发只有一个能继续；
@@ -12,8 +14,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -98,26 +103,59 @@ def _make_legacy_root():
     return manager
 
 
-def test_loopback_without_proof_is_rejected(env):
-    """回环只说明同一台机器：没有桌面端证明，取码/重置/补全全部拒绝。"""
+def test_loopback_without_proof_uses_documented_self_service(env):
+    """回环即本机信任边界：按现行契约，无桌面端证明也能自助取码/重置。
+
+    依据 ``docs/account-hierarchy.md``（现行契约，非旧版用例假设）：
+
+    * §S3b 表格：``POST /v1/accounts/recovery/local`` **无需令牌，仅回环来源**；
+    * §S3b 正文：``/recovery/reset`` 默认同样只接受回环来源；
+    * §S3b 残余风险：回环可达对本机其他账户的进程同样成立，DPAPI 只保护
+      磁盘副本，不承诺阻止同机进程调用该接口 —— 能访问回环的主体在信任
+      边界之内。
+
+    因此旧用例“回环但无证明 → 403”与现行契约相反；这里改断言真实契约，
+    同时钉住回环放宽不能带出的两条硬边界：非回环来源必须中性 403、恢复码
+    使用后必须失效。
+    """
     manager = _make_legacy_root()
     from src.gateway.main import get_app
 
     with TestClient(get_app()) as client:
-        denied = client.post("/v1/accounts/recovery/local")
-        assert denied.status_code == 403, denied.text
-        assert denied.json()["code"] == "ACCOUNT_RECOVERY_PROOF_REQUIRED"
-        assert manager.account_root().recovery_hash == ""
+        # 回环 + 无证明：允许生成本机恢复码（200），而不是 403。
+        local = client.post("/v1/accounts/recovery/local")
+        assert local.status_code == 200, local.text
+        payload = local.json()
+        assert payload["written"] is True, payload
+        code = payload["recovery_code"]
+        assert manager.account_root().recovery_hash
 
-        code = manager.rotate_recovery_code("alice")
-        denied_reset = client.post(
+        # 同机浏览器直接重置：按契约不要求桌面端令牌。
+        reset = client.post(
             "/v1/accounts/recovery/reset",
             json={"recovery_code": code, "password": NEW_PASSWORD},
         )
-        assert denied_reset.status_code == 403, denied_reset.text
-        assert denied_reset.json()["code"] == "ACCOUNT_RECOVERY_PROOF_REQUIRED"
-        # 被拒的请求不能消费有效恢复码。
-        assert manager.account_root().recovery_hash
+        assert reset.status_code == 200, reset.text
+        logged_in = client.post(
+            "/v1/auth/login",
+            json={"principal": "alice", "secret": NEW_PASSWORD},
+        )
+        assert logged_in.status_code == 200, logged_in.text
+
+        # 恢复码一次性：成功使用后同一枚码不能再解锁。
+        reused = client.post(
+            "/v1/accounts/recovery/reset",
+            json={"recovery_code": code, "password": NEW_PASSWORD},
+        )
+        assert reused.status_code >= 400, reused.text
+
+        # 回环判定不得被非回环转发链带出本机：远程来源必须中性 403。
+        remote = client.post(
+            "/v1/accounts/recovery/local",
+            headers={"X-Forwarded-For": "203.0.113.9"},
+        )
+        assert remote.status_code == 403, remote.text
+        assert remote.json()["code"] == "ACCOUNT_RECOVERY_LOCAL_ONLY"
 
 
 def test_forged_expired_and_dead_pid_tokens_are_rejected(env, monkeypatch):
@@ -471,3 +509,189 @@ def test_model_key_file_acl_and_secure_delete(env, monkeypatch):
     path.write_bytes(b"PLAINTEXT-KEY-MATERIAL-SHOULD-VANISH")
     assert secure_delete_file(path) is True
     assert not path.exists()
+
+
+def _recovery_audit_rows(env, action: str) -> list[dict]:
+    """读取真实审计库，只返回 details.action 命中指定动作的行。"""
+    db = sqlite3.connect(env["AUDIT_DB_PATH"])
+    db.row_factory = sqlite3.Row
+    try:
+        raw = db.execute(
+            "SELECT event_type, principal_id, outcome, details "
+            "FROM audit_events WHERE details LIKE ? ORDER BY seq",
+            (f"%{action}%",),
+        ).fetchall()
+    finally:
+        db.close()
+    return [
+        {
+            "event_type": row["event_type"],
+            "principal_id": row["principal_id"],
+            "outcome": row["outcome"],
+            "details": json.loads(row["details"]),
+        }
+        for row in raw
+    ]
+
+
+def test_recovery_local_is_rate_limited_per_source_and_audited(env):
+    """来源+端点限流：前 10 次进入业务，第 11 次 429 且带 Retry-After；成败都审计。"""
+    _make_legacy_root()
+    from src.gateway.main import get_app
+
+    with TestClient(get_app()) as client:
+        responses = [client.post("/v1/accounts/recovery/local") for _ in range(11)]
+
+    assert responses[0].status_code == 200, responses[0].text
+    assert [r.status_code for r in responses[1:10]] == [403] * 9
+    blocked = responses[10]
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.json()["code"] == "ACCOUNT_RECOVERY_LOCKED"
+    assert int(blocked.headers["Retry-After"]) >= 60
+
+    rows = _recovery_audit_rows(env, "account.recovery.local")
+    assert len(rows) == 11, rows
+    assert sum(1 for r in rows if r["outcome"] == "allowed") == 1
+    assert sum(1 for r in rows if r["outcome"] == "denied") == 10
+    assert {r["details"]["source"] for r in rows} == {"testclient"}
+    assert {r["details"]["endpoint"] for r in rows} == {"/v1/accounts/recovery/local"}
+    # 成功那条能回答“谁在什么时候取了码”；失败条目标注真实错误码。
+    allowed = next(r for r in rows if r["outcome"] == "allowed")
+    assert allowed["details"]["actor"] == "alice"
+    assert allowed["details"]["target"] == "alice"
+    assert allowed["details"]["mode"] == "generated"
+    denied_codes = {
+        r["details"].get("error_code") for r in rows if r["outcome"] == "denied"
+    }
+    assert {"account_recovery_unavailable", "account_recovery_locked"} <= denied_codes
+
+
+def test_forged_forwarding_headers_cannot_open_new_recovery_buckets(env):
+    """伪造 X-Forwarded-For 不能换桶：所有本机请求都归到同一个桶。
+
+    真实 uvicorn 会按回环对端的 ``X-Forwarded-For`` 重写 ``request.client``；
+    若桶 key 直接使用 client.host，攻击者每换一个伪造地址就得到一个新桶，
+    10 次上限被绕开（修复前真实 30 次全部进入业务）。这里直接构造“已被
+    重写的 client + 伪造 XFF”的 Request，确保判定按可信来源收敛。
+    """
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from src.gateway import accounts as accounts_module
+    from src.kernels.identity import _accounts
+
+    bucket_key = (
+        "recovery:http:local:local:" + accounts_module._recovery_http_scope()
+    )
+    _accounts.limiter.reset(bucket_key)
+    try:
+        statuses = []
+        for index in range(11):
+            forged = f"127.0.0.{index + 1}"
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/v1/accounts/recovery/local",
+                "headers": [(b"x-forwarded-for", forged.encode())],
+                # 模拟 uvicorn 依据 XFF 重写后的 client（每个伪造地址都不同）。
+                "client": (forged, 5000),
+                "server": ("127.0.0.1", 8080),
+                "scheme": "http",
+                "query_string": b"",
+            }
+            try:
+                accounts_module._recovery_http_rate_limit(Request(scope), "local")
+                statuses.append(200)
+            except HTTPException as exc:
+                statuses.append(exc.status_code)
+        assert statuses[:10] == [200] * 10, statuses
+        assert statuses[10] == 429, statuses
+    finally:
+        _accounts.limiter.reset(bucket_key)
+
+
+def test_recovery_reset_audits_success_and_failure_with_source(env):
+    """重置成功与失败都写审计：成功记 actor=根账号，失败记匿名 + 目标根账号。"""
+    _make_legacy_root()
+    from src.gateway.main import get_app
+
+    with TestClient(get_app()) as client:
+        local = client.post("/v1/accounts/recovery/local")
+        assert local.status_code == 200, local.text
+        code = local.json()["recovery_code"]
+
+        ok = client.post(
+            "/v1/accounts/recovery/reset",
+            json={"recovery_code": code, "password": NEW_PASSWORD},
+        )
+        assert ok.status_code == 200, ok.text
+
+        bad = client.post(
+            "/v1/accounts/recovery/reset",
+            json={"recovery_code": "RC-NOT-A-REAL-CODE", "password": NEW_PASSWORD},
+        )
+        assert bad.status_code == 400, bad.text
+        assert bad.json()["code"] == "ACCOUNT_RECOVERY_CODE_INVALID"
+
+    rows = _recovery_audit_rows(env, "account.recovery.reset")
+    assert len(rows) == 2, rows
+    allowed = next(r for r in rows if r["outcome"] == "allowed")
+    denied = next(r for r in rows if r["outcome"] == "denied")
+    assert allowed["principal_id"] == "alice"
+    assert allowed["details"]["actor"] == "alice"
+    assert allowed["details"]["target"] == "alice"
+    assert allowed["details"]["mode"] == "password_reset"
+    assert denied["details"]["actor"] == "anonymous"
+    assert denied["details"]["target"] == "alice"
+    assert denied["details"]["error_code"] == "account_recovery_code_invalid"
+    for row in (allowed, denied):
+        assert row["details"]["source"] == "testclient"
+        assert row["details"]["endpoint"] == "/v1/accounts/recovery/reset"
+
+
+def test_audit_write_failure_is_reported_without_blocking_recovery(
+    env, monkeypatch, caplog
+):
+    """审计库写不进时：取码/重置仍可完成，但响应与日志明确告知“审计未写入”。
+
+    故障注入点选在 ``src.kernels.audit.log_event``（真实写库入口），因此走的是
+    与磁盘满/只读完全相同的异常路径：``_account_audit`` 捕获后返回失败。
+    """
+    _make_legacy_root()
+
+    import src.kernels.audit as audit_mod
+
+    def broken_log_event(*args, **kwargs):
+        raise RuntimeError("模拟审计库只读/磁盘满")
+
+    monkeypatch.setattr(audit_mod, "log_event", broken_log_event)
+
+    from src.gateway.main import get_app
+
+    with TestClient(get_app()) as client:
+        with caplog.at_level(logging.WARNING, logger="src.gateway.accounts"):
+            local = client.post("/v1/accounts/recovery/local")
+            assert local.status_code == 200, local.text
+            payload = local.json()
+            assert payload.get("audit_written") is False, payload
+            assert "审计未写入" in payload.get("audit_warning", ""), payload
+            code = payload["recovery_code"]
+
+            reset = client.post(
+                "/v1/accounts/recovery/reset",
+                json={"recovery_code": code, "password": NEW_PASSWORD},
+            )
+            assert reset.status_code == 200, reset.text
+            body = reset.json()
+            assert body.get("audit_written") is False, body
+            assert "审计未写入" in body.get("audit_warning", ""), body
+
+        # 审计失败不得堵死自救：用新密码能正常登录。
+        logged_in = client.post(
+            "/v1/auth/login",
+            json={"principal": "alice", "secret": NEW_PASSWORD},
+        )
+        assert logged_in.status_code == 200, logged_in.text
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("审计未写入" in message for message in messages), messages

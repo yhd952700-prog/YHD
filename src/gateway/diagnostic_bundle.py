@@ -40,6 +40,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
 from .account_context import require_account_principal
+from .policy import require_admin_principal
 
 from ..brand import BRAND_LOCKUP as APP_NAME
 from ..common.redaction import (
@@ -583,9 +584,13 @@ def bundle_filename(now: datetime | None = None) -> str:
 router = APIRouter(prefix="/v1", tags=["diagnostics"])
 
 
-@router.get("/diagnostics/bundle")
+@router.get("/diagnostics/bundle", dependencies=[Depends(require_admin_principal)])
 def download_diagnostics_bundle() -> Response:
-    """下载一键诊断包（登录闸门由 ``main.py`` 统一挂载）。内容见 :data:`BUNDLE_MEMBERS`。
+    """下载一键诊断包（登录闸门由 ``main.py`` 统一挂载）。
+
+    诊断包是整机全局资源（日志、环境、进程快照），不按会话/项目切分，因此只允许
+    管理员导出；成员的自有数据走 ``/v1/chat/export`` 等独立通道。内容见
+    :data:`BUNDLE_MEMBERS`。
 
     命中明文凭据的成员会被**剔除**而不是整体失败：用户最需要求助时不能无路可走。
     剔除清单同时写在响应头（``X-LiuHao-Diagnostics-Omitted-Members``）与包内

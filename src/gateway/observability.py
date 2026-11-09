@@ -10,8 +10,11 @@
 * ``/v1/metrics/prometheus`` —— 接上此前**无人调用**的 ``generate_metrics()``，
   输出 Prometheus 文本格式，使 docker-compose.observability.yml 的 Prometheus 能真正抓取。
 * ``/v1/ready/subsystems`` —— 把 14 个内核纳入就绪检查（既有 ``/v1/ready`` 只看 5 个 auth 组件）。
-* ``/v1/production/preflight`` —— 生产配置预检。**必须鉴权**：它会透露
+* ``/v1/production/preflight`` —— 生产配置预检。**必须管理员鉴权**：它会透露
   "SECRET_KEY 是占位符"这类对攻击者极具价值的信息。
+* ``/v1/alerts``、``/v1/alerts/rules`` —— 整机告警读取。**必须管理员鉴权**：
+  告警条目携带全局执行/目标标识与错误详情，且 ``Alert`` 没有归属字段，无法安全地
+  按账号裁剪给成员。
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from ..observability.production import (
     validate_production_config,
 )
 from ..observability.alerts.store import AlertStore
-from .health import ProbeTimeout, _run_probe
+from .health import ProbeTimeout, _run_probe, _busy_response
 from .display import (
     decorate_alert,
     decorate_finding,
@@ -43,7 +46,7 @@ from .display import (
     subsystem_user_message,
     technical_detail,
 )
-from .policy import require_human_principal
+from .policy import require_admin_principal, require_human_principal
 
 logger = logging.getLogger("liuhao.gateway.observability")
 
@@ -135,7 +138,7 @@ async def prometheus_metrics(request: Request) -> Response:
     include_in_schema=False,
     dependencies=[Depends(require_human_principal)],
 )
-async def subsystem_readiness() -> JSONResponse:
+async def subsystem_readiness(request: Request) -> JSONResponse:
     """14 内核逐条就绪检查（需人类主体鉴权）。
 
     ``check_subsystems()`` 会**导入并实例化 14 个内核**（首次可达数秒），所以
@@ -173,15 +176,12 @@ async def subsystem_readiness() -> JSONResponse:
     try:
         body, ready = await _run_probe(_payload, timeout=10.0)
     except ProbeTimeout as exc:
-        logger.warning("子系统就绪检查超时：%s", exc)
-        return JSONResponse(
-            content={
-                "status": "busy",
-                "reason": "probe_timeout",
-                "user_message": "就绪检查处理较慢，请稍后重试。",
-            },
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            headers={"Retry-After": "1"},
+        # 与 health.py 的四字段繁忙报文共用同一个构造函数：同一产品只有一套
+        # 503 形状（``code`` / ``message`` / ``correlation_id`` / ``retry_after``
+        # + ``Retry-After`` / ``X-Correlation-ID``）。旧形状里前端根本不读
+        # ``user_message``，中文提示会整句丢失。
+        return _busy_response(
+            "子系统就绪检查", request.headers.get("X-Trace-ID", "unknown"), str(exc)
         )
     return JSONResponse(
         content=body,
@@ -189,9 +189,9 @@ async def subsystem_readiness() -> JSONResponse:
     )
 
 
-@router.get("/production/preflight", dependencies=[Depends(require_human_principal)])
-async def production_preflight() -> JSONResponse:
-    """生产配置预检（需人类主体鉴权）。
+@router.get("/production/preflight", dependencies=[Depends(require_admin_principal)])
+async def production_preflight(request: Request) -> JSONResponse:
+    """生产配置预检（需管理员鉴权）。
 
     报告**只含键名、代码与严重级别，不含任何配置值**。
     """
@@ -210,20 +210,14 @@ async def production_preflight() -> JSONResponse:
     try:
         body = await _run_probe(_payload, timeout=8.0)
     except ProbeTimeout as exc:
-        logger.warning("生产配置预检超时：%s", exc)
-        return JSONResponse(
-            content={
-                "status": "busy",
-                "reason": "probe_timeout",
-                "user_message": "配置预检处理较慢，请稍后重试。",
-            },
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            headers={"Retry-After": "1"},
+        # 同上：统一四字段，不再另造一套 ``status:"busy"`` 报文。
+        return _busy_response(
+            "生产配置预检", request.headers.get("X-Trace-ID", "unknown"), str(exc)
         )
     return JSONResponse(content=body, status_code=status.HTTP_200_OK)
 
 
-@router.get("/alerts", dependencies=[Depends(require_human_principal)])
+@router.get("/alerts", dependencies=[Depends(require_admin_principal)])
 def list_alerts() -> Dict[str, Any]:
     """列出告警（只读）。返回 firing 告警与最近告警；库为空时 count=0，不是错误。
 
@@ -249,7 +243,7 @@ def list_alerts() -> Dict[str, Any]:
     }
 
 
-@router.get("/alerts/rules", dependencies=[Depends(require_human_principal)])
+@router.get("/alerts/rules", dependencies=[Depends(require_admin_principal)])
 def list_alert_rules() -> Dict[str, Any]:
     """列出已注册的告警规则及其真实 enabled 状态。
 

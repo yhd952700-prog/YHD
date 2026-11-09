@@ -278,7 +278,7 @@ def test_health_stays_fast_while_identity_resolution_is_stuck(monkeypatch):
 # ④ 身份校验防护：lane 就绪、2 秒超时、abandon、降级自愈、503 vs 401
 # ---------------------------------------------------------------------------
 def test_identity_lanes_are_warm_before_first_request():
-    """经**启动路径**验证：导入即预热，4 条 lane 的 Event 都已 set。
+    """经**启动路径**验证：导入即预热，全部 lane 的 Event 都已 set。
 
     旧用例直接调 ``warm_identity_pool()``，绕开了真正的启动路径，属于假护栏。
     """
@@ -340,7 +340,12 @@ def test_stuck_identity_store_returns_structured_503(monkeypatch):
 
 
 def test_identity_pool_full_fails_fast(monkeypatch):
-    """4 条 lane 都在忙时第 5 个请求立即 503，不排队。"""
+    """全部 lane 都在忙时，第 N+1 个请求**有界等待**后 503，不无限排队。
+
+    lane 数量可配（``LIUHAO_IDENTITY_LANES``），所以这里按
+    ``rl._IDENTITY_LANE_COUNT`` 动态占满，而不是硬编码 4 —— 断言强度不变：
+    多一个请求必须 503，且必须在等待预算内返回。
+    """
     monkeypatch.setenv("LIUHAO_IDENTITY_TIMEOUT_SECONDS", "5.0")
     limiter = rl.RateLimiter()
     monkeypatch.setattr(rl, "_default_limiter", limiter)
@@ -350,19 +355,23 @@ def test_identity_pool_full_fails_fast(monkeypatch):
         lambda _r, _t=(): (time.sleep(0.4), ("ip:127.0.0.1", None))[1],
     )
     middleware = rl.RateLimitMiddleware(_build_app(), paths=("/v1/chat",))
+    lanes = rl._IDENTITY_LANE_COUNT
 
     async def scenario():
-        jobs = [asyncio.create_task(_call_asgi(middleware, "/v1/chat")) for _ in range(4)]
-        await asyncio.sleep(0.1)  # 让 4 条 lane 先占满
+        jobs = [
+            asyncio.create_task(_call_asgi(middleware, "/v1/chat"))
+            for _ in range(lanes)
+        ]
+        await asyncio.sleep(0.1)  # 让全部 lane 先占满
         started = time.monotonic()
-        fifth = await _call_asgi(middleware, "/v1/chat")
+        overflow = await _call_asgi(middleware, "/v1/chat")
         elapsed = time.monotonic() - started
         await asyncio.gather(*jobs)
-        return elapsed, fifth
+        return elapsed, overflow
 
-    elapsed, fifth = asyncio.run(scenario())
-    assert _status(fifth) == 503
-    assert elapsed < 0.5, f"池满没有快速失败：第 5 个请求等了 {elapsed:.2f}s"
+    elapsed, overflow = asyncio.run(scenario())
+    assert _status(overflow) == 503
+    assert elapsed < 0.5, f"池满没有快速失败：第 {lanes + 1} 个请求等了 {elapsed:.2f}s"
 
 
 def test_degraded_state_self_heals_without_restart(monkeypatch):
@@ -418,7 +427,7 @@ def test_genuine_invalid_token_keeps_401_contract():
 
 
 def test_stuck_threads_stay_within_cap_after_repeated_hangs(monkeypatch):
-    """连续 20 次卡死/弃置后，线程总数仍 ≤ 4 + 4。"""
+    """连续 20 次卡死/弃置后，线程总数仍 ≤ lane 数 + 4。"""
     monkeypatch.setenv("LIUHAO_IDENTITY_TIMEOUT_SECONDS", "0.05")
     limiter = rl.RateLimiter()
     monkeypatch.setattr(

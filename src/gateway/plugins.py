@@ -33,6 +33,8 @@ def _serialize(info: Any) -> Dict[str, Any]:
         "kernel_type": info.kernel_type,
         "status": status,
         "active": status == PluginStatus.ACTIVE.value,
+        "activatable": bool(getattr(info, "activatable", False)),
+        "builtin": bool(getattr(info, "is_builtin", False)),
         "capabilities": list(info.capabilities),
         "scope": info.scope,
         "error": info.error,
@@ -43,9 +45,16 @@ def _serialize(info: Any) -> Dict[str, Any]:
 def list_plugins(
     principal: str = Depends(require_human_principal),
 ) -> Dict[str, Any]:
-    """List every registered plugin with its real status."""
+    """List every **loadable** registered plugin with its real status.
+
+    Entries without a module entry point are historical placeholders (the old
+    V3.0 seed rows such as ``identity-impl`` / ``tenant-A-identity-plugin``).
+    They can never be activated, so they are kept out of the enable list
+    instead of being rendered as permanently failing buttons.
+    """
     registry = get_plugin_registry()
     plugins = [_serialize(info) for info in registry.list_plugins()]
+    plugins = [p for p in plugins if p["activatable"] or p["active"]]
     active = [p for p in plugins if p["active"]]
     return {"total": len(plugins), "active": len(active), "plugins": plugins}
 
@@ -57,10 +66,68 @@ def activate_plugin(
 ) -> Dict[str, Any]:
     """Activate a registered plugin (real import + instantiate)."""
     registry = get_plugin_registry()
-    if registry.get_plugin(plugin_id) is None:
+    info = registry.get_plugin(plugin_id)
+    if info is None:
         raise HTTPException(
             status_code=404,
             detail=f"没有找到插件「{plugin_id}」。请刷新列表后重试。",
         )
-    info = registry.activate_plugin(plugin_id)
-    return _serialize(info)
+    if not getattr(info, "activatable", False):
+        raise HTTPException(
+            status_code=409,
+            detail="该条目没有可加载的模块入口，属于历史登记占位，无需激活。",
+        )
+    result = registry.activate_plugin(plugin_id)
+    return _serialize(result)
+
+
+@router.post("/{plugin_id}/execute")
+async def execute_plugin(
+    plugin_id: str,
+    payload: Dict[str, Any] | None = None,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """Execute a capability on an activated plugin and return the real result.
+
+    The endpoint exists so "已启用" is verifiable: it lazily runs the plugin's
+    ``initialize`` / ``start`` lifecycle (if needed) and then calls the real
+    ``PluginInterface.execute`` implementation.
+    """
+    registry = get_plugin_registry()
+    info = registry.get_plugin(plugin_id)
+    if info is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"没有找到插件「{plugin_id}」。",
+        )
+    if not getattr(info, "activatable", False):
+        raise HTTPException(
+            status_code=409,
+            detail="该条目没有可加载的模块入口，无法执行能力。",
+        )
+
+    instance = registry.get_loaded_plugin(plugin_id)
+    if instance is None:
+        result = registry.activate_plugin(plugin_id)
+        if result is None or result.status != PluginStatus.ACTIVE:
+            raise HTTPException(
+                status_code=409,
+                detail=(result.error if result else None) or "插件尚未激活，无法执行能力。",
+            )
+        instance = registry.get_loaded_plugin(plugin_id)
+    if instance is None:
+        raise HTTPException(status_code=409, detail="插件尚未激活，无法执行能力。")
+
+    try:
+        if not instance.can_execute():
+            await instance.initialize()
+            await instance.start()
+        output = await instance.execute(payload or {})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"插件能力执行失败：{exc}") from exc
+
+    return {
+        "plugin_id": plugin_id,
+        "capabilities": list(info.capabilities),
+        "result": output,
+    }

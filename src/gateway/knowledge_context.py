@@ -46,15 +46,18 @@ import weakref
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
+from ..ai.context_budget import estimate_tokens
+
 logger = logging.getLogger("liuhao.gateway.knowledge_context")
 
-#: 注入提示词的上下文上限（token，按 4 字符≈1 token 估算）。
+#: 注入提示词的上下文上限（token，与全项目统一的 ``estimate_tokens`` 同口径）。
 KNOWLEDGE_MAX_CONTEXT_TOKENS = 600
-_CHARS_PER_TOKEN = 4
-KNOWLEDGE_MAX_CONTEXT_CHARS = KNOWLEDGE_MAX_CONTEXT_TOKENS * _CHARS_PER_TOKEN
 
-#: 单条片段注入上限，避免一份超长 chunk 吃光全部预算。
+#: 单条片段注入上限（字符，先做粗截断，再按 token 预算精截）。
 _MAX_SNIPPET_CHARS = 800
+
+#: 截断后正文至少保留的字符数：预算不足以容纳标题加这点正文时直接停止。
+_MIN_BLOCK_BODY_CHARS = 40
 
 #: 返回给客户端的引用片段预览上限。
 _CITATION_PREVIEW_CHARS = 200
@@ -111,6 +114,23 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "…"
 
 
+def _truncate_to_tokens(text: str, limit: int) -> str:
+    """把文本截到 token 预算内（``estimate_tokens`` 单调，二分安全）。"""
+    text = text or ""
+    if limit <= 0:
+        return ""
+    if estimate_tokens(text) <= limit:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if estimate_tokens(text[:mid]) <= limit:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low].rstrip()
+
+
 def _source_of(hit: Dict[str, Any]) -> Dict[str, Any]:
     """把一条检索命中投影成稳定的引用结构（不发整段原文）。"""
     metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
@@ -159,7 +179,7 @@ def _abstained(
     """``used=False`` 的弃答结果，但带上“没有资料”的模型指令。"""
     result = _not_used(reason, human_reason, diagnostics)
     result["context"] = _NO_KNOWLEDGE_INSTRUCTION
-    result["context_tokens"] = max(1, len(_NO_KNOWLEDGE_INSTRUCTION) // _CHARS_PER_TOKEN)
+    result["context_tokens"] = max(1, estimate_tokens(_NO_KNOWLEDGE_INSTRUCTION))
     return result
 
 
@@ -370,7 +390,14 @@ def build_knowledge_context(
     if not status.get("enabled"):
         reason = str(status.get("reason") or "知识库不可用")
         logger.info("knowledge_context: not enabled: %s", reason)
-        return _not_used("unavailable", "知识库不可用，本次没有参考它。")
+        # MEM-020：不能只说"不可用"。把服务端真实原因（未配置 / 维度或模型
+        # 错配 / 向量库故障）原样带给用户，否则"没查"会被误当成"查了没找到"。
+        human = (
+            reason
+            if reason.startswith("知识库未启用")
+            else f"知识库未启用，原因：{reason}"
+        )
+        return _not_used("unavailable", human)
 
     try:
         # 相关度阈值归知识库侧（有评测数据支撑），网关不再混入自己的门槛。
@@ -494,10 +521,29 @@ def build_knowledge_context(
                 score_diagnostics,
             )
 
-    # 按 token 预算拼装：每条先截断，累计超过预算即停止，保证不超上限。
+    # 按 token 预算拼装：与裁剪/配额/账本共用 ``estimate_tokens``。固定外壳
+    # 与片段分隔符也占预算，先预留出来，保证最终 context_tokens 不超上限。
+    _context_prefix = (
+        "\n\n[知识库上下文]\n"
+        "以下是与用户问题相关的资料片段。\n"
+        "规则：\n"
+        "1. 只能依据这些片段回答，不要使用片段之外的记忆、常识或推测补全；\n"
+        "2. 使用了某条资料时，用来源编号标注（例如 [1]）；\n"
+        "3. 如果片段中没有能回答问题的信息，直接回答“知识库中没有找到相关内容”，"
+        "不要猜测，也不要编造数字、步骤或结论。\n\n"
+    )
+    _context_suffix = "\n[知识库上下文结束]"
+    overhead_tokens = (
+        estimate_tokens(_context_prefix)
+        + estimate_tokens(_context_suffix)
+        # 片段间 "\n\n" 分隔符：最多 top_k 段，每条 ≤1 token。
+        + _DEFAULT_TOP_K
+    )
+    block_budget = max(0, KNOWLEDGE_MAX_CONTEXT_TOKENS - overhead_tokens)
+
     blocks: List[str] = []
     sources: List[Dict[str, Any]] = []
-    used_chars = 0
+    used_tokens = 0
     for index, hit in enumerate(qualified, start=1):
         text = _truncate(str(hit.get("text") or ""), _MAX_SNIPPET_CHARS)
         if not text:
@@ -508,32 +554,24 @@ def build_knowledge_context(
             f"片段={source['chunk_index']} 相关度={source['score']}"
         )
         block = f"{header}\n{text}"
-        if used_chars + len(block) > KNOWLEDGE_MAX_CONTEXT_CHARS:
-            remaining = KNOWLEDGE_MAX_CONTEXT_CHARS - used_chars
+        block_tokens = estimate_tokens(block)
+        if used_tokens + block_tokens > block_budget:
+            remaining = block_budget - used_tokens
             # 预算不足以容纳标题+正文时停止；绝不为了凑数而破坏边界。
-            if remaining < len(header) + 40:
+            if remaining < estimate_tokens(header) + _MIN_BLOCK_BODY_CHARS:
                 break
-            block = _truncate(block, remaining)
+            block = _truncate_to_tokens(block, remaining)
         blocks.append(block)
         sources.append(source)
-        used_chars += len(block)
-        if used_chars >= KNOWLEDGE_MAX_CONTEXT_CHARS:
+        used_tokens += estimate_tokens(block)
+        if used_tokens >= block_budget:
             break
 
     if not blocks:
         return _abstained("no_relevant", "未找到相关内容", score_diagnostics)
 
-    context = (
-        "\n\n[知识库上下文]\n"
-        "以下是与用户问题相关的资料片段。\n"
-        "规则：\n"
-        "1. 只能依据这些片段回答，不要使用片段之外的记忆、常识或推测补全；\n"
-        "2. 使用了某条资料时，用来源编号标注（例如 [1]）；\n"
-        "3. 如果片段中没有能回答问题的信息，直接回答“知识库中没有找到相关内容”，"
-        "不要猜测，也不要编造数字、步骤或结论。\n\n"
-        + "\n\n".join(blocks)
-        + "\n[知识库上下文结束]"
-    )
+    context = _context_prefix + "\n\n".join(blocks) + _context_suffix
+    context_tokens = max(1, estimate_tokens(context))
 
     score_diagnostics["injected"] = len(sources)
     logger.info(
@@ -542,7 +580,7 @@ def build_knowledge_context(
         len(sources),
         score_diagnostics["top_score"],
         score_diagnostics["runner_up_score"],
-        max(1, len(context) // _CHARS_PER_TOKEN),
+        context_tokens,
     )
     return {
         "used": True,
@@ -551,7 +589,7 @@ def build_knowledge_context(
         "message": f"本次使用知识库：{len(sources)} 个片段",
         "sources": sources,
         "context": context,
-        "context_tokens": max(1, len(context) // _CHARS_PER_TOKEN),
+        "context_tokens": context_tokens,
         "hits": len(sources),
         "diagnostics": score_diagnostics,
     }

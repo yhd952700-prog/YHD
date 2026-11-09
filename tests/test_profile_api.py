@@ -154,6 +154,40 @@ def test_delete_only_affects_own_profile(client):
     assert pcm.has_profile("user-victim")
 
 
+def test_delete_single_fact_keeps_sibling_key(client):
+    """DELETE /v1/profile/facts/{key} 必须精确删除：city 不能带走 city_code。
+
+    这是真实对外入口 + 真实内核的端到端回归：两条 key 共享前缀，旧实现按
+    前缀删会让用户点一下「删除城市」就静默丢掉 city_code，且不可逆。
+    """
+    client.put("/v1/profile", json={"fact": {"key": "city", "value": "Shanghai"}})
+    client.put("/v1/profile", json={"fact": {"key": "city_code", "value": "021"}})
+
+    r = client.delete("/v1/profile/facts/city")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+
+    assert client.get("/v1/profile").json()["facts"] == {"city_code": "021"}
+
+    # 内核里的 PERSISTENT 副本同样只能少一条。
+    from src.kernels.memory import get_memory_kernel
+
+    kernel = get_memory_kernel()
+    assert kernel.recall(f"profile:{_principal()}:fact:city") is None
+    assert kernel.recall(f"profile:{_principal()}:fact:city_code").value == "021"
+
+
+def test_delete_single_preference_keeps_sibling_key(client):
+    client.put("/v1/profile", json={"preference": {"key": "tone", "value": "formal"}})
+    client.put(
+        "/v1/profile", json={"preference": {"key": "tone_style", "value": "short"}}
+    )
+    r = client.delete("/v1/profile/preferences/tone")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+    assert set(client.get("/v1/profile").json()["preferences"]) == {"tone_style"}
+
+
 def test_profile_operations_follow_business_semantics_not_http_verbs(client):
     """画像读写属于**业务读语义**：任何已登录人类都能读写自己的画像。
 
@@ -198,6 +232,17 @@ def test_chat_binds_profile_principal_from_token(client, monkeypatch):
     seen = {}
 
     class FakeAssistant:
+        # 产品现在会读 ``assistant.provider``（用量归属/模型名）；替身给个空值，
+        # 但保留"画像主体来自令牌"的断言重点。
+        provider = None
+
+        def serialized_turn(self, **_kw):
+            # 产品现在每轮都用会话级互斥锁串行化（见 src/gateway/chat.py）；
+            # 替身没有并发写风险，返回空上下文即可。
+            from contextlib import nullcontext
+
+            return nullcontext()
+
         def __init__(self, name="x", profile_principal=None, **kw):
             self.principal = name
             self.profile_principal = profile_principal or name
@@ -232,6 +277,17 @@ def test_chat_without_user_id_backward_compatible(client, monkeypatch):
     seen = {}
 
     class FakeAssistant:
+        # 产品现在会读 ``assistant.provider``（用量归属/模型名）；替身给个空值，
+        # 但保留"画像主体来自令牌"的断言重点。
+        provider = None
+
+        def serialized_turn(self, **_kw):
+            # 产品现在每轮都用会话级互斥锁串行化（见 src/gateway/chat.py）；
+            # 替身没有并发写风险，返回空上下文即可。
+            from contextlib import nullcontext
+
+            return nullcontext()
+
         def __init__(self, name="x", profile_principal=None, **kw):
             self.principal = name
             self.profile_principal = profile_principal or name
@@ -252,6 +308,17 @@ def test_sessions_exposes_token_owner(client, monkeypatch):
     import src.gateway.chat as chat_mod
 
     class FakeAssistant:
+        # 产品现在会读 ``assistant.provider``（用量归属/模型名）；替身给个空值，
+        # 但保留"画像主体来自令牌"的断言重点。
+        provider = None
+
+        def serialized_turn(self, **_kw):
+            # 产品现在每轮都用会话级互斥锁串行化（见 src/gateway/chat.py）；
+            # 替身没有并发写风险，返回空上下文即可。
+            from contextlib import nullcontext
+
+            return nullcontext()
+
         def __init__(self, name="x", profile_principal=None, **kw):
             self.principal = name
             self.profile_principal = profile_principal or name

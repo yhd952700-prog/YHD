@@ -138,4 +138,46 @@ def test_loader_failure_recorded(client):
     b = r.json()
     assert b["status"] == "failed", b
     assert b["error"], b
+    assert "无法导入插件模块" in b["error"], b
     assert b["active"] is False, b
+
+
+def test_placeholder_without_module_is_hidden_and_not_activatable(client):
+    """历史占位（无 module_path）不进启用列表，直接调用给中文 409。"""
+    c, h = client
+    import src.kernels.plugin as _plugin_mod
+
+    reg = _plugin_mod.get_plugin_registry()
+    reg.register_plugin(
+        name="identity-impl",
+        version="1.0.0",
+        kernel_type="identity",
+        capabilities=["create_identity"],
+        scope="L3",
+        plugin_id="identity:identity-impl:1.0.0",
+    )
+
+    body = c.get("/v1/plugins", headers=h).json()
+    ids = {p["plugin_id"] for p in body["plugins"]}
+    assert "identity:identity-impl:1.0.0" not in ids, body
+
+    r = c.post("/v1/plugins/identity:identity-impl:1.0.0/activate", headers=h)
+    assert r.status_code == 409, r.text
+    assert "没有可加载的模块入口" in r.json()["detail"], r.text
+
+
+def test_builtin_capability_is_really_callable(client):
+    """激活后必须能真正执行能力，而不是只改状态字段。"""
+    c, h = client
+    r = c.post(f"/v1/plugins/{BUILTIN_ID}/activate", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["active"] is True
+
+    r2 = c.post(f"/v1/plugins/{BUILTIN_ID}/execute", headers=h, json={})
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    result = body["result"]
+    assert result["heartbeat"] is True, body
+    assert result["registered_plugins"] >= 1, body
+    assert result["active_plugins"] >= 1, body
+

@@ -159,6 +159,10 @@ def background_step(name: str, ok: bool, elapsed_ms: float, error: str = "") -> 
         )
         if not ok:
             _BACKGROUND["errors"].append({"step": name, "error": error})
+            # 后台步骤可能在 ``background_finished()`` 之后才失败：排程器要等
+            # 首屏渲染完再启动（默认延后 8s），那时预热线程已经收尾并写过 done。
+            # 失败必须把状态改回 failed，否则 /v1/startup 会一直显示正常。
+            _BACKGROUND["status"] = "failed"
 
 
 def background_finished() -> None:

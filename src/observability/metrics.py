@@ -712,15 +712,34 @@ class MetricCollector:
         self._latencies: "deque[float]" = deque(maxlen=200)
         # Heartbeat: time of the last successful collect_snapshot() tick.
         self._last_heartbeat = time.time()
+        # Probe traffic is counted separately, never into the user error rate:
+        # a probe 503 means "the service is busy answering a probe", not "a
+        # user request failed". Mixing them produced a false CRITICAL
+        # (error_rate_percent 50.0) while the service was perfectly healthy.
+        self._probe_requests = 0
+        self._probe_5xx = 0
 
     # -- ingestion ----------------------------------------------------------
 
-    def record_request(self, duration_seconds: float, status_code: int) -> None:
-        """Record one completed HTTP response. Fail-safe: never raises."""
+    def record_request(
+        self, duration_seconds: float, status_code: int, is_probe: bool = False
+    ) -> None:
+        """Record one completed HTTP response. Fail-safe: never raises.
+
+        ``is_probe`` marks health/ready/metrics and other operator probe
+        surfaces. Their status is tracked in ``probe_stats()`` only, so a
+        busy probe can never be read as a failing user request. Prometheus
+        still labels these per endpoint, so probe failures stay observable.
+        """
         try:
             if not isinstance(status_code, int):
                 status_code = int(status_code)
             with self._lock:
+                if is_probe:
+                    self._probe_requests += 1
+                    if 500 <= status_code < 600:
+                        self._probe_5xx += 1
+                    return
                 self._total_requests += 1
                 if 200 <= status_code < 300:
                     self._count_2xx += 1
@@ -736,6 +755,11 @@ class MetricCollector:
                     self._latencies.append(float(duration_seconds))
         except Exception:  # pragma: no cover - must never break a request
             pass
+
+    def probe_stats(self) -> Dict[str, int]:
+        """Probe-only counters (separate class, not part of the error rate)."""
+        with self._lock:
+            return {"requests": self._probe_requests, "five_xx": self._probe_5xx}
 
     # -- measurement helpers (each wrapped so one bad source can't sink all) -
 

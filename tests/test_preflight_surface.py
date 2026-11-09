@@ -130,6 +130,34 @@ class TestBackendActuallySendsThePreflightShape:
         with TestClient(get_app()) as anon:
             assert anon.get("/v1/production/preflight").status_code == 401
 
+    def test_member_is_forbidden_with_chinese_reason(self):
+        """成员（L1）读整机预检必须 403，且只给中文原因、不回显内部路径/堆栈。
+
+        预检会回传安全配置姿势（例如「SECRET_KEY 是占位符」），因此按管理员专属
+        收紧；控制台的 Preflight 页本就 ``requires: 'root'``，成员界面不可达。
+        """
+        from src.security.jwt_handler import create_access_token
+
+        token, _ = create_access_token(
+            "test-member", metadata={"kind": "human", "scope": "L1"}
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        with TestClient(get_app(), headers=headers) as member:
+            response = member.get("/v1/production/preflight")
+
+        assert response.status_code == 403, response.text
+        detail = response.json()["detail"]
+        assert isinstance(detail, str), detail
+        assert "管理员权限" in detail
+        for leak in ("Traceback", "src/gateway", "src\\gateway", ".py", "C:\\", "/Users/"):
+            assert leak not in response.text, f"403 响应泄漏了内部信息：{leak!r}"
+
+    def test_admin_can_still_read(self, auth_headers):
+        """管理员（L0）仍能读 —— 收紧不能把 root 运维面锁死。"""
+        with TestClient(get_app(), headers=auth_headers) as admin:
+            response = admin.get("/v1/production/preflight")
+        assert response.status_code == 200, response.text
+
 
 class TestConsoleActuallyRendersIt:
     """前端真的接了线并渲染 —— 本文件的主要价值。"""
@@ -145,12 +173,23 @@ class TestConsoleActuallyRendersIt:
         )
 
     def test_page_is_registered_and_reachable(self):
-        """nav + PAGE_META + 路由三处都要有，否则页面写出来也点不到。"""
+        """nav + PAGE_META + 路由三处都要有，否则页面写出来也点不到。
+
+        路由条件不能写死成某个变量名：`App.tsx` 现在先经过深链门控算出 `shown`
+        （`shown` 由 `active` 与可见页面集合派生），再按 `shown` 挂载页面。
+        旧断言钉住 `active === 'preflight'`，结构一变就假红，但它并不能证明
+        "Preflight 真的被渲染"。这里改为断言当前真实的接线：门控确实从
+        `active` 派生，且 `preflight` 分支渲染的是 `<Preflight>`。
+        """
         nav = (_CONSOLE_SRC / "lib" / "nav.ts").read_text(encoding="utf-8")
         app = (_CONSOLE_SRC / "App.tsx").read_text(encoding="utf-8")
+        code = _code_only(app)
         assert "preflight" in _code_only(nav), "nav.ts 没有 preflight 入口"
-        assert "preflight:" in _code_only(app), "App.tsx 的 PAGE_META 没有 preflight"
-        assert re.search(r"active\s*===\s*'preflight'", _code_only(app)), (
+        assert "preflight:" in code, "App.tsx 的 PAGE_META 没有 preflight"
+        assert re.search(r"visiblePages\.has\(active\)", code), (
+            "App.tsx 的路由不再从 active 派生可见页面 —— 菜单项可能点不进去"
+        )
+        assert re.search(r"shown\s*===\s*'preflight'\s*&&\s*<Preflight\b", code), (
             "App.tsx 路由没有渲染 Preflight —— 菜单里有、点进去是空白"
         )
 

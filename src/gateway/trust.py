@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from src.kernels.trust import (
     TrustChain,
@@ -36,6 +36,9 @@ from src.kernels.trust import (
     TrustScope,
     get_trust_manager,
 )
+
+from .account_context import AccountContext, require_account_principal, require_visible
+from .policy import _is_admin_claim, require_bearer_payload
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +91,20 @@ def _chain_summary(chain: TrustChain) -> Dict[str, Any]:
 
 
 @router.get("/{entity_id}")
-def get_trust(entity_id: str) -> Dict[str, Any]:
+def get_trust(
+    entity_id: str,
+    context: AccountContext = Depends(require_account_principal),
+    payload=Depends(require_bearer_payload),
+) -> Dict[str, Any]:
     """读取某个实体的真实信任状态（只读）。
 
     数据全部来自信任内核进程单例，绝不另建一份可能分叉 / 造假的副本。
+
+    归属：只能读自己或自己子树内的实体；其他主体（含不存在的用户名）一律
+    与"资源不存在"同一个中性 404 —— 否则本接口就是一个可枚举任意用户是否
+    存在的预言机。``stats`` 是全局统计，只对管理员返回。
     """
+    require_visible(context, entity_id)
     mgr = get_trust_manager()
 
     revoked = mgr.is_revoked(entity_id)
@@ -109,10 +121,13 @@ def get_trust(entity_id: str) -> Dict[str, Any]:
     chain = mgr.get_trust_chain(entity_id, entity_id)
     chain_summary = _chain_summary(chain) if chain is not None else None
 
-    return {
+    body: Dict[str, Any] = {
         "entity_id": entity_id,
         "revoked": revoked,
         "scores": scores,
         "chain_summary": chain_summary,
-        "stats": mgr.stats(),
     }
+    metadata = getattr(payload, "metadata", None)
+    if _is_admin_claim(payload, metadata if isinstance(metadata, dict) else {}):
+        body["stats"] = mgr.stats()
+    return body

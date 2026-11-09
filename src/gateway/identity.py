@@ -51,7 +51,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from .policy import require_human_principal
+from .display import UserReadableHTTPException
+from .policy import require_bearer_payload, require_human_principal
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,8 @@ def _manager():
         manager = get_identity_manager()
     except Exception as exc:  # noqa: BLE001 - 读不到必须如实说出来
         logger.warning("identity manager unavailable: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="身份服务暂时不可用，本次读取没有完成。请稍后重试。",
         ) from exc
@@ -136,7 +138,8 @@ def _registry_report(manager) -> Tuple[Dict[str, Any], List[str]]:
         described = manager.describe_identity_namespaces()
     except Exception as exc:  # noqa: BLE001
         logger.warning("identity registry unreadable: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后刷新即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="身份列表暂时读不出来，本次读取没有完成。请稍后重试。",
         ) from exc
@@ -150,7 +153,7 @@ def _registry_report(manager) -> Tuple[Dict[str, Any], List[str]]:
 
     registry: Dict[str, Any] = {
         "backend": store.get("backend"),
-        "location": store.get("location"),
+        # 注册表的绝对路径不外发：它指向本机文件系统布局，属于部署内部信息。
         "configured": bool(store.get("configured")),
         "integrity_enforced": bool(integrity.get("integrity_enforced")),
         "integrity_state": integrity.get("integrity_state"),
@@ -180,6 +183,10 @@ def _registry_report(manager) -> Tuple[Dict[str, Any], List[str]]:
         warnings.append(
             "启动时有登记请求未被接受（细节已写入诊断日志，可联系维护人员查看）。"
         )
+    for _warning in described.get("account_warnings") or []:
+        # 账号树重建导致的恢复码失效等降级必须逐字可见，不能再套一层
+        # "细节见日志" —— 用户需要知道旧恢复码已经不能用了。
+        warnings.append(str(_warning))
 
     return registry, warnings
 
@@ -261,10 +268,63 @@ def _collect(**filters) -> List:
         return list(manager.list_identities())
     except Exception as exc:  # noqa: BLE001
         logger.warning("identity registry could not be enumerated: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后刷新即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="身份列表暂时读不出来，本次读取没有完成。请稍后重试。",
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# 账号作用域 —— 与 audit.py 的账号树口径一致
+# ---------------------------------------------------------------------------
+
+
+def _caller_scope(payload) -> tuple[Any, Optional[List[str]], str]:
+    """请求者可读的主体集合。
+
+    * 成员：``[自己]``；根：整棵子树；无账号节点的老部署：L0 不设限、其余只看自己。
+    * 非经核验令牌（进程内直接调用）返回不设限；HTTP 上不可达。
+    """
+    if payload is None or not hasattr(payload, "sub"):
+        return None, None, "all"
+    from .audit import _account_scope, _scope_filter
+
+    context, sovereign = _account_scope(payload)
+    principals, mode = _scope_filter(context, sovereign, None)
+    return context, principals, mode
+
+
+def _visible_identity(identity, principals: Optional[List[str]]) -> bool:
+    """账号树内的**人类**身份按"自己或子树"可见。
+
+    agent / service 是系统级主体，没有归属账号字段，不属于"他人的账号数据"，
+    因此保留可读（否则身份页对根和成员都会变成空表）；其它账号的人类身份
+    一律按子树收敛。
+    """
+    if principals is None:
+        return True
+    if identity.namespace != "human":
+        return True
+    return str(identity.principal) in principals
+
+
+def _read_scope(context, principals, mode) -> Dict[str, Any]:
+    return {
+        "mode": mode,
+        "principals": principals if principals is not None else "all",
+        "root_view": bool(
+            context is not None and context.is_root and mode == "subtree"
+        ),
+    }
+
+
+def _neutral_missing() -> HTTPException:
+    """越权读一律 404：不暴露"存在但你不能看"。"""
+    return HTTPException(
+        status_code=404,
+        detail="没有找到这个身份。请刷新列表后重试；如果刚创建，请等几秒再刷新。",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -281,13 +341,15 @@ def list_principals(
     include_permissions: bool = Query(False, description="是否把权限明细一并带回"),
     limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT, description="返回主体数上限"),
     _principal: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
-    """列出**真实**身份内核里的全部主体（只读）。
+    """列出**真实**身份内核里的全部主体（只读，账号作用域内）。
 
     返回值带 ``registry`` 与 ``warnings``：缺项/拒收时必须能被看见，否则
     "只有 2 个内置身份"会被读成"系统里就这 2 个主体"。
     """
-    identities = _collect()
+    context, principals, mode = _caller_scope(payload)
+    identities = [i for i in _collect() if _visible_identity(i, principals)]
     manager = _manager()
     registry, warnings = _registry_report(manager)
 
@@ -331,6 +393,7 @@ def list_principals(
         "registry": registry,
         "warnings": warnings,
         "source": _SOURCE,
+        "read_scope": _read_scope(context, principals, mode),
         "read_only": True,
     }
 
@@ -339,6 +402,7 @@ def list_principals(
 def get_principal(
     principal_id: str,
     _principal: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
     """读单个主体（只读）。``principal_id`` 既接受**身份 id**也接受**主体名**。
 
@@ -355,17 +419,22 @@ def get_principal(
             identity = manager.get_identity_by_principal(principal_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("identity lookup failed: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="身份查询没有完成，请稍后重试。",
         ) from exc
 
+    context, principals, mode = _caller_scope(payload)
     registry, warnings = _registry_report(manager)
     if identity is None:
         raise HTTPException(
             status_code=404,
             detail="没有找到这个身份。请刷新列表后重试；如果刚创建，请等几秒再刷新。",
         )
+    if not _visible_identity(identity, principals):
+        # 存在但不在你的子树里 —— 与"不存在"给同一个 404，不泄露存在性。
+        raise _neutral_missing()
 
     grants = _grant_view(identity)
     return {
@@ -378,6 +447,7 @@ def get_principal(
         "registry": registry,
         "warnings": warnings,
         "source": _SOURCE,
+        "read_scope": _read_scope(context, principals, mode),
         "read_only": True,
     }
 
@@ -391,13 +461,15 @@ def list_permissions(
     kind: Optional[str] = Query(None, description="按主体类型过滤：human / agent / service"),
     limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT, description="返回 grant 行数上限"),
     _principal: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
-    """扁平列出全部 grant（只读）：谁 -> 被授予了什么 -> 受哪个作用域上限约束。
+    """扁平列出全部 grant（只读，账号作用域内）：谁 -> 被授予了什么 -> 受哪个作用域上限约束。
 
     过滤是**真的收窄**（先把集合缩小再计数），不是"返回全部让前端自己筛"：
     假过滤会让"筛完只有 3 条"既可能是真的只有 3 条，也可能是被 limit 截断。
     """
-    identities = _collect()
+    context, principals, mode = _caller_scope(payload)
+    identities = [i for i in _collect() if _visible_identity(i, principals)]
     manager = _manager()
     registry, warnings = _registry_report(manager)
 
@@ -436,6 +508,7 @@ def list_permissions(
         "registry": registry,
         "warnings": warnings,
         "source": _SOURCE,
+        "read_scope": _read_scope(context, principals, mode),
         "read_only": True,
     }
 
@@ -443,13 +516,15 @@ def list_permissions(
 @router.get("/summary")
 def summary(
     _principal: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
     """身份总览（只读）：按类型 / 状态 / 作用域上限计数，外加注册表诚实度。
 
     计数全部来自这次遍历的真实身份对象，没有来自别处（没有 roster、没有 AI
     员工注册表）—— 那些是别的概念，混进来会让"这个主体持有几条权限"变成假数字。
     """
-    identities = _collect()
+    context, principals, mode = _caller_scope(payload)
+    identities = [i for i in _collect() if _visible_identity(i, principals)]
     manager = _manager()
     registry, warnings = _registry_report(manager)
 
@@ -481,5 +556,6 @@ def summary(
         "registry": registry,
         "warnings": warnings,
         "source": _SOURCE,
+        "read_scope": _read_scope(context, principals, mode),
         "read_only": True,
     }

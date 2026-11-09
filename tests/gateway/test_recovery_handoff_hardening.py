@@ -395,6 +395,29 @@ def test_non_loopback_is_rejected_and_remote_switch_defaults_off(env, monkeypatc
         assert forwarded.status_code == 403, forwarded.text
 
 
+def test_local_browser_can_recover_without_desktop_token(env):
+    """本机浏览器/已配对手机中继：无桌面一次性令牌也能重置与补发（PROD-007）。
+
+    回环 + 同一 Windows 用户已经是硬门槛；令牌是可选加固，不再阻断本机自救。
+    """
+    manager = _make_legacy_root()
+    from src.gateway.main import get_app
+
+    with TestClient(get_app()) as client:
+        code = manager.rotate_recovery_code("alice")
+        reset = client.post(
+            "/v1/accounts/recovery/reset",
+            json={"recovery_code": code, "password": NEW_PASSWORD},
+        )
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["access_token"]
+
+        # 码已被消费 → 本机重新生成（不再需要 X-LiuHao-Local-Proof）。
+        handoff = client.post("/v1/accounts/recovery/local")
+        assert handoff.status_code == 200, handoff.text
+        assert handoff.json()["recovery_code"]
+
+
 def test_legacy_plaintext_is_migrated_then_deleted(env):
     """旧明文 → 原地转加密（不保留双份）→ 取用即焚 → 提示换新。"""
     from src.kernels.identity import get_identity_manager

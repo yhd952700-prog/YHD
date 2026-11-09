@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Any
 from src.common.atomic_write import atomic_write_text
+from src.common.data_paths import resolve_store_path
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from .models import Alert, AlertRule, AlertThreshold, AlertSeverity, AlertState, AlertType
 from .sinks import dispatch_alert
@@ -50,8 +51,10 @@ class AlertStore:
 
     def __init__(self, storage_path: str = None):
         if storage_path is None:
-            storage_path = os.environ.get(
-                ALERTS_STORE_PATH_ENV, DEFAULT_ALERTS_STORE_PATH
+            storage_path = resolve_store_path(
+                os.path.join("observability", "alerts.json"),
+                DEFAULT_ALERTS_STORE_PATH,
+                env_var=ALERTS_STORE_PATH_ENV,
             )
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)

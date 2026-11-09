@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 from ..plugins.base import PluginMetadata
+from ..common.data_paths import resolve_store_path
 
 
 class PluginRegistry:
@@ -49,15 +50,17 @@ class PluginRegistry:
     def _default_registry_path() -> Path:
         """默认注册表位置：与执行 journal / 产物索引同一套解析策略。
 
-        ``LIUHAO_WORKSPACE_ROOT`` 优先（安装版由启动器指向用户数据目录），
-        否则回落到仓库的 ``data/plugins/registry.json``；不写死盘符，
-        也不静默使用开发机路径。
+        ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > 仓库的
+        ``data/plugins/registry.json``；不写死盘符，也不静默使用开发机路径。
         """
-        root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
-        if root:
-            return Path(root) / "plugins" / "registry.json"
         repo_root = Path(__file__).resolve().parents[2]
-        return repo_root / "data" / "plugins" / "registry.json"
+        return Path(
+            resolve_store_path(
+                os.path.join("plugins", "registry.json"),
+                repo_root / "data" / "plugins" / "registry.json",
+                workspace=True,
+            )
+        )
 
     def _load_registry(self) -> None:
         """Load registry from persistent storage."""

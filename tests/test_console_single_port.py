@@ -21,8 +21,11 @@ Two failure modes are pinned here, both measured rather than imagined:
    absent from the reserved set, so an unknown ``/knowledge/...`` path answered
    200 ``text/html``. ``TestReservedPrefixesCoverTheWholeApi`` derives the
    prefixes from the live OpenAPI schema, so the list cannot rot silently.
-3. **Missing build output must not change anything.** CI runs the test suite
-   with no console bundle on disk; the gateway has to stay API-only there.
+3. **Missing build output must not change API behaviour -- and must explain
+   itself.** A deployment without a bundle stays API-only, but a browser
+   navigation gets an explicit Chinese 404 naming the build command, never a
+   500 and never a bare ``Not Found``. CI builds the bundle before pytest, so
+   this branch is exercised on every run.
 4. **The PWA surface is served, and typed correctly.** The console installs on
    a desktop (independent window) and on a phone (home-screen icon) through the
    same manifest + service worker. A wrong ``Content-Type`` on ``sw.js``, or an
@@ -67,10 +70,10 @@ def client(auth_headers):
 
     Deliberately does **not** require a console bundle. The "API is not
     shadowed" assertions below are exactly what must keep working in an
-    API-only deployment, and CI never builds the console -- so hanging this
-    fixture off the bundle would silently skip that coverage in CI, which is
-    precisely how a shadowing regression would slip through. Console-specific
-    tests ask for ``console_dist`` explicitly instead.
+    API-only deployment, so hanging this fixture off the bundle would skip
+    that coverage on any source checkout without a build. Console-specific
+    tests ask for ``console_dist`` explicitly instead. CI now builds the
+    bundle before pytest, so those tests do run there as well.
     """
     # `with` runs lifespan; the health endpoints are registered inside it.
     # `auth_headers`: the API routers now sit behind the console auth gate, and
@@ -329,10 +332,23 @@ class TestNoBuildOutputKeepsApiOnlyBehaviour:
 
     def test_the_fallback_is_installed_with_a_bundle(self, console_dist):
         # Guard the guard: the assertion above would pass for the wrong reason
-        # if the handler were never installed at all. Skips in CI, where the
-        # console is never built -- the same API-only environment the check
-        # above is protecting.
+        # if nothing were installed at all. CI builds the bundle before pytest,
+        # so this runs there too; it only skips on a checkout with no build.
         assert is_installed(get_app()) is True
+
+    def test_navigation_without_a_bundle_returns_a_chinese_hint(
+        self, monkeypatch, tmp_path
+    ):
+        """没有构建产物时，浏览器导航必须拿到能照做的中文 404，而不是 500。"""
+        monkeypatch.setenv(CONSOLE_DIST_ENV, str(tmp_path / "absent"))
+        with TestClient(get_app()) as client:
+            response = client.get("/goals")
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+        detail = response.json()["detail"]
+        assert detail["code"] == "CONSOLE_NOT_BUILT"
+        assert re.search(r"[\u4e00-\u9fff]", detail["message"])
+        assert "npm run build" in detail["message"]
 
     def test_the_api_still_works_without_a_bundle(self, monkeypatch, tmp_path):
         monkeypatch.setenv(CONSOLE_DIST_ENV, str(tmp_path / "absent"))
@@ -368,6 +384,23 @@ class TestBuildOutputIsAValidBundle:
         assert "localhost:8080" not in index
 
 
+class TestMalformedAbsoluteUriRequestTarget:
+    """绝对 URI 请求行不能变成 500。
+
+    实测：``GET http://127.0.0.1:8081/v1/health HTTP/1.1`` 命中控制台的 404
+    回落，``StaticFiles`` 把 ``http://...`` 当成本地路径去 stat，Windows 上
+    路径里的 ``:`` 抛 ``OSError [WinError 123]``，网关返回 500。请求行畸形是
+    客户端错误，必须是 400，而不是让服务端故障日志收噪音。
+    """
+
+    def test_absolute_uri_request_target_is_400_not_500(self, pwa_client):
+        # 前导 "/" 与 ASGI 里真实的 ``scope["path"]`` 形状一致（见模块内的
+        # ``_ABSOLUTE_URI_RE``）；httpx 原样保留路径中的 ``http://``。
+        response = pwa_client.get("/http://evil.example.com/v1/health")
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["code"] == "INVALID_REQUEST_TARGET"
+
+
 # ---------------------------------------------------------------------------
 # PWA 表面（桌面端独立窗口 / 手机端主屏图标）
 # ---------------------------------------------------------------------------
@@ -381,10 +414,11 @@ CONSOLE_APP = Path(__file__).resolve().parents[1] / "apps" / "console" / "consol
 def pwa_bundle(tmp_path, monkeypatch) -> Path:
     """由**已提交的源文件**拼出一个最小发布包。
 
-    刻意不用 `resolve_console_dist()`：CI 不跑 `npm run build`，把 PWA 断言挂在
-    构建产物上会导致它们在 CI 里全部 skip —— 而那恰恰是最需要它们的地方。
-    `public/` 与入口 `index.html` 都在版本库中，用它们拼出的文件集与构建产物在
-    PWA 这个面上的文件集完全一致（构建只是额外产出 `assets/`）。
+    刻意不用 `resolve_console_dist()`：CI 现在会跑 `npm run build`，但把 PWA
+    断言挂在一个本地可能不存在的 `dist/` 上，会让源码检出的环境整组 skip ——
+    而那恰恰是最需要它们的地方。`public/` 与入口 `index.html` 都在版本库中，
+    用它们拼出的文件集与构建产物在 PWA 这个面上的文件集完全一致（构建只是
+    额外产出 `assets/`）。
     """
     bundle = tmp_path / "dist"
     bundle.mkdir()
@@ -538,3 +572,29 @@ class TestClientModesAgreeAcrossTheWire:
 
         # 三个端就是这次的交付目标本身；数量变了应当先怀疑词表而不是先改断言。
         assert tuple(gateway_auth.CLIENT_MODES) == ("desktop", "web", "mobile")
+
+
+def test_api_docs_are_closed_by_default_and_open_only_with_dev_switch(monkeypatch):
+    """/docs 与 /openapi.json 默认按生产处理，只有显式开发开关才开放。"""
+    monkeypatch.delenv("LIUHAO_HTTP_DOCS", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    with TestClient(
+        get_app(), base_url="http://127.0.0.1:8080", client=("127.0.0.1", 50000)
+    ) as default_app:
+        assert default_app.get("/docs").status_code == 404
+        assert default_app.get("/openapi.json").status_code == 404
+
+    monkeypatch.setenv("LIUHAO_HTTP_DOCS", "1")
+    with TestClient(
+        get_app(), base_url="http://127.0.0.1:8080", client=("127.0.0.1", 50000)
+    ) as dev_app:
+        assert dev_app.get("/docs").status_code == 200
+        assert dev_app.get("/openapi.json").status_code == 200
+
+    # 显式生产仍强制关闭，即使开发开关还留在环境里。
+    monkeypatch.setenv("APP_ENV", "production")
+    with TestClient(
+        get_app(), base_url="http://127.0.0.1:8080", client=("127.0.0.1", 50000)
+    ) as prod_app:
+        assert prod_app.get("/docs").status_code == 404
+        assert prod_app.get("/openapi.json").status_code == 404

@@ -130,6 +130,25 @@ def _logical_prefix(owner: str, mode: str) -> str:
     return f"accounts/{owner}"
 
 
+def _assert_subtree_workspace_path(
+    context: AccountContext, rel: str, mode: str
+) -> None:
+    """根默认视角按子树收敛 ``accounts/<owner>/...``。
+
+    ``mode="all"`` 是根在工作区根上的默认浏览（公共区 + ``accounts`` 目录）。
+    归属校验此前只发生在 ``account=`` 参数上，于是
+    ``path=accounts/<别人的账号>/secret.txt`` 能绕过 :meth:`can_read`：
+    单根部署里账号目录都是自己树内成员，看不出问题；多根并存时就是跨根
+    下载别人的产物。这里与 ``GoalViewer.sees`` 同一口径——只认自己子树，
+    其余一律与"文件不存在"同形的 404。
+    """
+    if mode != "all":
+        return
+    parts = rel.strip("/").split("/")
+    if len(parts) >= 2 and parts[0] == "accounts" and not context.can_read(parts[1]):
+        raise _neutral_not_found()
+
+
 def _strip_owner_prefix(path: str, owner: str, mode: str) -> str:
     """接受 ``accounts/<owner>/...`` 形式的工作区相对路径。
 
@@ -162,6 +181,7 @@ def list_files(
     physical_root, owner, mode = _account_space(context, account)
     within_account = mode != "all"
     rel = _strip_owner_prefix(path, owner, mode)
+    _assert_subtree_workspace_path(context, rel, mode)
     logical_dir = f"{_logical_prefix(owner, mode)}/{rel}".strip("/")
     if not rel:
         abs_dir = physical_root
@@ -185,7 +205,18 @@ def list_files(
     try:
         names = sorted(os.listdir(abs_dir))
     except OSError as exc:
-        raise HTTPException(status_code=500, detail="无法列举目录：%s" % exc)
+        # 原始 OSError 只进日志（含路径/errno）；用户侧只给可行动的下一步。
+        logger.warning("无法列举目录 path=%s: %s", abs_dir, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "fs_unavailable",
+                "message": (
+                    "无法打开这个文件夹：可能已被移动、删除，或当前账号没有权限。"
+                    "请换一个位置后重试。"
+                ),
+            },
+        )
     for name in names:
         child = os.path.join(abs_dir, name)
         try:
@@ -228,6 +259,7 @@ def read_file(
     """
     physical_root, owner, mode = _account_space(context, account)
     rel = _strip_owner_prefix(path, owner, mode)
+    _assert_subtree_workspace_path(context, rel, mode)
     if not rel:
         raise _neutral_not_found()
     abs_path = _resolve(rel, physical_root, within_account=(mode != "all"))
@@ -248,7 +280,18 @@ def read_file(
         with open(abs_path, "rb") as handle:
             raw = handle.read()
     except OSError as exc:
-        raise HTTPException(status_code=500, detail="读取失败：%s" % exc)
+        # 同上：路径与 errno 只进日志，响应体只保留人话。
+        logger.warning("读取文件失败 path=%s: %s", abs_path, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "fs_unavailable",
+                "message": (
+                    "无法打开这个文件夹：可能已被移动、删除，或当前账号没有权限。"
+                    "请换一个位置后重试。"
+                ),
+            },
+        )
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:

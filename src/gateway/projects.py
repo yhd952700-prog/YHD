@@ -42,6 +42,8 @@ from ..common.atomic_write import (
     exclusive_file_lock,
     read_text_with_retry,
 )
+from ..common.data_paths import resolve_store_path
+from ..common.input_guard import normalize_required_name, reject_unsafe_text
 from ..kernels.identity import _accounts
 from .account_context import deny
 from .policy import require_bearer_payload
@@ -90,14 +92,15 @@ class ProjectStore:
 
     @staticmethod
     def _default_path() -> str:
-        """默认项目库位置（与 _goals 同源，REDIR-able 以便隔离验证）。"""
-        root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-        if root:
-            return os.path.join(root, "liuhao_projects.json")
+        """默认项目库位置（与 _goals 同源：WORKSPACE_ROOT > DATA_DIR > 仓库根）。"""
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
-        return os.path.join(repo_root, ".liuhao_projects.json")
+        return resolve_store_path(
+            "liuhao_projects.json",
+            os.path.join(repo_root, ".liuhao_projects.json"),
+            workspace=True,
+        )
 
     def _read_disk(self, path: str) -> Optional[Dict[str, Dict[str, Any]]]:
         """锁内重读磁盘；文件不存在返回 ``{}``，读不动/不是对象返回 ``None``。"""
@@ -154,12 +157,20 @@ class ProjectStore:
                     persisted = True
             except Exception as exc:
                 # 落盘（含拿不到 OS 锁/目录不可建）失败绝不打断请求，但如实返回。
+                # 关键：**不提交内存**。否则一条持久化失败的记录会留在内存里，
+                # 后续 GET /projects 会持续 400（PROJECT_LIST_FAILED），
+                # 只能手工归档那条毒记录才恢复。
                 logger.error("ProjectStore: persist failed (%s): %s", path, exc)
                 persisted = False
                 if state is None:
+                    # 锁都没拿到：本次变更完全不生效，仅用于返回给调用方判断。
                     state = copy.deepcopy(self._projects)
-                    outcome = mutate(state)
-            self._projects = state
+                    try:
+                        outcome = mutate(state)
+                    except Exception:  # noqa: BLE001 - 返回原始错误即可
+                        outcome = None
+            if persisted:
+                self._projects = state
             return outcome, persisted
 
     def _load(self) -> None:
@@ -512,8 +523,7 @@ class ProjectCreateRequest(BaseModel):
         cleaned = str(value or "").strip()
         if not cleaned:
             raise ValueError("项目名称不能为空")
-        if len(cleaned) > MAX_PROJECT_NAME:
-            raise ValueError(f"项目名称最多 {MAX_PROJECT_NAME} 个字")
+        normalize_required_name(cleaned, "项目名称", max_chars=MAX_PROJECT_NAME)
         return cleaned
 
     @field_validator("description")
@@ -522,6 +532,8 @@ class ProjectCreateRequest(BaseModel):
         cleaned = str(value or "")
         if len(cleaned) > MAX_PROJECT_DESCRIPTION:
             raise ValueError(f"项目描述最多 {MAX_PROJECT_DESCRIPTION} 个字")
+        if cleaned:
+            reject_unsafe_text(cleaned, "项目描述")
         return cleaned
 
 

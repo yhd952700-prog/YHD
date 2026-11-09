@@ -165,6 +165,33 @@ def test_alert_rules_requires_auth(client, tmp_path):
     assert r.status_code == 401, r.text
 
 
+def _member_headers() -> dict:
+    """成员（L1）真实 bearer 令牌，与网关 validator 同一签发/校验路径。"""
+    from src.security.jwt_handler import create_access_token
+
+    token, _ = create_access_token(
+        "test-member", metadata={"kind": "human", "scope": "L1"}
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_member_is_forbidden_on_global_alert_surfaces(client, tmp_path):
+    """成员（L1）读整机告警必须 403 + 中文原因，且不回显内部路径/堆栈。
+
+    ``Alert`` 没有归属字段，无法安全地把全局告警裁剪成「与自己相关」；控制台的
+    系统状态页本就 ``requires: 'root'``，成员界面不可达。
+    """
+    c, _headers = client
+    for path in ("/v1/alerts", "/v1/alerts/rules"):
+        r = c.get(path, headers=_member_headers())
+        assert r.status_code == 403, f"{path} 成员应 403，实际 {r.status_code}: {r.text}"
+        detail = r.json()["detail"]
+        assert isinstance(detail, str), detail
+        assert "管理员权限" in detail, detail
+        for leak in ("Traceback", "src/gateway", "src\\gateway", ".py", "C:\\", "/Users/"):
+            assert leak not in r.text, f"{path} 403 响应泄漏了内部信息：{leak!r}"
+
+
 def test_alerts_honest_empty_when_no_failures(client, tmp_path):
     """诚实空态：无执行失败时 count==0、firing_count==0、alerts==[]，不是错误。"""
     c, headers = client

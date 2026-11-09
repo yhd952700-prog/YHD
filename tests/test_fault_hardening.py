@@ -15,6 +15,7 @@ import json
 import sqlite3
 import sys
 import threading
+import time
 
 import jwt
 import pytest
@@ -101,6 +102,64 @@ def test_expired_token_is_still_rejected(jwt_handler, clock):
     clock["wall"] = 1120.0
     with pytest.raises(jwt.ExpiredSignatureError):
         jwt_handler.validate_token(token)
+
+
+def test_token_minted_while_clock_was_ahead_survives_rollback(jwt_handler):
+    """真实回拨复现：签发时墙钟快 1 小时，随后把系统时间拨回。
+
+    旧用例把稳定钟锚在 epoch 1000，而 PyJWT 的 nbf 校验读**真实主机时间**
+    （远大于 nbf），所以 nbf 永远通过 —— 假阳性。这里让 nbf 落在真实时间的
+    "未来"，只有 nbf 改用稳定钟自判才能通过：
+
+    (a) 回拨前签发的令牌，回拨后仍可用；
+    (b) 回拨后新签发的令牌也能用（否则登录循环）。
+    """
+    real_wall, real_mono = time.time(), time.monotonic()
+    time_mod._reanchor(real_wall + 3600.0, real_mono)  # 签发那一刻墙钟快 1 小时
+    try:
+        token, _ = jwt_handler.create_token("alice", ttl=900)
+        assert jwt_handler.validate_token(token).sub == "alice"
+
+        fresh, _ = jwt_handler.create_token("bob", ttl=900)
+        assert jwt_handler.validate_token(fresh).sub == "bob"
+    finally:
+        time_mod._reanchor(real_wall, time.monotonic())
+
+
+def test_token_bucket_never_goes_negative_on_clock_rollback(monkeypatch):
+    """回拨 1 小时不能把限流桶加成负数，reset 必须是真实恢复时间。"""
+    from src.gateway import rate_limiter as rl
+
+    state = {"wall": 1000.0, "mono": 100.0}
+
+    class FakeTime:
+        @staticmethod
+        def time():
+            return state["wall"]
+
+        @staticmethod
+        def monotonic():
+            return state["mono"]
+
+    monkeypatch.setattr(rl, "time", FakeTime)
+    bucket = rl.TokenBucket(capacity=5, refill_rate=0.01)
+    for _ in range(5):
+        allowed, _ = bucket.try_consume(1)
+        assert allowed
+    assert bucket.tokens == 0.0
+
+    state["wall"] -= 3600.0  # 用户把系统时间往回拨 1 小时（单调钟不动）
+    allowed, info = bucket.try_consume(1)
+    assert allowed is False
+    assert bucket.tokens >= 0.0, f"回拨把桶加成了负数：{bucket.tokens}"
+    assert info["reset"] >= state["wall"] + 50, (
+        f"reset 只给了 {info['reset'] - state['wall']:.0f}s，不是真实恢复时间"
+    )
+
+    # 单调钟走过 100 秒（墙钟仍停在回拨后的时刻）→ 恢复 1 个令牌。
+    state["mono"] += 100.0
+    allowed, _ = bucket.try_consume(1)
+    assert allowed is True
 
 
 def test_audit_chain_survives_clock_rollback(tmp_path, clock):

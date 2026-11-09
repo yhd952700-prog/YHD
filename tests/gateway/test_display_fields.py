@@ -5,7 +5,8 @@
 
 * 模型/服务商 → ``display_name`` / ``display_status`` / ``provider_display_name``；
 * 任务/事件 → ``display_title`` / ``status_label``；
-* 健康/告警/预检 → ``user_message`` + ``technical_detail``（后者留给诊断页）；
+* 健康/告警/预检 → ``user_message``（``/v1/ready`` 的 ``technical_detail``
+  已移除——未鉴权探针不再下发技术细节，诊断走鉴权接口）；
 * 旧字段（``provider`` / ``type`` / ``severity`` / ``message`` 等）一律保留。
 
 本测试逐条锁住这些形态，并断言旧字段仍在（向后兼容）。
@@ -201,7 +202,9 @@ def test_health_and_ready_expose_user_message(client):
         assert check["status"]  # 旧字段
         assert check["user_message"], name
         assert check["status_label"], name
-        assert isinstance(check["technical_detail"], str) and check["technical_detail"], name
+        assert "technical_detail" not in check, (
+            f"{name}: 未鉴权的 /v1/ready 仍在泄露技术细节"
+        )
         assert machine_fragments(check["user_message"]) == [], name
 
     subsystems = handle.get("/v1/ready/subsystems", headers=headers).json()
@@ -231,3 +234,14 @@ def test_preflight_findings_are_readable(client):
         assert finding["message"] not in finding["user_message"]
         assert finding["message"] in finding["technical_detail"]
         assert isinstance(finding["technical_detail"], str) and finding["technical_detail"]
+
+
+def test_task_error_technical_detail_explains_timeout_in_chinese():
+    """任务超时的技术详情：英文原文照留，前面补一行中文说明。"""
+    from src.gateway.display import task_error_copy
+
+    copy = task_error_copy("Execution timeout after 300s")
+
+    assert copy["message"] == "任务执行超时，已停止。请稍后重试；如果反复出现，请导出诊断包。"
+    assert "中文说明：执行超时，任务在 300 秒内没有完成。" in copy["technical_detail"]
+    assert "原始错误：Execution timeout after 300s" in copy["technical_detail"]

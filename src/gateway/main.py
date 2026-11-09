@@ -647,6 +647,16 @@ class OverloadGuardMiddleware:
                 self._in_flight -= 1
 
 
+#: 计入"用户请求错误率"之外的探针/运维面（``record_request(is_probe=True)``）。
+#: 这些端点的 503 意思是"服务正忙于回答探针"，不是"用户请求失败"；混入
+#: ``error_rate_percent`` 会造出假 CRITICAL（实测 50.0% / 25.0%）。
+#: Prometheus 的 ``http_requests_total`` 仍按 endpoint 记录，探针失败不会被静音。
+PROBE_ONLY_PATHS = frozenset(
+    OverloadGuardMiddleware.EXEMPT_PATHS
+    | {"/v1/ready/subsystems", "/v1/production/preflight"}
+)
+
+
 class LoopStallWatchdog:
     """事件循环停滞看门狗（D-1 取证与告警）。
 
@@ -2299,7 +2309,8 @@ def get_app() -> FastAPI:
         if _get_metric_collector is not None:
             try:
                 _get_metric_collector().record_request(
-                    process_time, response.status_code
+                    process_time, response.status_code,
+                    is_probe=request.url.path in PROBE_ONLY_PATHS,
                 )
             except Exception as exc:  # pragma: no cover - never fail a request
                 logger.warning(f"metric recording failed: {exc}")
@@ -2569,7 +2580,8 @@ def get_app() -> FastAPI:
 
     app.include_router(health_router)
 
-    # 启动状态（只读、免鉴权）：前端在网关启动期间用它显示"正在启动"。
+    # 启动状态（只读、仅本机回环）：前端在网关启动期间用它显示"正在启动"。
+    # 对外监听时远端请求不会拿到启动阶段/耗时/降级组件名。
     # 契约见 src/gateway/startup.py 的模块文档与 docs/startup-profile.md。
     from .startup import router as startup_router
 

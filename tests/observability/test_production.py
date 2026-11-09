@@ -448,6 +448,37 @@ class TestHttpEndpoints:
         response = client.get("/v1/production/preflight")
         assert response.status_code == 401, response.text
 
+    @pytest.mark.parametrize("path,kind", [
+        ("/v1/ready/subsystems", "子系统就绪检查"),
+        ("/v1/production/preflight", "生产配置预检"),
+    ])
+    def test_probe_timeout_503_uses_four_fields(
+        self, client, monkeypatch, human_headers, path, kind
+    ):
+        """探针超时 503 全产品共用一套四字段，不再回旧的 ``status:"busy"``。
+
+        旧形状只有 ``user_message``，前端不读它 —— 中文提示会整句丢失。
+        """
+        from src.gateway import observability as gateway_observability
+        from src.gateway.health import ProbeTimeout
+
+        async def _timeout(*_args, **_kwargs):
+            raise ProbeTimeout("probe exceeded 10.0s")
+
+        monkeypatch.setattr(gateway_observability, "_run_probe", _timeout)
+        headers = dict(human_headers, **{"X-Trace-ID": "trace-busy-42"})
+        response = client.get(path, headers=headers)
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert set(body) == {"code", "message", "correlation_id", "retry_after"}
+        assert body["code"] == "PROBE_BUSY"
+        assert body["correlation_id"] == "trace-busy-42"
+        assert body["retry_after"] == 1
+        assert body["message"].startswith(kind)
+        assert "繁忙" in body["message"]
+        assert response.headers["Retry-After"] == "1"
+        assert response.headers["X-Correlation-ID"] == "trace-busy-42"
+
     def test_legacy_metrics_and_ready_are_untouched(self, client):
         """新增端点不得影响既有 health.py 三个端点。"""
         assert client.get("/v1/health").status_code == 200

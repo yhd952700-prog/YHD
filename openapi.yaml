@@ -306,6 +306,13 @@ components:
       type: object
     ChatRequest:
       properties:
+        client_request_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          description: 客户端请求 id（同一请求重发时保持不变，用于去重）
+          title: Client Request Id
         message:
           description: 用户消息
           maxLength: 8000
@@ -335,34 +342,6 @@ components:
       - message
       title: ChatRequest
       type: object
-    ChatDenialError:
-      description: '对话被拒绝时的结构化错误体：预算/额度不足 = 402 `budget_exceeded`，真权限不足 = 403 `permission_denied`。响应头同时带 `X-LiuHao-Correlation-Id`，与审计事件 `ACCESS_DENIED` 的 `correlation_id` 相同。'
-      properties:
-        code:
-          description: '`budget_exceeded`（402）或 `permission_denied`（403）'
-          enum:
-          - budget_exceeded
-          - permission_denied
-          title: Code
-          type: string
-        correlation_id:
-          description: 与审计 `ACCESS_DENIED` 事件逐条对上用的请求级 ID。
-          title: Correlation Id
-          type: string
-        detail:
-          description: 与 `message` 相同的兼容字段（旧客户端读 `detail` 也能拿到中文说明）。
-          title: Detail
-          type: string
-        message:
-          description: 给用户看的中文说明（预算拒绝会给出调整额度/换更便宜模型的下一步）。
-          title: Message
-          type: string
-      required:
-      - code
-      - message
-      - correlation_id
-      title: ChatDenialError
-      type: object
     ChatResponse:
       properties:
         agent:
@@ -371,16 +350,47 @@ components:
         correlation_id:
           title: Correlation Id
           type: string
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        fell_back_from:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Fell Back From
         knowledge:
           additionalProperties: true
           title: Knowledge
           type: object
+        notice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Notice
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
         reply:
           title: Reply
           type: string
         status:
           title: Status
           type: string
+        technical_detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Technical Detail
+        truncated:
+          default: false
+          title: Truncated
+          type: boolean
         turn:
           title: Turn
           type: integer
@@ -441,8 +451,7 @@ components:
       properties:
         api_key:
           anyOf:
-          - maxLength: 512
-            type: string
+          - type: string
           - type: 'null'
           title: Api Key
         base_url:
@@ -522,6 +531,13 @@ components:
             false (default): execute synchronously and return the terminal state.'
           title: Background
           type: boolean
+        client_request_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          description: 客户端请求 id（同一请求重发时保持不变，用于短窗口去重）
+          title: Client Request Id
         employee_name:
           anyOf:
           - maxLength: 128
@@ -670,6 +686,24 @@ components:
           type: array
       title: KnowledgeImportRequest
       type: object
+    KnowledgeNeutralNotFound:
+      description: 越权与"不存在"同形的 404 实体（不暴露文档是否存在）。
+      properties:
+        code:
+          title: Code
+          type: string
+        detail:
+          title: Detail
+          type: string
+        message:
+          title: Message
+          type: string
+      required:
+      - code
+      - message
+      - detail
+      title: KnowledgeNeutralNotFound
+      type: object
     LoginRequest:
       properties:
         client:
@@ -711,6 +745,25 @@ components:
           type: string
       title: MemoryAdoptRequest
       type: object
+    MemoryDeletionReceipt:
+      description: 根账号处置未归属/隔离记录的删除回执。
+      properties:
+        deleted:
+          title: Deleted
+          type: boolean
+        id:
+          title: Id
+          type: string
+        removed:
+          description: 实际删除行数；0 表示没有可删的行
+          title: Removed
+          type: integer
+      required:
+      - id
+      - deleted
+      - removed
+      title: MemoryDeletionReceipt
+      type: object
     MemoryExportRequest:
       properties:
         format:
@@ -734,6 +787,31 @@ components:
           title: Entries
           type: array
       title: MemoryImportRequest
+      type: object
+    MemoryPatchRequest:
+      description: 纠正一条记忆：只允许改正文/来源/标签，身份与归属不可改。
+      properties:
+        source:
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          title: Source
+        tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Tags
+        text:
+          anyOf:
+          - maxLength: 8000
+            minLength: 1
+            type: string
+          - type: 'null'
+          title: Text
+      title: MemoryPatchRequest
       type: object
     MemoryWriteRequest:
       properties:
@@ -760,8 +838,7 @@ components:
       properties:
         api_key:
           anyOf:
-          - maxLength: 512
-            type: string
+          - type: string
           - type: 'null'
           description: API Key（加密落盘；mock/ollama 可留空）
           title: Api Key
@@ -822,17 +899,27 @@ components:
       properties:
         api_key:
           anyOf:
-          - maxLength: 512
-            type: string
+          - type: string
           - type: 'null'
           description: 留空表示不修改
           title: Api Key
+        base_updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 乐观并发校验：客户端读取表单时这一行的 updated_at。与服务器当前值不一致说明另一窗口已保存过，返回 409 提示刷新，避免整表单覆盖。
+          title: Base Updated At
         base_url:
           anyOf:
           - maxLength: 512
             type: string
           - type: 'null'
           title: Base Url
+        confirm_key_resend:
+          default: false
+          description: 接口地址变更且该模型已有 Key 时，显式确认“把已保存的 Key 发送到新地址”。不确认则必须重新输入 Key；该标记不落库，只用于本次更新并写入审计。
+          title: Confirm Key Resend
+          type: boolean
         enabled:
           anyOf:
           - type: boolean
@@ -878,8 +965,44 @@ components:
           title: Timeout
       title: ModelUpdatePayload
       type: object
-    PasswordResetRequest:
+    NeutralNotFound:
+      description: 越权与"不存在"同形的 404 实体（不暴露资源是否存在）。
       properties:
+        code:
+          examples:
+          - ACCOUNT_MEMORY_FOREIGN_DENIED
+          title: Code
+          type: string
+        detail:
+          examples:
+          - 资源不存在或无权访问
+          title: Detail
+          type: string
+        message:
+          examples:
+          - 资源不存在或无权访问
+          title: Message
+          type: string
+      required:
+      - code
+      - message
+      - detail
+      title: NeutralNotFound
+      type: object
+    PasswordResetRequest:
+      description: '改密请求。
+
+
+        * 管理者重置成员：只需 ``password``；
+
+        * 自己改自己：还必须带上 ``current_password``（令牌被盗也不能静默换密）。'
+      properties:
+        current_password:
+          anyOf:
+          - maxLength: 256
+            type: string
+          - type: 'null'
+          title: Current Password
         password:
           maxLength: 256
           minLength: 8
@@ -970,6 +1093,41 @@ components:
       - name
       title: ProjectCreateRequest
       type: object
+    QuarantinedMemoryRowResponse:
+      description: 迁移时被跳过、但原文仍保留在隔离区的一条源记录。
+      properties:
+        created_at:
+          title: Created At
+          type: string
+        id:
+          title: Id
+          type: string
+        owner_hint:
+          title: Owner Hint
+          type: string
+        payload:
+          additionalProperties: true
+          title: Payload
+          type: object
+        reason:
+          description: non_memory_telemetry / empty_text / missing_entry_id / missing_key
+          title: Reason
+          type: string
+        source:
+          title: Source
+          type: string
+        source_ref:
+          title: Source Ref
+          type: string
+      required:
+      - id
+      - source
+      - source_ref
+      - reason
+      - owner_hint
+      - created_at
+      title: QuarantinedMemoryRowResponse
+      type: object
     RecoveryResetRequest:
       properties:
         password:
@@ -1036,130 +1194,6 @@ components:
       - retention_days
       - max_total_bytes
       title: RetentionUpdate
-      type: object
-    LogRetentionReport:
-      additionalProperties: true
-      description: POST /v1/settings/logs/prune 的 report 字段；也原样存进最后一份 retention.json。
-      properties:
-        deleted:
-          description: 本次删除的备份清单。
-          items:
-            additionalProperties: false
-            properties:
-              bytes:
-                type: integer
-              name:
-                type: string
-              reason:
-                type: string
-            type: object
-          type: array
-        env_override:
-          additionalProperties: false
-          description: 哪些维度正被环境变量覆盖（true 表示界面改了也不生效）。
-          properties:
-            max_total_bytes:
-              type: boolean
-            retention_days:
-              type: boolean
-          type: object
-        failed:
-          description: 尝试删除但失败的备份清单及原因（不会冒充成功）。
-          items:
-            additionalProperties: false
-            properties:
-              bytes:
-                type: integer
-              name:
-                type: string
-              reason:
-                type: string
-            type: object
-          type: array
-        generated_at:
-          description: 报告生成时间（本地时区 ISO 8601，秒级）。
-          type: string
-        kept:
-          description: 清理后仍保留的日志清单。
-          items:
-            additionalProperties: false
-            properties:
-              active:
-                description: true 表示正在写入的活动日志（永不删除）。
-                type: boolean
-              age_days:
-                type: number
-              bytes:
-                type: integer
-              name:
-                type: string
-            type: object
-          type: array
-        max_total_bytes:
-          description: 本次执行采用的总量上限（字节）；0 表示不按量清理。
-          type: integer
-        notice:
-          description: 给用户看的一句话结论。
-          type: string
-        policy:
-          description: 本次执行策略的可读说明。
-          type: string
-        report_written:
-          description: retention.json 是否成功落盘；false 时结果仅本进程可见。
-          type: boolean
-        retention_days:
-          description: 本次执行采用的保留天数；0 表示不按天清理。
-          type: integer
-        status:
-          description: ok / 部分完成 / 日志目录不存在，未执行。
-          type: string
-        total_bytes_after:
-          type: integer
-        total_bytes_before:
-          type: integer
-      type: object
-    LogSettingsState:
-      additionalProperties: false
-      description: GET/PUT /v1/settings/logs 与 prune 响应的 state 字段；绝不包含日志目录绝对路径。
-      properties:
-        active_bytes:
-          description: 正在写入的活动日志（*.log）总字节数。
-          type: integer
-        active_count:
-          description: 活动日志文件数。
-          type: integer
-        backup_bytes:
-          description: 轮转备份（*.log.N）总字节数。
-          type: integer
-        backup_count:
-          description: 轮转备份文件数。
-          type: integer
-        env_override:
-          additionalProperties: false
-          description: 哪些维度正被环境变量覆盖（true 表示界面改了也不生效）。
-          properties:
-            max_total_bytes:
-              type: boolean
-            retention_days:
-              type: boolean
-          type: object
-        last_report:
-          anyOf:
-          - $ref: '#/components/schemas/LogRetentionReport'
-          - type: 'null'
-          description: 最近一次清理报告；没有则 null。
-        max_total_bytes:
-          description: 生效中的日志总量上限（字节）；0 表示不按量清理。
-          type: integer
-        note:
-          description: 固定提示：只清理旧的日志备份，正在写入的日志不会删除。
-          type: string
-        retention_days:
-          description: 生效中的保留天数；0 表示不按天清理。
-          type: integer
-        total_bytes:
-          description: 目录内全部日志（活动 + 备份）总字节数。
-          type: integer
       type: object
     RollbackRequest:
       properties:
@@ -1252,8 +1286,7 @@ components:
       properties:
         api_key:
           anyOf:
-          - maxLength: 512
-            type: string
+          - type: string
           - type: 'null'
           title: Api Key
         base_url:
@@ -1287,6 +1320,189 @@ components:
       - provider
       - model
       title: TestPayload
+      type: object
+    UnassignedKnowledgeDocument:
+      description: 一篇无归属历史文档（``owner_account_id`` 为空，无法反推账号）。
+      properties:
+        can_delete:
+          title: Can Delete
+          type: boolean
+        chunks:
+          title: Chunks
+          type: integer
+        detail:
+          title: Detail
+          type: string
+        display_name:
+          title: Display Name
+          type: string
+        document_id:
+          title: Document Id
+          type: string
+        owner:
+          description: 恒为空串：不属于任何账号
+          title: Owner
+          type: string
+        preview:
+          description: 首块原文预览（已脱敏、已截断）
+          title: Preview
+          type: string
+        preview_truncated:
+          title: Preview Truncated
+          type: boolean
+        reason:
+          examples:
+          - missing_owner_metadata
+          title: Reason
+          type: string
+        reference:
+          examples:
+          - knowledge://documents/legacy.txt#0
+          title: Reference
+          type: string
+      required:
+      - document_id
+      - owner
+      - display_name
+      - chunks
+      - reason
+      - detail
+      - preview
+      - preview_truncated
+      - reference
+      - can_delete
+      title: UnassignedKnowledgeDocument
+      type: object
+    UnassignedKnowledgeResponse:
+      description: '``GET /v1/knowledge/maintenance/unassigned``（主账号/老部署专属）。'
+      properties:
+        count:
+          title: Count
+          type: integer
+        documents:
+          items:
+            $ref: '#/components/schemas/UnassignedKnowledgeDocument'
+          title: Documents
+          type: array
+        has_more:
+          title: Has More
+          type: boolean
+        limit:
+          title: Limit
+          type: integer
+        lost:
+          description: 迁移丢失数；只读视图自身恒为 0
+          title: Lost
+          type: integer
+        note:
+          title: Note
+          type: string
+        offset:
+          title: Offset
+          type: integer
+        total:
+          title: Total
+          type: integer
+      required:
+      - documents
+      - count
+      - total
+      - limit
+      - offset
+      - has_more
+      - lost
+      - note
+      title: UnassignedKnowledgeResponse
+      type: object
+    UnassignedMemoryEntry:
+      description: 一条归属无法判定的历史记忆（``owner="__unassigned__"``）。
+      properties:
+        account_id:
+          description: 恒为 __unassigned__：不属于任何账号
+          title: Account Id
+          type: string
+        created_at:
+          title: Created At
+          type: string
+        id:
+          title: Id
+          type: string
+        source:
+          title: Source
+          type: string
+        tags:
+          items:
+            type: string
+          title: Tags
+          type: array
+        text:
+          title: Text
+          type: string
+      required:
+      - id
+      - account_id
+      - text
+      - source
+      - created_at
+      title: UnassignedMemoryEntry
+      type: object
+    UnassignedMemoryResponse:
+      description: '``GET /v1/memory/unassigned``：未归属记忆 + 迁移隔离区（根账号专属）。'
+      properties:
+        count:
+          title: Count
+          type: integer
+        entries:
+          items:
+            $ref: '#/components/schemas/UnassignedMemoryEntry'
+          title: Entries
+          type: array
+        has_more:
+          title: Has More
+          type: boolean
+        limit:
+          title: Limit
+          type: integer
+        note:
+          title: Note
+          type: string
+        offset:
+          title: Offset
+          type: integer
+        quarantine_limit:
+          title: Quarantine Limit
+          type: integer
+        quarantine_offset:
+          title: Quarantine Offset
+          type: integer
+        quarantined:
+          items:
+            $ref: '#/components/schemas/QuarantinedMemoryRowResponse'
+          title: Quarantined
+          type: array
+        quarantined_count:
+          title: Quarantined Count
+          type: integer
+        quarantined_total:
+          title: Quarantined Total
+          type: integer
+        total:
+          title: Total
+          type: integer
+      required:
+      - entries
+      - count
+      - total
+      - limit
+      - offset
+      - has_more
+      - quarantined
+      - quarantined_count
+      - quarantined_total
+      - quarantine_limit
+      - quarantine_offset
+      - note
+      title: UnassignedMemoryResponse
       type: object
     ValidationError:
       properties:
@@ -1445,7 +1661,9 @@ paths:
         \ file, empty\n    document, or a text layer full of broken glyphs. A scanned PDF never\n    returns\
         \ an empty string as \"success\", and a garbled text layer is never\n    stored silently: the\
         \ caller must retry with ``allow_low_quality=true``.\n\nLarge files belong on ``POST /documents/upload/jobs``:\
-        \ this handler blocks\nuntil extraction + embedding finish."
+        \ this handler blocks\nuntil extraction + embedding finish.\n\nThe body is streamed to a temporary\
+        \ file first, so peak memory stays flat\nregardless of file size; the temp file is removed on\
+        \ success and on every\nfailure path."
       operationId: knowledge_upload_document_knowledge_documents_upload_post
       parameters:
       - in: header
@@ -1495,11 +1713,13 @@ paths:
       description: 'Queue a **file** ingest job and return immediately with a job id.
 
 
-        This is the async twin of ``POST /documents/upload``: the bytes are read
+        This is the async twin of ``POST /documents/upload``: the body is streamed
 
-        here, then extraction and embedding happen in the worker. A 300-page PDF
+        to a temporary file here, then extraction and embedding happen in the
 
-        therefore answers 202 instantly and reports real page progress via
+        worker **from that path** (no full bytes copy held by the job). A 300-page
+
+        PDF therefore answers 202 instantly and reports real page progress via
 
         ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
 
@@ -1507,7 +1727,9 @@ paths:
 
         ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
 
-        document is embedded, so a cancel is a full rollback (全回滚).
+        document is embedded, so a cancel is a full rollback (全回滚). The worker
+
+        removes the temp file on success, failure and cancellation alike.
 
 
         Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
@@ -1568,15 +1790,13 @@ paths:
       description: 'Delete a document: chunks, vectors, FTS rows and content hash at once.
 
 
-        Authorisation is the account scope, not an admin claim: a member may delete
+        Authorisation is the account scope, not an admin claim: every account (the
 
-        only their own document, the root account may delete documents in its
+        root included) may delete only its own document, and anything outside that
 
-        subtree, and anything outside that range is a neutral 404 -- byte-identical
+        range is a neutral 404 -- byte-identical to "this document does not exist",
 
-        to "this document does not exist", so the endpoint cannot be used to probe
-
-        another account''s library.'
+        so the endpoint cannot be used to probe another account''s library.'
       operationId: knowledge_delete_document_knowledge_documents__document_id__delete
       parameters:
       - in: path
@@ -1807,6 +2027,163 @@ paths:
       tags:
       - knowledge
       - knowledge
+  /knowledge/maintenance/migrate-document-ids:
+    post:
+      deprecated: true
+      description: 迁移旧版 CJK 坍缩 id；默认 dry-run，返回完整计划与条数守恒结论。
+      operationId: knowledge_migrate_document_ids_knowledge_maintenance_migrate_document_ids_post
+      parameters:
+      - in: query
+        name: dry_run
+        required: false
+        schema:
+          default: true
+          title: Dry Run
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Migrate Document Ids Knowledge Maintenance Migrate Document
+                  Ids Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Migrate Document Ids
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/maintenance/reindex:
+    post:
+      deprecated: true
+      description: 按当前 embedding 模型重建可见文档向量（换模型/维度漂移后的恢复入口）。
+      operationId: knowledge_reindex_knowledge_maintenance_reindex_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Reindex Knowledge Maintenance Reindex Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Reindex
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/maintenance/unassigned:
+    get:
+      deprecated: true
+      description: '无归属历史文档的只读视图（主账号/老部署专用；成员中性 404）。
+
+
+        只返回 ``owner_account_id`` 为空的文档，不读取任何账号的私有文档；
+
+        成员访问与"不存在"同形，隔离边界不放宽。'
+      operationId: knowledge_unassigned_documents_knowledge_maintenance_unassigned_get
+      parameters:
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnassignedKnowledgeResponse'
+          description: Successful Response
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeNeutralNotFound'
+          description: 非主账号一律中性 404：与「这篇文档不存在」逐字一致，不泄露无归属文档的存在。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 无归属历史文档只读视图（仅主账号）
+      tags:
+      - knowledge
+      - knowledge
   /knowledge/query:
     post:
       deprecated: true
@@ -1950,7 +2327,12 @@ paths:
       - knowledge
   /v1/about:
     get:
-      description: 控制台「关于与隐私」页数据：版本、目录、许可证与第三方声明（只读）。
+      description: '控制台「关于与隐私」页数据：版本、目录、许可证与第三方声明（只读、离线）。
+
+
+        许可证全文直接随响应下发：用户在断网的机器上也能逐份点开，不依赖任何外部链接。
+
+        成员视角不下发本机绝对路径：路径字段换成角色占位符，名称/大小/全文保持不变。'
       operationId: about_v1_about_get
       parameters:
       - in: header
@@ -2307,23 +2689,7 @@ paths:
       - accounts
   /v1/accounts/recovery/local:
     post:
-      description: '忘记密码且手上没有恢复码时的**本机**自助出口。
-
-
-        交接文件始终以“非明文”形态落盘：Windows 用 DPAPI（CurrentUser）加密，
-
-        其他平台或 DPAPI 失败时降级为 ACL 收紧 + 短 TTL；任何情况下都不长期留
-
-        明文。本请求把码解密**一次**、随响应交给本机用户，随后立即删除文件并
-
-        清零解密暂存（一次性取用即焚）。
-
-
-        只在两种情况下开放：①本机已有加密交接文件（旧明文迁移或上次未取走）；
-
-        ②根账号确实没有恢复码。后者之外不重发，避免任何人作废用户手上有效的
-
-        恢复码（DoS）。重发有效码的正规入口是登录后的 ``/recovery/rotate``。'
+      description: 本机自助取码的 HTTP 外壳：来源/证明/限流在 impl 内，审计在此覆盖成败。
       operationId: recovery_local_handoff_v1_accounts_recovery_local_post
       responses:
         '200':
@@ -2349,11 +2715,11 @@ paths:
         （``verify_activation_code`` → 改密 → ``consume_activation_code``）同序。
 
 
-        来源契约：默认只接受本机回环请求，且必须携带桌面端通过 DACL 命名管道
+        来源契约：默认只接受本机回环请求（本机浏览器直接重置即可，不再强制
 
-        发放的一次性重置令牌（防止同机其他账户只凭回环就重置）。远程重置必须
+        桌面端一次性令牌）；可信启动下仍校验调用者与网关是同一个 Windows 账户。
 
-        由管理员显式开启 ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭；开启后
+        远程重置必须显式开启 ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭；开启后
 
         任何能访问服务端口、且持有恢复码的来源都可重置根密码，风险自担）。'
       operationId: recovery_reset_v1_accounts_recovery_reset_post
@@ -2787,7 +3153,14 @@ paths:
       - accounts
   /v1/accounts/{principal}/password:
     post:
-      description: 管理者重置成员密码：写凭据 + 立即吊销旧令牌 + 哈希链审计。
+      description: '改密：管理者重置成员密码；本人可自助改密（需当前密码）。
+
+
+        管理者路径：写凭据 + 立即吊销旧令牌 + 哈希链审计。
+
+        自助路径：先校验 ``current_password``，再复用同一套"换凭据 + bump epoch"，
+
+        因此令牌被盗但不知道当前密码时无法静默夺号。'
       operationId: reset_password_v1_accounts__principal__password_post
       parameters:
       - in: path
@@ -3085,7 +3458,6 @@ paths:
       summary: Account Usage Events
       tags:
       - accounts
-
   /v1/alerts:
     get:
       description: '列出告警（只读）。返回 firing 告警与最近告警；库为空时 count=0，不是错误。
@@ -3376,23 +3748,33 @@ paths:
       - audit
   /v1/audit/export:
     get:
-      description: '导出审计归档（只读）：事件原文 + 导出时刻的校验结果与尾锚点，不含校验密钥。
-        仅根账号或独立主权令牌可导出，成员调用返回 403；本接口不写任何审计记录。'
+      description: '导出审计记录归档（只读，仅根账号 / 独立主权令牌）。
+
+
+        归档是**给人留存与比对**的副本，不是密钥证明：包含事件原文、导出时刻的
+
+        校验结果与尾锚点，但**不含校验密钥**（密钥永不出机）。换机后没有密钥时，
+
+        这份归档只能用于查阅/比对，不能替代原机上的带密钥校验。'
       operationId: export_events_v1_audit_export_get
       parameters:
-      - in: query
+      - description: 只导出 seq 大于该值的事件（翻页用）
+        in: query
         name: since_seq
         required: false
         schema:
           default: 0
+          description: 只导出 seq 大于该值的事件（翻页用）
           minimum: 0
           title: Since Seq
           type: integer
-      - in: query
+      - description: 单次导出条数上限（超出用 next_since_seq 续导）
+        in: query
         name: limit
         required: false
         schema:
           default: 5000
+          description: 单次导出条数上限（超出用 next_since_seq 续导）
           maximum: 20000
           minimum: 1
           title: Limit
@@ -3422,8 +3804,6 @@ paths:
                 title: Response Export Events V1 Audit Export Get
                 type: object
           description: Successful Response
-        '403':
-          description: 成员账号无权导出审计归档（仅根账号 / 独立主权令牌）。
         '422':
           content:
             application/json:
@@ -3492,6 +3872,15 @@ paths:
         重算过的哈希正是 tamper-evidence 的反面。'
       operationId: verify_chain_v1_audit_verify_get
       parameters:
+      - description: true = 从头重算全链（慢，但能发现历史篡改）；false = 增量校验
+        in: query
+        name: full
+        required: false
+        schema:
+          default: false
+          description: true = 从头重算全链（慢，但能发现历史篡改）；false = 增量校验
+          title: Full
+          type: boolean
       - in: header
         name: x-liuhao-token
         required: false
@@ -3530,6 +3919,15 @@ paths:
       description: 与 ``GET /v1/audit/verify`` 完全相同的只读校验。
       operationId: verify_chain_post_v1_audit_verify_post
       parameters:
+      - description: true = 从头重算全链（慢，但能发现历史篡改）；false = 增量校验
+        in: query
+        name: full
+        required: false
+        schema:
+          default: false
+          description: true = 从头重算全链（慢，但能发现历史篡改）；false = 增量校验
+          title: Full
+          type: boolean
       - in: header
         name: x-liuhao-token
         required: false
@@ -3705,6 +4103,14 @@ paths:
       operationId: chat_v1_chat_post
       parameters:
       - in: header
+        name: Idempotency-Key
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency-Key
+      - in: header
         name: x-liuhao-token
         required: false
         schema:
@@ -3733,44 +4139,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatResponse'
           description: Successful Response
-        '402':
-          content:
-            application/json:
-              examples:
-                budget_exceeded:
-                  summary: 预算/额度不足（402）
-                  value:
-                    code: budget_exceeded
-                    correlation_id: 156a7c18547a47bb
-                    detail: 本次调用会超出你设定的预算，请调整额度或换更便宜的模型。
-                    message: 本次调用会超出你设定的预算，请调整额度或换更便宜的模型。
-              schema:
-                $ref: '#/components/schemas/ChatDenialError'
-          description: 本次调用会超出你设定的预算（`budget_exceeded`）。响应头与响应体都带 `correlation_id`，可直接对上审计 `ACCESS_DENIED`。
-          headers:
-            X-LiuHao-Correlation-Id:
-              description: 与响应体 `correlation_id` 相同的请求级 ID。
-              schema:
-                type: string
-        '403':
-          content:
-            application/json:
-              examples:
-                permission_denied:
-                  summary: 真权限不足（403）
-                  value:
-                    code: permission_denied
-                    correlation_id: 4a5c9f2520e5453c
-                    detail: '权限不足：当前账号未被授权执行对话操作。'
-                    message: '权限不足：当前账号未被授权执行对话操作。'
-              schema:
-                $ref: '#/components/schemas/ChatDenialError'
-          description: 当前账号未被授权执行对话（`permission_denied`）。与预算不足刻意使用不同的状态码和 `code`，避免把"钱不够"误导成"没权限"。
-          headers:
-            X-LiuHao-Correlation-Id:
-              description: 与响应体 `correlation_id` 相同的请求级 ID。
-              schema:
-                type: string
         '422':
           content:
             application/json:
@@ -3827,10 +4195,14 @@ paths:
       - chat
   /v1/chat/history:
     get:
-      description: '返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
+      description: '返回某会话的历史消息（按可读范围读，跨后端重启有效）。
 
 
-        别人占用的会话名一律 404（与"没有历史"不可区分）。'
+        无权与不存在必须**完全同形**：账号树里省略 ``limit`` 时一律中性 404；
+
+        显式分页（控制台首屏）则一律返回空历史。两个分支都不依赖"该名字是否
+
+        属于别人"，所以无法据此探测会话是否存在。'
       operationId: chat_history_v1_chat_history_get
       parameters:
       - in: query
@@ -3840,6 +4212,28 @@ paths:
           default: default
           title: Session Id
           type: string
+      - description: 本页消息数（从最近一条往前）；省略=全量（旧客户端兼容）
+        in: query
+        name: limit
+        required: false
+        schema:
+          anyOf:
+          - maximum: 2000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          description: 本页消息数（从最近一条往前）；省略=全量（旧客户端兼容）
+          title: Limit
+      - description: 从最近一条往前跳过多少条消息
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          description: 从最近一条往前跳过多少条消息
+          minimum: 0
+          title: Offset
+          type: integer
       - in: header
         name: x-liuhao-token
         required: false
@@ -3876,14 +4270,36 @@ paths:
       - chat
   /v1/chat/sessions:
     get:
-      description: '列出**当前主体**的活跃会话（不会暴露别人的会话名）。
+      description: '列出当前主体可读的会话。
 
 
-        ``users`` 给出 会话→主体 归属，值恒为令牌主体 —— 归属是派生事实，
+        ``users`` 给出 会话→主体 归属：成员恒为自己；根账号会看到子树里的会话
 
-        不再接受客户端声明。'
+        并在这里标出它实际属于哪个账号。归属是服务端派生事实，不接受客户端声明。'
       operationId: chat_sessions_v1_chat_sessions_get
       parameters:
+      - description: 本页会话数；省略=全量（旧客户端兼容）。前端默认 50。
+        in: query
+        name: limit
+        required: false
+        schema:
+          anyOf:
+          - maximum: 1000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          description: 本页会话数；省略=全量（旧客户端兼容）。前端默认 50。
+          title: Limit
+      - description: 跳过多少条（按稳定字母序）
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          description: 跳过多少条（按稳定字母序）
+          minimum: 0
+          title: Offset
+          type: integer
       - in: header
         name: x-liuhao-token
         required: false
@@ -4022,12 +4438,31 @@ paths:
 
         - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
 
-        - ``{"type": "done", "status": "denied", "reason": "budget_exceeded" | "permission_denied", "correlation_id": "..."}``  **兜底**拒绝帧：只用于建流之后才发生的拒绝（等会话锁期间额度被别的会话用光），此时 HTTP 状态已发出、改不了。
+
+        **预算/权限判定在建流之前完成**：拒绝时直接物理返回 ``402 budget_exceeded``
+
+        / ``403 permission_denied``（JSON + ``X-LiuHao-Correlation-Id``），不会
+
+        建立 ``text/event-stream``。只有建流之后才发生的兜底拒绝（等会话锁期间
+
+        额度被别的会话用光）才用 ``done`` 帧的 ``status=denied`` + ``reason``
+
+        表达 —— 那时 HTTP 状态已发出，改不了。
 
 
-        **预算/权限判定在建流之前完成**：拒绝时物理返回 ``402 budget_exceeded`` / ``403 permission_denied``（JSON + ``X-LiuHao-Correlation-Id``），不会建立 ``text/event-stream``，也不会调用模型。'
+        重复提交（连点/重发）同样走幂等：后来者不会第二次调用模型，而是等首个
+
+        流结束后重放同一份内容（结束帧带 ``deduplicated: true``）。'
       operationId: chat_stream_v1_chat_stream_post
       parameters:
+      - in: header
+        name: Idempotency-Key
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency-Key
       - in: header
         name: x-liuhao-token
         required: false
@@ -4055,57 +4490,7 @@ paths:
           content:
             application/json:
               schema: {}
-            text/event-stream:
-              examples:
-                done_budget_denied:
-                  summary: 兜底拒绝的 done 帧（建流后额度被用光，HTTP 200，reason=budget_exceeded）
-                  value: |
-                    data: {"type": "done", "status": "denied", "turn": 1, "session_id": "sess-1", "correlation_id": "156a7c18547a47bb", "usage_recorded": false, "knowledge": {}, "error": "本次调用会超出你设定的预算，请调整额度或换更便宜的模型。", "reason": "budget_exceeded"}
-                done_permission_denied:
-                  summary: 兜底拒绝的 done 帧（建流后权限被收回，HTTP 200，reason=permission_denied）
-                  value: |
-                    data: {"type": "done", "status": "denied", "turn": 1, "session_id": "sess-1", "correlation_id": "4a5c9f2520e5453c", "usage_recorded": false, "knowledge": {}, "error": "权限不足：当前账号未被授权执行对话操作。", "reason": "permission_denied"}
-              schema:
-                type: string
-          description: 'SSE 流已建立。正常的拒绝（预算/权限）**不会**走到这里 —— 它们在建流前就用 402/403 物理返回了；只有建流后才发生的兜底拒绝才以 200 + `done` 帧（`status=denied` + `reason`）表达。'
-        '402':
-          content:
-            application/json:
-              examples:
-                budget_exceeded:
-                  summary: 预算/额度不足（建流前拒绝，402）
-                  value:
-                    code: budget_exceeded
-                    correlation_id: 156a7c18547a47bb
-                    detail: 本次调用会超出你设定的预算，请调整额度或换更便宜的模型。
-                    message: 本次调用会超出你设定的预算，请调整额度或换更便宜的模型。
-              schema:
-                $ref: '#/components/schemas/ChatDenialError'
-          description: 建流前预算判定失败（`budget_exceeded`）。**响应不是 `text/event-stream`**，也不会有任何分块输出；模型未被调用。响应头与响应体都带 `correlation_id`，可直接对上审计 `ACCESS_DENIED`（`details.phase=pre_stream`）。
-          headers:
-            X-LiuHao-Correlation-Id:
-              description: 与响应体 `correlation_id` 相同的请求级 ID。
-              schema:
-                type: string
-        '403':
-          content:
-            application/json:
-              examples:
-                permission_denied:
-                  summary: 真权限不足（建流前拒绝，403）
-                  value:
-                    code: permission_denied
-                    correlation_id: 4a5c9f2520e5453c
-                    detail: '权限不足：当前账号未被授权执行对话操作。'
-                    message: '权限不足：当前账号未被授权执行对话操作。'
-              schema:
-                $ref: '#/components/schemas/ChatDenialError'
-          description: 建流前权限判定失败（`permission_denied`）。**响应不是 `text/event-stream`**，也不会有任何分块输出。与预算不足刻意使用不同的状态码和 `code`，避免把"钱不够"误导成"没权限"。
-          headers:
-            X-LiuHao-Correlation-Id:
-              description: 与响应体 `correlation_id` 相同的请求级 ID。
-              schema:
-                type: string
+          description: Successful Response
         '422':
           content:
             application/json:
@@ -4117,7 +4502,7 @@ paths:
       - chat
   /v1/dashboard/activity:
     get:
-      description: 最近动态：真实审计事件（已过滤 kernel state_change 噪声）。
+      description: 最近动态：真实审计事件（已过滤 kernel state_change 噪声，账号作用域内）。
       operationId: dashboard_activity_v1_dashboard_activity_get
       parameters:
       - in: query
@@ -4165,7 +4550,7 @@ paths:
       - dashboard
   /v1/dashboard/analytics:
     get:
-      description: 驾驶舱图表数据源：真实审计时序 + 真实事件分布。
+      description: 驾驶舱图表数据源：真实审计时序 + 真实事件分布（账号作用域内）。
       operationId: dashboard_analytics_v1_dashboard_analytics_get
       parameters:
       - in: query
@@ -4261,7 +4646,7 @@ paths:
       - roster
   /v1/dashboard/summary:
     get:
-      description: 系统摘要：状态、运行时长、provider、会话、审计统计。
+      description: 系统摘要：状态、运行时长、provider、会话、审计统计（账号作用域内）。
       operationId: dashboard_summary_v1_dashboard_summary_get
       parameters:
       - in: header
@@ -4300,7 +4685,21 @@ paths:
       - dashboard
   /v1/diagnostics/bundle:
     get:
-      description: 下载一键诊断包（登录闸门由 ``main.py`` 统一挂载）。内容见 :data:`BUNDLE_MEMBERS`。
+      description: '下载一键诊断包（登录闸门由 ``main.py`` 统一挂载）。
+
+
+        诊断包是整机全局资源（日志、环境、进程快照），不按会话/项目切分，因此只允许
+
+        管理员导出；成员的自有数据走 ``/v1/chat/export`` 等独立通道。内容见
+
+        :data:`BUNDLE_MEMBERS`。
+
+
+        命中明文凭据的成员会被**剔除**而不是整体失败：用户最需要求助时不能无路可走。
+
+        剔除清单同时写在响应头（``X-LiuHao-Diagnostics-Omitted-Members``）与包内
+
+        ``REDACTED-MEMBERS.txt``；只有"一个成员都留不下"才返回 409。'
       operationId: download_diagnostics_bundle_v1_diagnostics_bundle_get
       parameters:
       - in: header
@@ -5555,7 +5954,7 @@ paths:
       - ai-management
   /v1/identity/permissions:
     get:
-      description: '扁平列出全部 grant（只读）：谁 -> 被授予了什么 -> 受哪个作用域上限约束。
+      description: '扁平列出全部 grant（只读，账号作用域内）：谁 -> 被授予了什么 -> 受哪个作用域上限约束。
 
 
         过滤是**真的收窄**（先把集合缩小再计数），不是"返回全部让前端自己筛"：
@@ -5650,7 +6049,7 @@ paths:
       - identity
   /v1/identity/principals:
     get:
-      description: '列出**真实**身份内核里的全部主体（只读）。
+      description: '列出**真实**身份内核里的全部主体（只读，账号作用域内）。
 
 
         返回值带 ``registry`` 与 ``warnings``：缺项/拒收时必须能被看见，否则
@@ -6189,7 +6588,9 @@ paths:
         \ file, empty\n    document, or a text layer full of broken glyphs. A scanned PDF never\n    returns\
         \ an empty string as \"success\", and a garbled text layer is never\n    stored silently: the\
         \ caller must retry with ``allow_low_quality=true``.\n\nLarge files belong on ``POST /documents/upload/jobs``:\
-        \ this handler blocks\nuntil extraction + embedding finish."
+        \ this handler blocks\nuntil extraction + embedding finish.\n\nThe body is streamed to a temporary\
+        \ file first, so peak memory stays flat\nregardless of file size; the temp file is removed on\
+        \ success and on every\nfailure path."
       operationId: knowledge_upload_document_v1_knowledge_documents_upload_post
       parameters:
       - in: header
@@ -6238,11 +6639,13 @@ paths:
       description: 'Queue a **file** ingest job and return immediately with a job id.
 
 
-        This is the async twin of ``POST /documents/upload``: the bytes are read
+        This is the async twin of ``POST /documents/upload``: the body is streamed
 
-        here, then extraction and embedding happen in the worker. A 300-page PDF
+        to a temporary file here, then extraction and embedding happen in the
 
-        therefore answers 202 instantly and reports real page progress via
+        worker **from that path** (no full bytes copy held by the job). A 300-page
+
+        PDF therefore answers 202 instantly and reports real page progress via
 
         ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
 
@@ -6250,7 +6653,9 @@ paths:
 
         ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
 
-        document is embedded, so a cancel is a full rollback (全回滚).
+        document is embedded, so a cancel is a full rollback (全回滚). The worker
+
+        removes the temp file on success, failure and cancellation alike.
 
 
         Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
@@ -6310,15 +6715,13 @@ paths:
       description: 'Delete a document: chunks, vectors, FTS rows and content hash at once.
 
 
-        Authorisation is the account scope, not an admin claim: a member may delete
+        Authorisation is the account scope, not an admin claim: every account (the
 
-        only their own document, the root account may delete documents in its
+        root included) may delete only its own document, and anything outside that
 
-        subtree, and anything outside that range is a neutral 404 -- byte-identical
+        range is a neutral 404 -- byte-identical to "this document does not exist",
 
-        to "this document does not exist", so the endpoint cannot be used to probe
-
-        another account''s library.'
+        so the endpoint cannot be used to probe another account''s library.'
       operationId: knowledge_delete_document_v1_knowledge_documents__document_id__delete
       parameters:
       - in: path
@@ -6629,6 +7032,160 @@ paths:
       tags:
       - knowledge
       - knowledge
+  /v1/knowledge/maintenance/migrate-document-ids:
+    post:
+      description: 迁移旧版 CJK 坍缩 id；默认 dry-run，返回完整计划与条数守恒结论。
+      operationId: knowledge_migrate_document_ids_v1_knowledge_maintenance_migrate_document_ids_post
+      parameters:
+      - in: query
+        name: dry_run
+        required: false
+        schema:
+          default: true
+          title: Dry Run
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Migrate Document Ids V1 Knowledge Maintenance Migrate Document
+                  Ids Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Migrate Document Ids
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/maintenance/reindex:
+    post:
+      description: 按当前 embedding 模型重建可见文档向量（换模型/维度漂移后的恢复入口）。
+      operationId: knowledge_reindex_v1_knowledge_maintenance_reindex_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Reindex V1 Knowledge Maintenance Reindex Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Reindex
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/maintenance/unassigned:
+    get:
+      description: '无归属历史文档的只读视图（主账号/老部署专用；成员中性 404）。
+
+
+        只返回 ``owner_account_id`` 为空的文档，不读取任何账号的私有文档；
+
+        成员访问与"不存在"同形，隔离边界不放宽。'
+      operationId: knowledge_unassigned_documents_v1_knowledge_maintenance_unassigned_get
+      parameters:
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnassignedKnowledgeResponse'
+          description: Successful Response
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeNeutralNotFound'
+          description: 非主账号一律中性 404：与「这篇文档不存在」逐字一致，不泄露无归属文档的存在。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 无归属历史文档只读视图（仅主账号）
+      tags:
+      - knowledge
+      - knowledge
   /v1/knowledge/query:
     post:
       deprecated: true
@@ -6906,7 +7463,12 @@ paths:
       - memory
   /v1/memory/entries:
     get:
-      description: 列表与检索共用同一过滤：先按 owner 收敛，再做关键词匹配。
+      description: '列表与检索共用同一过滤：先按 owner 收敛，再做关键词匹配。
+
+
+        ``q`` 里的 ``%`` / ``_`` 按字面量匹配（显式 ``ESCAPE ''\''``）；分页保证
+
+        一次请求不可能吐出本人（或子树）的全部记忆。'
       operationId: list_entries_v1_memory_entries_get
       parameters:
       - description: self 或 subtree
@@ -6918,15 +7480,37 @@ paths:
           description: self 或 subtree
           title: Scope
           type: string
-      - description: 关键词；匹配正文/来源/标签
+      - description: 关键词；匹配正文/来源/标签（按字面量，不解释通配符）
         in: query
         name: q
         required: false
         schema:
           default: ''
-          description: 关键词；匹配正文/来源/标签
+          description: 关键词；匹配正文/来源/标签（按字面量，不解释通配符）
           title: Q
           type: string
+      - description: 单页条数上限
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 100
+          description: 单页条数上限
+          maximum: 500
+          minimum: 1
+          title: Limit
+          type: integer
+      - description: 分页偏移
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          description: 分页偏移
+          maximum: 1000000
+          minimum: 0
+          title: Offset
+          type: integer
       - in: header
         name: x-liuhao-token
         required: false
@@ -6962,7 +7546,14 @@ paths:
       tags:
       - memory
     post:
-      description: 只写**自己**的记忆；主账号也不能借这个端点改写子账号记忆。
+      description: '只写**自己**的记忆；主账号也不能借这个端点改写子账号记忆。
+
+
+        幂等窗口：同一账号在 ``MEMORY_IDEMPOTENCY_WINDOW_SECONDS`` 内重复提交
+
+        完全相同的内容（正文 / 来源 / 标签）时，返回已存在的那条并标记
+
+        ``deduplicated: true`` —— 重试不会凭空多出一条记忆。'
       operationId: write_entry_v1_memory_entries_post
       parameters:
       - in: header
@@ -7006,6 +7597,53 @@ paths:
       tags:
       - memory
   /v1/memory/entries/{entry_id}:
+    delete:
+      description: '删除**自己**的一条记忆，并清理同 owner 的 ``origin:<id>`` 派生副本。
+
+
+        不是本人 404；删除后列表/检索/单条读取都不可见。删除动作写审计。'
+      operationId: delete_entry_v1_memory_entries__entry_id__delete
+      parameters:
+      - in: path
+        name: entry_id
+        required: true
+        schema:
+          title: Entry Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Entry V1 Memory Entries  Entry Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Entry
+      tags:
+      - memory
     get:
       description: 单条读取：不是自己的条目与"不存在"完全相同（404）。
       operationId: get_entry_v1_memory_entries__entry_id__get
@@ -7048,6 +7686,61 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Entry
+      tags:
+      - memory
+    patch:
+      description: '纠正**自己**的一条记忆（改正文/来源/标签），并写审计。
+
+
+        归属不可改：主账号也不能借 PATCH 把条目改到子账号名下。不是本人一律
+
+        404（与"不存在"不可区分）。'
+      operationId: patch_entry_v1_memory_entries__entry_id__patch
+      parameters:
+      - in: path
+        name: entry_id
+        required: true
+        schema:
+          title: Entry Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryPatchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Entry V1 Memory Entries  Entry Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Entry
       tags:
       - memory
   /v1/memory/export:
@@ -7137,6 +7830,212 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Import Memory Endpoint
+      tags:
+      - memory
+  /v1/memory/quarantine/{quarantine_id}:
+    delete:
+      description: '删除一条迁移隔离记录（仅根账号；成员与"不存在"同为中性 404）。
+
+
+        隔离区保留的是迁移时跳过的源行原文；确认不 (再) 需要时由根账号删除。
+
+        删除只影响隔离区本身，不会触碰已导入的记忆条目。'
+      operationId: delete_quarantined_row_v1_memory_quarantine__quarantine_id__delete
+      parameters:
+      - in: path
+        name: quarantine_id
+        required: true
+        schema:
+          title: Quarantine Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryDeletionReceipt'
+          description: Successful Response
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NeutralNotFound'
+          description: 非根账号一律中性 404：与「这条记录不存在」逐字一致，不泄露未归属区/隔离区的存在。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 删除一条迁移隔离记录（仅主账号）
+      tags:
+      - memory
+  /v1/memory/unassigned:
+    get:
+      description: '迁移时无法判定归属的历史记忆 + 隔离区（MEM-016：仅根账号可查）。
+
+
+        ``entries`` 是归属无法判定、但仍以 ``__unassigned__`` 存进新库的记录；
+
+        ``quarantined`` 是迁移时**跳过**的源行原文（运行时遥测、空正文/空 id）。
+
+        两者都不属于任何账号，普通 ``/entries`` 的 self/subtree 都不会返回；
+
+        根账号在这里能看到条数与原文，据此人工确认归属后再决定补录或删除。
+
+        非根账号与"不存在"同形（404），不泄露未归属区与隔离区的存在。'
+      operationId: list_unassigned_entries_v1_memory_unassigned_get
+      parameters:
+      - description: 单页条数上限
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          description: 单页条数上限
+          maximum: 500
+          minimum: 1
+          title: Limit
+          type: integer
+      - description: 分页偏移
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          description: 分页偏移
+          maximum: 1000000
+          minimum: 0
+          title: Offset
+          type: integer
+      - description: 隔离区单页条数上限
+        in: query
+        name: quarantine_limit
+        required: false
+        schema:
+          default: 50
+          description: 隔离区单页条数上限
+          maximum: 500
+          minimum: 1
+          title: Quarantine Limit
+          type: integer
+      - description: 隔离区分页偏移
+        in: query
+        name: quarantine_offset
+        required: false
+        schema:
+          default: 0
+          description: 隔离区分页偏移
+          maximum: 1000000
+          minimum: 0
+          title: Quarantine Offset
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnassignedMemoryResponse'
+          description: Successful Response
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NeutralNotFound'
+          description: 非根账号一律中性 404：与「这条记录不存在」逐字一致，不泄露未归属区/隔离区的存在。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 无归属历史记忆与迁移隔离区（仅主账号）
+      tags:
+      - memory
+  /v1/memory/unassigned/{entry_id}:
+    delete:
+      description: '删除一条无归属历史记忆（仅根账号；成员与"不存在"同为中性 404）。
+
+
+        未归属区不属于任何账号，普通 ``DELETE /entries/{id}`` 对它一律 404；
+
+        这个根账号专用入口让"看得见"能真的落到"处置得掉"。'
+      operationId: delete_unassigned_entry_v1_memory_unassigned__entry_id__delete
+      parameters:
+      - in: path
+        name: entry_id
+        required: true
+        schema:
+          title: Entry Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryDeletionReceipt'
+          description: Successful Response
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NeutralNotFound'
+          description: 非根账号一律中性 404：与「这条记录不存在」逐字一致，不泄露未归属区/隔离区的存在。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 删除一条无归属历史记忆（仅主账号）
       tags:
       - memory
   /v1/models:
@@ -7441,6 +8340,12 @@ paths:
       tags:
       - models
     get:
+      description: '详情必须登录：匿名可读会泄露 base_url / owner / api_key_masked。
+
+
+        已登录路径的可见性规则与列表一致（``_guard_visible`` 按归属判定），
+
+        所以这里只是把"匿名"从可读集合里去掉，登录后的行为不变。'
       operationId: get_model_v1_models__model_id__get
       parameters:
       - in: path
@@ -7622,8 +8527,12 @@ paths:
       - models
   /v1/network/egress:
     get:
-      description: 出站登记表的只读投影（按用途分组）；清单与 src/security/egress_registry.py 同源，
-        新增未归类主机会落在「其他真实出站」组而不是消失。仅读取，不发起任何外部请求。
+      description: '出站登记表的只读投影：「关于与隐私」页的清单与代码同源。
+
+
+        每条都来自 ``src/security/egress_registry.py``，前端不写第二份；
+
+        新增主机若忘了归类，也会落在「其他真实出站」组里而不是消失。'
       operationId: get_egress_registry_v1_network_egress_get
       parameters:
       - in: header
@@ -7651,15 +8560,25 @@ paths:
                 title: Response Get Egress Registry V1 Network Egress Get
                 type: object
           description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
       summary: Get Egress Registry
       tags:
       - network
   /v1/network/messages:
     get:
-      description: '读取网络总线真实状态（只读）。
+      description: '读取网络总线真实状态（只读，账号作用域=自己或子树）。
 
 
-        数据全部来自网络内核进程单例，绝不另建一份可能分叉 / 造假的副本。'
+        数据全部来自网络内核进程单例，绝不另建一份可能分叉 / 造假的副本。
+
+        消息按 ``source`` / ``destination`` 与可读主体集合求交：成员看不到他人
+
+        账号的消息，根看到整棵子树的消息。'
       operationId: get_network_messages_v1_network_messages_get
       parameters:
       - in: header
@@ -7698,8 +8617,7 @@ paths:
       - network
   /v1/network/research:
     get:
-      description: 联网检索的当前状态和开启前的告知文案；不发起任何网络请求。
-        鉴权要求任意已登录人类令牌（成员可读）；写操作见 PUT，仅根账号可用。
+      description: 联网检索的当前状态 + 开启前的告知文案（不需要任何网络请求）。
       operationId: get_research_setting_v1_network_research_get
       parameters:
       - in: header
@@ -7723,37 +8641,10 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: false
-                properties:
-                  disclosure:
-                    description: 开启联网检索前的告知文案；没有可用 provider 时说明不可用。
-                    type: string
-                  enabled:
-                    description: 真实生效值（环境变量优先，其次界面保存值，默认 false）。
-                    type: boolean
-                  env_override:
-                    description: 环境变量是否正在强制覆盖界面选择。
-                    type: boolean
-                  max_phrase_chars:
-                    description: 单次检索短语的最大字符数。
-                    type: integer
-                  provider_hosts:
-                    description: 每个 provider 对应的目标主机（与 providers 同序）。
-                    items:
-                      type: string
-                    type: array
-                  providers:
-                    description: 可用的联网检索 provider 名称。
-                    items:
-                      type: string
-                    type: array
-                  stored_enabled:
-                    description: 界面里保存的选择（可能不生效，见 env_override）。
-                    type: boolean
+                additionalProperties: true
+                title: Response Get Research Setting V1 Network Research Get
                 type: object
           description: Successful Response
-        '401':
-          description: 缺少或无效的人类身份令牌（require_human_principal 闸门）。
         '422':
           content:
             application/json:
@@ -7764,9 +8655,14 @@ paths:
       tags:
       - network
     put:
-      description: 保存用户的联网检索选择（本地偏好，落盘到 data/privacy_settings.json，不发任何外部请求）。
-        环境变量覆盖时此值不生效，响应仍返回真实生效状态。读取对任意已登录人类开放；
-        写入仅根账号（成员调用返回 403 SETTINGS_ROOT_ONLY）。
+      description: '保存用户的联网检索选择（本地偏好，不发任何外部请求）。
+
+
+        开启/关闭都**立即生效**：``enabled()`` 每次工具调用都重新读这份偏好，
+
+        不依赖进程重启。审计留痕是硬要求 —— 开启等于"授权把关键词发出去"，
+
+        必须能回答"谁、什么时候、开了哪些站"。'
       operationId: set_research_setting_v1_network_research_put
       parameters:
       - in: header
@@ -7796,54 +8692,16 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: false
-                properties:
-                  disclosure:
-                    description: 开启联网检索前的告知文案；没有可用 provider 时说明不可用。
-                    type: string
-                  enabled:
-                    description: 真实生效值（环境变量优先，其次刚保存的值，默认 false）。
-                    type: boolean
-                  env_override:
-                    description: 环境变量是否正在强制覆盖界面选择。
-                    type: boolean
-                  max_phrase_chars:
-                    description: 单次检索短语的最大字符数。
-                    type: integer
-                  provider_hosts:
-                    description: 每个 provider 对应的目标主机（与 providers 同序）。
-                    items:
-                      type: string
-                    type: array
-                  providers:
-                    description: 可用的联网检索 provider 名称。
-                    items:
-                      type: string
-                    type: array
-                  stored_enabled:
-                    description: 界面里保存的选择（可能不生效，见 env_override）。
-                    type: boolean
+                additionalProperties: true
+                title: Response Set Research Setting V1 Network Research Put
                 type: object
           description: Successful Response
-        '401':
-          description: 缺少或无效的人类身份令牌（require_human_principal 闸门）。
         '422':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-        '403':
-          content:
-            application/json:
-              examples:
-                settings_root_only:
-                  summary: 成员账号写设置（403）
-                  value:
-                    code: SETTINGS_ROOT_ONLY
-                    message: 该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。
-                    detail: 该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。
-          description: 成员账号只能读取；写操作仅根账号可用，稳定错误码 SETTINGS_ROOT_ONLY。
       summary: Set Research Setting
       tags:
       - network
@@ -7897,7 +8755,16 @@ paths:
       - observability
   /v1/plugins:
     get:
-      description: List every registered plugin with its real status.
+      description: 'List every **loadable** registered plugin with its real status.
+
+
+        Entries without a module entry point are historical placeholders (the old
+
+        V3.0 seed rows such as ``identity-impl`` / ``tenant-A-identity-plugin``).
+
+        They can never be activated, so they are kept out of the enable list
+
+        instead of being rendered as permanently failing buttons.'
       operationId: list_plugins_v1_plugins_get
       parameters:
       - in: header
@@ -7979,9 +8846,70 @@ paths:
       summary: Activate Plugin
       tags:
       - plugins
+  /v1/plugins/{plugin_id}/execute:
+    post:
+      description: 'Execute a capability on an activated plugin and return the real result.
+
+
+        The endpoint exists so "已启用" is verifiable: it lazily runs the plugin''s
+
+        ``initialize`` / ``start`` lifecycle (if needed) and then calls the real
+
+        ``PluginInterface.execute`` implementation.'
+      operationId: execute_plugin_v1_plugins__plugin_id__execute_post
+      parameters:
+      - in: path
+        name: plugin_id
+        required: true
+        schema:
+          title: Plugin Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - additionalProperties: true
+                type: object
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Execute Plugin V1 Plugins  Plugin Id  Execute Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Execute Plugin
+      tags:
+      - plugins
   /v1/policy/approvals:
     get:
-      description: 列出审批凭据（默认只看有效的）。
+      description: 列出审批凭据（默认只看有效的；账号作用域=自己或子树）。
       operationId: list_approvals_v1_policy_approvals_get
       parameters:
       - in: query
@@ -8138,7 +9066,14 @@ paths:
       - policy
   /v1/policy/approvals/{grant_id}:
     delete:
-      description: 撤销一条审批凭据（审计留痕）。重复撤销幂等。
+      description: '撤销一条审批凭据（审计留痕）。重复撤销幂等。
+
+
+        管理员也只能撤销**自己子树内**主体的 grant；跨根撤销一律与"授权不存在"
+
+        同一个中性 404（否则 L0 管理员可凭 id 枚举并撤销任意根下的授权）。
+
+        无账号节点的独立管理员（``principals is None``）仍保留全局权限。'
       operationId: revoke_approval_v1_policy_approvals__grant_id__delete
       parameters:
       - in: path
@@ -8189,7 +9124,7 @@ paths:
       tags:
       - policy
     get:
-      description: 按 id 读取一条审批凭据（含已过期/已撤销）。
+      description: 按 id 读取一条审批凭据（含已过期/已撤销；作用域=自己或子树）。
       operationId: get_approval_v1_policy_approvals__grant_id__get
       parameters:
       - in: path
@@ -8273,7 +9208,7 @@ paths:
       - policy
   /v1/production/preflight:
     get:
-      description: '生产配置预检（需人类主体鉴权）。
+      description: '生产配置预检（需管理员鉴权）。
 
 
         报告**只含键名、代码与严重级别，不含任何配置值**。'
@@ -8312,7 +9247,7 @@ paths:
       - observability
   /v1/profile:
     delete:
-      description: '清空**当前主体**的画像（不可恢复）。
+      description: '清空**当前主体**的画像（不可恢复），并同步删穿内核 PERSISTENT 副本。
 
 
         主体只来自令牌：``DELETE /v1/profile?principal=someone`` 不会删掉别人，
@@ -8434,6 +9369,224 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Update Profile
+      tags:
+      - profile
+  /v1/profile/facts/{key}:
+    delete:
+      description: 删除单条事实（纠正错误记忆），同时删穿内核副本。
+      operationId: delete_profile_fact_v1_profile_facts__key__delete
+      parameters:
+      - in: path
+        name: key
+        required: true
+        schema:
+          title: Key
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Profile Fact V1 Profile Facts  Key  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Profile Fact
+      tags:
+      - profile
+  /v1/profile/pending:
+    get:
+      description: 模型提议、等待用户确认的长期事实（记忆投毒防线）。
+      operationId: list_pending_facts_v1_profile_pending_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Pending Facts V1 Profile Pending Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Pending Facts
+      tags:
+      - profile
+  /v1/profile/pending/{pending_id}/approve:
+    post:
+      description: 用户确认后才真正写入长期事实。
+      operationId: approve_pending_fact_v1_profile_pending__pending_id__approve_post
+      parameters:
+      - in: path
+        name: pending_id
+        required: true
+        schema:
+          title: Pending Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Approve Pending Fact V1 Profile Pending  Pending Id  Approve Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Approve Pending Fact
+      tags:
+      - profile
+  /v1/profile/pending/{pending_id}/reject:
+    post:
+      operationId: reject_pending_fact_v1_profile_pending__pending_id__reject_post
+      parameters:
+      - in: path
+        name: pending_id
+        required: true
+        schema:
+          title: Pending Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reject Pending Fact V1 Profile Pending  Pending Id  Reject Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reject Pending Fact
+      tags:
+      - profile
+  /v1/profile/preferences/{key}:
+    delete:
+      description: 删除单条偏好（纠正错误记忆），同时删穿内核副本。
+      operationId: delete_profile_preference_v1_profile_preferences__key__delete
+      parameters:
+      - in: path
+        name: key
+        required: true
+        schema:
+          title: Key
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Profile Preference V1 Profile Preferences  Key  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Profile Preference
       tags:
       - profile
   /v1/profile/summary:
@@ -8790,33 +9943,39 @@ paths:
       - projects
   /v1/sessions/search:
     get:
-      description: '在当前账号自己的会话历史里全文搜索：中文按 2 字及以上子串命中（CJK bigram 索引）；
-        索引建立中返回 ready=false 与进度；FTS5 不可用或单字查询时降级为逐行扫描并给出 notice。
-        搜索范围固定为当前账号，不跨账号。'
+      description: "在当前账号可读的会话历史里全文搜索。\n\n* 中文按 2 字及以上子串命中（CJK bigram 索引）；\n* 索引建立中会返回 ``ready=false``\
+        \ 与进度 ``indexed/index_total``，\n  结果可能不完整；\n* FTS5 不可用或单字查询时降级为逐行扫描，``degraded=true`` 且\n  ``notice``\
+        \ 会明确写「搜索变慢」——绝不静默变慢。\n\n根账号合并子树搜索；每条结果的 ``account`` 标出它属于哪个账号。"
       operationId: search_sessions_v1_sessions_search_get
       parameters:
-      - in: query
+      - description: 搜索词（中文子串可直接搜）
+        in: query
         name: q
         required: true
         schema:
+          description: 搜索词（中文子串可直接搜）
           maxLength: 200
           minLength: 1
           title: Q
           type: string
-      - in: query
+      - description: 本页结果数
+        in: query
         name: limit
         required: false
         schema:
           default: 20
+          description: 本页结果数
           maximum: 200
           minimum: 1
           title: Limit
           type: integer
-      - in: query
+      - description: 跳过多少条结果
+        in: query
         name: offset
         required: false
         schema:
           default: 0
+          description: 跳过多少条结果
           minimum: 0
           title: Offset
           type: integer
@@ -8856,8 +10015,6 @@ paths:
       - chat
   /v1/settings/logs:
     get:
-      description: 当前日志占用与生效中的保留策略；last_report 是最近一次清理报告。不返回日志目录绝对路径。
-        鉴权要求任意已登录人类令牌（成员可读）；保存与清理见 PUT/POST，仅根账号可用。
       operationId: get_log_settings_v1_settings_logs_get
       parameters:
       - in: header
@@ -8881,10 +10038,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LogSettingsState'
+                additionalProperties: true
+                title: Response Get Log Settings V1 Settings Logs Get
+                type: object
           description: Successful Response
-        '401':
-          description: 缺少或无效的人类身份令牌（require_human_principal 闸门）。
         '422':
           content:
             application/json:
@@ -8895,10 +10052,6 @@ paths:
       tags:
       - settings
     put:
-      description: 保存日志保留策略（天数与总量上限）。环境变量 LIUHAO_LOG_RETENTION_DAYS /
-        LIUHAO_LOG_MAX_TOTAL_BYTES 覆盖时，响应里的 env_override 会标 true，界面改动不生效。
-        只改策略，不删除任何文件。读取对任意已登录人类开放；写入仅根账号
-        （成员调用返回 403 SETTINGS_ROOT_ONLY）。
       operationId: update_log_settings_v1_settings_logs_put
       parameters:
       - in: header
@@ -8928,35 +10081,21 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LogSettingsState'
+                additionalProperties: true
+                title: Response Update Log Settings V1 Settings Logs Put
+                type: object
           description: Successful Response
-        '401':
-          description: 缺少或无效的人类身份令牌（require_human_principal 闸门）。
         '422':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-        '403':
-          content:
-            application/json:
-              examples:
-                settings_root_only:
-                  summary: 成员账号写设置（403）
-                  value:
-                    code: SETTINGS_ROOT_ONLY
-                    message: 该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。
-                    detail: 该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。
-          description: 成员账号只能读取；保存保留策略仅根账号可用，稳定错误码 SETTINGS_ROOT_ONLY。
       summary: Update Log Settings
       tags:
       - settings
   /v1/settings/logs/prune:
     post:
-      description: 立即按当前策略清理旧日志备份；正在写入的活动日志永不删除。不需要请求体。
-        结果同时返回最新状态（state）与本次清理报告（report）。读取对任意已登录人类开放；
-        立即清理仅根账号（成员调用返回 403 SETTINGS_ROOT_ONLY）。
       operationId: prune_logs_v1_settings_logs_prune_post
       parameters:
       - in: header
@@ -8980,33 +10119,16 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: false
-                properties:
-                  report:
-                    $ref: '#/components/schemas/LogRetentionReport'
-                  state:
-                    $ref: '#/components/schemas/LogSettingsState'
+                additionalProperties: true
+                title: Response Prune Logs V1 Settings Logs Prune Post
                 type: object
           description: Successful Response
-        '401':
-          description: 缺少或无效的人类身份令牌（require_human_principal 闸门）。
         '422':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-        '403':
-          content:
-            application/json:
-              examples:
-                settings_root_only:
-                  summary: 成员账号写设置（403）
-                  value:
-                    code: SETTINGS_ROOT_ONLY
-                    message: 该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。
-                    detail: 该设置由最高权限账号统一管理，当前账号只能查看；修改没有生效。
-          description: 成员账号只能读取；立即清理仅根账号可用，稳定错误码 SETTINGS_ROOT_ONLY。
       summary: Prune Logs
       tags:
       - settings
@@ -9036,7 +10158,14 @@ paths:
       description: '读取某个实体的真实信任状态（只读）。
 
 
-        数据全部来自信任内核进程单例，绝不另建一份可能分叉 / 造假的副本。'
+        数据全部来自信任内核进程单例，绝不另建一份可能分叉 / 造假的副本。
+
+
+        归属：只能读自己或自己子树内的实体；其他主体（含不存在的用户名）一律
+
+        与"资源不存在"同一个中性 404 —— 否则本接口就是一个可枚举任意用户是否
+
+        存在的预言机。``stats`` 是全局统计，只对管理员返回。'
       operationId: get_trust_v1_trust__entity_id__get
       parameters:
       - in: path

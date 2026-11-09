@@ -8,6 +8,61 @@ from pathlib import Path
 from typing import Any, List
 from urllib.parse import urlparse
 
+from src.tasks._queue_paths import resolve_sqlite_store
+
+
+def _app_root() -> Path:
+    """程序根（安装树 / 源码仓库）；取不到时退回本文件所在仓库根。"""
+    try:
+        from src.upgrade.update_check import default_app_root
+
+        return default_app_root()
+    except Exception:  # noqa: BLE001 - 仅用于探测旧位置，失败不影响解析
+        return Path(__file__).resolve().parents[2]
+
+
+def _legacy_metrics_db() -> Path:
+    """旧默认位置：返回**确实存在**的那一份，都没有时退回 cwd。
+
+    历史默认 ``sqlite:///./verify_metrics.db`` 是相对 cwd 解析的，所以旧库一定
+    躺在"当年启动进程的那个目录"里。只看固定一个位置会漏：用户可能换了个目录
+    启动（例如从仓库根换成安装根）。因此按顺序探测：
+
+    1. 当前 cwd —— 老版本最常写入的位置；
+    2. 程序根（安装树 / 源码仓库）—— 从程序目录启动过的那台机器。
+
+    两者同时存在时不猜，按上面的优先级只迁移 **cwd** 那一份（两份内容如果
+    不同，没有任何依据判断哪份更权威），另一份留在原处、不删不改。
+    """
+    candidates: list[Path] = []
+    for root in (Path.cwd(), _app_root()):
+        candidate = root / "verify_metrics.db"
+        if candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return candidates[0]
+
+
+def default_metrics_database_url() -> str:
+    """未显式配置时的指标库地址：统一数据根，旧 ``<cwd>/verify_metrics.db`` 迁移。
+
+    历史默认 ``sqlite:///./verify_metrics.db`` 是相对 **当前工作目录** 解析的：
+    从用户主目录或系统目录启动时会悄悄把指标库写到 C 盘。改为数据根下的
+    ``verify_metrics.db``；旧位置存在时按队列同款流程迁移（backup API + 校验 +
+    原子落位 + 旧文件保留），失败继续用旧库。
+    """
+    path = resolve_sqlite_store(
+        "verify_metrics.db",
+        _legacy_metrics_db(),
+        label="指标库",
+    )
+    return "sqlite:///" + Path(path).as_posix()
+
 
 @dataclass(frozen=True)
 class ProviderMetric:
@@ -34,8 +89,10 @@ class ProviderMetricsRepository:
     """
 
     def __init__(self, database_url: str | None = None) -> None:
-        self.database_url = database_url or os.environ.get(
-            "DATABASE_URL", "sqlite:///./verify_metrics.db"
+        self.database_url = (
+            database_url
+            or (os.environ.get("DATABASE_URL") or "").strip()
+            or default_metrics_database_url()
         )
         self._lock = threading.RLock()
         self._conn = self._connect()

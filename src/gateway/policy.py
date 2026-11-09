@@ -121,6 +121,14 @@ def require_bearer_payload(
     except IdentityStoreUnavailable:
         # 撤销库读不出来是**本机基础设施故障**，不是令牌无效：回 503，
         # 文案明确"这次不是你密码的问题"。与下面的 401 是两套话、两个码。
+        #
+        # **仅测试路径**：真实 HTTP 请求在到达本依赖前，已经由
+        # ``GlobalRateLimitMiddleware``（全部 /v1）与 ``RateLimitMiddleware``
+        # （受保护前缀）完成身份解析，503 由它们先行返回；本分支唯一被直接
+        # 调用覆盖的地方是 tests/test_overload_isolation.py 的
+        # ``test_identity_store_unavailable_maps_to_503_not_401``（另有"中间件
+        # 解析成功后数据库立刻再次卡住"的窄竞态）。因此保留而不是删除，形状
+        # 必须与 rate_limiter.identity_unavailable_payload 的四字段一致。
         raise identity_unavailable_exception("unavailable")
     except Exception:  # noqa: BLE001 - 具体原因不外泄（可能含解析细节）
         raise HTTPException(
@@ -390,19 +398,51 @@ def create_approval(
     return {"approved": True, "grant": grant.to_dict()}
 
 
+def _approval_scope(payload) -> tuple[Any, Optional[List[str]], str]:
+    """审批凭据的可读主体集合（与 audit.py 的账号树口径一致）。
+
+    * 成员：``[自己]``；根：整棵子树（凭据里自带 ``issued_by`` 标出签发主体）；
+    * 无账号节点的老部署：L0 不设限、其余只看自己；
+    * 非经核验令牌（进程内直接调用）不设限；HTTP 上不可达。
+    """
+    if payload is None or not hasattr(payload, "sub"):
+        return None, None, "all"
+    from .audit import _account_scope, _scope_filter
+
+    context, sovereign = _account_scope(payload)
+    principals, mode = _scope_filter(context, sovereign, None)
+    return context, principals, mode
+
+
+def _approval_read_scope(context, principals, mode) -> Dict[str, Any]:
+    return {
+        "mode": mode,
+        "principals": principals if principals is not None else "all",
+        "root_view": bool(
+            context is not None and context.is_root and mode == "subtree"
+        ),
+    }
+
+
 @router.get("/policy/approvals", response_model=Dict[str, Any])
 def list_approvals(
     include_expired: bool = False,
     include_revoked: bool = False,
     _: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
-    """列出审批凭据（默认只看有效的）。"""
+    """列出审批凭据（默认只看有效的；账号作用域=自己或子树）。"""
+    context, principals, mode = _approval_scope(payload)
     grants = list_grants(
         include_expired=include_expired, include_revoked=include_revoked
     )
+    if principals is not None:
+        visible = set(principals)
+        grants = [g for g in grants if str(g.principal) in visible]
     return {
         "count": len(grants),
         "grants": [g.to_dict() for g in grants],
+        "read_scope": _approval_read_scope(context, principals, mode),
         "enforcement": describe_enforcement(),
     }
 
@@ -497,15 +537,28 @@ def list_pending_approvals(
 
 
 @router.get("/policy/approvals/{grant_id}", response_model=Dict[str, Any])
-def get_approval(grant_id: str, _: str = Depends(require_human_principal)) -> Dict[str, Any]:
-    """按 id 读取一条审批凭据（含已过期/已撤销）。"""
+def get_approval(
+    grant_id: str,
+    _: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
+) -> Dict[str, Any]:
+    """按 id 读取一条审批凭据（含已过期/已撤销；作用域=自己或子树）。"""
+    context, principals, mode = _approval_scope(payload)
     grant = get_grant(grant_id)
     if grant is None:
         raise HTTPException(
             status_code=404,
             detail="没有找到这条授权，可能已经撤销。请刷新审批列表后重试。",
         )
-    return grant.to_dict()
+    if principals is not None and str(grant.principal) not in set(principals):
+        # 存在但不在你的子树里 —— 与"不存在"同一个 404，不泄露存在性。
+        raise HTTPException(
+            status_code=404,
+            detail="没有找到这条授权，可能已经撤销。请刷新审批列表后重试。",
+        )
+    body = grant.to_dict()
+    body["read_scope"] = _approval_read_scope(context, principals, mode)
+    return body
 
 
 @router.delete("/policy/approvals/{grant_id}", response_model=Dict[str, Any])
@@ -513,8 +566,23 @@ def revoke_approval(
     grant_id: str,
     reason: str = "",
     principal: str = Depends(require_admin_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
-    """撤销一条审批凭据（审计留痕）。重复撤销幂等。"""
+    """撤销一条审批凭据（审计留痕）。重复撤销幂等。
+
+    管理员也只能撤销**自己子树内**主体的 grant；跨根撤销一律与"授权不存在"
+    同一个中性 404（否则 L0 管理员可凭 id 枚举并撤销任意根下的授权）。
+    无账号节点的独立管理员（``principals is None``）仍保留全局权限。
+    """
+    _, principals, _mode = _approval_scope(payload)
+    grant = get_grant(grant_id)
+    if grant is not None and principals is not None:
+        if str(grant.principal) not in set(principals):
+            raise HTTPException(
+                status_code=404,
+                detail="这条授权不存在或已经撤销，本次操作没有完成。"
+                       "请刷新后重新查看。",
+            )
     try:
         grant = revoke_grant(grant_id, revoked_by=principal, reason=reason)
     except KeyError as exc:

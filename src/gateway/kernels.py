@@ -8,8 +8,9 @@
 - ``POST /v1/kernels/{name}/resume``：恢复指定内核（合法前置 PAUSED）。
 
 全部路由挂在带 ``require_human_principal`` 闸门的 router 上（main.get_app 统一
-挂一次；这里每条再显式加一次依赖，确保即使挂载方式变化也不会漏闸门），未持
-有效人类令牌的请求会得到 401。
+挂一次；这里每条再显式加一次依赖，确保挂载方式变化也不会漏闸门），未持有效人类
+令牌的请求会得到 401。``init`` / ``shutdown`` / ``pause`` / ``resume`` 会改变全局
+内核状态，额外要求管理员权限（非管理员 403）；只读的 ``GET /v1/kernels`` 不要求。
 
 **绝不伪造成功**：factory-only 的 context / execution 没有规范单例，pause/resume
 它们会如实返回 409 + 原因；实例不存在的内核也如实返回 409 + 原因，而不是假装
@@ -64,7 +65,7 @@ def post_kernels_shutdown(_: str = Depends(require_admin_principal)) -> Dict[str
 
 @kernels_router.post("/kernels/{name}/pause")
 def post_kernels_pause(
-    name: str, _: str = Depends(require_human_principal)
+    name: str, _: str = Depends(require_admin_principal)
 ) -> Dict[str, Any]:
     """暂停指定内核。合法前置：READY / UNINITIALIZED。
 
@@ -103,12 +104,15 @@ def post_kernels_pause(
     try:
         inst.pause()
     except KernelStateError as exc:
+        current = getattr(inst, "lifecycle", None)
         raise HTTPException(
             status_code=409,
             detail={
                 "error": "illegal_state_transition",
                 "name": name,
-                "current": getattr(inst, "lifecycle", None),
+                # 枚举必须先取 .value：应用的 HTTPException 处理器直接 json.dumps，
+                # 原始 Enum 会让 409 变成 TypeError/500。
+                "current": getattr(current, "value", current),
                 "detail": str(exc),
             },
         )
@@ -121,7 +125,7 @@ def post_kernels_pause(
 
 @kernels_router.post("/kernels/{name}/resume")
 def post_kernels_resume(
-    name: str, _: str = Depends(require_human_principal)
+    name: str, _: str = Depends(require_admin_principal)
 ) -> Dict[str, Any]:
     """恢复指定内核。合法前置：PAUSED。
 
@@ -156,12 +160,13 @@ def post_kernels_resume(
     try:
         inst.resume()
     except KernelStateError as exc:
+        current = getattr(inst, "lifecycle", None)
         raise HTTPException(
             status_code=409,
             detail={
                 "error": "illegal_state_transition",
                 "name": name,
-                "current": getattr(inst, "lifecycle", None),
+                "current": getattr(current, "value", current),
                 "detail": str(exc),
             },
         )

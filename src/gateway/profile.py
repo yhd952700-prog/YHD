@@ -56,6 +56,7 @@ def get_profile(principal: str = Depends(require_human_principal)) -> Dict[str, 
     profile = pcm.get_profile(pid)
     data = profile.to_dict()
     data["has_profile"] = pcm.has_profile(pid)
+    data["pending_facts"] = pcm.list_pending_facts(pid)
     # 摘要：空画像时不给兜底串（与对话链路注入行为一致）。
     data["summary"] = pcm.summarize(pid) if pcm.has_profile(pid) else ""
     return data
@@ -136,12 +137,74 @@ def update_profile(
 
 @router.delete("/profile")
 def clear_profile(principal: str = Depends(require_human_principal)) -> Dict[str, Any]:
-    """清空**当前主体**的画像（不可恢复）。
+    """清空**当前主体**的画像（不可恢复），并同步删穿内核 PERSISTENT 副本。
 
     主体只来自令牌：``DELETE /v1/profile?principal=someone`` 不会删掉别人，
     查询参数被忽略。
     """
     pid = _resolve(principal)
     pcm = get_personal_context()
-    pcm.clear(pid)
-    return {"principal": pid, "cleared": True, "has_profile": pcm.has_profile(pid)}
+    kernel_deleted = pcm.clear(pid)
+    return {
+        "principal": pid,
+        "cleared": True,
+        "kernel_deleted": kernel_deleted,
+        "has_profile": pcm.has_profile(pid),
+    }
+
+
+@router.delete("/profile/facts/{key}")
+def delete_profile_fact(
+    key: str, principal: str = Depends(require_human_principal)
+) -> Dict[str, Any]:
+    """删除单条事实（纠正错误记忆），同时删穿内核副本。"""
+    pid = _resolve(principal)
+    pcm = get_personal_context()
+    deleted = pcm.delete_fact(pid, key)
+    return {"principal": pid, "key": key, "deleted": deleted}
+
+
+@router.delete("/profile/preferences/{key}")
+def delete_profile_preference(
+    key: str, principal: str = Depends(require_human_principal)
+) -> Dict[str, Any]:
+    """删除单条偏好（纠正错误记忆），同时删穿内核副本。"""
+    pid = _resolve(principal)
+    pcm = get_personal_context()
+    deleted = pcm.delete_preference(pid, key)
+    return {"principal": pid, "key": key, "deleted": deleted}
+
+
+@router.get("/profile/pending")
+def list_pending_facts(
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    """模型提议、等待用户确认的长期事实（记忆投毒防线）。"""
+    pid = _resolve(principal)
+    return {
+        "principal": pid,
+        "pending": get_personal_context().list_pending_facts(pid),
+    }
+
+
+@router.post("/profile/pending/{pending_id}/approve")
+def approve_pending_fact(
+    pending_id: str, principal: str = Depends(require_human_principal)
+) -> Dict[str, Any]:
+    """用户确认后才真正写入长期事实。"""
+    pid = _resolve(principal)
+    item = get_personal_context().approve_pending_fact(pid, pending_id)
+    if item is None:
+        return {"principal": pid, "approved": False, "reason": "不存在或已处理"}
+    return {"principal": pid, "approved": True, "item": item}
+
+
+@router.post("/profile/pending/{pending_id}/reject")
+def reject_pending_fact(
+    pending_id: str, principal: str = Depends(require_human_principal)
+) -> Dict[str, Any]:
+    pid = _resolve(principal)
+    item = get_personal_context().reject_pending_fact(pid, pending_id)
+    if item is None:
+        return {"principal": pid, "rejected": False, "reason": "不存在或已处理"}
+    return {"principal": pid, "rejected": True, "item": item}

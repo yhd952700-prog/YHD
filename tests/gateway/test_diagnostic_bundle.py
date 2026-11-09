@@ -27,6 +27,27 @@ from src.gateway.diagnostic_bundle import (
 )
 
 
+def _allow_admin(app) -> None:
+    """独立挂载 router 的打包用例不测鉴权：显式放行管理员依赖。
+
+    真实鉴权（管理员 200 / 成员 403 / 匿名 401）由下方真实 App 用例覆盖。
+    """
+    from src.gateway.policy import require_admin_principal
+
+    app.dependency_overrides[require_admin_principal] = lambda: "test-admin"
+
+
+def _token(scope: str) -> dict:
+    """按网关同一签发路径铸令牌；scope L0=管理员，L1=成员。"""
+    from src.security import get_jwt_handler
+
+    token, _payload = get_jwt_handler().create_token(
+        subject=f"test-diagnostics-{scope}",
+        metadata={"kind": "human", "scope": scope},
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture()
 def fake_probes(monkeypatch):
     """把真实探针换成固定内容：测的是打包与脱敏，不是健康检查本身。"""
@@ -245,6 +266,7 @@ def test_endpoint_returns_a_zip_with_declared_filename(fake_probes):
 
     app = FastAPI()
     app.include_router(bundle.router)
+    _allow_admin(app)
     with TestClient(app) as client:
         response = client.get("/v1/diagnostics/bundle")
 
@@ -263,6 +285,36 @@ def test_real_app_requires_login_before_export():
         response = client.get("/v1/diagnostics/bundle")
 
     assert response.status_code in (401, 403)
+
+
+def test_real_app_admin_can_export(fake_probes):
+    """管理员（L0）仍能导出 —— 收紧权限不能把正常运维路径锁死。"""
+    from fastapi.testclient import TestClient
+
+    from src.gateway.main import get_app
+
+    with TestClient(get_app(), headers=_token("L0")) as client:
+        response = client.get("/v1/diagnostics/bundle")
+
+    assert response.status_code == 200, response.text
+    assert response.content[:2] == b"PK"
+
+
+def test_real_app_member_is_forbidden_with_chinese_reason():
+    """成员（L1）导整机诊断包必须 403，且只给中文原因、不回显内部路径/堆栈。"""
+    from fastapi.testclient import TestClient
+
+    from src.gateway.main import get_app
+
+    with TestClient(get_app(), headers=_token("L1")) as client:
+        response = client.get("/v1/diagnostics/bundle")
+
+    assert response.status_code == 403, response.text
+    detail = response.json()["detail"]
+    assert isinstance(detail, str), detail
+    assert "管理员权限" in detail
+    for leak in ("Traceback", "diagnostic_bundle", "src/gateway", "src\\gateway", "C:\\", "/Users/", ".py"):
+        assert leak not in response.text, f"403 响应泄漏了内部信息：{leak!r}"
 
 
 # --------------------------------------------------------------------------- #
@@ -383,6 +435,7 @@ def test_endpoint_downgrades_and_reports_omitted_members(tmp_path, fake_probes, 
 
     app = FastAPI()
     app.include_router(bundle.router)
+    _allow_admin(app)
     with TestClient(app) as client:
         response = client.get("/v1/diagnostics/bundle")
 
@@ -411,6 +464,7 @@ def test_endpoint_returns_409_only_when_nothing_can_be_saved(
 
     app = FastAPI()
     app.include_router(bundle.router)
+    _allow_admin(app)
     with TestClient(app) as client:
         response = client.get("/v1/diagnostics/bundle")
 

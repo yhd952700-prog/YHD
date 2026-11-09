@@ -22,9 +22,8 @@ Expected conclusions:
 from __future__ import annotations
 
 import json
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 import pytest
 from fastapi.testclient import TestClient
@@ -115,20 +114,30 @@ class _StubHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture()
-def stub_server():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
-    server.daemon_threads = True
-    server.request_count = 0
-    server.request_started_at = []
-    server.usage_snapshots = []
-    server.usage_probe = None
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+def stub_server(loopback_inference_server):
+    # 带 Key 的 http 只放行回环 + 11434/1234/8000/8080（net_guard 的产品策略）。
+    # 假上游必须站在白名单端口上：绑随机端口时用例测到的只是"策略拒绝随机
+    # 端口"，根本走不到这里要验证的"上游没有返回内容"。产品策略不动。
+    with loopback_inference_server(_StubHandler, "stream-honesty") as server:
+        server.request_count = 0
+        server.request_started_at = []
+        server.usage_snapshots = []
+        server.usage_probe = None
         yield server
-    finally:
-        server.shutdown()
-        server.server_close()
+
+
+@pytest.fixture(autouse=True)
+def _retry_short_timeouts(monkeypatch):
+    """0.6 秒超时是为了让用例跑得快，不是产品默认的"短超时不重试"。
+
+    ``providers.py`` 默认阈值 5 秒（用户把超时压短就是明确要求"别让我等"），
+    0.6 秒下重试路径根本不会被走到。这里用产品自带的官方开关
+    ``LIUHAO_RETRY_MIN_TIMEOUT_SECONDS=0``（"任何超时都照常重试"）开启重试，
+    产品默认值与断言都不动。
+    """
+    from src.ai.providers import RETRY_MIN_TIMEOUT_ENV
+
+    monkeypatch.setenv(RETRY_MIN_TIMEOUT_ENV, "0")
 
 
 @pytest.fixture(autouse=True)

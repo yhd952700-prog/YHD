@@ -46,6 +46,260 @@ def client():
         yield test_client
 
 
+class TestProbeTrafficIsNotUserTraffic:
+    """A probe 503 must not look like a user request failure.
+
+    The operational review saw ``/v1/ready`` 503 counted into
+    ``error_rate_percent`` and a false CRITICAL (50.0 / 25.0) while the
+    service was healthy. The alerting math is covered in
+    ``tests/gateway/test_alerting_real.py``; this test pins the WIRING --
+    the real middleware must pass ``is_probe=True`` for probe paths.
+    """
+
+    def test_ready_503_lands_in_probe_counters_not_error_rate(
+        self, client, monkeypatch
+    ):
+        from src.gateway import health as health_module
+        from src.gateway import main as main_module
+        from src.observability.metrics import get_metric_collector
+
+        # The collector is imported by the deferred warmup thread, which waits
+        # up to 10s for the first screen -- a test never waits that long, so
+        # the middleware would be a no-op here. Production has it live once
+        # warmup finishes; trigger the same idempotent import so this test
+        # exercises the real middleware wiring instead of the import timing.
+        main_module._ensure_http_metrics()
+
+        async def _timeout(*_args, **_kwargs):
+            raise health_module.ProbeTimeout("probe exceeded 2.0s")
+
+        monkeypatch.setattr(health_module, "_run_probe", _timeout)
+        collector = get_metric_collector()
+        before_snap = collector.collect_snapshot()
+        before_probe = collector.probe_stats()
+
+        response = client.get("/v1/ready")
+
+        assert response.status_code == 503, response.text
+        after_probe = collector.probe_stats()
+        after_snap = collector.collect_snapshot()
+
+        assert after_probe["requests"] == before_probe["requests"] + 1
+        assert after_probe["five_xx"] == before_probe["five_xx"] + 1
+        # Nothing leaked into the user-request counters. ``collect_snapshot``
+        # exposes the alert-facing metrics only (no raw total_requests key),
+        # so assert on the derived ones: neither the error rate nor the
+        # latency window may move when a probe 503s.
+        assert after_snap["error_rate_percent"] == before_snap["error_rate_percent"]
+        assert after_snap["latency_p99_ms"] == before_snap["latency_p99_ms"]
+
+    def test_business_paths_are_not_in_the_probe_set(self):
+        from src.gateway.main import PROBE_ONLY_PATHS
+
+        for probe in ("/v1/health", "/v1/ready", "/v1/metrics"):
+            assert probe in PROBE_ONLY_PATHS
+        # A user-facing route must NOT be excluded, or this fix would silence
+        # real failures instead of just the probe false positive.
+        assert "/v1/chat" not in PROBE_ONLY_PATHS
+        assert "/v1/ready/subsystems" in PROBE_ONLY_PATHS
+
+
+class TestSchedulerReadiness:
+    """排程器起不来时 /v1/ready 必须显性报 unhealthy。
+
+    真实案例：旧库缺列（``no such column: concurrency_key``）导致整条排程器
+    不启动，提醒/定时任务静默不响，而 `/v1/ready` 全程健康。
+    """
+
+    @staticmethod
+    def _broken_host():
+        class _Broken:
+            running = False
+            reason = ""
+            start_error = (
+                "本地排程器启动失败（提醒与定时任务不会触发）："
+                "OperationalError: no such column: concurrency_key"
+            )
+
+        return _Broken()
+
+    def test_scheduler_start_failure_is_unhealthy_and_named(self, client):
+        client.app.state.local_scheduler_host = self._broken_host()
+
+        response = client.get("/v1/ready")
+        body = response.json()
+
+        assert response.status_code == 503, response.text
+        scheduler = body["checks"]["scheduler"]
+        assert scheduler["status"] == "unhealthy"
+        assert scheduler["start_error"]
+        assert "提醒与定时任务不会触发" in scheduler["user_message"]
+        assert any("Scheduler:" in err for err in body.get("errors", []))
+
+    def test_scheduler_check_is_wired_into_the_real_probe(self, client):
+        body = client.get("/v1/ready").json()
+        scheduler = body["checks"].get("scheduler")
+        assert scheduler is not None, "/v1/ready 没有排程器检查项 —— 接线丢了"
+        assert scheduler["status"] == "healthy"
+        # 启动宽限窗口内也不许冒充"运行正常"。
+        assert scheduler.get("display_status") in {"排程器启动中", "排程器运行中", "排程器未在本进程运行"}
+
+    def test_running_scheduler_reports_healthy(self, client):
+        class _Running:
+            running = True
+            reason = "运行中"
+            start_error = ""
+
+        client.app.state.local_scheduler_host = _Running()
+        body = client.get("/v1/ready").json()
+        scheduler = body["checks"]["scheduler"]
+        assert scheduler["status"] == "healthy"
+        assert "提醒与定时任务会按时触发" in scheduler["user_message"]
+
+
+class TestKernelReadiness:
+    """关键内核未到 READY 必须进 /v1/ready；非关键失败只作告警。
+
+    真实空档：``initialize_all()`` 的错误只进日志和 /v1/startup，单个关键内核
+    （身份/审计/安全/策略）没到 READY 时 /v1/ready 全绿。用一个聚合项避免把
+    检查列表逐个撑长。
+    """
+
+    def test_critical_kernel_not_ready_blocks_readiness(self, client):
+        client.app.state.kernel_lifecycle_report = {
+            "initialized": [],
+            "skipped_not_present": [],
+            "no_canonical_instance": [],
+            "errors": [{"name": "identity", "error": "许可证存储不可读"}],
+            "snapshot": {
+                "identity": {
+                    "name": "identity",
+                    "has_instance": True,
+                    "lifecycle": "uninitialized",
+                }
+            },
+        }
+
+        response = client.get("/v1/ready")
+        body = response.json()
+
+        assert response.status_code == 503, response.text
+        kernels = body["checks"]["kernels"]
+        assert kernels["status"] == "unhealthy"
+        assert kernels["critical_not_ready"][0]["name"] == "identity"
+        assert "账号身份与登录校验" in kernels["critical_not_ready"][0]["impact"]
+        assert "账号身份与登录校验" in kernels["user_message"]
+        assert any("Kernels:" in err for err in body.get("errors", []))
+
+    def test_optional_kernel_failure_is_advisory_not_blocking(self, client):
+        client.app.state.kernel_lifecycle_report = {
+            "initialized": [],
+            "skipped_not_present": [],
+            "no_canonical_instance": [],
+            "errors": [{"name": "memory", "error": "存储不可读"}],
+            "snapshot": {
+                "memory": {
+                    "name": "memory",
+                    "has_instance": True,
+                    "lifecycle": "uninitialized",
+                }
+            },
+        }
+
+        response = client.get("/v1/ready")
+        body = response.json()
+
+        assert response.status_code == 200, response.text
+        kernels = body["checks"]["kernels"]
+        assert kernels["status"] == "degraded"
+        assert kernels["blocks_readiness"] is False
+        assert kernels["optional_not_ready"][0]["name"] == "memory"
+        assert "kernels" in (body.get("advisories") or [])
+
+    def test_kernel_check_is_wired_into_the_real_probe(self, client):
+        assert client.app.state.kernel_lifecycle_report is not None
+        body = client.get("/v1/ready").json()
+        kernels = body["checks"].get("kernels")
+        assert kernels is not None, "/v1/ready 没有内核聚合项 —— 接线丢了"
+        assert kernels["status"] == "healthy"
+
+
+class TestMetricsReadiness:
+    """监控失明按告警处理：不阻断就绪，但总览必须看得见。"""
+
+    def test_permanent_metrics_import_failure_is_advisory(self, client, monkeypatch):
+        from src.gateway import main as main_module
+
+        monkeypatch.setattr(main_module, "_metrics_import_attempted", True, raising=False)
+        monkeypatch.setattr(main_module, "_get_metric_collector", None, raising=False)
+        monkeypatch.setattr(main_module, "_RECORD_HTTP_REQUEST", None, raising=False)
+
+        response = client.get("/v1/ready")
+        body = response.json()
+
+        assert response.status_code == 200, response.text
+        assert body["status"] == "ready"
+        metrics = body["checks"]["metrics"]
+        assert metrics["status"] == "degraded"
+        assert metrics["blocks_readiness"] is False
+        assert "错误率告警会失明" in metrics["user_message"]
+        assert "metrics" in (body.get("advisories") or [])
+
+    def test_metrics_before_warmup_is_not_a_problem(self, client, monkeypatch):
+        from src.gateway import main as main_module
+
+        monkeypatch.setattr(main_module, "_metrics_import_attempted", False, raising=False)
+        body = client.get("/v1/ready").json()
+        metrics = body["checks"]["metrics"]
+        assert metrics["status"] == "healthy"
+        assert "预热" in metrics["display_status"]
+
+
+class TestSchedulerStartTimeout:
+    """启动线程卡在 build 而不抛异常时，宽限过后必须转 unhealthy。"""
+
+    def test_alive_thread_past_deadline_is_unhealthy(self, client):
+        import time
+
+        class _AliveThread:
+            def is_alive(self):
+                return True
+
+        client.app.state.local_scheduler_host = None
+        client.app.state.scheduler_host_thread = _AliveThread()
+        client.app.state.scheduler_start_timeout_s = 60.0
+        client.app.state.scheduler_start_deadline = time.monotonic() - 1.0
+
+        response = client.get("/v1/ready")
+        body = response.json()
+
+        assert response.status_code == 503, response.text
+        scheduler = body["checks"]["scheduler"]
+        assert scheduler["status"] == "unhealthy"
+        assert scheduler["display_status"] == "排程器启动超时"
+        assert "可能卡在初始化" in scheduler["user_message"]
+
+    def test_alive_thread_within_deadline_is_starting(self, client):
+        import time
+
+        class _AliveThread:
+            def is_alive(self):
+                return True
+
+        client.app.state.local_scheduler_host = None
+        client.app.state.scheduler_host_thread = _AliveThread()
+        client.app.state.scheduler_start_timeout_s = 60.0
+        client.app.state.scheduler_start_deadline = time.monotonic() + 60.0
+
+        response = client.get("/v1/ready")
+        body = response.json()
+
+        assert response.status_code == 200, response.text
+        scheduler = body["checks"]["scheduler"]
+        assert scheduler["status"] == "healthy"
+        assert scheduler["display_status"] == "排程器启动中"
+
+
 class TestWiring:
     def test_main_reuses_the_authoritative_router(self):
         """main 暴露的 health_router 必须**就是** health.py 那一个。"""
@@ -93,12 +347,18 @@ class TestReadiness:
     def test_status_and_http_code_agree(self, client):
         response = client.get("/v1/ready")
         body = response.json()
-        unhealthy = [
+        # 告警级检查（blocks_readiness=false，如监控链路）不参与 503 判定。
+        blocking = [
             name
             for name, detail in body["checks"].items()
-            if detail.get("status") != "healthy"
+            if detail.get("status") != "healthy" and detail.get("blocks_readiness", True)
         ]
-        if unhealthy:
+        advisory = [
+            name
+            for name, detail in body["checks"].items()
+            if detail.get("status") != "healthy" and not detail.get("blocks_readiness", True)
+        ]
+        if blocking:
             # 不健康时必须如实降级：503 + errors，而不是回答 "ready"。
             assert response.status_code == 503
             assert body["status"] == "degraded"
@@ -106,6 +366,9 @@ class TestReadiness:
         else:
             assert response.status_code == 200
             assert body["status"] == "ready"
+        if advisory:
+            # 告警不阻断，但也不能彻底隐身：payload 单独列出它们。
+            assert set(body.get("advisories") or []) == set(advisory)
 
     def test_each_check_carries_a_status(self, client):
         checks = client.get("/v1/ready").json()["checks"]
@@ -166,10 +429,14 @@ class TestProbeIsolation:
 
         assert response.status_code == 503, response.text
         body = response.json()
-        assert body["reason"] == "probe_timeout"
-        assert body["status"] == "busy"
-        assert "慢" in body["user_message"] or "处理较慢" in body["user_message"]
+        # 与业务 503 同一套四字段；`status=busy` 语义落在 `code` 与 `message` 里。
+        assert body["code"] == "PROBE_BUSY"
+        assert body["retry_after"] == 1
+        assert body["correlation_id"]
+        assert "慢" in body["message"] or "处理较慢" in body["message"]
+        assert set(body) == {"code", "message", "correlation_id", "retry_after"}
         assert response.headers.get("Retry-After") == "1"
+        assert response.headers.get("X-Correlation-ID") == body["correlation_id"]
         # 耗时应当≈预算，而不是≈采集时长：说明采集不在请求/事件循环线程上。
         assert elapsed < budget + 0.5, (
             f"指标端点等了 {elapsed:.2f}s，超过探针预算 {budget:.2f}s —— "
@@ -226,6 +493,108 @@ class TestProbeIsolation:
         assert "ai_provider_status()" not in body, (
             "liveness 又在事件循环线程上直接读模型配置库了（D-1 的僵死入口）"
         )
+
+
+class TestIdempotencyDedupeAdvisory:
+    """ACTION-01 后续：幂等账本缺失/不可写不允许静默。
+
+    账本缺席时硬副作用能力会被 fail-closed 拒绝，安全能力放行；两种情况都在
+    健康面留下告警级检查（``blocks_readiness=False``），并在 ``advisories`` 里列出。
+    """
+
+    def test_hard_side_effect_refusal_is_visible_but_not_blocking(
+        self, client, monkeypatch
+    ):
+        from src.gateway import health as health_module
+
+        monkeypatch.setattr(
+            health_module,
+            "_execution_dedupe_advisories",
+            lambda: [
+                {
+                    "code": "hard_side_effect_without_ledger",
+                    "status": "degraded",
+                    "advisory": True,
+                    "blocks_readiness": False,
+                    "display_status": "硬副作用已拒绝（账本未接入）",
+                    "display_name": "幂等去重",
+                    "user_message": (
+                        "执行引擎没有接入幂等账本（journal），已拒绝执行硬副作用能力"
+                        "（network_bus、personal.write…）。解决方式：注入 "
+                        "ExecutionJournal，或通过网关部署运行（网关默认已接入账本）。"
+                    ),
+                    "capability": "network_bus",
+                    "capabilities": ["network_bus"],
+                    "occurrences": 3,
+                    "first_seen_at": "2026-11-08T10:00:00+00:00",
+                    "last_seen_at": "2026-11-08T10:00:03+00:00",
+                }
+            ],
+        )
+
+        response = client.get("/v1/ready")
+        assert response.status_code == 200, "告警不得把就绪探针打成 503"
+        body = response.json()
+        check = body["checks"]["idempotency_dedupe"]
+        assert check["status"] == "degraded"
+        assert check["blocks_readiness"] is False
+        assert check["display_status"] == "硬副作用已拒绝（账本未接入）"
+        # 文案要让人看懂「哪些能力被挡了、怎么解」，不是一行术语。
+        assert "ExecutionJournal" in check["user_message"]
+        assert "网关默认已接入账本" in check["user_message"]
+        assert "本次被挡下的硬副作用能力：network_bus" in check["user_message"]
+        assert check["codes"] == ["hard_side_effect_without_ledger"]
+        assert check["capabilities"] == ["network_bus"]
+        assert check["occurrences"] == 3
+        assert "idempotency_dedupe" in (body.get("advisories") or [])
+
+    def test_safe_capability_advisory_names_blocked_class(self, client, monkeypatch):
+        from src.gateway import health as health_module
+
+        monkeypatch.setattr(
+            health_module,
+            "_execution_dedupe_advisories",
+            lambda: [
+                {
+                    "code": "ledger_missing_safe_replay",
+                    "status": "degraded",
+                    "advisory": True,
+                    "blocks_readiness": False,
+                    "display_status": "幂等账本未接入（安全能力已放行）",
+                    "display_name": "幂等去重",
+                    "user_message": (
+                        "执行引擎没有接入幂等账本（journal）：只读/可安全重入能力已放行；"
+                        "硬副作用能力会被拒绝执行。解决方式：注入 ExecutionJournal。"
+                    ),
+                    "capability": "file.read",
+                    "capabilities": ["file.read"],
+                    "occurrences": 1,
+                    "first_seen_at": "2026-11-08T10:00:00+00:00",
+                    "last_seen_at": "2026-11-08T10:00:00+00:00",
+                }
+            ],
+        )
+
+        response = client.get("/v1/ready")
+        assert response.status_code == 200
+        check = response.json()["checks"]["idempotency_dedupe"]
+        assert check["status"] == "degraded"
+        assert check["display_status"] == "幂等账本未接入（安全能力已放行）"
+        assert "硬副作用能力会被拒绝" in check["user_message"]
+        assert check["capabilities"] == ["file.read"]
+
+    def test_healthy_ledger_has_no_advisory(self, client, monkeypatch):
+        from src.gateway import health as health_module
+
+        monkeypatch.setattr(health_module, "_execution_dedupe_advisories", lambda: [])
+        response = client.get("/v1/ready")
+        assert response.status_code == 200
+        body = response.json()
+        check = body["checks"]["idempotency_dedupe"]
+        assert check["status"] == "healthy"
+        assert check["blocks_readiness"] is False
+        assert "idempotency_dedupe" not in (body.get("advisories") or [])
+
 
 
 def _default_executor_threads(loop) -> int:
@@ -314,12 +683,41 @@ class TestThreadPoolStartDoesNotStallLoop:
         assert main_module.install_nonblocking_worker_start() is True
         assert main_module.install_nonblocking_worker_start() is True
 
-    def test_probe_pool_threads_are_created_before_the_first_probe(self):
-        """探针线程池必须在启动时建好，不能在第一个探针请求里现场建线程。"""
+    def test_probe_pool_threads_are_created_before_the_first_probe(self, monkeypatch):
+        """探针线程池必须**真的**建满，且 4 条探针能同时跑。
+
+        为什么用独立的池：``_PROBE_POOL`` 是模块级全局，前面的 TestClient 用例已经
+        用过 /v1/health，会顺手把线程建出来 —— 在共享池上断言 ``== 4`` 会被前面的
+        测试"喂饱"而假绿（`rss8h4` 的现场就是只建出 2 条，见 §12.11）。
+        这里换一个新池，并要求 4 个任务能**同时**站在栅栏上（少一条线程就超时失败）。
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
         from src.gateway import health
 
-        assert health.warm_probe_pool() == 4
-        assert len(health._PROBE_POOL._threads) == 4
+        fresh = ThreadPoolExecutor(max_workers=4, thread_name_prefix="liuhao-probe-test")
+        monkeypatch.setattr(health, "_PROBE_POOL", fresh)
+        try:
+            assert health.warm_probe_pool() == 4
+            assert len(fresh._threads) == 4, "预热没有真的建出 4 条线程"
+
+            gate = threading.Barrier(4)
+
+            def _stand(_item=0, gate=gate):
+                try:
+                    gate.wait(1.0)
+                    return True
+                except threading.BrokenBarrierError:
+                    return False
+
+            outcomes = list(fresh.map(_stand, range(4)))
+            assert outcomes == [True, True, True, True], (
+                "4 个探针任务没能同时开跑：线程数不足，满载时会现场建线程（D-1）"
+            )
+            assert len(fresh._threads) == 4, "运行期又新建了线程"
+        finally:
+            fresh.shutdown(wait=False)
 
     def test_default_executor_threads_are_created_before_first_to_thread(self):
         """``asyncio.to_thread`` 用的默认线程池也必须在启动时建满。
@@ -357,9 +755,9 @@ class TestThreadPoolStartDoesNotStallLoop:
 
         async def scenario():
             loop = asyncio.get_running_loop()
-            before = len(loop._default_executor._threads) if loop._default_executor else 0
+            before = _default_executor_threads(loop)
             await asyncio.to_thread(lambda: None)
-            after = len(loop._default_executor._threads)
+            after = _default_executor_threads(loop)
             return before, after
 
         before, after = asyncio.run(scenario())

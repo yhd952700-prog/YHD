@@ -25,6 +25,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from _thread import start_new_thread as _start_new_thread
 
 if os.name == "nt":  # pragma: no cover - platform split
     import msvcrt
@@ -39,19 +40,58 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only, avoids any gateway<->a
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..ai.usage_meter import PLANNING_LABEL, meter_scope, snapshot
 from .account_usage import record_usage
+from .display import UserReadableHTTPException
 
 # Used to turn a produced file's absolute path into a workspace-relative,
 # honest artifact reference (never inventing a path that isn't real).
 from src.ai.workspace import workspace_root
+from src.common.atomic_write import describe_storage_failure
+from src.common.data_paths import resolve_store_path
 # 真实信任决议：雇佣前先查信任内核的撤销注册表。``src.kernels.trust`` 不反向
 # import ``src.gateway``，故此处取顶层 import 无循环风险（已验证）。
 from src.kernels.trust import get_trust_manager
 
+from ..common.input_guard import (
+    normalize_required_name,
+    normalize_required_text,
+    reject_unsafe_text,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _start_goal_thread(thread: threading.Thread) -> None:
+    """启动后台 goal 线程，但**不等**它真正跑起来（D-1）。
+
+    ``threading.Thread.start()`` 末尾的 ``self._started.wait()`` **没有超时**。
+    宿主资源紧张时新线程迟迟进不了 bootstrap，这个 ``start()`` 就会无限等；本函数
+    由 anyio worker 调用，等住的是整个 worker token，请求处理随之变慢。事件循环
+    那一路已由 ``main.install_nonblocking_worker_start`` 堵住，但这里是应用自己
+    ``new`` 的普通线程，那个补丁盖不到。
+
+    机制与 ``main.py`` 的 anyio 补丁一致：登记 limbo 后交给 ``_thread`` 直接启动，
+    不等 ``_started``。``_goal_threads`` 只做登记/清理（全仓库没有对 goal 线程
+    ``join()``，已核对），因此不需要 ``_started`` 被置位。
+    """
+    if thread._started.is_set():
+        raise RuntimeError("threads can only be started once")
+    limbo_lock = getattr(threading, "_active_limbo_lock", None)
+    limbo = getattr(threading, "_limbo", None)
+    if limbo_lock is None or limbo is None:  # pragma: no cover - CPython 内部结构变化
+        thread.start()
+        return
+    with limbo_lock:
+        limbo[thread] = thread
+    try:
+        _start_new_thread(thread._bootstrap, ())
+    except Exception:
+        with limbo_lock:
+            limbo.pop(thread, None)
+        raise
 
 
 def _butler_model_planning_enabled() -> bool:
@@ -124,6 +164,31 @@ class GoalCreateRequest(BaseModel):
         None, max_length=128,
         description="可选：把这次目标指名交给某位员工执行（其全部子任务都归该员工）",
     )
+    # 幂等键：同一次「提交目标」被重复发送时，服务端在短窗口内返回同一个
+    # goal_id，不再新起一条目标。
+    client_request_id: Optional[str] = Field(
+        None, max_length=128,
+        description="客户端请求 id（同一请求重发时保持不变，用于短窗口去重）",
+    )
+
+    @field_validator("natural_language")
+    @classmethod
+    def _check_natural_language(cls, value: str) -> str:
+        return normalize_required_text(value, "目标描述", max_chars=2000)
+
+    @field_validator("employee_name")
+    @classmethod
+    def _check_employee_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_name(value, "员工名", max_chars=128)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _check_client_request_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_name(value, "客户端请求 id", max_chars=128)
 
 
 class GoalSummary(BaseModel):
@@ -203,6 +268,18 @@ class HireEmployeeRequest(BaseModel):
         description="默认能力 id 列表（必须是已注册执行器的 capability）",
     )
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        return normalize_required_name(value, "员工名", max_chars=128)
+
+    @field_validator("role_description")
+    @classmethod
+    def _check_role_description(cls, value: str) -> str:
+        if value:
+            reject_unsafe_text(value, "职责描述")
+        return value
+
 
 class BatchHireEmployeesRequest(BaseModel):
     """批量雇佣：逐条创建，任一条失败不影响其它条目。"""
@@ -220,6 +297,18 @@ class AdoptEmployeeRequest(BaseModel):
         "", max_length=128, description="复制到根空间后的名字（省略则自动生成）"
     )
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        return normalize_required_name(value, "员工名", max_chars=128)
+
+    @field_validator("as_name")
+    @classmethod
+    def _check_as_name(cls, value: str) -> str:
+        if value:
+            return normalize_required_name(value, "新员工名", max_chars=128)
+        return value
+
 
 class EmployeeUpdateRequest(BaseModel):
     """改名 / 改职责 / 停用或启用 / 改默认能力（只作用于自己的员工）。"""
@@ -230,6 +319,20 @@ class EmployeeUpdateRequest(BaseModel):
     employment_status: Optional[str] = Field(
         None, description="active（在职）/ disabled（停用）"
     )
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_name(value, "新名字", max_chars=128)
+
+    @field_validator("role_description")
+    @classmethod
+    def _check_role_description(cls, value: Optional[str]) -> Optional[str]:
+        if value:
+            reject_unsafe_text(value, "职责描述")
+        return value
 
 
 class AssignTaskRequest(BaseModel):
@@ -257,6 +360,25 @@ class AssignTaskRequest(BaseModel):
         description="true: 立即返回 running 并可轮询逐任务进度；false: 同步执行到终态",
     )
 
+    @field_validator("employee_name")
+    @classmethod
+    def _check_employee_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_name(value, "员工名", max_chars=128)
+
+    @field_validator("agent_id")
+    @classmethod
+    def _check_agent_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_name(value, "agent id", max_chars=128)
+
+    @field_validator("instruction")
+    @classmethod
+    def _check_instruction(cls, value: str) -> str:
+        return normalize_required_text(value, "任务说明", max_chars=2000)
+
 
 class GoalWorkError(Exception):
     """Goal 子操作的可读错误：带 HTTP 状态码与明确错误码。
@@ -278,6 +400,15 @@ class GoalPersistError(GoalWorkError):
 
     def __init__(self, detail: str) -> None:
         super().__init__(507, "goal_persist_failed", detail)
+
+
+class GoalCorruptError(GoalPersistError):
+    """目标记录文件已损坏且无法自动恢复：必须显式告警，禁止静默覆盖。"""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = 500
+        self.code = "goal_store_corrupt"
 
 
 def _http_from_goal_error(exc: GoalWorkError) -> HTTPException:
@@ -386,7 +517,9 @@ class GoalViewer:
         if owner == self.principal:
             return True
         if self.is_root:
-            return True
+            # 多根并存时"根"只代表自己这棵树，不代表整个进程；必须收敛到
+            # 自己的子树，否则会跨根读到别人的目标/产物。
+            return owner in self.subtree
         if owner in self.subtree:
             return True
         # 单机老部署（令牌没有账号节点）读取"没有归属字段"的历史数据：
@@ -404,12 +537,17 @@ class GoalViewer:
         return self.standalone and owner == default_account_id()
 
     def sees_any_owner(self, owners: Set[str]) -> bool:
-        """产物下载：根看全部；其余只看自己（老数据归本机默认账号）。"""
+        """产物下载：与 :meth:`sees` 同一口径——只认自己子树。
+
+        多根并存时 ``is_root`` 只代表自己这棵树，不能当成"全站管理员"；
+        否则 ``root1`` 能下载另一棵树 ``child2`` 的产物。需要全站产物的
+        正当场景必须由显式管理员能力表达，而不是按 ``is_root`` 默认放行。
+        """
         if not owners:
             return True  # 没有归属记录的文件不是"别人的产物"
-        if self.is_root:
-            return True
         if self.principal in owners:
+            return True
+        if any(owner in self.subtree for owner in owners):
             return True
         return self.standalone and any(o == default_account_id() for o in owners)
 
@@ -670,17 +808,13 @@ class AIStateManager:
                 _lcore = LCore(scope="L1", register_local_tools=True)
                 # Crash recovery: attach a durable, append-only journal so a
                 # goal mid-flight when the process died can resume already-
-                # completed tasks on restart (journal keyed by goal id). Path is
-                # REDIR-able via LIUHAO_WORKSPACE_ROOT so isolation verifiers
-                # never touch the real workspace.
-                root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-                if root:
-                    journal_path = os.path.join(root, "liuhao_execution.journal")
-                else:
-                    journal_path = os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                        ".liuhao_execution.journal",
-                    )
+                # completed tasks on restart (journal keyed by goal id). The
+                # path MUST come from the same resolver the worker uses (data
+                # root + legacy migration): a private copy here splits the log
+                # between the API process and the worker.
+                from src.tasks.journal import execution_journal_path
+
+                journal_path = execution_journal_path()
                 journal = ExecutionJournal(journal_path)
                 # 产物索引（旁路观测）：构造失败不阻塞执行链，退回原行为。
                 try:
@@ -847,14 +981,29 @@ class AIStateManager:
 
             state = str(entry.get("state") or "").lower()
             tasks = [t for t in (entry.get("tasks") or []) if isinstance(t, dict)]
-            completed = sum(1 for task in tasks if task.get("success"))
+            # 任务卡里没有 ``success`` 字段，真实完成度只能看 status。
+            completed = sum(
+                1
+                for task in tasks
+                if str(task.get("status") or "").lower()
+                in ("completed", "completed_unattributed")
+            )
             failed = sum(
                 1
                 for task in tasks
                 if str(task.get("status") or "").lower() in ("failed", "interrupted")
             )
+            artifacts = [
+                a for a in (entry.get("artifacts") or [])
+                if isinstance(a, str) and a.strip()
+            ]
             description = str(entry.get("natural_language") or "").strip()[:300]
-            headline = "已完成" if state == "completed" else "执行未成功"
+            if state == "completed" and artifacts:
+                headline = "已完成并产出"
+            elif state == "completed":
+                headline = "已完成（无文件产物）"
+            else:
+                headline = "执行未成功"
             text = f"{headline}：{description}" if description else f"{headline}一次任务"
             if tasks:
                 text += f"（任务 {len(tasks)} 项，成功 {completed}，失败 {failed}）"
@@ -879,16 +1028,17 @@ class AIStateManager:
     def _default_goals_path() -> str:
         """Default location of the persisted goals dict.
 
-        ``LIUHAO_WORKSPACE_ROOT/liuhao_goals.json`` when set (REDIR-able for
-        isolation verifiers), else ``<repo_root>/.liuhao_goals.json``.
+        ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > repo-root fallback
+        (see ``src.common.data_paths``).
         """
-        root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-        if root:
-            return os.path.join(root, "liuhao_goals.json")
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
-        return os.path.join(repo_root, ".liuhao_goals.json")
+        return resolve_store_path(
+            "liuhao_goals.json",
+            os.path.join(repo_root, ".liuhao_goals.json"),
+            workspace=True,
+        )
 
     # ── Goal archive (bounded hot set + append-only shards) ──
 
@@ -1108,13 +1258,19 @@ class AIStateManager:
             if t.get("status") in ("completed", "completed_unattributed")
         )
         failed = sum(1 for t in tasks if t.get("status") == "failed")
+        # 列表页也会直接显示 error：历史记录里的英文原文（Max retries /
+        # Blocked: dependency ...）在这里统一换成中文分类，原文只作为技术详情。
+        from .display import task_error_copy
+
+        error_copy = task_error_copy(item.get("error"))
         return {
             "goal_id": item["goal_id"],
             "state": item["state"],
             "natural_language": item.get("natural_language", ""),
             "scope": item.get("scope", ""),
             "created_at": item.get("created_at"),
-            "error": item.get("error"),
+            "error": error_copy["message"] or None,
+            "technical_detail": error_copy["technical_detail"] or None,
             "replan_suggested": item.get("replan_suggested", False),
             "task_count": len(tasks),
             "completed_tasks": completed,
@@ -1126,6 +1282,7 @@ class AIStateManager:
             "artifacts": [
                 path for path in (item.get("artifacts") or [])
                 if isinstance(path, str) and path.strip()
+                and self._artifact_still_exists(path)
             ],
             "assigned_employee": item.get("assigned_employee"),
             "assigned_employees": item.get("assigned_employees", []),
@@ -1255,7 +1412,7 @@ class AIStateManager:
                             fh.write("{" + ",".join(parts) + "}")
                             fh.flush()
                             os.fsync(fh.fileno())
-                        os.replace(tmp_path, path)
+                        self._replace_goal_file(tmp_path, path)
                         # 其它进程刚写入、本进程内存里还没有的目标：纳入可见范围，
                         # 否则同机多 worker 时列表会"少一半"。内存里已有的目标仍以
                         # 内存版本为准（它可能正在执行）。
@@ -1263,6 +1420,16 @@ class AIStateManager:
                             for gid, entry in merged.items():
                                 if gid not in self._goals:
                                     self._goals[gid] = entry
+        except GoalCorruptError:
+            # 数据损坏不是"磁盘写失败"：保留隔离文件与哨兵，明确告知调用方，
+            # 绝不降级成一次成功的空写入把磁盘上其它目标覆盖掉。
+            logger.error("AIStateManager: goals store is corrupt (%s)", path)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
         except Exception as exc:  # persistence must never be reported as success
             # error, not warning: a silent persistence failure is how goal
             # history quietly disappears across restarts.
@@ -1273,23 +1440,167 @@ class AIStateManager:
                 except OSError:
                     pass
             # 调用方必须看到失败：接口不能返回 200 running 让用户以为已保存。
+            detail = describe_storage_failure(exc, path)
             raise GoalPersistError(
-                "目标记录无法写入本机磁盘，本次状态尚未持久化。"
-                "请检查磁盘空间后重试。"
+                "目标记录未能保存。" + detail + "本次状态尚未持久化。"
             ) from exc
 
     @staticmethod
-    def _read_goals_file(path: str) -> Dict[str, Any]:
-        """读回磁盘上的 goals 字典；读不到/损坏时返回空字典（不阻断写入）。"""
+    def _goal_sentinel_path(path: str) -> str:
+        return f"{path}.corrupt.json"
+
+    @staticmethod
+    def _cleanup_goal_temps(path: str, older_than_seconds: float = 3600.0) -> None:
+        """清理崩溃/强杀留下的孤儿临时文件。
+
+        阈值取 1 小时：刚崩溃留下的 ``.tmp`` 可能是唯一可恢复的完整副本，
+        不能为了"清理垃圾"把它删掉；超过 1 小时的才视为孤儿。
+        """
+        directory = os.path.dirname(os.path.abspath(path))
+        prefix = os.path.basename(path) + "."
+        cutoff = time.time() - older_than_seconds
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+        for name in names:
+            if not (name.startswith(prefix) and name.endswith(".tmp")):
+                continue
+            candidate = os.path.join(directory, name)
+            try:
+                if os.path.getmtime(candidate) < cutoff:
+                    os.unlink(candidate)
+            except OSError:
+                continue
+
+    @staticmethod
+    def _goal_tmp_candidates(path: str) -> List[str]:
+        directory = os.path.dirname(os.path.abspath(path))
+        prefix = os.path.basename(path) + "."
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return []
+        candidates = [
+            os.path.join(directory, name)
+            for name in names
+            if name.startswith(prefix) and name.endswith(".tmp")
+        ]
+        candidates.sort(
+            key=lambda item: os.path.getmtime(item), reverse=True
+        )
+        return candidates
+
+    @staticmethod
+    def _clear_goal_sentinel(path: str) -> None:
+        try:
+            os.unlink(AIStateManager._goal_sentinel_path(path))
+        except OSError:
+            pass
+
+    @staticmethod
+    def _write_goal_sentinel(path: str, detail: str, quarantine: str) -> None:
+        sentinel = AIStateManager._goal_sentinel_path(path)
+        payload = json.dumps(
+            {"detail": detail, "quarantine": quarantine, "at": time.time()},
+            ensure_ascii=False,
+        )
+        try:
+            with open(sentinel, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError as exc:
+            # 哨兵写不进去也要让本次保存显式失败；后续保存仍有隔离文件兜底。
+            logger.error("AIStateManager: cannot write goal sentinel %s: %s", sentinel, exc)
+
+    @classmethod
+    def _recover_corrupt_goals_file(
+        cls, path: str, exc: Exception
+    ) -> Dict[str, Any]:
+        """隔离损坏文件、尝试用临时副本恢复；恢复不了则显式报错并留下哨兵。"""
+        logger.error("AIStateManager: goals file corrupt (%s): %s", path, exc)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        quarantine = f"{path}.corrupt.{stamp}"
+        try:
+            cls._replace_goal_file(path, quarantine)
+        except OSError as move_exc:
+            raise GoalCorruptError(
+                f"目标记录文件「{path}」已损坏且无法隔离（可能被其它程序占用）。"
+                "为避免覆盖磁盘上其它目标，本次保存已停止；请关闭占用该文件的程序后重试。"
+            ) from move_exc
+
+        for candidate in cls._goal_tmp_candidates(path):
+            try:
+                with open(candidate, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(data, dict):
+                logger.warning(
+                    "AIStateManager: goals file recovered from temp copy %s", candidate
+                )
+                cls._clear_goal_sentinel(path)
+                return data
+
+        detail = (
+            f"目标记录文件「{path}」已损坏，原文件已隔离到「{quarantine}」。"
+            "未找到可用的临时副本，为避免覆盖磁盘上其它目标，本次保存已停止。"
+            "请从备份恢复该文件（或确认后手动删除隔离文件与哨兵）再重试。"
+        )
+        cls._write_goal_sentinel(path, detail, quarantine)
+        raise GoalCorruptError(detail) from exc
+
+    @classmethod
+    def _read_goals_file(cls, path: str) -> Dict[str, Any]:
+        """读回磁盘上的 goals 字典。
+
+        读不到返回 ``{}``；**损坏时不再静默返回空**：先隔离原文件、尝试临时
+        副本，仍失败则抛 ``GoalCorruptError`` 并留下哨兵，阻止后续保存把磁盘
+        上其它目标无提示覆盖掉。
+        """
+        cls._cleanup_goal_temps(path)
+        sentinel = cls._goal_sentinel_path(path)
         if not os.path.exists(path):
+            if os.path.exists(sentinel):
+                try:
+                    with open(sentinel, "r", encoding="utf-8") as fh:
+                        blocked = json.load(fh)
+                    detail = str(blocked.get("detail") or "").strip()
+                except (OSError, ValueError, TypeError):
+                    detail = ""
+                raise GoalCorruptError(
+                    detail
+                    or f"目标记录文件「{path}」此前已损坏并被隔离，尚未恢复；"
+                    "为避免覆盖其它目标，本次保存已停止。请从备份恢复后重试。"
+                )
             return {}
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-        except Exception as exc:  # noqa: BLE001 - 损坏文件不能阻塞新写入
-            logger.warning("AIStateManager: goals read-merge skipped: %s", exc)
-            return {}
+            if not isinstance(data, dict):
+                raise ValueError("目标记录根节点不是 JSON 对象")
+        except Exception as exc:  # noqa: BLE001 - 损坏必须显式处理
+            return cls._recover_corrupt_goals_file(path, exc)
+        cls._clear_goal_sentinel(path)
+        return data
+
+    @staticmethod
+    def _replace_goal_file(src: str, dst: str) -> None:
+        """``os.replace`` 有界重试：Windows 上杀软/索引器会短暂占用目标文件。"""
+        delay = 0.2
+        for attempt in range(1, 4):
+            try:
+                os.replace(src, dst)
+                return
+            except OSError as exc:
+                retryable = isinstance(exc, PermissionError) or getattr(
+                    exc, "winerror", None
+                ) in (5, 32)
+                if attempt >= 3 or not retryable:
+                    raise
+                time.sleep(delay)
+                delay *= 2
 
     @staticmethod
     def _merge_goal_maps(
@@ -1583,13 +1894,16 @@ class AIStateManager:
                       verification_criteria, True, project_id, pinned_agent, owner),
                 kwargs={"raise_on_persist": False, "notify_outcome": True},
                 name=f"goal-{goal_id}",
-                daemon=True,
+                # 非 daemon：解释器退出时会等这条线程收尾落盘。daemon 线程在
+                # 进程退出瞬间被切断，会把「已跑完」的目标留在 goals.json 的
+                # running 上，重启后被误判成 interrupted。
+                daemon=False,
             )
             # 先登记线程再启动：否则线程可能先结束并 pop，随后登记又留下一
             # 个永远不会被清理的线程记录。
             with self._goal_lock:
                 self._goal_threads[goal_id] = t
-            t.start()
+            _start_goal_thread(t)
             # Register the link immediately (goal id is known up-front).
             self._link_goal_to_project(project_id, goal_id)
             return running_entry
@@ -2594,10 +2908,15 @@ class AIStateManager:
         runtime = self._ensure_runtime()
         # 从存储的 dict 重建 AgentRunResult 的关键字段
         from src.ai.agent_runtime import AgentRunResult, AgentRunState, ExecutionTrace
+        prior_state = str(prior_entry.get("state") or "failed").strip().lower()
+        if prior_state == "interrupted":
+            # AgentRunState 没有 interrupted；中断的目标语义上可按失败重试，
+            # 不能因为枚举转换抛 ValueError 变成 500。
+            prior_state = "failed"
         prior = AgentRunResult(
             goal_id=goal_id,
             correlation_id=prior_entry.get("correlation_id", ""),
-            state=AgentRunState(prior_entry.get("state", "failed")),
+            state=AgentRunState(prior_state),
             context=None,
             evaluation=None,
             trace=ExecutionTrace(correlation_id=prior_entry.get("correlation_id", "")),
@@ -2671,7 +2990,18 @@ class AIStateManager:
             raise ValueError(f"Goal {goal_id} not found")
         if viewer is not None and not viewer.sees(item):
             raise GoalWorkError(404, "goal_not_found", f"目标不存在：{goal_id}")
-        return self._attach_employee_attribution(item)
+        item = self._attach_employee_attribution(item)
+        # 产物是磁盘事实，不是历史快照：文件被删/被清空后，读取时不能再列出。
+        artifacts = item.get("artifacts")
+        if isinstance(artifacts, list):
+            live = [
+                a for a in artifacts
+                if self._artifact_still_exists(a)
+            ]
+            if live != artifacts:
+                item = dict(item)
+                item["artifacts"] = live
+        return item
 
     def stop_goal(
         self, goal_id: str, viewer: Optional[GoalViewer] = None
@@ -3705,6 +4035,9 @@ class AIStateManager:
         # threads (observed in verify_employee_goal_binding.py /
         # verify_http_full_closure.py logs) -- a crash the gates never counted.
         from ..kernels.execution import task_result_text
+        # 任务失败文案的唯一映射点：``error`` 上屏（中文分类 + 下一步），
+        # ``technical_detail`` 折叠展示（保留英文原因、任务 ID、依赖 ID）。
+        from .display import task_error_copy
 
         plan_tasks = None
         if result.context:
@@ -3753,7 +4086,8 @@ class AIStateManager:
                         # 不能 str(dict)：页面上会出现 {'key': 'value'} 原始结构。
                         # 统一走内核的可读渲染（含来源链接与抓取时间）。
                         "result": task_result_text(t.result)[:1200] if t.result else None,
-                        "error": t.error,
+                        "error": task_error_copy(t.error)["message"] or None,
+                        "technical_detail": task_error_copy(t.error)["technical_detail"] or None,
                         "started_at": str(t.started_at) if t.started_at else None,
                         "completed_at": str(t.completed_at) if t.completed_at else None,
                     })
@@ -3804,7 +4138,8 @@ class AIStateManager:
             "natural_language": natural_language,
             "scope": scope,
             "correlation_id": result.correlation_id,
-            "error": result.error,
+            "error": task_error_copy(result.error)["message"] or None,
+            "technical_detail": task_error_copy(result.error)["technical_detail"] or None,
             "replan_count": result.replan_count,
             "replan_suggested": result.replan_suggested,
             "memory_keys": result.memory_keys,
@@ -3830,6 +4165,35 @@ class AIStateManager:
             return json.loads(json.dumps(value, ensure_ascii=False, default=str))
         except (TypeError, ValueError):
             return {str(k): str(v) for k, v in value.items()}
+
+    @staticmethod
+    def _artifact_still_exists(artifact: Any) -> bool:
+        """读取时复核产物：存在且非空才算数（兼容 accounts/<owner>/ 布局）。"""
+        if isinstance(artifact, dict):
+            path = str(artifact.get("path") or "").strip()
+            if artifact.get("exists") is False:
+                return False
+        elif isinstance(artifact, str):
+            path = artifact.strip()
+        else:
+            return False
+        if not path:
+            return False
+        rel = path.replace("\\", "/").lstrip("/")
+        candidates = [os.path.join(workspace_root(), rel)]
+        accounts_root = os.path.join(workspace_root(), "accounts")
+        try:
+            for name in os.listdir(accounts_root):
+                candidates.append(os.path.join(accounts_root, name, rel))
+        except OSError:
+            pass
+        for candidate in candidates:
+            try:
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                    return True
+            except OSError:
+                continue
+        return False
 
     @staticmethod
     def _collect_artifacts(plan_tasks: List[Any]) -> List[str]:
@@ -3881,6 +4245,13 @@ class AIStateManager:
                 rel = os.path.relpath(abs_path, ws_root)
             else:
                 # Outside the workspace: do not record (fail-closed).
+                continue
+            # 存在性校验：删掉的文件不能继续出现在产物清单里。与重启路径
+            # （_collect_artifacts_from_cards）保持同一口径：存在且非空。
+            try:
+                if not os.path.isfile(abs_path) or os.path.getsize(abs_path) <= 0:
+                    continue
+            except OSError:
                 continue
             # Normalize to forward slashes for a stable, portable reference.
             rel = rel.replace(os.sep, "/")
@@ -3945,6 +4316,36 @@ class AIStateManager:
 
 # ─── REST 端点 ───────────────────────────────────────────────
 
+#: ``POST /v1/goals`` 的短窗口幂等：同账号 + 同 ``client_request_id`` 在一小时内
+#: 只创建一次目标，重复提交直接返回原结果（``deduplicated: true``）。
+GOAL_IDEMPOTENCY_TTL_SECONDS = 3600
+_GOAL_IDEMPOTENCY_LOCK = threading.Lock()
+_GOAL_IDEMPOTENCY_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+
+
+def _goal_idempotency_get(key: Tuple[str, str]) -> Optional[Dict[str, Any]]:
+    now = time.monotonic()
+    with _GOAL_IDEMPOTENCY_LOCK:
+        cached = _GOAL_IDEMPOTENCY_CACHE.get(key)
+        if cached is None:
+            return None
+        if now - cached[0] > GOAL_IDEMPOTENCY_TTL_SECONDS:
+            _GOAL_IDEMPOTENCY_CACHE.pop(key, None)
+            return None
+        return copy.deepcopy(cached[1])
+
+
+def _goal_idempotency_put(key: Tuple[str, str], result: Dict[str, Any]) -> None:
+    if not isinstance(result, dict):
+        return
+    now = time.monotonic()
+    with _GOAL_IDEMPOTENCY_LOCK:
+        for stale_key, (stamp, _payload) in list(_GOAL_IDEMPOTENCY_CACHE.items()):
+            if now - stamp > GOAL_IDEMPOTENCY_TTL_SECONDS:
+                _GOAL_IDEMPOTENCY_CACHE.pop(stale_key, None)
+        _GOAL_IDEMPOTENCY_CACHE[key] = (now, copy.deepcopy(result))
+
+
 @router.get("/goals")
 def list_goals(viewer: Optional[GoalViewer] = Depends(_goal_viewer)) -> Dict[str, Any]:
     """列出**当前账号可见**的 Goal 及其状态（别人的目标连计数都不进入）。
@@ -3982,6 +4383,13 @@ def create_goal(
     """
     viewer = _as_viewer(viewer)
     mgr = AIStateManager()
+    idem_key: Optional[Tuple[str, str]] = None
+    if req.client_request_id:
+        idem_key = (viewer.principal if viewer is not None else "", req.client_request_id)
+        cached = _goal_idempotency_get(idem_key)
+        if cached is not None:
+            cached["deduplicated"] = True
+            return cached
     try:
         pinned_agent: Optional[str] = None
         if req.employee_name:
@@ -3989,7 +4397,7 @@ def create_goal(
             # 绝不悄悄回退成"随便派给默认员工"。
             _employee, _agent = mgr.resolve_employee_agent(req.employee_name, viewer)
             pinned_agent = _agent.id
-        return mgr.create_and_execute_goal(
+        result = mgr.create_and_execute_goal(
             natural_language=req.natural_language,
             scope=req.scope,
             plan_mode=req.plan_mode,
@@ -3999,6 +4407,9 @@ def create_goal(
             pinned_agent=pinned_agent,
             owner_account_id=viewer.principal if viewer is not None else "",
         )
+        if idem_key is not None:
+            _goal_idempotency_put(idem_key, result)
+        return result
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
@@ -4013,7 +4424,8 @@ def create_goal(
         ) from exc
     except Exception as exc:
         logger.warning("goal execution failed: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试/重启即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="目标执行没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
         ) from exc
@@ -4064,7 +4476,8 @@ def replan_goal(
         ) from exc
     except Exception as exc:
         logger.warning("replan failed: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试/重启即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="重新规划没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
         ) from exc
@@ -4139,7 +4552,8 @@ def assign_goal(
         ) from exc
     except Exception as exc:
         logger.warning("assignment failed: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试/重启即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="任务派发没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
         ) from exc
@@ -4178,7 +4592,8 @@ def retry_goal_task(
         ) from exc
     except Exception as exc:
         logger.warning("task retry failed: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试/重启即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="重试任务没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
         ) from exc
@@ -4210,7 +4625,8 @@ def list_employees(
         }
     except Exception as exc:
         logger.warning("employee listing failed: %s", exc)
-        raise HTTPException(
+        # 可操作：稍后重试即可，不含内部细节 → 允许原样透传。
+        raise UserReadableHTTPException(
             status_code=503,
             detail="读取员工列表没有完成。请稍后重试。",
         ) from exc

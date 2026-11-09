@@ -15,14 +15,15 @@ import inspect
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .knowledge_context import (
     build_knowledge_context,
@@ -40,6 +41,7 @@ from .account_context import (
 from ..kernels.identity import _accounts
 from .account_usage import record_usage
 from ..ai.conversation_store import ConversationStoreError
+from ..ai.context_budget import estimate_tokens
 from ..ai.model_config import ModelConfigError
 from ..ai.usage_meter import UsageMeter, meter_scope, snapshot, use_meter
 from ..common.atomic_write import (
@@ -47,11 +49,26 @@ from ..common.atomic_write import (
     describe_storage_failure,
     is_storage_failure,
 )
+from ..common.input_guard import (
+    normalize_required_name,
+    normalize_required_text,
+)
 from ..kernels.memory.store import MemoryStoreError
 
 #: 落盘失败（磁盘满 / 只读盘 / 无权限 / 被占用）。这些错误必须变成
 #: 中文可行动提示：对话正文可以生成成功，但历史没保存不能静默。
 _STORAGE_ERRORS = (ConversationStoreError, MemoryStoreError, StorageWriteError)
+
+#: ``describe_storage_failure`` / ``ConversationStoreError`` 的文案末尾会附上
+#: 「（原始错误：…）」。原文只留在日志里，给用户的 503 只保留可行动部分。
+_RAW_ERROR_TAIL_RE = re.compile(r"（原始错误：[\s\S]*?）\s*$")
+_STORAGE_FALLBACK_MESSAGE = "会话历史没有保存成功。请检查磁盘空间与目录权限后重试。"
+
+
+def _public_storage_message(exc: BaseException, text: Optional[str] = None) -> str:
+    """去掉内部原始错误尾巴，保留「磁盘已满/只读/被占用 + 下一步」可操作文案。"""
+    message = _RAW_ERROR_TAIL_RE.sub("", text if text is not None else str(exc)).strip()
+    return message or _STORAGE_FALLBACK_MESSAGE
 
 
 def _storage_http_error(exc: BaseException) -> Optional[HTTPException]:
@@ -63,11 +80,15 @@ def _storage_http_error(exc: BaseException) -> Optional[HTTPException]:
     """
     if not is_storage_failure(exc):
         return None
+    # 原始异常（可能含路径/驱动原文）只进日志，不进用户响应。
+    logger.warning("chat storage failure -> 503: %s", exc)
     return HTTPException(
         status_code=503,
         detail={
             "code": "storage_unavailable",
-            "message": describe_storage_failure(exc, "数据目录"),
+            "message": _public_storage_message(
+                exc, describe_storage_failure(exc, "数据目录")
+            ),
         },
     )
 
@@ -507,31 +528,6 @@ def list_sessions(
     return sorted(set(live) | set(persisted))
 
 
-def list_sessions_page(
-    principal: Optional[str] = None,
-    known_principals: Optional[List[str]] = None,
-    allow_legacy: Optional[bool] = None,
-    limit: Optional[int] = None,
-    offset: int = 0,
-) -> Dict[str, object]:
-    """会话列表分页（进程内 + 持久库并集，``limit=None`` 保持旧的全量语义）。
-
-    排序保持和 ``list_sessions`` 完全一致（字母序），这样"加载更多"翻页
-    不会出现跳条/重条，刷新后首屏位置也稳定。
-    """
-    ids = list_sessions(principal, known_principals, allow_legacy)
-    total = len(ids)
-    start = max(0, int(offset or 0))
-    page = ids[start:] if limit is None else ids[start:start + max(0, int(limit))]
-    return {
-        "sessions": page,
-        "total": total,
-        "has_more": start + len(page) < total,
-        "limit": limit,
-        "offset": start,
-    }
-
-
 def delete_session(session_id: str, principal: Optional[str] = None) -> bool:
     """删除一个会话：清空其持久化历史并移除实例。返回是否成功。
 
@@ -584,6 +580,18 @@ class ChatRequest(BaseModel):
         description="客户端请求 id（同一请求重发时保持不变，用于去重）",
     )
 
+    @field_validator("message")
+    @classmethod
+    def _check_message(cls, value: str) -> str:
+        return normalize_required_text(value, "用户消息", max_chars=8000)
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return normalize_required_name(value, "会话 ID", max_chars=128)
+
 
 class ChatResponse(BaseModel):
     reply: str
@@ -599,6 +607,15 @@ class ChatResponse(BaseModel):
     #: 失败时上游返回的原文（只含 message，已脱敏、≤120 字）。前端只能在
     #: 可展开的「技术详情」里展示，不得拼进主文案。
     technical_detail: Optional[str] = None
+    #: 中性中文失败说明（status != completed 时给出，含"被长度上限截断"）。
+    error: Optional[str] = None
+    #: 输出是否被长度上限截断（finish_reason=length/max_tokens）：内容真实
+    #: 但没说完，客户端必须提示"继续"，不能当成完整回答。
+    truncated: bool = False
+    #: 非流式路径的"正在重试"提示（provider 重试回调写入）。
+    notice: Optional[str] = None
+    #: 本轮发生静默切换时，实际应答模型之前尝试过的模型标签。
+    fell_back_from: Optional[List[str]] = None
 
 
 def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
@@ -632,9 +649,13 @@ def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
         )
     except _STORAGE_ERRORS as exc:
         # 会话历史库都打不开（磁盘满/只读/被占用）：明确 503，而不是英文 500。
+        logger.warning("session history store failed: %s", exc)
         raise HTTPException(
             status_code=503,
-            detail={"code": "storage_unavailable", "message": str(exc)},
+            detail={
+                "code": "storage_unavailable",
+                "message": _public_storage_message(exc),
+            },
         ) from exc
     owner = str(getattr(assistant.provider, "owner_principal", "") or "")
     if owner and owner != principal and scope.can_use(owner):
@@ -658,8 +679,19 @@ def _record_chat_usage(
     返回是否真的写入了账本。失败不阻断对话，但调用方必须感知到（流式结束帧
     携带 ``usage_recorded``，readiness 里也有 ``usage_ledger`` 状态）。
     """
-    owner = str(getattr(assistant.provider, "owner_principal", "") or "") or principal
-    model = str(getattr(assistant.provider, "model", "") or req.model_id or "")
+    # 跨厂商 failover 后，额度实际消耗在"实际应答"的那家：账本归属必须跟随
+    # 真实 provider，不能继续记在主模型名下（否则成本会记到错的模型/错的 Key）。
+    owner = str(
+        getattr(assistant.provider, "last_served_owner", "")
+        or getattr(assistant.provider, "owner_principal", "")
+        or ""
+    ) or principal
+    model = str(
+        getattr(assistant.provider, "last_served_model", "")
+        or getattr(assistant.provider, "model", "")
+        or req.model_id
+        or ""
+    )
     recorded = record_usage(
         actor=principal,
         key_owner=owner,
@@ -675,11 +707,6 @@ def _record_chat_usage(
             "chat usage was NOT recorded (session=%s actor=%s)", req.session_id, principal
         )
     return recorded
-
-
-def _estimate_tokens(text: str) -> int:
-    """无 provider usage 时的保守估算；账本里标记 ``estimated=1``。"""
-    return max(1, len(str(text or "")) // 4)
 
 
 # ─── 重复提交去重（幂等）──────────────────────────────────────
@@ -958,11 +985,12 @@ def chat(
                             result = assistant.chat(req.message)
                         except _STORAGE_ERRORS as exc:
                             # 正文可能已生成，但会话/记忆没落盘：如实 503，不静默丢历史。
+                            logger.warning("chat turn persist failed: %s", exc)
                             raise HTTPException(
                                 status_code=503,
                                 detail={
                                     "code": "storage_unavailable",
-                                    "message": str(exc),
+                                    "message": _public_storage_message(exc),
                                 },
                             ) from exc
                         except Exception as exc:
@@ -982,8 +1010,10 @@ def chat(
                     tokens_out = int(usage["tokens_out"])
                     estimated = False
                 else:
-                    tokens_in = _estimate_tokens(req.message)
-                    tokens_out = _estimate_tokens(result.get("reply"))
+                    # 无 provider usage：用全项目统一的 estimate_tokens 估算，
+                    # 与裁剪/配额口径一致；账本标记 estimated=1。
+                    tokens_in = max(1, estimate_tokens(req.message))
+                    tokens_out = max(1, estimate_tokens(result.get("reply")))
                     estimated = True
                 _record_chat_usage(
                     assistant,
@@ -1012,6 +1042,17 @@ def chat(
                 getattr(assistant, "last_turn_technical_detail", None)
                 if result["status"] != "completed"
                 else None
+            ),
+            error=(
+                getattr(assistant, "last_turn_error", None)
+                if result["status"] != "completed"
+                else None
+            ),
+            truncated=bool(result["status"] == "truncated"),
+            notice=getattr(assistant, "last_turn_retry_notice", None),
+            fell_back_from=(
+                list(getattr(assistant.provider, "last_fell_back_from", []) or [])
+                or None
             ),
         )
     except BaseException:
@@ -1155,14 +1196,16 @@ def chat_stream(
             correlation_id = str(
                 getattr(assistant, "last_turn_correlation_id", "") or ""
             )
-            if turn_status == "completed":
+            if turn_status in ("completed", "truncated"):
+                # truncated 的 token 是真实消耗（内容也真实产出），照实记账；
+                # 失败轮次仍然不记账。
                 if usage["reported"]:
                     tokens_in = int(usage["tokens_in"])
                     tokens_out = int(usage["tokens_out"])
                     estimated = False
                 else:
-                    tokens_in = _estimate_tokens(req.message)
-                    tokens_out = max(1, reply_chars // 4)
+                    tokens_in = max(1, estimate_tokens(req.message))
+                    tokens_out = max(1, estimate_tokens(reply_text))
                     estimated = True
                 usage_recorded = _record_chat_usage(
                     assistant,
@@ -1185,8 +1228,8 @@ def chat_stream(
                     tokens_out = int(usage["tokens_out"])
                     estimated = False
                 else:
-                    tokens_in = _estimate_tokens(req.message)
-                    tokens_out = max(1, reply_chars // 4)
+                    tokens_in = max(1, estimate_tokens(req.message))
+                    tokens_out = max(1, estimate_tokens(reply_text))
                     estimated = True
                 usage_recorded = _record_chat_usage(
                     assistant,
@@ -1253,6 +1296,13 @@ def chat_stream(
             "usage_recorded": usage_recorded,
             "knowledge": public_metadata(knowledge),
         }
+        if turn_status == "truncated":
+            # 不能只靠 status：老客户端可能只认 done 就收尾，必须显式标出来。
+            done["truncated"] = True
+        fell_back_from = getattr(assistant.provider, "last_fell_back_from", None)
+        if isinstance(fell_back_from, list) and fell_back_from:
+            # 跨厂商切换必须可审计：写明"这一轮之前试过谁"。
+            done["fell_back_from"] = [str(item) for item in fell_back_from]
         if turn_status != "completed":
             if not turn_error:
                 # 技术细节只进日志；事件流里也必须是中性中文说明。
@@ -1307,25 +1357,53 @@ def chat_stream(
     )
 
 
-def _session_owned_by_other(principal: str, session_id: str) -> bool:
-    """该会话名是否被**其他主体**占用（用于把越权读取判成 404）。
+def _readable_session_owners(context: AccountContext) -> Tuple[str, ...]:
+    """本次请求可读的会话归属主体：根覆盖整棵子树，成员只有自己。"""
+    return tuple(context.subtree) if context.is_root else (context.principal,)
 
-    只看活跃实例：持久化层按主体分键（``liuhao-<principal>-<session>``），
-    别人无法枚举，也不需要由此推断"某个名字是否存在"。
+
+def _session_owner_for_read(
+    context: AccountContext, session_id: str
+) -> Optional[str]:
+    """解析该会话实际归属的**可读**主体；不可读与不存在一律返回 ``None``。
+
+    返回值只用于选择读取的数据，不得据此改变"无权 / 不存在"的响应形状：
+    两者必须继续走同一个中性 404（或同一个空历史），否则就成了存在性探针。
     """
-    key = _session_key(principal, session_id)
-    if key in _sessions:
-        return False
+    owners = _readable_session_owners(context)
     with _sessions_lock:
-        for other_key in _sessions:
-            owner = _owner_of(other_key)
-            if owner and owner != principal and _bare_session_id(other_key) == session_id:
-                return True
-    return False
+        live_keys = set(_sessions)
+    # 先看进程内活跃实例：否则会出现"活跃=404、只落盘=200"的第二种口径。
+    for owner in owners:
+        if _session_key(owner, session_id) in live_keys:
+            return owner
+    store = get_conversation_store()
+    for owner in owners:
+        for candidate in _history_principal_candidates(owner, session_id):
+            if store.has_rows(candidate):
+                return owner
+    return None
 
 
 def _neutral_not_found() -> HTTPException:
     return deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
+
+
+def _empty_history_payload(
+    session_id: str, principal: str, limit: Optional[int], offset: int
+) -> Dict[str, object]:
+    """无权或不存在时的空历史（不读取、不判断对方是否存在）。"""
+    return {
+        "session_id": session_id,
+        "history": [],
+        "count": 0,
+        "total": 0,
+        "has_more": False,
+        "limit": limit,
+        "offset": max(0, int(offset or 0)),
+        "user_id": principal,
+        "profile_principal": f"user-{principal}",
+    }
 
 
 @router.get("/chat/stats")
@@ -1333,11 +1411,63 @@ def chat_stats(
     session_id: str = "default",
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    if _session_owned_by_other(context.principal, session_id):
+    owner = _session_owner_for_read(context, session_id)
+    if owner is None:
+        if context.standalone:
+            # 单账号老部署没有"别人的会话"，保留旧语义（默认会话可空统计）。
+            return get_assistant(
+                session_id, context.principal, key_scope=key_scope_for(context)
+            ).stats()
         raise _neutral_not_found()
-    scope = key_scope_for(context)
-    assistant = get_assistant(session_id, context.principal, key_scope=scope)
-    return assistant.stats()
+    if owner != context.principal:
+        # 根读下级会话时只读统计，不构造下级的 assistant：避免 root 的
+        # key_scope 改写下级实例的 provider 绑定（读操作不该有写副作用）。
+        history_principal = _resolve_history_principal(owner, session_id)
+        store = get_conversation_store()
+        return {
+            "principal": history_principal,
+            "provider": None,
+            "model": None,
+            "turn": store.get_last_turn(history_principal),
+            "history_messages": store.load_page(history_principal)["total"],
+        }
+    return get_assistant(
+        session_id, context.principal, key_scope=key_scope_for(context)
+    ).stats()
+
+
+def _list_sessions_in_scope(
+    context: AccountContext, limit: Optional[int], offset: int
+) -> Tuple[Dict[str, object], Dict[str, str]]:
+    """按可读范围聚合会话列表，并给出 会话 -> 归属主体 映射。
+
+    根账号合并整棵子树（子会话仍用裸 session_id，``users`` 标出归属）；
+    成员只列自己。同名会话在多个账号下出现时保留先出现者的归属，列表本身
+    仍只有一条，避免分页出现重复项。
+    """
+    mapping: Dict[str, str] = {}
+    for owner in _readable_session_owners(context):
+        for session_id in list_sessions(
+            owner,
+            known_principals=list(context.subtree),
+            allow_legacy=context.is_root and owner == context.principal,
+        ):
+            mapping.setdefault(session_id, owner)
+    session_ids = sorted(mapping)
+    total = len(session_ids)
+    start = max(0, int(offset or 0))
+    page_ids = (
+        session_ids[start:]
+        if limit is None
+        else session_ids[start:start + max(0, int(limit))]
+    )
+    return {
+        "sessions": page_ids,
+        "total": total,
+        "has_more": start + len(page_ids) < total,
+        "limit": limit,
+        "offset": start,
+    }, {session_id: mapping[session_id] for session_id in page_ids}
 
 
 @router.get("/chat/sessions")
@@ -1351,18 +1481,12 @@ def chat_sessions(
     offset: int = Query(0, ge=0, description="跳过多少条（按稳定字母序）"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    """列出**当前主体**的活跃会话（不会暴露别人的会话名）。
+    """列出当前主体可读的会话。
 
-    ``users`` 给出 会话→主体 归属，值恒为令牌主体 —— 归属是派生事实，
-    不再接受客户端声明。``total`` / ``has_more`` 让前端决定是否"加载更多"。
+    ``users`` 给出 会话→主体 归属：成员恒为自己；根账号会看到子树里的会话
+    并在这里标出它实际属于哪个账号。归属是服务端派生事实，不接受客户端声明。
     """
-    page = list_sessions_page(
-        context.principal,
-        known_principals=list(context.subtree),
-        allow_legacy=context.is_root,
-        limit=limit,
-        offset=offset,
-    )
+    page, users = _list_sessions_in_scope(context, limit, offset)
     sessions = page["sessions"]
     return {
         "sessions": sessions,
@@ -1371,7 +1495,7 @@ def chat_sessions(
         "has_more": page["has_more"],
         "limit": limit,
         "offset": page["offset"],
-        "users": {s: context.principal for s in sessions},
+        "users": users,
     }
 
 
@@ -1420,13 +1544,79 @@ def chat_history(
     offset: int = Query(0, ge=0, description="从最近一条往前跳过多少条消息"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    """返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
+    """返回某会话的历史消息（按可读范围读，跨后端重启有效）。
 
-    别人占用的会话名一律 404（与"没有历史"不可区分）。
+    无权与不存在必须**完全同形**：账号树里省略 ``limit`` 时一律中性 404；
+    显式分页（控制台首屏）则一律返回空历史。两个分支都不依赖"该名字是否
+    属于别人"，所以无法据此探测会话是否存在。
     """
-    if _session_owned_by_other(context.principal, session_id):
+    owner = _session_owner_for_read(context, session_id)
+    if owner is None:
+        if context.standalone or limit is not None:
+            return _empty_history_payload(
+                session_id, context.principal, limit, offset
+            )
         raise _neutral_not_found()
-    return read_history(session_id, context.principal, limit=limit, offset=offset)
+    return read_history(session_id, owner, limit=limit, offset=offset)
+
+
+def _search_in_scope(
+    context: AccountContext, q: str, limit: int, offset: int
+) -> Dict[str, object]:
+    """在当前可读范围内搜索；根账号合并子树并标出每条结果的归属。"""
+    owners = _readable_session_owners(context)
+    store = get_conversation_store()
+    if len(owners) == 1:
+        return store.search(
+            owners[0],
+            q,
+            limit=limit,
+            offset=offset,
+            known_principals=context.subtree,
+        )
+    merged: List[Dict[str, object]] = []
+    totals = 0
+    ready = True
+    degraded = False
+    indexed = 0
+    index_total = 0
+    notices: List[str] = []
+    modes: List[str] = []
+    for owner in owners:
+        result = store.search(
+            owner,
+            q,
+            limit=min(200, offset + limit),
+            offset=0,
+            known_principals=context.subtree,
+        )
+        totals += int(result.get("total") or 0)
+        ready = ready and bool(result.get("ready", True))
+        degraded = degraded or bool(result.get("degraded"))
+        indexed += int(result.get("indexed") or 0)
+        index_total += int(result.get("index_total") or 0)
+        if result.get("notice"):
+            notices.append(str(result["notice"]))
+        if result.get("mode"):
+            modes.append(str(result["mode"]))
+        for item in result.get("results") or []:
+            merged.append({**item, "account": owner})
+    merged.sort(key=lambda item: float(item.get("created_at") or 0), reverse=True)
+    page = merged[offset:offset + limit]
+    return {
+        "results": page,
+        "count": len(page),
+        "total": totals,
+        "has_more": offset + len(page) < totals,
+        "limit": limit,
+        "offset": offset,
+        "mode": "+".join(dict.fromkeys(modes)) or "merged",
+        "degraded": degraded,
+        "ready": ready,
+        "indexed": indexed,
+        "index_total": index_total,
+        "notice": notices[0] if notices else "",
+    }
 
 
 @router.get("/sessions/search")
@@ -1436,17 +1626,17 @@ def search_sessions(
     offset: int = Query(0, ge=0, description="跳过多少条结果"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    """在当前账号的会话历史里全文搜索。
+    """在当前账号可读的会话历史里全文搜索。
 
     * 中文按 2 字及以上子串命中（CJK bigram 索引）；
     * 索引建立中会返回 ``ready=false`` 与进度 ``indexed/index_total``，
       结果可能不完整；
     * FTS5 不可用或单字查询时降级为逐行扫描，``degraded=true`` 且
       ``notice`` 会明确写「搜索变慢」——绝不静默变慢。
+
+    根账号合并子树搜索；每条结果的 ``account`` 标出它属于哪个账号。
     """
-    result = get_conversation_store().search(
-        context.principal, q, limit=limit, offset=offset
-    )
+    result = _search_in_scope(context, q, limit, offset)
     result["query"] = q
     return result
 

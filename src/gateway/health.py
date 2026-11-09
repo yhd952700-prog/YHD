@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 import os
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
@@ -100,25 +101,54 @@ def _warm_barrier(gate: threading.Barrier) -> None:
         pass
 
 
+def _redact_ready_details(value):
+    """递归脱敏就绪检查：``technical_detail`` 在任何层级都不再出现。
+
+    ``/v1/ready`` 是未鉴权可访问的探针，绝对路径、环境变量名、Traceback
+    片段都不能下发（实测曾把 ``docker-compose sets /app/data/audit_store.db``
+    这类部署指引直接暴露）。保留人话字段与状态字段，其余字符串统一过
+    :func:`redact_log_text`。
+    """
+    if isinstance(value, str):
+        return redact_log_text(value)
+    if isinstance(value, dict):
+        return {
+            key: _redact_ready_details(item)
+            for key, item in value.items()
+            if key != "technical_detail"
+        }
+    if isinstance(value, list):
+        return [_redact_ready_details(item) for item in value]
+    return value
+
+
 def _busy_response(kind: str, trace_id: str, detail: str = "") -> JSONResponse:
-    """探针取数超时的快速失败响应（503 + 中文原因 + Retry-After）。"""
-    payload: Dict[str, Any] = {
-        "status": "busy",
-        "status_label": "繁忙",
-        "reason": "probe_timeout",
-        "service": "liuhao-gateway",
-        "timestamp": time.time(),
-        "trace_id": trace_id,
-        "user_message": (
-            f"{kind}暂时取不到数据：系统正在处理较慢的请求，探针已快速返回，"
+    """探针取数超时的快速失败响应：与业务 503 同一套**四字段**。
+
+    ``code`` / ``message`` / ``correlation_id`` / ``retry_after`` + ``Retry-After``
+    头。``status=busy`` 的语义保留在 ``code=PROBE_BUSY`` 与中文 ``message`` 里。
+    ``detail``（``str(exc)``，可能带 "TypeName: msg" 与绝对路径）**不再下发**：
+    探针未鉴权可访问，只留人话；技术原因脱敏后进日志，配合 ``correlation_id``
+    排查。
+    """
+    correlation_id = trace_id if trace_id and trace_id != "unknown" else uuid.uuid4().hex[:16]
+    if detail:
+        logger.warning(
+            "evt=probe.busy kind=%s correlation_id=%s cause=%s",
+            kind, correlation_id, redact_log_text(str(detail))[:200],
+        )
+    payload = {
+        "code": "PROBE_BUSY",
+        "message": (
+            f"{kind}暂时取不到数据：系统正在处理较慢的请求（探针繁忙），"
             "服务本身仍在运行，请 1 秒后重试。"
         ),
+        "correlation_id": correlation_id,
+        "retry_after": 1,
     }
-    if detail:
-        payload["detail"] = detail
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        headers={"Retry-After": "1"},
+        headers={"Retry-After": "1", "X-Correlation-ID": correlation_id},
         content=payload,
     )
 
@@ -231,7 +261,456 @@ async def liveness_probe(request: Request) -> JSONResponse:
     )
 
 
-def _readiness_payload_sync(trace_id: str) -> tuple:
+#: 关键内核：任何一项在启动时未到 READY 都会让对应能力缺失且难以察觉。
+#: 只影响对应能力，不逐个列出成多项检查——/v1/ready 用一个聚合项 ``kernels``。
+#: 非关键内核失败只在同一项里作告警，不阻断就绪。
+_CRITICAL_KERNELS: Dict[str, str] = {
+    "audit": "审计留痕与证据核验",
+    "identity": "账号身份与登录校验",
+    "security": "敏感操作的安全裁决",
+    "policy": "高风险动作的策略门禁",
+    "execution": "工具/任务执行与记录",
+}
+
+
+def _kernels_readiness(report: Any, wired: bool = True) -> tuple:
+    """把启动时的内核生命周期报告翻成一个聚合检查项（不逐个撑长列表）。
+
+    数据来源只有 ``main.py`` 在 ``initialize_all()`` 之后写入
+    ``app.state.kernel_lifecycle_report`` 的同一份报告（含启动快照）。这里不
+    重新驱动内核、不创建实例，只读。
+
+    为什么用「启动快照」而不是当前的 ``snapshot()``：多数内核是惰性单例，
+    在 ``initialize_all()`` 之后才由请求路径首次创建（例如审计存储由断点器
+    创建），它们的 ``lifecycle`` 天然停在 ``UNINITIALIZED``。若把「现在存在但
+    未 READY」一律判失败，**每次开机都会 503**。所以只对「启动时就存在、被
+    驱动过」的关键内核判 READY；启动后新建的惰性实例不算故障。
+    """
+    if not wired:
+        # 直接调用（非网关请求对象）：不臆造内核状态。
+        return (
+            {
+                "status": "healthy",
+                "display_status": "内核状态未接入",
+                "user_message": "内核生命周期报告未接入就绪检查。",
+                "critical_not_ready": [],
+                "optional_not_ready": [],
+            },
+            "",
+        )
+    if not isinstance(report, dict):
+        # 网关注入了这条检查却没拿到报告：这是接线断了，不能静默放行。
+        return (
+            {
+                "status": "unhealthy",
+                "display_status": "内核状态未接入",
+                "display_name": "内核生命周期",
+                "user_message": (
+                    "内核生命周期报告缺失：无法确认关键内核是否就绪，"
+                    "请检查网关启动装配。"
+                ),
+                "critical_not_ready": [],
+                "optional_not_ready": [],
+            },
+            "Kernels: lifecycle report is missing",
+        )
+
+    boot_snapshot = report.get("snapshot") or {}
+    errors = report.get("errors") or []
+    error_by_name = {
+        str(item.get("name") or ""): str(item.get("error") or "")
+        for item in errors
+        if isinstance(item, dict)
+    }
+
+    critical_not_ready: list = []
+    optional_not_ready: list = []
+    checked: set = set()
+
+    for name, item in boot_snapshot.items():
+        if not isinstance(item, dict) or not item.get("has_instance"):
+            continue
+        checked.add(name)
+        lifecycle = str(item.get("lifecycle") or "").strip().lower()
+        if lifecycle == "ready" and name not in error_by_name:
+            continue
+        entry = {
+            "name": name,
+            "lifecycle": lifecycle or "unknown",
+            "error": error_by_name.get(name, ""),
+        }
+        if name in _CRITICAL_KERNELS:
+            entry["impact"] = _CRITICAL_KERNELS[name]
+            critical_not_ready.append(entry)
+        else:
+            optional_not_ready.append(entry)
+
+    # 启动报告里有错误、但快照没收录（实例在快照之后才出现）的关键内核也要报。
+    for name, detail in error_by_name.items():
+        if name in _CRITICAL_KERNELS and name not in checked:
+            critical_not_ready.append(
+                {
+                    "name": name,
+                    "lifecycle": "unknown",
+                    "error": detail,
+                    "impact": _CRITICAL_KERNELS[name],
+                }
+            )
+
+    check: Dict[str, Any] = {
+        "critical_not_ready": critical_not_ready,
+        "optional_not_ready": optional_not_ready,
+    }
+    if critical_not_ready:
+        names = "、".join(item["name"] for item in critical_not_ready)
+        impacts = "；".join(
+            f"{item['name']}（影响{item['impact']}）" for item in critical_not_ready
+        )
+        check.update(
+            {
+                "status": "unhealthy",
+                "display_status": "关键内核未就绪",
+                "display_name": "内核生命周期",
+                "user_message": (
+                    f"关键内核未就绪：{impacts}。"
+                    f"相关能力可能缺失，其余服务仍可用；请在诊断页查看 {names}。"
+                ),
+            }
+        )
+        return check, f"Kernels: {names} did not reach READY"
+
+    if optional_not_ready:
+        names = "、".join(item["name"] for item in optional_not_ready)
+        check.update(
+            {
+                "status": "degraded",
+                "advisory": True,
+                "blocks_readiness": False,
+                "display_status": "非关键内核未就绪",
+                "display_name": "内核生命周期",
+                "user_message": (
+                    f"关键内核均已就绪；非关键内核未就绪（{names}），"
+                    "不影响核心功能，仅在相关能力上可能缺失。"
+                ),
+            }
+        )
+        return check, ""
+
+    check.update(
+        {
+            "status": "healthy",
+            "display_status": "内核运行正常",
+            "display_name": "内核生命周期",
+            "user_message": "启动时存在的关键内核均已到达 READY。",
+        }
+    )
+    return check, ""
+
+
+def _metrics_readiness() -> tuple:
+    """指标链路的可观测性检查（告警级，不阻断就绪）。
+
+    ``main._ensure_http_metrics()`` 是幂等导入：导入失败后 ``_metrics_import_
+    attempted`` 仍为 True，但 ``_get_metric_collector`` / ``_RECORD_HTTP_REQUEST``
+    永远是 None。此时 Prometheus 没有请求样本、错误率告警全盲——这是"监控失明"，
+    不是"业务断服"，所以按告警处理（``blocks_readiness=False``）：总览显示、
+    但不让 /v1/ready 503。
+
+    预热开始前（``attempted=False``）是正常的启动窗口，不报问题。
+    """
+    try:
+        from . import main as _gateway_main
+
+        attempted = bool(getattr(_gateway_main, "_metrics_import_attempted", False))
+        collector = getattr(_gateway_main, "_get_metric_collector", None)
+        recorder = getattr(_gateway_main, "_RECORD_HTTP_REQUEST", None)
+    except Exception:  # pragma: no cover - 装配异常不能反过来打断探针
+        attempted, collector, recorder = False, None, None
+
+    if not attempted:
+        return (
+            {
+                "status": "healthy",
+                "advisory": True,
+                "blocks_readiness": False,
+                "display_status": "指标链路预热中",
+                "display_name": "监控链路",
+                "user_message": "指标链路尚未完成预热，启动后会自动接入。",
+            },
+            "",
+        )
+
+    if collector is not None and recorder is not None:
+        return (
+            {
+                "status": "healthy",
+                "advisory": True,
+                "blocks_readiness": False,
+                "display_status": "指标链路正常",
+                "display_name": "监控链路",
+                "user_message": "请求指标已接入，错误率告警可正常评估。",
+            },
+            "",
+        )
+
+    missing = [
+        label
+        for label, value in (("指标采集", collector), ("Prometheus 导出", recorder))
+        if value is None
+    ]
+    return (
+        {
+            "status": "degraded",
+            "advisory": True,
+            "blocks_readiness": False,
+            "display_status": "监控链路不可用",
+            "display_name": "监控链路",
+            "user_message": (
+                "指标链路不可用"
+                f"（{'、'.join(missing)} 未加载）：Prometheus 没有请求样本，"
+                "错误率告警会失明；业务请求不受影响。"
+            ),
+        },
+        "Metrics: instrumentation unavailable -- error-rate alerting is blind",
+    )
+
+
+def _execution_dedupe_advisories() -> list:
+    """读取执行内核的幂等去重告警（单独成函数，便于测试替换）。
+
+    取不到时返回空列表：探针本身不能因为导入失败而误报。
+    """
+    try:
+        from ..kernels.execution import dedupe_advisories
+
+        return list(dedupe_advisories() or [])
+    except Exception:  # pragma: no cover - 装配异常不能反过来打断探针
+        return []
+
+
+def _idempotency_readiness(advisories: Any) -> tuple:
+    """幂等账本的可用性检查（告警级，不阻断就绪）。
+
+    journal 未接入 / 账本写不进去时，硬副作用动作的重复投递无法被去重，
+    同一动作（发消息、调外部接口、启动外部可见服务）可能产生第二次不可撤销
+    后果。这件事不允许静默，但也不该让业务断服，所以按 advisory 展示
+    （``blocks_readiness=False``）。
+    """
+    items = [item for item in (advisories or []) if isinstance(item, dict)]
+    if not items:
+        return (
+            {
+                "status": "healthy",
+                "advisory": True,
+                "blocks_readiness": False,
+                "display_status": "幂等去重正常",
+                "display_name": "幂等去重",
+                "user_message": "幂等账本已接入：不可重入动作的重复投递会复用首次结果。",
+            },
+            "",
+        )
+
+    codes = sorted({str(item.get("code") or "") for item in items})
+    # 严重度排序：硬副作用被拒绝 > 账本写失败 > 安全能力放行告警。
+    priority_codes = (
+        "hard_side_effect_without_ledger",
+        "journal_write_failed",
+        "ledger_missing_safe_replay",
+    )
+    lead = items[0]
+    for code in priority_codes:
+        matched = [item for item in items if item.get("code") == code]
+        if matched:
+            lead = matched[0]
+            break
+
+    user_message = " ".join(
+        str(item.get("user_message") or "").strip()
+        for item in items
+        if str(item.get("user_message") or "").strip()
+    )
+
+    capabilities: set = set()
+    blocked: set = set()
+    for item in items:
+        caps = item.get("capabilities")
+        if isinstance(caps, list):
+            capabilities.update(str(cap) for cap in caps if cap)
+        if item.get("capability"):
+            capabilities.add(str(item.get("capability")))
+        if item.get("code") == "hard_side_effect_without_ledger" and isinstance(caps, list):
+            blocked.update(str(cap) for cap in caps if cap)
+    if blocked:
+        user_message += (
+            f"（本次被挡下的硬副作用能力：{'、'.join(sorted(blocked))}）"
+        )
+    if not user_message:
+        user_message = "幂等去重存在告警，请检查 journal 装配与写入权限。"
+
+    check = {
+        "status": "degraded",
+        "advisory": True,
+        "blocks_readiness": False,
+        "display_status": lead.get("display_status") or "幂等去重告警",
+        "display_name": "幂等去重",
+        "user_message": user_message,
+        "codes": codes,
+        "capabilities": sorted(capabilities),
+        "occurrences": sum(int(item.get("occurrences") or 0) for item in items),
+        "first_seen_at": lead.get("first_seen_at"),
+        "last_seen_at": lead.get("last_seen_at"),
+    }
+    if "hard_side_effect_without_ledger" in codes:
+        detail = (
+            "Idempotency: hard side-effect capabilities were refused because no "
+            "journal is wired -- attach an ExecutionJournal to run them"
+        )
+    elif "journal_write_failed" in codes:
+        detail = (
+            "Idempotency: ledger write failed -- non-reentrant actions were refused"
+        )
+    else:
+        detail = (
+            "Idempotency: ledger not wired -- read-only/reentrant actions allowed, "
+            "hard side-effect actions refused"
+        )
+    return check, detail
+
+
+def _scheduler_readiness(
+    host: Any,
+    boot_thread: Any,
+    wired: bool,
+    start_deadline: Any = None,
+    start_timeout_s: Any = None,
+) -> tuple:
+    """把排程器托管状态翻成就绪检查项（不另建状态）。
+
+    唯一事实来源是 ``main.py`` 启动时写入 ``app.state.local_scheduler_host`` 的
+    ``HostedLocalScheduler``：``running`` 与 ``start_error`` 由
+    ``src/tasks/scheduler_host.py`` 维护，这里只读。
+
+    真实故障（``start_error`` 非空，例如旧库缺列 ``no such column``）必须
+    ``unhealthy``：这是"提醒与定时任务不会触发"的静默空档，不能装饰成
+    ``degraded`` 或直接放过。非故障状态（按配置不托管、另一进程持有锁）保持
+    ``healthy`` 并用 ``display_status`` 说明，避免把配置选择报成故障。
+    """
+    if not wired:
+        # 非网关进程内的直接调用（旧内部调用方/单测）：不臆造排程器状态。
+        return None, ""
+
+    start_error = str(getattr(host, "start_error", "") or "").strip()
+    running = bool(getattr(host, "running", False))
+    reason = str(getattr(host, "reason", "") or "").strip()
+    check: Dict[str, Any] = {
+        "running": running,
+        "reason": reason,
+        "display_name": "任务调度",
+    }
+
+    if start_error:
+        message = (
+            start_error
+            if "提醒与定时任务不会触发" in start_error
+            else f"提醒与定时任务不会触发：{start_error}"
+        )
+        check.update(
+            {
+                "status": "unhealthy",
+                "start_error": start_error,
+                "display_status": "排程器未启动",
+                "user_message": message,
+            }
+        )
+        return check, f"Scheduler: {start_error}"
+
+    if running:
+        check.update(
+            {
+                "status": "healthy",
+                "display_status": "排程器运行中",
+                "user_message": "排程器运行正常，提醒与定时任务会按时触发。",
+            }
+        )
+        return check, ""
+
+    if host is not None:
+        # 按配置关闭 / 另一进程已持有实例锁：提醒仍由别处负责，不是故障。
+        note = reason or "未在本进程运行"
+        check.update(
+            {
+                "status": "healthy",
+                "display_status": "排程器未在本进程运行",
+                "user_message": f"排程器未在本进程运行（{note}）；这是配置/归属状态，不是故障。",
+            }
+        )
+        return check, ""
+
+    if bool(getattr(boot_thread, "is_alive", lambda: False)()):
+        # 启动线程还活着：先给"启动中"的宽限。但线程卡在 build/导入而不抛异常时，
+        # 它会永远活着——超过配置阈值必须转成故障，不能永远显示"启动中"。
+        deadline = start_deadline
+        overdue = False
+        if isinstance(deadline, (int, float)) and deadline > 0:
+            overdue = time.monotonic() > deadline
+        if overdue:
+            seconds = (
+                f"{float(start_timeout_s):.0f}"
+                if isinstance(start_timeout_s, (int, float))
+                else "配置的"
+            )
+            detail = f"排程器启动超时（超过 {seconds} 秒），可能卡在初始化"
+            check.update(
+                {
+                    "status": "unhealthy",
+                    "start_error": detail,
+                    "display_status": "排程器启动超时",
+                    "user_message": (
+                        f"提醒与定时任务不会触发：{detail}，"
+                        "请到诊断页查看技术细节。"
+                    ),
+                }
+            )
+            return check, f"Scheduler: {detail} -- reminders will not fire"
+        # 后台启动的宽限窗口内（main.py 有意延后启动）：明确说"启动中"，
+        # 既不冒充运行正常，也不把每次开机的正常等待报成故障。
+        check.update(
+            {
+                "status": "healthy",
+                "starting": True,
+                "display_status": "排程器启动中",
+                "user_message": "排程器正在后台启动，提醒与定时任务稍后可用。",
+            }
+        )
+        return check, ""
+
+    detail = (
+        "排程器启动线程已退出但未完成启动"
+        if boot_thread is not None
+        else "排程器启动状态未接入"
+    )
+    check.update(
+        {
+            "status": "unhealthy",
+            "start_error": detail,
+            "display_status": "排程器未启动",
+            "user_message": f"提醒与定时任务不会触发：{detail}，请到诊断页查看技术细节。",
+        }
+    )
+    return check, f"Scheduler: {detail} -- reminders will not fire"
+
+
+def _readiness_payload_sync(
+    trace_id: str,
+    *,
+    scheduler_host: Any = None,
+    scheduler_boot_thread: Any = None,
+    scheduler_wired: bool = False,
+    scheduler_start_deadline: Any = None,
+    scheduler_start_timeout_s: Any = None,
+    kernel_report: Any = None,
+    kernel_wired: bool = False,
+) -> tuple:
     """
     Readiness probe - Kubernetes 检查服务是否就绪接受流量。
 
@@ -336,10 +815,19 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
     #                    or a regression. That is a real integrity failure, so
     #                    it DOES degrade the gate.
     try:
-        from ..kernels.audit import audit_stats, audit_verification_coverage
+        from ..kernels.audit import (
+            audit_stats,
+            audit_verification_coverage,
+            get_audit_write_health,
+        )
 
         astats = audit_stats()
         cov = audit_verification_coverage()
+        # The store can OPEN and still fail EVERY write: policy decisions then
+        # run fail-open and are "NOT RECORDED", while this block used to report
+        # "available / healthy". That is the lie this field removes.
+        write_health = get_audit_write_health()
+        write_failing = bool(write_health.get("failing"))
         uncovered = cov.get("uncovered_events", 0) or 0
         rooted = cov.get("rooted_at_genesis", True)
         floor = cov.get("retention_floor_seq", 0) or 0
@@ -395,9 +883,20 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
             "availability": "available",
             # Evidence integrity: the three honest values above.
             "evidence_status": evidence_status,
-            "status": "degraded" if evidence_status == "broken" else "healthy",
+            # A failing write path outranks "coverage pending": the chain is
+            # actively losing records, so the gate MUST say so.
+            "status": (
+                "unhealthy"
+                if write_failing
+                else ("degraded" if evidence_status == "broken" else "healthy")
+            ),
             "total_events": astats.get("total_events", 0),
             "failures": astats.get("failures", 0),
+            "write_failing": write_failing,
+            "write_attempts": write_health.get("attempted", 0),
+            "write_failures": write_health.get("failed", 0),
+            "failure_streak": write_health.get("failure_streak", 0),
+            "last_failure_kind": write_health.get("last_failure_kind"),
             "coverage_ratio": cov.get("coverage_ratio"),
             "uncovered_events": uncovered,
             "covered_through": cov.get("covered_through"),
@@ -406,6 +905,22 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
             "rooted_at_retention_floor": rooted_suffix,
             "retention_floor_seq": floor,
         }
+        if write_failing:
+            # Fail-open is a deliberate availability trade-off, but it must be
+            # LOUD: the user is told the audit trail stopped, in Chinese, at
+            # the readiness edge -- not left reading a green "审计链正常".
+            checks["audit_store"]["user_message"] = (
+                "审计记录已中断，相关操作没有被记录。系统仍可继续使用，"
+                "请尽快恢复审计库（AUDIT_DB_PATH 指向的数据库）。"
+            )
+            checks["audit_store"]["display_status"] = "审计记录已中断"
+            checks["audit_store"]["fail_open"] = True
+            errors.append(
+                "Audit Write: "
+                f"{write_health.get('failure_streak', 0)} consecutive write "
+                f"failure(s) (last kind: {write_health.get('last_failure_kind') or 'unknown'}) "
+                "-- policy decisions are NOT RECORDED (fail-open)."
+            )
         if evidence_status == "pending":
             # Non-gating: this is the normal tail lag between checkpoints, so it
             # is phrased as a pending item -- NOT as "verification incomplete"
@@ -609,6 +1124,11 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
             checks["executor_fence"]["status"] = "degraded"
             checks["executor_fence"]["error"] = reason
             checks["executor_fence"]["failed_at"] = install.get("failed_at")
+            checks["executor_fence"]["display_status"] = "执行隔离未生效"
+            checks["executor_fence"]["user_message"] = (
+                "执行隔离未生效：防护开关已打开，但拦截未挂载，自主操作可能未被拦截。"
+                "请到诊断页查看技术细节。"
+            )
             errors.append(
                 "Executor Fence: armed (LIUHAO_EXECUTOR_FENCE=on) but the "
                 f"default executor fence is NOT attached -- {reason}. "
@@ -617,9 +1137,18 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
         elif not armed:
             # Informational only -- the default policy is that the gate is
             # opt-in, so an unarmed deployment is a config state, not a fault.
+            # But it must NOT read as "执行隔离正常": on every Windows install
+            # the gate is never armed, so claiming normal here is a lie about
+            # whether autonomous actions are fenced at all.
             checks["executor_fence"]["note"] = (
                 "executor fence gate not armed (LIUHAO_EXECUTOR_FENCE != on): "
                 "the default-deny autonomous-action gate is inactive"
+            )
+            checks["executor_fence"]["enforcement"] = "off"
+            checks["executor_fence"]["display_status"] = "执行隔离未启用"
+            checks["executor_fence"]["user_message"] = (
+                "执行隔离未启用：当前部署不拦截自主执行"
+                "（LIUHAO_EXECUTOR_FENCE 未开启）。这是配置状态，不是故障。"
             )
     except Exception as e:  # pragma: no cover - defensive
         errors.append(f"Executor Fence: {str(e)}")
@@ -699,6 +1228,44 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
         }
         errors.append("安全策略自检暂时无法运行，请到诊断页查看技术细节。")
 
+    # 排程器（提醒/定时任务）托管状态。历史上它起不来时这里完全看不见：
+    # 旧库缺列导致整条排程器不启动，用户只会发现"提醒莫名不响了"而系统全程
+    # 报健康。数据只读 main.py 已写入 app.state 的 HostedLocalScheduler。
+    scheduler_check, scheduler_error = _scheduler_readiness(
+        scheduler_host,
+        scheduler_boot_thread,
+        scheduler_wired,
+        scheduler_start_deadline,
+        scheduler_start_timeout_s,
+    )
+    if scheduler_check is not None:
+        checks["scheduler"] = scheduler_check
+        if scheduler_error:
+            errors.append(scheduler_error)
+
+    # 内核生命周期聚合项：关键内核启动时未到 READY 会阻断就绪；非关键内核
+    # 未就绪只作告警。数据来自 main.py 写入 app.state 的同一份启动报告。
+    kernels_check, kernels_error = _kernels_readiness(kernel_report, kernel_wired)
+    checks["kernels"] = kernels_check
+    if kernels_error:
+        errors.append(kernels_error)
+
+    # 指标链路：监控失明是告警，不是业务断服。blocks_readiness=False 使它
+    # 不进阻断判定；总览仍单独展示（见 Overview.tsx）。
+    metrics_check, metrics_error = _metrics_readiness()
+    checks["metrics"] = metrics_check
+    if metrics_error:
+        errors.append(metrics_error)
+
+    # 幂等去重（ACTION-01 后续）：账本未接入 / 不可写时，不可重入动作的重复
+    # 投递无法去重。同样是告警级（不阻断就绪），但必须能在总览里看到。
+    idempotency_check, idempotency_error = _idempotency_readiness(
+        _execution_dedupe_advisories()
+    )
+    checks["idempotency_dedupe"] = idempotency_check
+    if idempotency_error:
+        errors.append(idempotency_error)
+
     # 逐项补"人话"字段；status 等机器字段原样保留（诊断页/旧调用方不受影响）。
     for name, check in checks.items():
         decorate_health_check(name, check)
@@ -709,29 +1276,52 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
         or checks["ai_provider"]["user_message"]
     )
 
-    # Determine overall status
-    unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
+    # Determine overall status.
+    # ``blocks_readiness=False`` 的检查项（指标链路、非关键内核）是告警级：
+    # 它们让总览看到问题，但不能让业务断服，所以不参与 503 判定。
+    blocking_unhealthy = [
+        k
+        for k, v in checks.items()
+        if v.get("status") != "healthy" and v.get("blocks_readiness", True)
+    ]
+    advisory_checks = [
+        k
+        for k, v in checks.items()
+        if v.get("status") != "healthy" and not v.get("blocks_readiness", True)
+    ]
 
-    overall_status = "ready" if not unhealthy_checks else "degraded"
+    overall_status = "ready" if not blocking_unhealthy else "degraded"
+
+    if overall_status == "ready" and advisory_checks:
+        user_message = (
+            f"系统就绪，阻断项全部通过；另有 {len(advisory_checks)} 项告警需要关注"
+        )
+    elif overall_status == "ready":
+        user_message = "系统就绪，全部检查通过"
+    else:
+        user_message = f"系统未完全就绪：{len(blocking_unhealthy)} 项检查需要关注"
 
     response_data = {
         "status": overall_status,
         "status_label": status_label(overall_status),
-        "user_message": (
-            "系统就绪，全部检查通过"
-            if overall_status == "ready"
-            else f"系统未完全就绪：{len(unhealthy_checks)} 项检查需要关注"
-        ),
+        "user_message": user_message,
         "service": "liuhao-gateway",
         "timestamp": time.time(),
         "trace_id": trace_id,
         "checks": checks,
         "ai_provider": checks.get("ai_provider"),
     }
+    if advisory_checks:
+        response_data["advisories"] = advisory_checks
+
+    # 探针未鉴权可访问：整包脱敏，并**在任何层级删掉 technical_detail**。
+    # 部署细节（绝对路径 / 环境变量名 / Traceback）只留在诊断页。
+    response_data["checks"] = _redact_ready_details(checks)
+    response_data["ai_provider"] = response_data["checks"].get("ai_provider")
 
     # Add error details if degraded/unhealthy
     if errors:
-        response_data["errors"] = errors
+        response_data["errors"] = [redact_log_text(str(err)) for err in errors]
 
     status_code = (
         status.HTTP_200_OK
@@ -746,9 +1336,40 @@ def _readiness_payload_sync(trace_id: str) -> tuple:
 async def readiness_probe(request: Request) -> JSONResponse:
     """就绪探针：采集在探针线程池里跑，超时快速返回 503（中文原因）。"""
     trace_id = request.headers.get("X-Trace-ID", "unknown")
+
+    # 排程器状态只从 main.py 启动时写入的 app.state 读取（同一份 start_error /
+    # running），不在探针里另建一套状态。拿不到 app（直接调用/单测）时不臆造。
+    scheduler_host = None
+    scheduler_boot_thread = None
+    scheduler_wired = False
+    scheduler_start_deadline = None
+    scheduler_start_timeout_s = None
+    kernel_report = None
+    kernel_wired = False
+    try:
+        state = request.app.state
+        scheduler_wired = True
+        kernel_wired = True
+        scheduler_host = getattr(state, "local_scheduler_host", None)
+        scheduler_boot_thread = getattr(state, "scheduler_host_thread", None)
+        scheduler_start_deadline = getattr(state, "scheduler_start_deadline", None)
+        scheduler_start_timeout_s = getattr(state, "scheduler_start_timeout_s", None)
+        kernel_report = getattr(state, "kernel_lifecycle_report", None)
+    except Exception:  # pragma: no cover - 非网关请求对象（直接调用）
+        scheduler_wired = False
+
     try:
         response_data, status_code = await _run_probe(
-            lambda: _readiness_payload_sync(trace_id)
+            lambda: _readiness_payload_sync(
+                trace_id,
+                scheduler_host=scheduler_host,
+                scheduler_boot_thread=scheduler_boot_thread,
+                scheduler_wired=scheduler_wired,
+                scheduler_start_deadline=scheduler_start_deadline,
+                scheduler_start_timeout_s=scheduler_start_timeout_s,
+                kernel_report=kernel_report,
+                kernel_wired=kernel_wired,
+            )
         )
     except ProbeTimeout as exc:
         return _busy_response("就绪检查", trace_id, str(exc))

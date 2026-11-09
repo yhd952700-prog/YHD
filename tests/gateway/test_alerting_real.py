@@ -178,3 +178,47 @@ def test_metric_collector_empty_window_p99_is_zero():
     assert collector._latency_p99_ms() == 0.0
     # error rate is 0/1*100 = 0.0 with no requests.
     assert collector._error_rate_percent() == 0.0
+
+
+def test_probe_busy_503_never_trips_the_critical_error_rate_alert():
+    """Direction 1: a probe 503 is "the service is busy", not a user failure.
+
+    This is the exact false-CRITICAL reproduced in the operational review:
+    ``/v1/ready`` returned 503 twice and the error rate read 50.0 / 25.0 while
+    the service was healthy. Probe traffic is now counted in a separate class
+    (``probe_stats``) and never enters ``error_rate_percent``.
+    """
+    collector = MetricCollector()
+    for _ in range(2):
+        collector.record_request(0.005, 503, is_probe=True)
+
+    assert collector.probe_stats() == {"requests": 2, "five_xx": 2}
+
+    snap = collector.collect_snapshot()
+    assert set(snap.keys()) == _EXPECTED_METRIC_NAMES
+    # Not merely "low": probe traffic does not dilute the denominator either,
+    # so a real user error rate cannot be masked by a stream of probes.
+    assert snap["error_rate_percent"] == 0.0
+
+    new_alerts = get_alert_manager().evaluate_all(snap)
+    rate_alerts = [a for a in new_alerts if a.metric_name == "error_rate_percent"]
+    assert rate_alerts == [], f"probe 503 produced a false alert: {rate_alerts}"
+
+
+def test_business_5xx_still_trips_the_critical_error_rate_alert():
+    """Direction 2: fixing the false positive must NOT silence real failures.
+
+    One real 500 among two user requests is a 50.0% error rate and must still
+    fire the CRITICAL ``err_rate_high`` alert.
+    """
+    collector = MetricCollector()
+    collector.record_request(0.010, 200)
+    collector.record_request(0.010, 500, is_probe=False)
+
+    snap = collector.collect_snapshot()
+    assert snap["error_rate_percent"] == pytest.approx(50.0)
+
+    new_alerts = get_alert_manager().evaluate_all(snap)
+    rate_alerts = [a for a in new_alerts if a.metric_name == "error_rate_percent"]
+    assert rate_alerts, "a real 500 stopped producing the CRITICAL error-rate alert"
+    assert rate_alerts[0].severity == AlertSeverity.CRITICAL

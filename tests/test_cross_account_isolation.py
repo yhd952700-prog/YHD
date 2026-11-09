@@ -414,6 +414,63 @@ class TestKnowledgeAccountIsolation:
         _assert_neutral_404(root_missing, member_missing)
         assert "管理员" not in root_missing.text
 
+    def test_unassigned_legacy_document_is_visible_only_to_root(self, client):
+        """无归属历史文档：主账号可看原文并删除，成员与不存在同形 404。"""
+        from src.knowledge.documents import get_knowledge_service
+
+        service = get_knowledge_service()
+        ingested = service.ingest(
+            "UNASSIGNED-MARKER 历史无归属文档正文。",
+            doc_id="---.txt",
+            owner_account_id="",
+        )
+        assert ingested["document_id"] == "---.txt"
+
+        boss = _headers("boss")
+        bob = _member_headers("bob")
+        view = client.get(
+            "/v1/knowledge/maintenance/unassigned", headers=boss
+        )
+        assert view.status_code == 200, view.text
+        body = view.json()
+        assert body["total"] == 1
+        assert body["lost"] == 0
+        item = body["documents"][0]
+        assert item["document_id"] == "---.txt"
+        assert item["reason"] == "missing_owner_metadata"
+        assert "UNASSIGNED-MARKER" in item["preview"]
+        assert item["reference"] == "knowledge://documents/---.txt#0"
+        assert item["can_delete"] is True
+
+        member_view = client.get(
+            "/v1/knowledge/maintenance/unassigned", headers=bob
+        )
+        _assert_neutral_404(
+            member_view,
+            client.get("/v1/knowledge/documents/no-such/chunks", headers=bob),
+        )
+
+        # 老前缀（无 /v1）是同一条路由的历史别名：同样只认主账号，
+        # 成员拿到的 404 与 /v1 版逐字一致，内容也相同。
+        legacy_view = client.get("/knowledge/maintenance/unassigned", headers=boss)
+        assert legacy_view.status_code == 200, legacy_view.text
+        assert legacy_view.json() == body
+        legacy_member = client.get("/knowledge/maintenance/unassigned", headers=bob)
+        _assert_neutral_404(
+            legacy_member,
+            client.get("/v1/knowledge/documents/no-such/chunks", headers=bob),
+        )
+        assert legacy_member.content == member_view.content
+
+        # 主账号能处置：删除后视图归零，普通成员始终看不到它。
+        assert client.delete(
+            "/v1/knowledge/documents/---.txt", headers=boss
+        ).status_code == 200
+        after = client.get(
+            "/v1/knowledge/maintenance/unassigned", headers=boss
+        ).json()
+        assert after["total"] == 0
+
 
 # ─── 3. 产物文件 / 产物索引 ─────────────────────────────────
 

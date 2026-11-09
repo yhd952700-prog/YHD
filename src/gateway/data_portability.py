@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from ..kernels.identity import _accounts, get_identity_manager
 from .account_context import AccountContext, deny, require_account_principal
+from .display import UserReadableHTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -338,9 +339,35 @@ def _usage_csv(summary: Dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 
 def _knowledge_scope(context: AccountContext):
-    from src.api.routes.knowledge import _scope_from_account_context
+    """备份导出的知识库范围：主账号覆盖整棵子树（核心能力），成员只导出自己。
 
-    return _scope_from_account_context(context)
+    日常读接口（列表/检索/分块）按"知识库是账号自有资产"只给本人；但备份
+    导出是主账号的整树数据迁移能力（``docs/account-hierarchy.md`` 第 21 条），
+    两者边界不同，因此这里不复用路由侧的读范围。
+    """
+    from src.knowledge.documents import KnowledgeScope
+
+    if context.standalone:
+        return KnowledgeScope(
+            principal=context.principal,
+            owners=(context.principal,),
+            include_unowned=True,
+            owns_legacy=True,
+            unowned_writes=True,
+        )
+    if context.is_member:
+        return KnowledgeScope(
+            principal=context.principal,
+            owners=(context.principal,),
+            include_unowned=False,
+            owns_legacy=False,
+        )
+    return KnowledgeScope(
+        principal=context.principal,
+        owners=tuple(context.subtree),
+        include_unowned=True,
+        owns_legacy=True,
+    )
 
 
 def _strip_owner_prefix(document_id: str, principal: str) -> str:
@@ -422,7 +449,9 @@ def import_knowledge(
         service = get_knowledge_service()
     status = service.status()
     if not status.get("enabled"):
-        raise HTTPException(
+        # 原因由知识库服务给出（如"没有可用的 embedding provider，请启动
+        # Ollama…"），是照着做就能恢复的运维文案；安全闸仍会兜住路径/SQL。
+        raise UserReadableHTTPException(
             status_code=503,
             detail=f"{status.get('reason') or '知识库不可用'}",
         )
@@ -453,7 +482,8 @@ def import_knowledge(
             )
         except EmbeddingUnavailableError as exc:
             logger.warning("knowledge import: embedding unavailable: %s", exc)
-            raise HTTPException(
+            # 可操作：等恢复后重试即可，不含内部细节 → 允许原样透传。
+            raise UserReadableHTTPException(
                 status_code=503, detail="知识库暂时不可用，请稍后重试。"
             ) from exc
         except Exception as exc:  # noqa: BLE001 - 单篇失败不拖垮整批

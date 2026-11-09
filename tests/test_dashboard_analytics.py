@@ -82,7 +82,9 @@ class TestTimeseries:
         monkeypatch.setattr("src.kernels.audit.audit_query", boom)
         body = client.get("/v1/dashboard/analytics").json()["timeseries"]
         assert body["available"] is False
-        assert "audit store is down" in body["error"]
+        # 产品把异常翻译成面向用户的中文文案（原始异常只进日志，不进响应），
+        # 这里锁定"如实说读不到"，不要求把内部异常原文透给界面。
+        assert "这段时间的审计趋势暂时读不到" in body["error"]
         assert body["days"] == []
 
 
@@ -177,7 +179,8 @@ class TestBreakdown:
         body = client.get("/v1/dashboard/analytics").json()["breakdown"]
         assert body["available"] is False
         assert body["items"] == []
-        assert "stats unavailable" in body["error"]
+        # 同 timeseries：界面文案是产品口径，内部异常原文不上屏。
+        assert "事件分布暂时读不到" in body["error"]
 
     def test_an_empty_store_yields_an_empty_but_available_breakdown(self, client, monkeypatch):
         monkeypatch.setattr(

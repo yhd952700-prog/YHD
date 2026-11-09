@@ -40,17 +40,27 @@ instead of reaching its own handler, because the catch-all already sat earlier
 in the table. Only GET/HEAD were affected -- the catch-all did not claim POST --
 which is exactly the kind of half-broken that hides until someone adds a route.
 
-So the fallback is installed as the **404 exception handler**. Starlette
-consults it only when *no* route matched, so it cannot shadow anything, no
-matter when that route was added. Static files are still resolved by
-``StaticFiles`` (which already handles path traversal safely) rather than by
-hand.
+So the fallback is installed as the **404 exception handler**, and it **chains**:
+it first offers the request to the console fallback and, when that returns
+``None``, calls the handler that was already present. On the real gateway that
+is ``main.py``'s sanitising handler; on a bare ``FastAPI()`` it is the framework
+default. Starlette consults it only when *no* route matched, so it cannot shadow
+anything, no matter when that route was added -- and because the previous
+handler is preserved (not replaced), sanitisation and JSON shapes are unchanged.
+
+Chaining is what makes ``mount_console`` self-sufficient: it used to rely on
+``main.py`` to re-dispatch through ``app.state.console_fallback``. That
+dependency was invisible until CI built a real bundle and the tests stopped
+skipping -- a bare ``FastAPI()`` plus ``mount_console`` then served nothing at
+all, because no exception handler was ever registered on it.
 
 Contract
 --------
-* **No build output -> nothing is registered.** An API-only deployment (CI, a
-  worker, a reviewer running the test suite) must behave exactly as before; a
-  missing bundle is a log line, never a startup failure.
+* **No build output -> API-only, with an explicit hint.** A missing bundle is a
+  log line, never a startup failure: the gateway serves the API, and a browser
+  navigation to an unknown non-API path answers a Chinese 404 that names the
+  build command -- not a 500, and not a bare ``Not Found`` that leaves the
+  operator guessing.
 * **API prefixes are never shadowed.** Every first segment the app serves an
   endpoint on -- ``/v1``, ``/api``, ``/knowledge`` -- plus the docs surfaces
   (``/docs``, ``/redoc``, ``/openapi.json``) are excluded, so an unknown
@@ -72,10 +82,8 @@ import threading
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 
-from .account_context import structured_error_body
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
@@ -116,6 +124,14 @@ def _is_reserved(path: str) -> bool:
     """True when ``path`` addresses the API rather than a console route."""
     head = (path or "").strip("/").split("/", 1)[0]
     return head in RESERVED_PREFIXES
+
+
+#: 绝对 URI 请求目标（代理形态 ``GET http://<host>/<path> HTTP/1.1``）。ASGI 把请求行
+#: 原样（可能带一个前导 ``/``）放进 ``scope["path"]``；它不是静态路径，绝不能
+#: 交给文件系统去 ``stat``。
+#: 这里刻意用 ``<host>``/``<path>`` 占位而不是真实示例域名：``tests/security``
+#: 的出站扫描是纯文本正则，任何 ``http://名字`` 形状都会被当成真实主机并要求登记。
+_ABSOLUTE_URI_RE = re.compile(r"^/?[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 #: 静态资源的扩展名。这些路径缺失时必须返回真 404，绝不能拿 ``index.html``
@@ -177,9 +193,17 @@ def _apply_cache_control(response, served_path: str):
 
 
 def is_installed(app: FastAPI) -> bool:
-    """True when the console fallback is registered on ``app``."""
-    handler = app.exception_handlers.get(StarletteHTTPException)
-    return getattr(handler, "__name__", "") == FALLBACK_HANDLER_NAME
+    """True when ``app`` is serving a console bundle.
+
+    The source of truth is ``app.state.console_fallback``, not
+    ``app.exception_handlers``: the fallback is now reached through a chaining
+    exception handler (and ``main.py`` also re-dispatches to the state entry),
+    so looking for a handler with a specific ``__name__`` would report "not
+    installed" on a correctly mounted app -- which is exactly what happened
+    when the state-based refactor landed.
+    """
+    handler = getattr(getattr(app, "state", None), "console_fallback", None)
+    return callable(handler) and getattr(handler, "__name__", "") == FALLBACK_HANDLER_NAME
 
 
 def resolve_console_dist() -> Optional[Path]:
@@ -252,21 +276,35 @@ def _warm_static_in_thread() -> threading.Thread:
 def mount_console(app: FastAPI, dist: Optional[Path] = None) -> Optional[str]:
     """Install the console fallback on ``app``. Returns the served path, or ``None``.
 
+    Self-sufficient by design: the fallback is registered on ``app`` here, and it
+    chains to whatever ``StarletteHTTPException`` handler was already present
+    (``main.py``'s sanitiser on the real gateway, FastAPI's default on a bare
+    ``FastAPI()``). Callers no longer have to remember to re-dispatch through
+    ``app.state.console_fallback`` -- that hidden requirement is what made a
+    directly-mounted app serve nothing.
+
     Unlike a catch-all route this needs no ordering guarantee, so it is safe to
     call before other routers are added.
     """
     resolved = dist if dist is not None else resolve_console_dist()
+    static = StaticFiles(directory=str(resolved), html=True) if resolved is not None else None
     if resolved is None:
-        logger.info(
-            "no console build output found (checked %s) -- gateway serves the "
-            "API only", os.environ.get(CONSOLE_DIST_ENV) or DEFAULT_CONSOLE_DIST,
+        logger.warning(
+            "未找到控制台构建产物（已检查 %s）——网关仅提供 API；浏览器访问非 "
+            "API 路径会收到中文提示。构建方式：在 apps/console/console 执行 "
+            "npm run build，或用 %s 指向含 index.html 的目录后重启",
+            os.environ.get(CONSOLE_DIST_ENV) or DEFAULT_CONSOLE_DIST,
+            CONSOLE_DIST_ENV,
         )
-        return None
 
-    static = StaticFiles(directory=str(resolved), html=True)
-
-    @app.exception_handler(StarletteHTTPException)
     async def console_fallback(request: Request, exc: StarletteHTTPException):
+        """仅接管"浏览器导航的 404"；其余返回 ``None`` 交给下一个处理器。
+
+        没有构建产物时返回一条明确的**中文** 404（``CONSOLE_NOT_BUILT`` 与构建
+        命令），而不是让浏览器只看到一句 ``Not Found``。有产物时先按静态文件
+        解析，再回落到入口 HTML；缺失的静态资源仍返回真 404，绝不用 ``index.html``
+        顶上（否则浏览器把 HTML 当 JS 解析，白屏而访问日志仍是 200）。
+        """
         path = str(request.scope.get("path") or "")
         method = str(request.scope.get("method") or "").upper()
         # Only a browser navigation is a client-side route. A non-GET/HEAD
@@ -275,17 +313,35 @@ def mount_console(app: FastAPI, dist: Optional[Path] = None) -> Optional[str]:
         # of bug as the root mount.
         if exc.status_code != 404 or method not in ("GET", "HEAD") \
                 or _is_reserved(path):
-            # Not ours: keep the platform's JSON body and status exactly.
-            # 结构化错误（``detail={"code","message"}``）要摊平到顶层，否则
-            # 本 handler 覆盖了账号面的结构化异常处理，驾驶舱读不到 ``code``。
-            body = structured_error_body(exc.detail)
-            if body is not None:
-                return JSONResponse(
-                    status_code=exc.status_code,
-                    content=body,
-                    headers=getattr(exc, "headers", None),
-                )
-            return await http_exception_handler(request, exc)
+            return None
+        if _ABSOLUTE_URI_RE.match(path):
+            # 畸形请求行不是控制台路由：``StaticFiles`` 会把 ``http://...`` 当成
+            # 本地路径去 stat，Windows 上路径里的 ``:`` 直接抛
+            # ``OSError [WinError 123]``，最终变成 500 噪音。明确 400，既不进
+            # 文件系统查找，也不把客户端错误记成服务端故障。
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": {
+                        "code": "INVALID_REQUEST_TARGET",
+                        "message": "不接受的绝对 URI 请求目标：请求行必须是相对路径。",
+                    }
+                },
+            )
+        if static is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": {
+                        "code": "CONSOLE_NOT_BUILT",
+                        "message": (
+                            "控制台构建产物不存在：请在 apps/console/console 执行 "
+                            "npm run build（或用 LIUHAO_CONSOLE_DIST 指向含 "
+                            "index.html 的目录）后重启网关。"
+                        ),
+                    }
+                },
+            )
         try:
             response = await static.get_response(path.lstrip("/"), request.scope)
             _mark_first_screen(request)
@@ -322,6 +378,28 @@ def mount_console(app: FastAPI, dist: Optional[Path] = None) -> Optional[str]:
                 "index.html",
             )
 
-    app.state.console_static_warm_thread = _warm_static_in_thread()
-    logger.info("console fallback installed from %s (404 handler)", resolved)
-    return str(resolved)
+    # 链住原有处理器：真实网关这里是 main.py 的结构化／脱敏处理器，裸 FastAPI
+    # 这里是框架默认处理器。只“问一句”而不替换，脱敏与 JSON 形状因此完全不变。
+    previous = app.exception_handlers.get(StarletteHTTPException)
+
+    async def console_http_error_handler(
+        request: Request, exc: StarletteHTTPException
+    ):
+        rendered = await console_fallback(request, exc)
+        if rendered is not None:
+            return rendered
+        if previous is None:  # 理论上 FastAPI 总会提供默认处理器，这里只兜底
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=getattr(exc, "headers", None),
+            )
+        return await previous(request, exc)
+
+    app.add_exception_handler(StarletteHTTPException, console_http_error_handler)
+
+    if resolved is not None:
+        app.state.console_fallback = console_fallback
+        app.state.console_static_warm_thread = _warm_static_in_thread()
+        logger.info("console fallback installed from %s", resolved)
+    return str(resolved) if resolved is not None else None

@@ -94,15 +94,20 @@ def test_employees_survive_cross_machine(monkeypatch, tmp_path):
     )
     source.create_employee("other-writer", owner_account_id="member2")
     exported = source.export_employees({"member1"})
-    assert [item["name"] for item in exported] == ["member-writer"]
+    exported_names = [item["name"] for item in exported]
+    # 新机会自动播种内置角色，内置角色也归属 member1，因此随包导出是正常的；
+    # 关键约束是「只导出该账号的员工」。
+    assert "member-writer" in exported_names
+    assert "other-writer" not in exported_names
+    assert {item.get("owner_account_id") for item in exported} == {"member1"}
 
     monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(tmp_path / "target" / "workspace"))
     target = EmployeeStore()
     target.create_employee("liuhao-default")  # 新机启动会先种一个默认员工
-    assert target.import_employees(exported) == {"restored": 1, "skipped": 0}
+    assert target.import_employees(exported) == {"restored": len(exported), "skipped": 0}
     restored = target.load("member-writer")
     assert restored is not None
     assert restored.owner_account_id == "member1"
     assert restored.role_description == "成员负责整理日报"
     # 同名员工已存在时不覆盖现场数据。
-    assert target.import_employees(exported) == {"restored": 0, "skipped": 1}
+    assert target.import_employees(exported) == {"restored": 0, "skipped": len(exported)}

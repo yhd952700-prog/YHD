@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import json
+import ssl
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.ai.providers import BaseProvider, ProviderTimeoutError
 from src.gateway.main import get_app
 from src.gateway.models import _classify_error
 
@@ -433,6 +435,46 @@ class TestConnectionProbe:
     def test_error_classification(self, exc, expected):
         assert _classify_error(exc) == expected
 
+    def test_certificate_failures_are_not_reported_as_unreachable(self):
+        """自签/私有 CA 的证书失败在 SDK 里也是连接错误，不能报"地址不可达"。"""
+
+        def cert(message: str, code: int, verify_message: str) -> ssl.SSLCertVerificationError:
+            exc = ssl.SSLCertVerificationError(message)
+            exc.verify_code = code
+            exc.verify_message = verify_message
+            return exc
+
+        def wrapped(exc: BaseException) -> APIConnectionError:
+            outer = APIConnectionError("Connection error.")
+            outer.__cause__ = exc
+            return outer
+
+        untrusted = wrapped(
+            cert(
+                "certificate verify failed: unable to get local issuer certificate",
+                20,
+                "unable to get local issuer certificate",
+            )
+        )
+        hostname = wrapped(
+            cert(
+                "certificate verify failed: Hostname mismatch, certificate is not valid for 'api.example.com'.",
+                62,
+                "Hostname mismatch, certificate is not valid for 'api.example.com'.",
+            )
+        )
+        expired = wrapped(
+            cert(
+                "certificate verify failed: certificate has expired",
+                10,
+                "certificate has expired",
+            )
+        )
+
+        assert _classify_error(untrusted) == "certificate_untrusted"
+        assert _classify_error(hostname) == "certificate_hostname"
+        assert _classify_error(expired) == "certificate_expired"
+
     @pytest.mark.parametrize("provider", ["openai", "deepseek", "anthropic"])
     def test_ollama_env_does_not_widen_other_providers(
         self, client, admin_headers, monkeypatch, provider
@@ -548,9 +590,13 @@ class TestConnectionProbe:
 
     def test_probe_failure_never_echoes_upstream_english(self, monkeypatch):
         """失败提示只给"下一步改什么"，上游英文原文与 Key 都不进响应。"""
+        from src.ai.providers import BaseProvider
         from src.gateway import models as models_mod
 
-        class BoomProvider:
+        class BoomProvider(BaseProvider):
+            def __init__(self):
+                super().__init__("boom", "no-such-model", api_key="sk-leaky-123456")
+
             def generate(self, *args, **kwargs):
                 raise RuntimeError(
                     "HTTP 401 Unauthorized: invalid api key sk-leaky-123456"
@@ -573,6 +619,62 @@ class TestConnectionProbe:
         assert "HTTP 401" not in result["detail"]
         assert "Unauthorized" not in result["detail"]
         assert "sk-leaky-123456" not in json.dumps(result)
+
+
+class TestProbeRetryNotice:
+    """测试页与聊天共用重试策略：重试要告知，短超时一次都不重试。"""
+
+    class _Flaky(BaseProvider):
+        def __init__(self, *, timeout: float):
+            super().__init__("flaky", "flaky-model", api_key="sk-flaky-123456", timeout=timeout, retry_base_delay=0.0)
+            self.calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderTimeoutError("模型服务", self.timeout, before_first_token=True)
+            return "pong"
+
+        def chat(self, messages, **kwargs):
+            return self.generate("ping", **kwargs)
+
+    def _cfg(self, timeout: float):
+        return {
+            "provider": "openai",
+            "model": "flaky-model",
+            "base_url": "",
+            "timeout": timeout,
+            "api_key": "sk-flaky-123456",
+        }
+
+    def test_retry_notice_is_returned_to_the_test_page(self, monkeypatch):
+        from src.gateway import models as models_mod
+
+        provider = self._Flaky(timeout=30)
+        monkeypatch.setattr(models_mod, "provider_from_config", lambda cfg: provider)
+        result = models_mod._probe(self._cfg(30))
+        assert result["ok"] is True
+        assert provider.calls == 2
+        assert result["notice"], "测试页必须告知发生过自动重试（不能只有流式聊天有）"
+        assert "重试" in result["notice"]
+
+    def test_short_timeout_probe_does_not_retry(self, monkeypatch):
+        from src.gateway import models as models_mod
+
+        class _AlwaysTimeout(self._Flaky):
+            def generate(self, prompt, **kwargs):
+                self.calls += 1
+                raise ProviderTimeoutError("模型服务", self.timeout, before_first_token=True)
+
+        provider = _AlwaysTimeout(timeout=2)
+        monkeypatch.setattr(models_mod, "provider_from_config", lambda cfg: provider)
+        result = models_mod._probe(self._cfg(2))
+        assert result["ok"] is False
+        assert result["reason"] == "timeout"
+        assert provider.calls == 1, "timeout=2 时测试连接也只试一次"
+        assert result["notice"] == ""
+        # 分类与文案不变：仍是超时，不是"证书/地址"之类的误判。
+        assert "超时" in result["detail"]
 
 
 class TestBaseUrlTargetPolicy:
