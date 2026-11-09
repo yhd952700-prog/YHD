@@ -299,3 +299,54 @@ def assert_safe_runtime_target(
             )
         validated.append(address)
     _pin_resolution(host, validated)
+
+
+def resolve_connection_target(
+    base_url: Optional[str],
+    *,
+    context: str = "模型服务",
+    allow_private_service: bool = False,
+    allow_loopback: bool = False,
+    has_credential: bool = False,
+) -> list:
+    """为实际建连取回**已校验**的地址列表；拿不到就拒绝（fail-closed）。
+
+    供 HTTP 传输层（见 ``providers._guarded_transport_cls``）在建连前调用，
+    让"守卫钉住/校验过的解析结果"成为唯一建连依据，而不是依赖 SDK 建连时
+    恰好再次命中 ``socket.getaddrinfo`` 钉住：
+
+    * 当前线程已钉住该主机 → 直接返回钉住条目（与 getaddrinfo 钉住同源，
+      钉住期间不重新查询 DNS，同名漂移/校验后翻转都动不了连接目标）；
+    * 未钉住 → 走 :func:`assert_safe_runtime_target` 同一套策略校验并钉住
+      后返回。
+
+    返回条目形如 ``[(AF_INET, "1.2.3.4"), ...]``，顺序与解析结果一致，调用
+    方按序逐个尝试（与 ``socket.create_connection`` 相同的回退语义）。校验
+    不通过（解析失败/私网/回环未放行/带 Key http）时抛
+    :class:`RuntimeTargetRejected`，调用方必须中止连接，不得退回自行解析。
+    """
+    value = (base_url or "").strip()
+    if not value:
+        return []
+    parsed = urlparse(value)
+    host = parsed.hostname
+    if not host:
+        raise RuntimeTargetRejected(f"{context}地址缺少合法主机名，已拒绝请求。")
+    pins = getattr(_PIN_STATE, "pins", None) or {}
+    entries = pins.get(str(host).lower())
+    if entries:
+        return list(entries)
+    assert_safe_runtime_target(
+        value,
+        context=context,
+        allow_private_service=allow_private_service,
+        allow_loopback=allow_loopback,
+        has_credential=has_credential,
+    )
+    entries = (getattr(_PIN_STATE, "pins", None) or {}).get(str(host).lower())
+    if not entries:
+        # assert 成功后必已钉住；到不了这里，兜底按 fail-closed 处理。
+        raise RuntimeTargetRejected(
+            f"{context}地址未取得已校验的连接目标，已停止请求。"
+        )
+    return list(entries)

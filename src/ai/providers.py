@@ -24,6 +24,7 @@ from .net_guard import (
     RuntimeTargetRejected,
     assert_safe_runtime_target,
     is_local_service_target,
+    resolve_connection_target,
 )
 from .observability import observe
 
@@ -2351,6 +2352,128 @@ class FailoverProvider(BaseProvider):
                 logger.debug("model chain: closing %r failed", provider, exc_info=True)
 
 
+def _guard_base_url(url) -> str:
+    """从 httpx/httpx2 的 URL 提取交给守卫校验的 base URL（scheme://host[:port]）。
+
+    端口要带上：回环白名单（11434/1234/8000/8080）按端口判定，不带端口会让
+    本地推理放行判定失效。
+    """
+    host = url.host
+    if not host:
+        return ""
+    netloc = f"[{host}]" if ":" in host else host
+    scheme = url.scheme
+    port = url.port
+    default = 443 if scheme == "https" else 80
+    if port is not None and port != default:
+        netloc = f"{netloc}:{port}"
+    return f"{scheme}://{netloc}"
+
+
+def _guarded_transport_cls(module):
+    """构造"守卫建连"同步传输类：实际建连强制使用守卫校验过的解析结果。
+
+    httpx 与 anthropic 1.x 内部的 httpx2 在 ``HTTPTransport.handle_request``
+    上形状一致（构造 core Request 交给连接池），这里按传入模块生成对应实现
+    （httpx→httpcore、httpx2→httpcore2），OpenAI / Anthropic 两个 provider
+    共用一套。行为要点（对应 known-gaps G-10 建连层缺口）：
+
+    * ``handle_request`` 先经 :func:`net_guard.resolve_connection_target`
+      取回**已校验**的地址列表——当前线程已钉住直接采用，未钉住按同一策略
+      重新校验；校验不通过一律中止连接（fail-closed），绝不退回自行解析；
+    * 未配置显式代理时，把连接 origin 改写为已校验 IP 并逐个尝试（与
+      ``socket.create_connection`` 相同的多地址回退语义）；TLS 的 SNI 与
+      证书校验仍按**原域名**进行（``extensions["sni_hostname"]``，httpcore
+      原生支持）——TLS 不削弱；``Host`` 头在请求构造时已按原主机名生成，
+      改写连接目标不影响它；
+    * 配置了显式代理时保留原主机名交由代理转发：httpcore 隧道的 TLS
+      server_hostname 取自 origin 主机名，改写成 IP 会破坏 SNI/证书校验；
+      此路径下守卫校验仍然生效，代理自身按它看到的域名解析属于代理的信任
+      边界（known-gaps 残余面如实披露）。
+
+    背景（2026-11-10 实测）：线程钉住对"进程内直连"有效，但 httpx 客户端
+    在 ``trust_env=True`` 时会把请求交给系统/环境代理，代理在**自己的进程
+    里**解析域名——线程钉住够不着，同名漂移与校验后翻转下连接会真实落到
+    漂移地址（上一切片 P4/P5 的缺口机制）。因此 OpenAI provider 不再把
+    ``trust_env`` 交给 ``httpx.Client`` 去建代理挂载，与 requests 系 provider
+    一直显式 ``proxies=None`` 的既有行为对齐；SSL 上下文的 trust_env 语义
+    保持不变。
+    """
+    import importlib
+
+    core_name = "httpcore2" if module.__name__ == "httpx2" else "httpcore"
+    core = importlib.import_module(core_name)
+
+    class GuardedHTTPTransport(module.HTTPTransport):
+        def __init__(
+            self,
+            *,
+            context: str = "模型服务",
+            has_credential: bool = False,
+            allow_loopback: bool = False,
+            allow_private_service: bool = False,
+            **kwargs,
+        ):
+            self._guard_kwargs = {
+                "context": context,
+                "has_credential": has_credential,
+                "allow_loopback": allow_loopback,
+                "allow_private_service": allow_private_service,
+            }
+            self._proxied = kwargs.get("proxy") is not None
+            super().__init__(**kwargs)
+
+        def handle_request(self, request):
+            scheme = request.url.scheme
+            if scheme not in ("http", "https"):
+                return super().handle_request(request)
+            targets = self._validated_targets(request)
+            if self._proxied or not targets:
+                # 显式代理：保留主机名（隧道 SNI 语义），守卫校验已经生效。
+                return super().handle_request(request)
+            original_url = request.url
+            original_extensions = request.extensions
+            last_connect_error = None
+            try:
+                for _family, address in targets:
+                    # 以已校验 IP 直连：连接的是 IP，TLS 验证的是原域名。
+                    # 注意不能用 copy.copy(request)：httpx.Request.__getstate__
+                    # 会把 stream 换成 UnattachedStream，复制后请求体变成
+                    # StreamClosed；这里就地改写、finally 复原。
+                    request.url = original_url.copy_with(
+                        host=f"[{address}]" if ":" in address else address
+                    )
+                    request.extensions = dict(original_extensions)
+                    if scheme == "https":
+                        request.extensions["sni_hostname"] = original_url.host
+                    try:
+                        return super().handle_request(request)
+                    except module.ConnectError as exc:
+                        # 连接阶段失败才轮到下一个已校验地址；写入阶段的失败
+                        # （WriteError 等）原样上抛，绝不重放请求体。
+                        last_connect_error = exc
+                        continue
+            finally:
+                request.url = original_url
+                request.extensions = original_extensions
+            if last_connect_error is not None:
+                raise last_connect_error
+            return super().handle_request(request)
+
+        def _validated_targets(self, request):
+            try:
+                return resolve_connection_target(
+                    _guard_base_url(request.url), **self._guard_kwargs
+                )
+            except RuntimeTargetRejected as exc:
+                # fail-closed：零连接，报错沿用守卫的中性文案（不带内网地址）。
+                raise module.ConnectError(str(exc)) from None
+
+    GuardedHTTPTransport.__name__ = "GuardedHTTPTransport"
+    GuardedHTTPTransport.__qualname__ = "GuardedHTTPTransport"
+    return GuardedHTTPTransport
+
+
 # OpenAI provider (1.x SDK compatible, using official openai library)
 class OpenAIProvider(BaseProvider):
     """OpenAI API provider integration using official openai Python SDK (1.x)."""
@@ -2395,14 +2518,24 @@ class OpenAIProvider(BaseProvider):
                 # "保存时是公网、运行时 302 到 169.254.169.254" 变成真实出站请求。
                 # 这里让 3xx 以状态码形式返回，再由 _guard_upstream_error 转为
                 # 中性拒绝文案。
+                #
+                # 建连层（G-10）：传输层强制使用守卫校验过的解析结果——已钉住
+                # 直接采用，未钉住重新校验，拒绝即零连接；同时不再继承环境/
+                # 系统代理（代理在它自己的进程里解析域名，线程钉住够不着，
+                # DNS 漂移会穿透到代理的建连目标），与 requests 系 provider
+                # 显式 proxies=None 的既有行为对齐。SSL 上下文的 trust_env
+                # 语义不变；显式配置的 OPENAI_PROXY 仍然生效。
+                guarded_transport = _guarded_transport_cls(httpx)(
+                    verify=True,
+                    trust_env=self._env_proxy_applies(),
+                    proxy=self.proxy or None,
+                    context="模型服务",
+                    has_credential=bool(self.api_key),
+                )
                 http_client = httpx.Client(
                     follow_redirects=False,
                     timeout=self.first_token_timeout,
-                    proxy=self.proxy or None,
-                    # 回环/本机地址不继承系统代理：否则代理会把"本机端口没开"
-                    # 变成 502/503，用户看到"服务端 5xx"而永远想不到去启动服务。
-                    # 显式配置的 proxy 优先（见 _env_proxy_applies）。
-                    trust_env=self._env_proxy_applies(),
+                    transport=guarded_transport,
                 )
 
                 self._client = openai.OpenAI(
@@ -2753,9 +2886,19 @@ class AnthropicProvider(BaseProvider):
             if self._client is None:
                 options = {
                     "api_key": self.api_key,
-                    # 与 OpenAI 兼容路径同一条策略：不跟随重定向。
+                    # 与 OpenAI 兼容路径同一条策略：不跟随重定向；建连经守卫
+                    # 传输层强制使用已校验地址，且不继承环境/系统代理（代理
+                    # 进程自行解析域名会让线程钉住失效）。SSL 上下文沿用
+                    # trust_env=True 的既有语义，显式代理本 provider 不支持。
                     "http_client": _anthropic_http.Client(
-                        follow_redirects=False, timeout=self.first_token_timeout
+                        follow_redirects=False,
+                        timeout=self.first_token_timeout,
+                        transport=_guarded_transport_cls(_anthropic_http)(
+                            verify=True,
+                            trust_env=True,
+                            context="模型服务",
+                            has_credential=bool(self.api_key),
+                        ),
                     ),
                     # 重试由 generate_with_retry 统一管理，避免 SDK 偷偷放大。
                     "max_retries": 0,
