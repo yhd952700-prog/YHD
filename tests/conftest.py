@@ -430,6 +430,13 @@ def _isolate_human_identity_store_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rbac_module, "_default_rbac", None)
     monkeypatch.setattr(rbac_store_module, "_rbac_store", None)
+    # 会话存储也是模块级单例：``src.ai.conversation_store._conversation_store``
+    # 在首次 ``get_conversation_store()`` 时按当时的 ``LIUHAO_DATA_DIR`` 绑定
+    # 库路径，之后永不重解析。若不按用例复位，先跑用例创建的 store 会一直
+    # 服务后续用例，``read_history`` 就从错误的库读（断言 0 == N）。
+    import src.ai.conversation_store as conversation_store_module
+
+    monkeypatch.setattr(conversation_store_module, "_conversation_store", None)
     # 首次解析会把旧位置 ``~/.liuhao/rbac.json`` 迁移到数据根；测试若让它指向
     # 真实用户目录，每个用例都会把开发者机器上那份真实库复制进 tmp，并带着真实
     # 角色运行（既污染断言结果，也把真实库当测试夹具）。这里按用例指到 tmp。

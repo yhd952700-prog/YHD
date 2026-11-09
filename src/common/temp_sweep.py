@@ -23,8 +23,10 @@ staging、提醒脚本都不会走到 ``finally`` 清理，于是永久留在 ``
   目录里必须有本产品的内容指纹（``data/master.key`` + 至少一个取证脚本/密文
   条目）、默认保留 30 天、出现 ``KEEP`` / ``.keep`` / ``DO_NOT_DELETE`` /
   ``keep-evidence*`` 永不删除、删除前先原子改名隔离（Windows 上被占用的目录
-  改名会失败 → 按"仍在用"保留）。保留期内也会把其中已知的密钥文件收紧到
-  当前用户，避免"等 30 天期间一直裸露"。候选根只有当前用户自己的临时目录
+  改名会失败 → 按"仍在用"保留）。保留期内也会把其中**所有**按设计持密的文件
+  （主密钥、凭据库、身份库、`root.token` / `member.token`、模型配置库及其
+  WAL/SHM，见 ``_EVIDENCE_SECRET_FILES``）收紧到当前用户，避免"等 30 天期间
+  一直裸露"。候选根只有当前用户自己的临时目录
   （``tempfile.gettempdir()`` 与 ``%LOCALAPPDATA%\\Temp``），且只认直接子项。
 
 启动开销（为什么需要缓存）
@@ -38,8 +40,12 @@ staging、提醒脚本都不会走到 ``finally`` 清理，于是永久留在 ``
 * 缓存落在**数据根**（``<data>/temp-sweep.stamp.json``），不写临时目录本身，
   避免"写缓存又改了临时目录 mtime"的自我失效。
 * 缓存最长有效 24h：即使目录没动静，每天也至少完整扫一次，避免"上次扫描时
-  pid 还活着、随后退出的残留"被无限期跳过。取证沙箱的判定不受缓存影响
-  （每次启动都跑，成本约 1ms）。
+  pid 还活着、随后退出的残留"被无限期跳过。取证沙箱的判定与**凭证收紧**不受
+  缓存影响：每次启动都跑（本机温态实测整轮 ~16ms，其中 8 个持密文件各一次
+  ``GetFileSecurity`` 约 2.8ms；旧范围 2 个文件 ~0.6ms）。凭证不能跟着 24h
+  缓存延后——取证进程可能在保留期内再次写入新文件，新文件会重新继承孤儿
+  SID，多等一天就是多裸露一天。冷启动多出的 pywin32 导入（~44ms）与主密钥
+  ACL 自检共用，不因扩大清单而增加。
 * 拿不到数据根、读缓存失败、时钟回拨等异常一律退回完整扫描（宁可慢，不可漏
   的根本保障是判据本身，不是缓存）。
 
@@ -108,6 +114,34 @@ _EVIDENCE_MARKERS = (
     "serve_console.js",
     "auth_secrets.json",
     "identities.json",
+)
+
+#: 沙箱里**按设计持密**的文件（相对沙箱根的路径）。清单来自对真实沙箱的逐项
+#: 枚举，而不是只补三个点名文件：
+#:
+#: * ``data/master.key``：主密钥，解开模型 API Key 与审计链；
+#: * ``auth_secrets.json``：登录凭据库（PBKDF2 记录，仍是口令材料）；
+#: * ``identities.json``：身份库（``integrity`` / ``activation_hash`` /
+#:   ``recovery_hash``）——能改写它就能改「谁有主权」；
+#: * ``root.token`` / ``member.token``：抓取期间签发的 Bearer 令牌，过期前可直接
+#:   冒充对应身份；
+#: * ``model_config.sqlite3`` 及其 ``-wal`` / ``-shm``：``ai_model_configs`` 表有
+#:   ``api_key_enc`` 列，WAL/SHM 是同一页数据的分身，一并收紧。
+#:
+#: 明确**不在**清单里的同级条目（枚举时逐项确认过，写进 docs/known-gaps.md）：
+#: ``capture_evidence.js`` 只在运行时读 token 不内嵌密钥；``alerts.json`` 的
+#: receiver 全是 ``console``；``rbac.json`` 零凭据命中；审计/会话/记忆库和脚本
+#: 不是按设计的凭据存储；``*.lock`` 是 1 字节空锁；``chrome-profile/`` 是浏览器
+#: 自己的目录，递归改写 ACL 会与运行中的浏览器抢文件，另行登记。
+_EVIDENCE_SECRET_FILES = (
+    _EVIDENCE_ANCHOR,
+    "auth_secrets.json",
+    "identities.json",
+    "root.token",
+    "member.token",
+    "model_config.sqlite3",
+    "model_config.sqlite3-wal",
+    "model_config.sqlite3-shm",
 )
 
 #: 有界遍历：最多看 512 个条目、4 层（避免异常目录拖慢启动）。
@@ -270,18 +304,23 @@ def _newest_mtime_bounded(path: str) -> Tuple[Optional[float], bool]:
 
 
 def _tighten_evidence_secrets(path: str) -> None:
-    """保留期内也把已知密钥文件收紧到当前用户（失败只记 debug）。"""
+    """保留期内也把沙箱里**所有**持密文件收紧到当前用户。
+
+    对已受保护的文件只做一次 ``GetFileSecurity``（约 0.3ms），不会重复写 DACL；
+    收紧失败只告警，下次启动重试——证据已经落盘，读不到才是更大的故障。
+    逐文件而不是递归整棵树：``chrome-profile/`` 这类运行中目录不在清单里。
+    """
     from src.common.fs_permissions import ensure_restricted_to_current_user
 
-    for relative in (_EVIDENCE_ANCHOR, "auth_secrets.json"):
+    for relative in _EVIDENCE_SECRET_FILES:
         candidate = os.path.join(path, relative)
         if not os.path.isfile(candidate):
             continue
         try:
             if not ensure_restricted_to_current_user(candidate):
-                logger.warning("取证沙箱密钥文件 ACL 未能收紧：%s", candidate)
+                logger.warning("取证沙箱凭据文件 ACL 未能收紧：%s", candidate)
         except Exception as exc:  # noqa: BLE001 - 启动路径不得抛出
-            logger.debug("取证沙箱密钥文件 ACL 收紧失败（%s）：%s", candidate, exc)
+            logger.debug("取证沙箱凭据文件 ACL 收紧失败（%s）：%s", candidate, exc)
 
 
 def _remove_quarantined(path: str) -> bool:
@@ -374,8 +413,9 @@ def sweep_stale_evidence_sandboxes(
 ) -> dict[str, int]:
     """清扫过期的 ``liuhao-maintenance-evidence``（判据见模块 docstring）。
 
-    不论是否删除，都会先尝试把沙箱里的 ``data/master.key`` 与
-    ``auth_secrets.json`` 收紧到当前用户：保留期不是"继续裸露"的借口。
+    不论是否删除，都会先尝试把沙箱里所有持密文件（见
+    ``_EVIDENCE_SECRET_FILES``：主密钥、凭据库、身份库、抓取令牌、模型配置库
+    及其 WAL/SHM）收紧到当前用户：保留期不是"继续裸露"的借口。
     不传 ``directory`` 时按 :func:`_evidence_roots` 覆盖当前用户的两个临时根。
     """
     stats = {"matched": 0, "removed": 0, "kept": 0}

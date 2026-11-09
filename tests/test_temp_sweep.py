@@ -447,6 +447,110 @@ def test_cached_sweep_still_tightens_evidence_key(tmp_path, monkeypatch):
     assert is_restricted_to_current_user(key)
 
 
+def _add_credential_files(sandbox, *, loosen: bool = True) -> None:
+    """按 ``_EVIDENCE_SECRET_FILES`` 补齐沙箱里的持密文件。"""
+    for relative in temp_sweep._EVIDENCE_SECRET_FILES:
+        target = sandbox / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            target.write_bytes(b"placeholder")
+        if loosen:
+            _loosen_acl(target)
+
+
+def test_all_credential_files_in_evidence_sandbox_are_tightened(tmp_path):
+    """保留期内，沙箱里**所有**持密文件都必须收紧（不只 master.key）。"""
+    from src.common.fs_permissions import is_restricted_to_current_user
+
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir()
+    sandbox = _make_evidence_sandbox(temp_dir)
+    _add_credential_files(sandbox)
+    for relative in temp_sweep._EVIDENCE_SECRET_FILES:
+        assert not is_restricted_to_current_user(sandbox / relative), (
+            f"前置条件：{relative} 应处于过宽状态"
+        )
+
+    stats = temp_sweep.sweep_stale_evidence_sandboxes(directory=str(temp_dir))
+
+    assert stats == {"matched": 1, "removed": 0, "kept": 1}
+    for relative in temp_sweep._EVIDENCE_SECRET_FILES:
+        assert is_restricted_to_current_user(sandbox / relative), (
+            f"保留期内必须收紧：{relative}"
+        )
+
+
+def test_non_credential_files_in_evidence_sandbox_are_not_touched(tmp_path):
+    """同名同级但不是持密文件 → 不产生 ACL 写入，避免误伤取证数据。"""
+    from src.common.fs_permissions import is_restricted_to_current_user
+
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir()
+    sandbox = _make_evidence_sandbox(temp_dir)
+    non_secret = ("alerts.json", "account_memory.sqlite3", "rbac.json")
+    for name in non_secret:
+        target = sandbox / name
+        target.write_text("{}", encoding="utf-8")
+        _loosen_acl(target)
+        assert not is_restricted_to_current_user(target)
+
+    temp_sweep.sweep_stale_evidence_sandboxes(directory=str(temp_dir))
+
+    for name in non_secret:
+        assert not is_restricted_to_current_user(sandbox / name), (
+            f"非持密文件不得被收紧：{name}"
+        )
+
+
+def test_open_handle_survives_acl_tightening(tmp_path):
+    """正在取证的进程：先持有句柄，再切 DACL，读不失败、内容/mtime 不变。
+
+    Windows 的访问检查发生在 ``open`` 时，替换 DACL 不吊销已存在的句柄。
+    """
+    from src.common.fs_permissions import is_restricted_to_current_user
+
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir()
+    sandbox = _make_evidence_sandbox(temp_dir)
+    token = sandbox / "root.token"
+    payload = b"header.payload.signature"
+    token.write_bytes(payload)
+    _loosen_acl(token)
+    assert not is_restricted_to_current_user(token)
+    before_mtime = token.stat().st_mtime_ns
+
+    with open(token, "rb") as handle:
+        assert handle.read() == payload
+        stats = temp_sweep.sweep_stale_evidence_sandboxes(directory=str(temp_dir))
+        assert stats == {"matched": 1, "removed": 0, "kept": 1}
+        assert is_restricted_to_current_user(token), "切 DACL 必须成功"
+        handle.seek(0)
+        assert handle.read() == payload, "已打开的句柄不得因切 DACL 失败"
+
+    assert token.read_bytes() == payload
+    assert token.stat().st_mtime_ns == before_mtime, "切 ACL 不得改写内容/mtime"
+
+
+def test_cached_sweep_still_tightens_all_credentials(tmp_path, monkeypatch):
+    """命中 24h 缓存时，凭据收紧照旧执行（凭证不能因缓存而跳过）。"""
+    from src.common.fs_permissions import is_restricted_to_current_user
+
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(temp_sweep, "_sweep_is_redundant", lambda *_args: True)
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir()
+    sandbox = _make_evidence_sandbox(temp_dir)
+    _add_credential_files(sandbox)
+
+    stats = temp_sweep.sweep_stale_temp_artifacts(directory=str(temp_dir))
+
+    assert stats == {"matched": 1, "removed": 0, "kept": 1}
+    for relative in temp_sweep._EVIDENCE_SECRET_FILES:
+        assert is_restricted_to_current_user(sandbox / relative), (
+            f"缓存命中也不得跳过收紧：{relative}"
+        )
+
+
 def test_evidence_roots_cover_both_user_temp_locations(tmp_path, monkeypatch):
     process_temp = tmp_path / "process-temp"
     process_temp.mkdir()

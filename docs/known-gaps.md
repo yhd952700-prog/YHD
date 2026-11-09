@@ -14,6 +14,7 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 | 2 | Gemini real success path unverified (no API key) | Gemini option is wired to `google-genai`; only a fake-key 400 proves the request reaches Google | Open, accepted |
 | 3 | `file_write` 的占位内容会被当成真实产物 | 模型可以把任务名/描述原样写进文件，`artifacts` 非空即被算作可交付 | **发布后处理**（本轮只登记，不改代码） |
 | 4 | Windows 上 rename 的掉电持久性只有 best-effort | 队列迁移在整机掉电后可能回到 rename 前状态；不损坏数据，最坏多迁一次 | Open（平台限制，见 §5） |
+| 5 | 取证沙箱 `rmtree` 删除不是安全擦除 | 删除后磁盘/日志/卷影副本仍可能恢复旧证据 | **保持结论**（数据残留；凭证 ACL 已在保留期内收紧，见「取证沙箱删除不是安全擦除」一节） |
 
 ---
 
@@ -563,6 +564,9 @@ list/read 后仍落在正确账号空间。回归见
 | E-22 | **安装版系统层体验（托盘 / 开机自启 / 后台驻留 / 单实例）在 0.1.1 新启动器上首次实测**（用正式 payload 结构 + 桌面壳 `scripts/liuhao_desktop.py` + 独立数据目录 + 独立端口模拟安装版；遵守「不动业务逻辑、不动前端视觉」的边界） | 第二次双击会起第二个网关并报端口冲突；托盘右键没有日志入口；托盘退出被误报成「未优雅收尾」——三项都会让普通用户以为程序坏了 | **已修 3 个缺陷（`3d3af233`）**：① 桌面壳此前没有自身单实例，第二次启动会再建一个托盘窗口、再让网关锁失败；改为按数据目录派生命名互斥量（`Local\LiuHaoDesktopShell_<sha1>`，`ERROR_ALREADY_EXISTS`），第二实例经 `RegisterWindowMessage("LiuHao.ShowStatusWindow")` 唤起已有窗口，找不到窗口则打开 `run/instance.json` 公布的 url，实测 0.91–1.22s 内以退出码 0 结束，托盘数 / 监听数均保持 1；② 托盘窗口类名原为随机 uuid、跨进程找不到，改为稳定派生 `LiuHaoTray_<sha1(数据目录)>`，并补右键「打开日志目录」（1005，实测新增 1 个资源管理器窗口）；③ `stop_process` 只读 `desktop-gateway.log`（WARNING+），而 uvicorn 的 `Application shutdown complete` 写在数据目录 `logs/liuhao.log`，导致托盘退出被误报「未确认优雅收尾」；改为同时读应用日志，实测 `graceful=True / shutdown_确认=True / 0.67s`。**其余实测**：关窗后窗口隐藏、网关继续服务（`/v1/startup` 200、python 子进程 1、托盘 1）；托盘退出后端口释放、WAL 清空、重启后账号/会话仍在；只强杀托盘时网关因 `LIUHAO_PARENT_PID` 自行退出，再次启动正常（无残留锁）；自启注册项写入 `HKCU\...\Run`（命令指向 `runtime\pythonw.exe scripts\liuhao_desktop.py --autostart`），在 `cwd=C:\Windows\System32` + 仅系统环境变量下等效启动成功，关闭后注册项删除。回归 `tests/desktop/test_desktop_system_layer.py` 新增 6 条（互斥量/类名稳定性、真实托盘窗口唤起、交接兜底、日志菜单、停止确认来源）。**未验证（不写成通过）**：a) 真实重启机器（只做了等效注册项启动）；b) 真实安装器快捷方式（`{app}\LiuHao.bat`）在已有实例运行时的完整路径——工具终端没有交互 stdin，控制台启动器在首次向导处被 `[FAIL] 首次运行需要在命令行窗口里完成向导` 阻断，未走到 `start_liuhao` 的「已在运行」分支；c) 通知区图标的人工可视化确认（程序侧已验证窗口/菜单消息/唤起可达，F-4 仍保持未验证）；d) `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` 与实际密钥不一致时的英文原始提示（`REFUSING registry row ... Remedy: set that variable ...`，含环境变量名与绝对路径）与 `LiuHao.bat` 无论何种结局都打印 `LiuHao stopped. Press any key to close.`——两者分属身份内核与 packaging 生成物，超出本任务边界，只登记不改。**普通用户会不会被卡住**：不会。单实例、关窗驻留、托盘退出、自启、强杀恢复五条主路径都能走完；剩余风险只在「双击快捷方式时是否停在向导」这一未验证路径，以及关控制台窗口时那句英文提示的观感 |
 | E-23 | **0.1.0 的 `/v1/health` 把版本号报成 `1.0.0`**（实测：0.1.0 安装实例自报 `1.0.0`，与 `LIUHAO_RELEASE.json`/`pyproject.toml` 的 `0.1.0` 不符）。原因是旧版 health 处理器读错了版本来源，属于 **0.1.0 自身缺陷**，不是升级链引入的回归 | 对运行中的 0.1.0 做版本探测/故障诊断会拿到错误版本，可能误判「装错了版本」或让升级前置判断失真；升级到 0.1.1 后该值正确 | **已修（0.1.1）**：health 改为报告真实运行版本，回归随升级/健康检查测试覆盖。**0.1.0 不回补**：已发布的 0.1.0 二进制不可改，回补需要重发旧版本号，收益为零且会让版本语义更乱；用户升级到 0.1.1 即消失。后续如需支持「识别 0.1.0 旧实例」，只能按已知缺陷解释，不得据此判定升级失败 |
 | E-24 | **交付记录与安装器文案滞后于产物**（按边界不手改构建产物与 `installer/**`）：① `dist/installer/README-DELIVERY.txt` 写「`dist\release\LIUHAO_RELEASE.json` 目前没有 `manifest_signature`」，实际顶层 `manifest_signature` 存在，且 `releases[0].signature=true`（`signature_algorithm=ed25519`）；② `installer/liuhao.iss:1054`、`:1060` 首屏写「本安装包未做代码签名」，实际 exe 为自签名且 `Status=Valid`；③ `dist/smoke-report.json` 的 `chat_note` 写「FAIL 属预期」，容易被误读成本次结果（本次 `login`/`chat` 均为 `PASS`）；④ 本文件 E-8 的早期写法「安装包未签名」已滞后 | 读者会把「没有签名 / 冒烟失败」当成现状，误判发布状态 | **已登记，按边界不手改**：①②属安装器/构建产物（其他线负责），③④属文档措辞（本轮已在 README、`INSTALL-WINDOWS.md`、`DELIVERY-CHECKLIST.md` 改正；`smoke-report.json` 本身保留不改写，见 README 的处置说明）。关闭条件：重建安装器时同步文案，或由构建线确认 `README-DELIVERY.txt` 与清单签名状态一致 |
+| E-25 | **开发路径扫描「运行文件命中 2」的逐点定性**（来源 `dist/release/dev-path-report.txt:3,9-10`，扫描时间 `2026-11-08T12:23:16Z`）：① `scripts/collect_diagnostics.bat:12` 的 `%APP_DIR%\.venv\Scripts\python.exe` 是**运行时展开**的兜底路径，仅当安装树缺 `runtime\python.exe` 时命中，且只在失败分支 `echo` 到控制台，不写入诊断 zip、不进入日志；② `src/logging_config.py:189` 的仓库绝对路径示例位于 `RedactingFormatter` 类 **docstring**，是脱敏规则的举例说明，不是日志输出模板；运行期 `format()` 调用 `redact_log_text()`，`src/common/redaction.py` 的 `_ABS_PATH_PATTERNS` 会把任意本机绝对路径折叠为 `<本地路径>/文件名` | 两处都不会把开发/安装绝对路径写进用户可见日志或交付物；**判定：无害**。扫描器按「文本中出现仓库路径字面量」计数，不区分 docstring 与运行时变量展开，这 2 条属已知误报 | **已处置（2026-11-09）**：`src/logging_config.py:189` 的绝对路径示例已改为占位写法 `` `D:\\<仓库>\\.venv\\...` ``（**仅注释**，`1 insertion / 1 deletion`，文件行数不变，运行逻辑零改动；改后该文件已无仓库名字面量）。`scripts/collect_diagnostics.bat:12` **明确不改**：`%APP_DIR%` 是运行时展开，安装树缺 `runtime\` 时它是必要兜底，删掉会让诊断脚本在异常环境直接失败；且该字符串只在失败分支 `echo` 到控制台，不落日志、不进诊断包。重新扫描与命中数更新由发布主线在 0.1.2 打包时执行（预计运行文件命中 2→1，余下 1 条为本条保留项） |
+| E-26 | **0.1.1 构建未启用 `-StrictReleaseDevPaths`，扫描不阻断构建**：`scripts/release/package-frozen.ps1:425-426` 的 `$buildArgs` 只传 `-Version`/`-OutRoot`/`-PythonExe`，没有该开关；能力本身已具备——`packaging/build_windows_installer.ps1:46`（参数定义）、`:265`（转成 `--strict-dev-paths`）、`packaging/make_release.py:633`（运行文件命中即失败）、`:778`（参数定义） | 源码里的开发路径字面量可随包交付而构建仍成功；「命中 0/2」只能靠人读报告，不会拦截 | **已登记缺口，本轮未修**（边界：不改 `packaging/**`）。**谁负责/在哪开**：发布打包线在 `scripts/release/package-frozen.ps1:425-426` 的 `$buildArgs` 增加 `"-StrictReleaseDevPaths"`（或在该脚本内默认强制），使每次真实构建都把运行文件命中当失败。落地前必须先处置 E-25 的 2 处，否则构建会被预期地打断。**不加的后果（当前事实）**：未传 `-StrictReleaseDevPaths` 时 `--strict-dev-paths` 不生效，`packaging/make_release.py:633` 的失败分支不会触发——**这道门是关着的**：本次构建扫出 2 处运行文件命中仍然放行并产出了包，此后任何新增的开发路径字面量同样不会阻断出包。**修复后的验收口径**：① `dist/release/dev-path-report.txt` 的「运行文件命中」应为 0（或逐条写明豁免项与理由）；② 人为植入一处命中做反例时，构建必须**非零退出**，且不得在 `dist/installer` 留下新产物或 `SHA256SUMS.txt`（不得静默产出包） |
+| E-27 | **`packaging/PAYLOAD-CONTENT.md:85-86` 的计数声明与产物不符**：文档写「本轮打包扫描：运行文件命中 0」，而同目录交付物 `dist/release/dev-path-report.txt:3` 实测「运行文件命中：2」 | 属「不可复算的计数声明 / 文档与产物不一致」：读者会以为源码已无开发路径字面量，实际仍有 2 处（见 E-25） | **已登记，按边界不改**（`packaging/**` 归另一线）。关闭条件：E-25 残余命中清零并重跑扫描后，把 L85-86 改为可复算的实测值；若保留豁免，必须写明豁免项与理由。**更正归属**：由发布主线在出 0.1.2 包时一并更正（本文件只登记需求，不改 `packaging/**`） |
 
 ---
 
@@ -694,6 +698,72 @@ list/read 后仍落在正确账号空间。回归见
 - 缺口对照输出「已有 / 缺什么 / 建议是否采用」，unknown 许可证仍拒绝；
 - 版本更新与漏洞变化能生成可订阅提醒；
 - 报告可追溯到来源、版本、许可证、扫描时间。
+
+---
+
+## 取证沙箱删除不是安全擦除；凭证 ACL 已在保留期内收紧（2026-11-09，**状态：残余 2 保持结论；残余 1 已消除**）
+
+### 残余 2：`rmtree` 删除 `liuhao-maintenance-evidence` 不等于安全擦除
+
+**知道什么。** [temp_sweep.py](file:///d:/LiuHao-AI-OS/src/common/temp_sweep.py#L326-L341)
+的 `_remove_quarantined()` 先把过期取证沙箱原子改名隔离，再交给
+`shutil.rmtree`。`rmtree` 只删除目录项、释放簇，**不覆盖数据块**：在同一个
+卷上，删除后的主密钥、令牌、凭据库内容仍可能被磁盘/日志/卷影副本恢复出来。
+风险类型：**数据残留（data remanence）**，影响面限于能接触该磁盘或卷影副本的
+人；不是远程可利用漏洞。
+
+**为什么不在代码里修。** 三个原因都不是"以后再说"：
+
+1. **应用层覆盖无法证明物理擦除。** SSD 的 wear leveling、NTFS 日志、
+   copy-on-write、TRIM 都可能让"覆写同一逻辑偏移"落到别的物理块。把每个
+   文件写成随机字节只会得到一个**看起来**做了擦除的实现——这正是本仓库
+   反复拒绝的"没验过就说安全"。
+2. **正确工具在部署层，不在应用层。** 能给出可验证保证的是全盘加密
+   （BitLocker）配合 `cipher /w` 擦除卷空闲空间；这属于安装/运维契约，写进
+   `src/` 反而会把部署前提藏起来。
+3. **对取证目录做覆盖有二次风险。** 保留期内沙箱可能正在被取证进程使用；
+   覆盖内容会破坏证据本身，与"宁可不删"的判据冲突。
+
+**谁在什么条件下才修。** 如果取证沙箱将来落在**没有全盘加密**的机器上，或
+合规要求"可证明擦除"，再处理：前提是确认沙箱已过保留期且无进程占用，然后用
+`cipher /w` 处理所在卷，或改为逐文件调用已有的
+`src/common/windows_acl.py:secure_delete_file()` 并在文档里同时写明它
+**不能**覆盖 SSD 物理块。现有
+[`secure_delete_file`](file:///d:/LiuHao-AI-OS/src/common/windows_acl.py#L147-L176)
+只用于少量密钥文件，不是通用方案。
+
+### 残余 1（已消除）：保留期内所有持密文件都收紧到当前用户
+
+**知道什么。** 上一轮只收紧了 `data/master.key` 与 `auth_secrets.json`，同一
+沙箱里的 `root.token`、`member.token`、`identities.json`、`model_config.sqlite3`
+（含 `-wal`/`-shm`，`api_key_enc` 列）仍在 30 天保留期内继承
+`%LOCALAPPDATA%\Temp` 上的孤儿 SID
+`S-1-5-21-1173064321-3619361309-2059095201-2888008584`。
+
+**已消除。** `_EVIDENCE_SECRET_FILES`（
+[temp_sweep.py:136](file:///d:/LiuHao-AI-OS/src/common/temp_sweep.py#L130-L139)）
+按真实沙箱逐项枚举后覆盖 8 个持密文件；
+`_tighten_evidence_secrets()`（
+[temp_sweep.py:306](file:///d:/LiuHao-AI-OS/src/common/temp_sweep.py#L306-L323)）
+对每个文件用受保护 DACL 只保留当前用户。受控前后实测：继承态 5 ACE /
+`control=0x8404` / 含孤儿 SID / 全部 `inherited=True` → 收紧后 1 ACE /
+`control=0x9404` / 当前用户 / `inherited=False`，文件内容哈希与 mtime 不变。
+非持密文件（`alerts.json`、`account_memory.sqlite3`、`rbac.json` 等）不被
+触碰。24h 缓存命中时收紧照旧执行（`sweep_stale_temp_artifacts` 在跳过 pid
+扫描时仍调用 `sweep_stale_evidence_sandboxes`）。
+
+**仍存在的边界（不是本轮遗漏）。** `chrome-profile/` 是浏览器自己的目录，
+可能含 cookie/会话，但不是本产品的凭据存储；递归改写运行中浏览器的 ACL 会
+与浏览器抢文件，因此**不**纳入逐文件收紧，也不在 `_EVIDENCE_SECRET_FILES`
+里。若将来要求连它一起收，需要先确认浏览器未运行，并单独设计递归策略。
+
+**行为边界。** 收紧发生在**启动时**；保留期内取证进程新写入的凭证文件会
+重新继承父目录 ACL，最长等到下一次启动才被收紧。我们没有该沙箱生产者
+（仓库内无创建代码，见 `docs/known-gaps.md` 本条目），无法加"写入后自收紧"。
+切 DACL 对**已打开的句柄**不构成破坏：Windows 访问检查发生在 `open` 时，
+替换 DACL 不吊销现有句柄；同用户的新 `open` 仍拿到 `FILE_ALL_ACCESS`。
+`tests/test_temp_sweep.py::test_open_handle_survives_acl_tightening` 实测
+持句柄读取不受影响。
 
 ---
 

@@ -2,8 +2,9 @@
 
 > **本文件是 Kernel 的唯一权威来源。任何文档与本文件冲突时，以本文件为准。**
 > 依据：`src/kernels/` 实际代码
-> **行数证据：对 `HEAD` 实测（2026-11-08 由 `git ls-tree`/`git show HEAD:` 复算，
-> 与 `scripts/verify_doc_count_claims.py` 的自动门禁同源）**
+> **行数证据：对 `HEAD`（`e83b22b0`）实测（2026-11-09 由 `git ls-tree` +
+> `git show HEAD:<path> | wc -l` 逐文件复算，与 `scripts/verify_doc_count_claims.py`
+> 的自动门禁同源；该门禁在同一 HEAD 上输出 `RESULT: PASS`）**
 > **计数证据：注册内核数取自运行时 `src.kernels._registry.KERNEL_ENTRIES`（`len()` = 14），
 > 而非数目录 —— 见 §0.5。**
 > 版本：v1.1（2026-10-04 修订：原v1.0 的行数列14/14 全部失真、合计数算错、且把"目录数"当作"内核数"）
@@ -51,39 +52,39 @@
 > ```
 > 刻意**不用**工作树统计：那会随未提交改动漂移，使本文档的"证据"无法在事后被复核。
 > 两列的区别必须讲清楚：`__init__.py` 行 = 主体实现；全包 `.py` 行 = 含子模块
-> （`audit/` 12 个文件、`execution/` 3 个等）。**旧版只给了一个既非前者也非后者的数字。**
+> （`audit/` 13 个文件、`execution/` 3 个等）。**旧版只给了一个既非前者也非后者的数字。**
 
 | # | Kernel | 路径 | `__init__.py` 行 | 全包 `.py` 行 | Definition Lock 依据 | 职责 |
 |---|--------|------|------|------|---------------------|------|
-| 1 | **identity** | `src/kernels/identity/` | 2704 | 4993 | §112 | Agent 身份、权限、L0-L7 作用域过滤 |
-| 2 | **memory** | `src/kernels/memory/` | 682 | 1412 | §112 | 多层记忆存储、L0-L7 作用域过滤、CRUD、跨层压缩整合 |
+| 1 | **identity** | `src/kernels/identity/` | 2779 | 5086 | §112 | Agent 身份、权限、L0-L7 作用域过滤 |
+| 2 | **memory** | `src/kernels/memory/` | 745 | 1488 | §112 | 多层记忆存储、L0-L7 作用域过滤、CRUD、跨层压缩整合 |
 | 3 | **context** | `src/kernels/context/` | 264 | 264 | §112 | 12 类输入 → 压缩 → 模型就绪上下文 |
-| 4 | **capability** | `src/kernels/capability/` | 567 | 567 | §112 | 能力注册中心、版本、追溯链、作用域检查 |
-| 5 | **policy** | `src/kernels/policy/` | 1443 | 1443 | §112 | ABAC 策略引擎、优先级评估、人类主权覆盖 |
-| 6 | **execution** | `src/kernels/execution/` | 2113 | 4032 | §112 | Goal→Task→Plan→Action→Verify 全链路 |
+| 4 | **capability** | `src/kernels/capability/` | 602 | 602 | §112 | 能力注册中心、版本、追溯链、作用域检查 |
+| 5 | **policy** | `src/kernels/policy/` | 1467 | 1467 | §112 | ABAC 策略引擎、优先级评估、人类主权覆盖 |
+| 6 | **execution** | `src/kernels/execution/` | 3020 | 4939 | §112 | Goal→Task→Plan→Action→Verify 全链路 |
 | 7 | **resource** | `src/kernels/resource/` | 650 | 650 | §112 | CPU/Mem/Storage/Token/Time/$ 六种配额 |
 | 8 | **event** | `src/kernels/event/` | 450 | 450 | §112 | 统一事件总线、correlation ID、死信重试 |
 | 9 | **network** | `src/kernels/network/` | 855 | 855 | §112 | 协议适配（A2A/MCP/gRPC/HTTP/WS）、路由 |
 | 10 | **trust** | `src/kernels/trust/` | 765 | 765 | §112 | 信任评分、传播、衰减、撤销 |
 | 11 | **evaluation** | `src/kernels/evaluation/` | 752 | 752 | §112 | 结果评估、反馈、重规划触发、升级 |
 | 12 | **security** | `src/kernels/security/` | 815 | 1085 | **§112** | RBAC+ABAC、Vault Transit 加密、审计 |
-| 13 | **audit** | `src/kernels/audit/` | 3385 | 8201 | **§113** | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
-| 14 | **plugin** | `src/kernels/plugin/` | 599 | 599 | **§115** | 插件注册、热加载、版本兼容、作用域激活 |
+| 13 | **audit** | `src/kernels/audit/` | 3393 | 8217 | **§113** | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
+| 14 | **plugin** | `src/kernels/plugin/` | 797 | 797 | **§115** | 插件注册、热加载、版本兼容、作用域激活 |
 | — | *（非注册）* **retention** | `src/kernels/retention/` | *134* | *1194* | — | **HD-06 留存子系统**，非注册内核（见 §0.5） |
 
-**14 个注册内核合计：16,044 行（`__init__.py`）/ 26,068 行（全包 `.py`）。**
-连同非注册的 `retention/`：`src/kernels/` 全树 = 16,178 / 27,262 行。
+**14 个注册内核合计：17,354 行（`__init__.py`）/ 全包 `.py` 27,417 行。**
+连同非注册的 `retention/`：`src/kernels/` 全树 = 17,488 / 28,611 行。
 
-> **2026-11-08 复算（HEAD `416f7109`，远端分支口径）**：`audit` 自上次同步（`20749820` 按 `ae7935a7` 复算）
-> 之后又因 `fd396351`（长跑治理：审计保留水位）与 `110b5ccd`（auto_vacuum / 一次性 VACUUM /
-> `checkpoint(TRUNCATE)`）增长 **231 行**，故 `__init__.py` 2,857→**3,088**、全包 7,335→**7,566**，
-> 合计 15,418→**15,649**。复算方法同上（`git show HEAD:<path> | wc -l`），
-> 门禁 `scripts/verify_doc_count_claims.py` 在该提交上应输出 `RESULT: PASS`。
+> **2026-11-09 复算（HEAD `e83b22b0`，工作树与 HEAD 一致）**：按 §1 的方法逐文件实测，
+> `__init__.py` 合计 **17,354**、全包 `.py` 合计 **27,417**；连同 `retention/`（134 / 1,194）
+> 全树 **17,488 / 28,611**。门禁 `scripts/verify_doc_count_claims.py` 在同一 HEAD 上输出
+> `RESULT: PASS`。相对上一版记录（2026-11-08 合并后 16,044 / 26,068），本次增量集中在
+> `execution`（2,113→3,020 / 4,032→4,939）、`plugin`（599→797）、`audit`（3,385→3,393 /
+> 8,201→8,217）、`identity`（2,704→2,779 / 4,993→5,086）等；这是代码增长，**不是口径变化**。
 >
-> **合并后复算（本分支合入 `origin/p36` 的 merge HEAD）**：同一方法在合并后的树上实测为
-> `__init__.py` 合计 **16,044**、全包 **26,068**（`audit` 3385 / 8201），与上表逐行一致。
-> 两个 tip 的差额来自本分支领先的提交（`audit` 在此期间继续增长），**不是口径分歧**；
-> 门禁以合并后的 HEAD 为准。
+> **历史记录（不参与当前口径，仅说明漂移来源）**：2026-11-08 曾按 HEAD `416f7109` 记录
+> `audit` 3,088 / 7,566、合计 15,649；合入 `origin/p36` 后记录 16,044 / 26,068。
+> 两行均已被上面的 HEAD 实测替换，引用本文档时只认表中当前值。
 
 > ⚠️ **v1.0 此处写的是「合计 6,391 行」，该数字有三个问题，且没有一个是对的**：
 > 1. **它与它自己上方的表格不符** —— 表内 14 个行数相加为 **6,581**，与 6,391 差 190。

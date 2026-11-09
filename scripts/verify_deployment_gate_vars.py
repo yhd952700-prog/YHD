@@ -235,7 +235,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/health.py:1020",
+            "src/gateway/health.py:1054",
             "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
