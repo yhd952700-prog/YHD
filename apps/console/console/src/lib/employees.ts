@@ -181,6 +181,24 @@ export function employeeCapabilityRisks(
     .join('、')
 }
 
+/**
+ * 能力目录里是否**确实没有**高风险项。
+ *
+ * 判定由数据算，不写死：目录为空、任一项是 HIGH/CRITICAL、或任一项没有标注
+ * 风险级别，都返回 false —— 这些情况下说「目录里没有高风险能力」都没有依据。
+ * 将来目录里真的出现高风险能力，界面上那句提示会自动消失。
+ */
+export function catalogHasNoHighRisk(
+  catalog?: Array<Pick<EmployeeCapability, 'risk'>>,
+): boolean {
+  const items = catalog ?? []
+  if (items.length === 0) return false
+  return items.every((item) => {
+    const level = String(item.risk ?? '').trim().toUpperCase()
+    return level === 'LOW' || level === 'MEDIUM'
+  })
+}
+
 export function employeeAgentId(employee: MyEmployee): string {
   const usable = (employee.agents ?? []).find((agent) => agent.status !== 'paused')
   return String((usable ?? employee.agents?.[0])?.id ?? '')

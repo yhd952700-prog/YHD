@@ -27,6 +27,7 @@ import {
   assignEmployeeTask,
   BATCH_HIRE_LIMIT,
   capabilityRisk,
+  catalogHasNoHighRisk,
   createEmployee,
   createEmployeesBatch,
   deleteEmployee,
@@ -586,6 +587,12 @@ export function MyEmployees({
                   )
                 })}
               </div>
+            )}
+            {catalogHasNoHighRisk(catalogApi.data?.capabilities) && (
+              // 这句只在数据支持时才出现：目录里真出现高风险能力，它会自己消失。
+              <p className="os-hint">
+                当前能力目录里没有高风险或极高风险的能力：{catalog.length} 项全部为低风险或中风险。
+              </p>
             )}
           </div>
 
