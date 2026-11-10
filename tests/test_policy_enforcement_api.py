@@ -10,9 +10,10 @@ These tests pin two things:
 
 * the boundary contract -- deferred is **409** (not forbidden, awaiting
   approval), hard-denied is **403**, and never 500;
-* the deployment decision itself -- exactly three surfaces may arm the switch
-  (production, the deployed staging contract, the cloud-bundle launcher), and
-  each must arm the whole gated surface **minus the audited exemptions** (C-6)
+* the deployment decision itself -- exactly four surfaces may arm the switch
+  (production, the deployed staging contract, the cloud-bundle launcher, and the
+  installed-build launcher), and each must arm the whole gated surface **minus
+  the audited exemptions** (C-6)
   at exactly ``CRITICAL``: arming nothing extra, silently dropping nothing, and
   no other file arming at all. The allow-list and the arming parsers are read
   from ``scripts/verify_c4_approval_channel.py`` rather than restated here --
@@ -64,7 +65,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 # reuse its constants and its arming parsers. `_armed_specs_c4()` below is a thin
 # discovery shell around the gate's own `_spec_from_line` / `_python_arming_for_file`:
 #
-#   * ALLOWED_ARMING is literally the gate's own three constants -- a fourth site
+#   * ALLOWED_ARMING is literally the gate's own four constants -- a fifth site
 #     added to the gate shows up here with no edit to this file;
 #   * "which spec does this site arm" is answered by the gate's parsers, not by a
 #     second regex, so "arms CRITICAL" cannot drift from "arms *something*";
@@ -82,8 +83,13 @@ _c4_spec = importlib.util.spec_from_file_location("verify_c4_approval_channel", 
 c4 = importlib.util.module_from_spec(_c4_spec)
 _c4_spec.loader.exec_module(c4)
 
-#: The three -- and only three -- surfaces allowed to arm the switch.
-ALLOWED_ARMING = frozenset({c4.PROD_MANIFEST, c4.STAGING_MANIFEST, c4.BUNDLE_LAUNCHER})
+#: The four -- and only four -- surfaces allowed to arm the switch.
+ALLOWED_ARMING = frozenset({
+    c4.PROD_MANIFEST,
+    c4.STAGING_MANIFEST,
+    c4.BUNDLE_LAUNCHER,
+    c4.INSTALLED_LAUNCHER,
+})
 PROD_MANIFEST = c4.PROD_MANIFEST
 
 #: Directories the arming scan never descends into. Mirrors the gate's
@@ -297,14 +303,14 @@ class TestArmedGateEndToEndOverHttp:
 
 
 class TestProductionArmingDecision:
-    """C-6: three surfaces may arm the switch, and all three arm the audited
+    """C-6: four surfaces may arm the switch, and all four arm the audited
     surface at exactly CRITICAL.
 
     D24 narrowed the deployment from "HIGH,CRITICAL" to "CRITICAL" only --
     CRITICAL actions are blocked by default, everything else is record-only, and
     the switch is NOT globally ON.
 
-    The three arming surfaces, and why each is legitimate rather than a leak:
+    The four arming surfaces, and why each is legitimate rather than a leak:
 
     * ``docker-compose.prod.yml`` -- production;
     * ``infra/staging/docker-compose.yml`` -- the G9 pre-prod *deployed* staging
@@ -314,16 +320,19 @@ class TestProductionArmingDecision:
       enforced set, and an unknown tier raises -- so arming is always more
       restrictive, never less);
     * ``scripts/build_cloud_bundle.py`` -- the launcher template that renders the
-      variable into a shipped bundle's ``serve.py``.
+      variable into a shipped bundle's ``serve.py``;
+    * ``scripts/launch_installed.py`` -- the installed-build entry point. The
+      installed form is the production form (0.1.2.1), and the old app.env had
+      no such line, so the launcher must setdefault it for upgrades too.
 
-    These same three are the gate's allow-list at
-    ``scripts/verify_c4_approval_channel.py:722``. This class reads that list
+    These same four are the gate's allow-list at
+    ``scripts/verify_c4_approval_channel.py:737``. This class reads that list
     rather than restating it; see the module header.
     """
 
     def test_allowed_arming_matches_the_c4_gate_source(self):
         """Pin the hand-off: the gate's own ``allowed_arming`` literal is these
-        three constants, and this file's allow-list is built from those same
+        four constants, and this file's allow-list is built from those same
         constants. Without this, someone could edit the gate's allow-list to add
         or drop a site and leave this file asserting a stale set."""
         tree = ast.parse(_C4_PATH.read_text(encoding="utf-8"))
@@ -342,9 +351,13 @@ class TestProductionArmingDecision:
             "the C4 gate no longer defines an `allowed_arming = {...}` literal; "
             "reconcile it with ALLOWED_ARMING here"
         )
-        assert literals == {"PROD_MANIFEST", "STAGING_MANIFEST", "BUNDLE_LAUNCHER"}
+        assert literals == {
+            "PROD_MANIFEST", "STAGING_MANIFEST", "BUNDLE_LAUNCHER",
+            "INSTALLED_LAUNCHER",
+        }
         assert ALLOWED_ARMING == {
             c4.PROD_MANIFEST, c4.STAGING_MANIFEST, c4.BUNDLE_LAUNCHER,
+            c4.INSTALLED_LAUNCHER,
         }
         # The gate's constants must still name the files we think they do --
         # a rename that moved the manifest would otherwise silently re-point the
@@ -352,6 +365,7 @@ class TestProductionArmingDecision:
         assert c4.PROD_MANIFEST == "docker-compose.prod.yml"
         assert c4.STAGING_MANIFEST == "infra/staging/docker-compose.yml"
         assert c4.BUNDLE_LAUNCHER == "scripts/build_cloud_bundle.py"
+        assert c4.INSTALLED_LAUNCHER == "scripts/launch_installed.py"
         for site in sorted(ALLOWED_ARMING):
             assert (REPO_ROOT / site).is_file(), f"allowed arming site missing: {site}"
 

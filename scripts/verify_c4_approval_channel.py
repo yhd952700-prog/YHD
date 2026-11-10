@@ -111,6 +111,14 @@ BUNDLE_LAUNCHER = "scripts/build_cloud_bundle.py"
 #: un-armed contract.
 STAGING_MANIFEST = "infra/staging/docker-compose.yml"
 
+#: The fourth legitimate arming site: the installed-build launcher.
+#: ``scripts/launch_installed.py`` is the entry point the Windows installer
+#: starts; the installed form IS the production form, so 0.1.2.1 makes it
+#: ``setdefault`` the switch to CRITICAL (and the app.env template it writes
+#: carries the same line). Local dev and CI never run this file, so the suite
+#: still exercises the record-only (L1) contract.
+INSTALLED_LAUNCHER = "scripts/launch_installed.py"
+
 RESULTS = []
 
 
@@ -512,8 +520,8 @@ def main() -> int:
 
     check("parse_spec('CRITICAL') -> 2 actions", len(enf.parse_spec("CRITICAL")) == 2)
     check(
-        "parse_spec('HIGH') -> 14 actions (15 minus the audited exemption)",
-        len(enf.parse_spec("HIGH")) == 14,
+        "parse_spec('HIGH') -> 16 actions (17 minus the audited exemption)",
+        len(enf.parse_spec("HIGH")) == 16,
         f"got {len(enf.parse_spec('HIGH'))}",
     )
     check(
@@ -726,10 +734,13 @@ def main() -> int:
     )
 
     armed = _armed_specs()
-    allowed_arming = {PROD_MANIFEST, STAGING_MANIFEST, BUNDLE_LAUNCHER}
+    allowed_arming = {
+        PROD_MANIFEST, STAGING_MANIFEST, BUNDLE_LAUNCHER, INSTALLED_LAUNCHER,
+    }
     unexpected = sorted(k for k in armed if k not in allowed_arming)
-    check("only the production manifest, the staging contract, and the "
-          "cloud-bundle launcher arm enforcement (dev/CI/Dockerfile never)",
+    check("only the production manifest, the staging contract, the "
+          "cloud-bundle launcher, and the installed-build launcher arm "
+          "enforcement (dev/CI/Dockerfile never)",
           not unexpected,
           f"unexpected={unexpected}" if unexpected else f"armed via {sorted(armed)}")
     for site in sorted(allowed_arming):
