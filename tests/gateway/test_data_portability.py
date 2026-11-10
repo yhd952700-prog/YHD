@@ -47,6 +47,12 @@ def isolated_stores(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "src.ai.conversation_store._conversation_store", store
     )
+    # chat.list_sessions 走 src.gateway.chat 自己的 get_conversation_store 包装，
+    # 最终读 conversation_store 的模块级单例全局。历史用例遗留的后台线程可能
+    # 在本用例 fixture 设置窗口读到 None 并把全局覆盖成默认路径的新库（竞态），
+    # 导致导出枚举落到空库。这里在 chat 层直接钉死隔离库，确保枚举与落盘读
+    # 的是同一份数据（tests/test_chat_gateway.py 同款模式）。
+    monkeypatch.setattr("src.gateway.chat.get_conversation_store", lambda: store)
     monkeypatch.setattr(
         "src.gateway.data_portability._conversation_store", lambda: store
     )
