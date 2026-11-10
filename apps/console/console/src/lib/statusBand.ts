@@ -10,14 +10,14 @@
  * 1. 「正在做」把有失败步骤的目标排在前面：那是最需要人看一眼的一条。
  * 2. 「刚完成」只认「completed + 产物非空」，与任务页的 `delivered` 判定同一口径，
  *    否则会出现首页说「刚完成」、任务页说「没写出文件」的自相矛盾。
- * 3. 后端目前只有 `created_at`，所以相对时间一律写「已创建 / 创建于」，
- *    不谎称「已运行 / 刚刚完成」。
+ * 3. 时间措辞跟着真实字段走：目标有 `completed_at` 才说「完成于」，
+ *    没有就退回 `created_at` 并说「创建于」—— 不显示空值，也不拿创建时间冒充完成时间。
  */
 
 import { parseTaskTime, riskTone } from './butler'
 import type { ButlerTone } from './butler'
 import { goalSummaryVerdict } from './goalVerdict'
-import type { GoalSummary, PendingApprovalItem } from './operator'
+import type { GoalSummary, GoalsResponse, PendingApprovalItem } from './operator'
 
 /** 轮询间隔：与任务页、管家页保持同一节奏。 */
 export const STATUS_BAND_REFRESH_MS = 30_000
@@ -90,8 +90,21 @@ export function pickRunningGoals(goals: GoalSummary[] | null | undefined): GoalS
     })
 }
 
+/** 完成时间：优先后端 `completed_at`，缺失时退回创建时间（并如实说明）。 */
+export function completedSeconds(goal: GoalSummary): number {
+  return parseTaskTime(goal.completed_at) ?? createdSeconds(goal)
+}
+
+/** 后端是否真的给了可解析的完成时间（决定文案说「完成于」还是「创建于」）。 */
+export function hasCompletedAt(goal: GoalSummary): boolean {
+  return parseTaskTime(goal.completed_at) !== null
+}
+
 /**
- * 刚完成：completed、产物非空、且判定为「已交付」；按创建时间从新到旧。
+ * 刚完成：completed、产物非空、且判定为「已交付」；按完成时间从新到旧。
+ *
+ * 没有 `completed_at` 的历史目标按创建时间排序 —— 这是手上唯一的时间，
+ * 但**不**把它当成完成时间展示（见 `completedAgoLabel`）。
  *
  * 返回完整列表，由组件截前 3 条并显示「还有 N 条」——在筛选器里截断会让
  * 「一共有几条」失去来源。
@@ -109,11 +122,29 @@ export function pickCompletedGoals(goals: GoalSummary[] | null | undefined): Goa
     })
     .slice()
     .sort((left, right) => {
-      const leftCreated = createdSeconds(left)
-      const rightCreated = createdSeconds(right)
-      if (leftCreated !== rightCreated) return leftCreated > rightCreated ? -1 : 1
+      const leftDone = completedSeconds(left)
+      const rightDone = completedSeconds(right)
+      if (leftDone !== rightDone) return leftDone > rightDone ? -1 : 1
       return String(left.goal_id).localeCompare(String(right.goal_id))
     })
+}
+
+/**
+ * 列表口径：`self` 只含自己的目标，`subtree` 含下属的。
+ *
+ * 字段来自后端；响应级缺失时看目标上有没有（两个位置后端都可能在用）。
+ * 都没有就返回 null —— 不默认成 `subtree`，否则空态会多出一句没根据的解释。
+ */
+export function resolveVisibleScope(
+  response: GoalsResponse | null | undefined,
+): 'self' | 'subtree' | null {
+  const direct = String(response?.visible_scope ?? '').trim().toLowerCase()
+  if (direct === 'self' || direct === 'subtree') return direct
+  const list = Array.isArray(response?.goals) ? response.goals : []
+  const perGoal = list.find((goal) => String(goal.visible_scope ?? '').trim())?.visible_scope
+  const value = String(perGoal ?? '').trim().toLowerCase()
+  if (value === 'self' || value === 'subtree') return value
+  return null
 }
 
 /**
@@ -228,15 +259,34 @@ export function waitingLabel(blockedAt: number | string | null | undefined, nowM
 }
 
 /**
- * 「刚完成」的时间：只显示创建时间，并如实区分分钟/小时/天。
+ * 「刚完成」的时间：有 `completed_at` 就说完成，没有就退回创建时间。
  *
- * 完成时间后端暂时没有单独字段（S2 补），所以这里绝不能写「刚刚完成」；
- * 一个三天前创建、刚刚跑完的目标会因此显示「创建于 3 天前」，这是诚实的。
+ * 两种措辞必须能区分：
+ *   * 有完成时间 →「刚完成 / 完成于 N 分钟前 …」；
+ *   * 没有完成时间 →「刚创建 / 创建于 N 分钟前 …」，这是历史目标的真实口径。
+ *
+ * 绝不混用：一个三天前创建、刚刚跑完但后端没回 `completed_at` 的目标
+ * 会显示「创建于 3 天前」，这是诚实的；写成「完成于 3 天前」就是假时间。
  */
 export function completedAgoLabel(
   createdAt: number | null | undefined,
   nowMs: number,
+  completedAt?: number | string | null,
 ): string {
+  const finished = parseTaskTime(completedAt)
+  if (finished !== null) {
+    const elapsed = Math.max(0, nowMs / 1000 - finished)
+    if (elapsed < 60) return '刚完成'
+    if (elapsed < 3600) return `完成于 ${Math.floor(elapsed / 60)} 分钟前`
+    if (elapsed < 86400) return `完成于 ${Math.floor(elapsed / 3600)} 小时前`
+    if (elapsed < 7 * 86400) return `完成于 ${Math.floor(elapsed / 86400)} 天前`
+    try {
+      return `完成于 ${new Date(finished * 1000).toLocaleDateString('zh-CN')}`
+    } catch {
+      return '创建时间未记录'
+    }
+  }
+
   const seconds = parseTaskTime(createdAt)
   if (seconds === null) return '创建时间未记录'
   const elapsed = Math.max(0, nowMs / 1000 - seconds)

@@ -19,11 +19,10 @@
  *   `completed_at` 是字符串时间戳。缺失就如实显示「—」，不伪装成时间。
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { ApiError, useApi } from '../lib/api'
 import {
   getGoal,
-  readFile,
   type GoalDetail,
   type GoalsResponse,
   type GoalSummary,
@@ -32,6 +31,7 @@ import {
 import { capabilityLabel, numberText, taskNameLabel } from '../lib/format'
 import { goalSummaryVerdict, goalVerdict } from '../lib/goalVerdict'
 import { GoalStatus } from '../components/GoalStatus'
+import { ArtifactPreview } from '../components/ArtifactPreview'
 import { Card, Empty, Guard } from '../components/ui'
 
 /** 任务状态 → 人话（成 / 败 / 进行中）。 */
@@ -124,22 +124,17 @@ export function Goals({ query }: { query: string }) {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
-  // 产物查看：点开某个 artifact 后，直接调 `/v1/files/content` 读取真实内容。
-  const [openArtifact, setOpenArtifact] = useState<string | null>(null)
-  const [artifactContent, setArtifactContent] = useState<string | null>(null)
-  const [artifactError, setArtifactError] = useState<string | null>(null)
-  const [artifactLoading, setArtifactLoading] = useState(false)
+  // 产物预览抽屉：只记路径，读取与渲染在组件里做；关闭后焦点还给"打开它的按钮"。
+  const [previewPath, setPreviewPath] = useState<string | null>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
 
   const openGoal = useCallback(async (id: string) => {
     setSelectedId(id)
     setDetail(null)
     setDetailError(null)
     setDetailLoading(true)
-    // 切换目标时收起上一个目标的产物视图，避免串台。
-    setOpenArtifact(null)
-    setArtifactContent(null)
-    setArtifactError(null)
-    setArtifactLoading(false)
+    // 切换目标时收起上一个目标的产物预览，避免串台。
+    setPreviewPath(null)
     try {
       setDetail(await getGoal(id))
     } catch (err) {
@@ -152,28 +147,17 @@ export function Goals({ query }: { query: string }) {
     }
   }, [])
 
-  const openArtifactFile = useCallback(async (relPath: string) => {
-    setOpenArtifact(relPath)
-    setArtifactContent(null)
-    setArtifactError(null)
-    setArtifactLoading(true)
-    try {
-      // 直接调后端的文件内容端点读取真实产物（只读、经执行围栏约束）。
-      const res = await readFile(relPath)
-      setArtifactContent(res.content)
-    } catch (err) {
-      setArtifactContent(null)
-      const status = err instanceof ApiError ? err.status : 0
-      setArtifactError(
-        status === 404
-          ? '产物文件已不存在（可能已被清除）'
-          : err instanceof Error
-            ? err.message
-            : '读取失败',
-      )
-    } finally {
-      setArtifactLoading(false)
-    }
+  const openPreview = useCallback((relPath: string, trigger: HTMLElement | null) => {
+    returnFocusRef.current = trigger
+    setPreviewPath(relPath)
+  }, [])
+
+  const closePreview = useCallback(() => {
+    setPreviewPath(null)
+    const target = returnFocusRef.current
+    returnFocusRef.current = null
+    // 等抽屉卸载后再还焦点，避免焦点落在已移除的节点上。
+    window.setTimeout(() => target?.focus(), 0)
   }, [])
 
   const need = query.trim().toLowerCase()
@@ -194,7 +178,10 @@ export function Goals({ query }: { query: string }) {
       <Card title="说明" sub="这个视图能证明什么" span={12}>
         <ul className="os-list">
           <li>这里只读：每一项都来自真实的执行历史，无缓存、无模拟。</li>
-          <li>点列表里的某一行，会拉取它的任务分解，右侧（下方）展示每个任务的真实状态、能力与执行者。</li>
+          <li>
+            点列表里的某一行，打开这件任务的详情：谁在负责、当前第几步、每一步的起止与失败原因，
+            以及它写出的产物；产物点开在右侧抽屉里看内容。
+          </li>
           <li>任务为空就是没有分解出任务，如实显示，不编造。</li>
           <li>目标不存在（已被清除）或被 401 拦截时，会显示真实原因，而不是假装没数据。</li>
         </ul>
@@ -203,7 +190,7 @@ export function Goals({ query }: { query: string }) {
       <Card
         title="目标列表"
         sub="AI 员工真实执行过的目标（每 30 秒刷新）"
-        span={selectedId ? 8 : 12}
+        span={selectedId ? 7 : 12}
         action={
           selectedId ? (
             <button className="os-btn" onClick={() => setSelectedId(null)}>
@@ -295,9 +282,9 @@ export function Goals({ query }: { query: string }) {
 
       {selectedId && (
         <Card
-          title={detail ? `任务分解 · ${detail.goal_id}` : `任务分解 · ${selectedId}`}
-          sub="点击目标后手动拉取，不轮询"
-          span={4}
+          title={detail ? `任务详情 · ${detail.goal_id}` : `任务详情 · ${selectedId}`}
+          sub="点开才拉取，不轮询；每一步的开始 / 结束 / 失败原因都来自本地服务的执行记录"
+          span={5}
         >
           {detailError && (
             <p className="os-error" role="alert">
@@ -314,9 +301,11 @@ export function Goals({ query }: { query: string }) {
             emptyHint="这个目标还没有记录任何子任务。"
           >
             {(data) => {
+              // 后端字段缺失时按空数组处理：界面说「没有产物」，不崩、不编。
+              const artifacts = data.artifacts ?? []
               const verdict = goalVerdict({
                 state: data.state,
-                artifacts: data.artifacts,
+                artifacts,
                 failed_tasks: data.tasks.filter(
                   (task) => task.success === false || task.status === 'failed',
                 ).length,
@@ -330,7 +319,7 @@ export function Goals({ query }: { query: string }) {
                       <GoalStatus
                         goal={{
                           state: data.state,
-                          artifacts: data.artifacts,
+                          artifacts,
                           failed_tasks: data.tasks.filter(
                             (task) => task.success === false || task.status === 'failed',
                           ).length,
@@ -349,8 +338,18 @@ export function Goals({ query }: { query: string }) {
                     <span className="os-kv-value">{data.scope || '—'}</span>
                   </div>
                   <div className="os-kv-row">
-                    <span className="os-kv-key">谁做的</span>
+                    <span className="os-kv-key">谁在负责</span>
                     <span className="os-kv-value">{goalEmployees(data)}</span>
+                  </div>
+                  <div className="os-kv-row">
+                    <span className="os-kv-key">当前第几步</span>
+                    <span className="os-kv-value">{stepProgressText(data.tasks)}</span>
+                  </div>
+                  <div className="os-kv-row">
+                    <span className="os-kv-key">用了哪些工具</span>
+                    <span className="os-kv-value os-hint">
+                      暂未提供 —— 本地服务的逐步运行记录还没上线；现在的目标详情只有任务级记录。
+                    </span>
                   </div>
                   <div className="os-kv-row">
                     <span className="os-kv-key">成功 / 失败</span>
@@ -416,107 +415,154 @@ export function Goals({ query }: { query: string }) {
                     </div>
                   )}
 
-                  {/* 产生的产物：目标真实写入工作区的文件（相对路径）。
-                      空数组就是没产生任何文件，如实显示，不编造。 */}
-                  <div className="os-kv-row os-kv-col">
-                    <span className="os-kv-key">产生的产物</span>
-                    <span className="os-kv-value">
-                      {(!data.artifacts || data.artifacts.length === 0) ? (
-                        <span className="os-hint">此目标没有向工作区写入任何文件。</span>
-                      ) : (
-                        <ul className="os-list">
-                          {data.artifacts.map((relPath: string) => (
-                            <li key={relPath}>
-                              <button
-                                className="os-link"
-                                onClick={() => void openArtifactFile(relPath)}
-                                title={relPath}
-                              >
-                                {relPath}
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </span>
-                  </div>
+                </div>
 
-                  {/* 点开后直接读取真实文件内容（只读）。 */}
-                  {openArtifact && (
-                    <div className="os-kv-row os-kv-col">
-                      <span className="os-kv-key">产物内容 · {openArtifact}</span>
-                      <span className="os-kv-value">
-                        {artifactLoading && <span className="os-hint">读取中…</span>}
-                        {artifactError && (
-                          <span className="os-error" role="alert">
-                            {artifactError}
-                          </span>
-                        )}
-                        {artifactContent !== null && !artifactLoading && (
-                          <pre className="os-pre">{artifactContent}</pre>
-                        )}
-                      </span>
-                    </div>
-                  )}
-                </div>
-                <div className="os-table-wrap">
-                  <table className="os-table">
-                    <thead>
-                      <tr>
-                        <th>任务名</th>
-                        <th>成 / 败</th>
-                        <th>谁做的</th>
-                        <th>耗时</th>
-                        <th>能力</th>
-                        <th>结果 / 错误</th>
-                        <th>起止时间</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.tasks.map((task: GoalTask) => (
-                        <tr key={task.id}>
-                          <td>
-                            <Truncated text={taskNameLabel(task.name)} max={200} />
-                          </td>
-                          <td>
-                            <span className={`os-dot os-tone-${taskStatusTone(task.status)}`} />
-                            {taskStatusLabel(task.status)}
-                          </td>
-                          <td>{task.assigned_employee || task.assigned_agent || '—'}</td>
-                          <td>{formatDuration(task.duration_ms)}</td>
-                          <td>{task.capability_id ? capabilityLabel(task.capability_id) : '—'}</td>
-                          <td>
-                            {task.error ? (
-                              <>
-                                <span className="os-error">{task.error}</span>
-                                {task.technical_detail ? (
-                                  <details style={{ marginTop: 4 }}>
-                                    <summary>技术详情</summary>
-                                    <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                                      {task.technical_detail}
-                                    </code>
-                                  </details>
-                                ) : null}
-                              </>
-                            ) : (
-                              <Truncated text={task.result ?? '—'} max={200} />
-                            )}
-                          </td>
-                          <td>
-                            {formatTimestamp(task.started_at)}
-                            {task.completed_at ? ` → ${formatTimestamp(task.completed_at)}` : ''}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <h3 className="os-detail-title">每一步</h3>
+                <ol className="os-steps">
+                  {data.tasks.map((task, index) => (
+                    <StepCard
+                      key={task.id}
+                      task={task}
+                      index={index}
+                      onOpenArtifact={openPreview}
+                    />
+                  ))}
+                </ol>
+
+                <h3 className="os-detail-title">产物</h3>
+                {artifacts.length === 0 ? (
+                  <p className="os-hint">此目标没有向工作区写入任何文件。</p>
+                ) : (
+                  <ul className="os-list">
+                    {artifacts.map((relPath: string) => (
+                      <li key={relPath}>
+                        <button
+                          className="os-link"
+                          onClick={(event) => openPreview(relPath, event.currentTarget)}
+                          title={relPath}
+                        >
+                          {relPath}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </>
               )
             }}
           </Guard>
         </Card>
       )}
+
+      {previewPath && <ArtifactPreview path={previewPath} onClose={closePreview} />}
     </div>
+  )
+}
+
+/**
+ * 「当前第几步」：只按后端记录说话。
+ *
+ * 优先找 running（正在跑的那一步）；没有 running 但有 failed，就说停在哪一步；
+ * 全部走完说走了几步；一条都没有就如实说没有分解。顺序 = 任务数组顺序，
+ * 不另外排序 —— 那已经是后端的分解顺序。
+ */
+function stepProgressText(tasks: GoalTask[]): string {
+  const total = tasks.length
+  if (total === 0) return '暂未提供（没有分解出任务）'
+  const status = (task: GoalTask) => (task.status || '').toLowerCase()
+  const runningIndex = tasks.findIndex((task) => status(task) === 'running')
+  if (runningIndex >= 0) return `第 ${runningIndex + 1} 步 / 共 ${total} 步（进行中）`
+  const failedIndex = tasks.findIndex(
+    (task) => task.success === false || status(task) === 'failed',
+  )
+  if (failedIndex >= 0) return `停在第 ${failedIndex + 1} 步 / 共 ${total} 步（失败）`
+  const settled = tasks.filter((task) =>
+    ['completed', 'failed', 'skipped', 'cancelled', 'interrupted'].includes(status(task)),
+  ).length
+  if (settled === total) return `已走完 ${total} 步`
+  return `尚未开始（共 ${total} 步）`
+}
+
+/** 一步 = 一张卡：第几步、谁负责、起止时间、失败原因（标红）、这一步的产物。 */
+function StepCard({
+  task,
+  index,
+  onOpenArtifact,
+}: {
+  task: GoalTask
+  index: number
+  onOpenArtifact: (path: string, trigger: HTMLElement | null) => void
+}) {
+  const status = (task.status || '').toLowerCase()
+  const failed = task.success === false || status === 'failed'
+  const running = status === 'running'
+  const artifacts = task.artifacts ?? []
+  return (
+    <li
+      className={`os-step${failed ? ' os-step-failed' : ''}${running ? ' os-step-current' : ''}`}
+    >
+      <div className="os-step-head">
+        <span className="os-step-index">第 {index + 1} 步</span>
+        <span className="os-step-name">{taskNameLabel(task.name)}</span>
+        <span className="os-step-status">
+          <span className={`os-dot os-tone-${taskStatusTone(task.status)}`} />
+          {taskStatusLabel(task.status)}
+        </span>
+      </div>
+
+      <div className="os-step-meta">
+        <span>负责：{task.assigned_employee || task.assigned_agent || '—'}</span>
+        <span>能力：{task.capability_id ? capabilityLabel(task.capability_id) : '暂未提供'}</span>
+        <span>耗时：{formatDuration(task.duration_ms)}</span>
+      </div>
+
+      <div className="os-step-time">
+        开始：{formatTimestamp(task.started_at)} · 结束：
+        {task.completed_at ? formatTimestamp(task.completed_at) : running ? '进行中' : '—'}
+      </div>
+
+      {failed && (
+        <div className="os-step-error">
+          <strong>失败在这一步</strong>
+          <div>{task.error || '暂未提供'}</div>
+          {task.technical_detail && (
+            <details>
+              <summary>技术详情</summary>
+              <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {task.technical_detail}
+              </code>
+            </details>
+          )}
+        </div>
+      )}
+
+      {!failed && task.error && <p className="os-error">{task.error}</p>}
+
+      {!failed && task.result && (
+        <div className="os-step-result">
+          <span className="os-step-label">结果</span>
+          <span>{task.result}</span>
+        </div>
+      )}
+
+      {artifacts.length > 0 && (
+        <div className="os-step-result">
+          <span className="os-step-label">产物</span>
+          <ul className="os-list">
+            {artifacts.map((relPath) => (
+              <li key={relPath}>
+                <button
+                  className="os-link"
+                  onClick={(event) => onOpenArtifact(relPath, event.currentTarget)}
+                  title={relPath}
+                >
+                  {relPath}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
   )
 }

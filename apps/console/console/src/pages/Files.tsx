@@ -21,13 +21,9 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { useApi } from '../lib/api'
-import {
-  readFile,
-  type FileContentResponse,
-  type FileEntry,
-  type FileListResponse,
-} from '../lib/operator'
+import { type FileEntry, type FileListResponse } from '../lib/operator'
 import { Card, Empty, Guard } from '../components/ui'
+import { ArtifactPreview } from '../components/ArtifactPreview'
 import { numberText, safeText } from '../lib/format'
 
 /** 路径面包屑：把 `a/b/c` 拆成 [{label, path}]，根单独成一项。 */
@@ -61,50 +57,27 @@ function formatSize(size: number | null | undefined): string {
 export function Files({ query }: { query: string }) {
   // 当前浏览目录（工作区相对路径；空字符串 = 根）。
   const [currentPath, setCurrentPath] = useState('')
-  // 当前打开的文件（相对路径）；null = 没打开任何文件。
+  // 当前打开的文件（相对路径）；null = 没打开任何文件。读取与渲染在预览抽屉里。
   const [selected, setSelected] = useState<string | null>(null)
-  const [content, setContent] = useState<FileContentResponse | null>(null)
-  const [contentError, setContentError] = useState<string | null>(null)
-  const [loadingContent, setLoadingContent] = useState(false)
 
   // 目录列举：随 currentPath 变化自动重取；未登录时挂起（path=null）。
   const listingPath = `/v1/files?path=${encodeURIComponent(currentPath)}`
   const listing = useApi<FileListResponse>(listingPath, 30_000)
 
-  const openEntry = useCallback(
-    (entry: FileEntry) => {
-      if (entry.type === 'dir') {
-        // 进入目录：清空已打开的文件，面包屑跟着变。
-        setSelected(null)
-        setContent(null)
-        setContentError(null)
-        setCurrentPath(entry.rel_path)
-      } else {
-        // 打开文件：触发真实读取，loading 态独立于目录列举。
-        setSelected(entry.rel_path)
-        setContent(null)
-        setContentError(null)
-        setLoadingContent(true)
-        void (async () => {
-          try {
-            setContent(await readFile(entry.rel_path))
-          } catch (err) {
-            setContent(null)
-            setContentError(err instanceof Error ? err.message : '读取失败')
-          } finally {
-            setLoadingContent(false)
-          }
-        })()
-      }
-    },
-    [],
-  )
+  const openEntry = useCallback((entry: FileEntry) => {
+    if (entry.type === 'dir') {
+      // 进入目录：收起已打开的文件，面包屑跟着变。
+      setSelected(null)
+      setCurrentPath(entry.rel_path)
+    } else {
+      // 打开文件：交给预览抽屉做真实读取，目录列表留在原位。
+      setSelected(entry.rel_path)
+    }
+  }, [])
 
   const navigateTo = useCallback((path: string) => {
     setCurrentPath(path)
     setSelected(null)
-    setContent(null)
-    setContentError(null)
   }, [])
 
   const need = query.trim().toLowerCase()
@@ -128,16 +101,9 @@ export function Files({ query }: { query: string }) {
   return (
     <div className="os-grid">
       <Card
-        title={selected ? `文件内容 · ${selected}` : `目录浏览 · ${currentPath || '工作区根'}`}
+        title={`目录浏览 · ${currentPath || '工作区根'}`}
         sub="只读面 —— 写入由 AI 员工自己完成，这里只负责浏览"
-        span={selected ? 8 : 12}
-        action={
-          selected ? (
-            <button className="os-btn" onClick={() => setSelected(null)}>
-              返回目录
-            </button>
-          ) : undefined
-        }
+        span={12}
       >
         {/* 面包屑：点任意一级都能跳回去 */}
         <div className="os-breadcrumbs">
@@ -151,89 +117,73 @@ export function Files({ query }: { query: string }) {
           ))}
         </div>
 
-        {selected ? (
-          // 文件内容区
-          contentError ? (
-            <p className="os-error">无法读取：{contentError}</p>
-          ) : loadingContent || (content === null && !contentError) ? (
-            <p>读取中…</p>
-          ) : content ? (
-            <div className="os-file-meta">
-              <span>大小 {formatSize(content.size)}</span>
-              <span>编码 {content.encoding}</span>
-            </div>
-          ) : null
-        ) : (
-          // 目录列举区
-          <Guard
-            loading={listing.loading}
-            error={listing.error}
-            data={listing.data}
-            isEmpty={(data) =>
-              data.entries.filter((entry) => !isStorageArtifact(entry.name)).length === 0
-            }
-            emptyTitle="此目录没有业务文件"
-            emptyHint="目录真实存在，但 AI 员工尚未写出任何业务文件；系统存储文件不在列表中显示。"
-            onRetry={listing.reload}
-          >
-            {() => (
-              <>
-                <div className="os-table-wrap">
-                  <table className="os-table">
-                    <thead>
-                      <tr>
-                        <th>名称</th>
-                        <th>类型</th>
-                        <th>大小</th>
-                        <th>修改时间</th>
+        {/* 目录列举区：打开文件时也不收起，预览在右侧抽屉里，关掉就回到这张表 */}
+        <Guard
+          loading={listing.loading}
+          error={listing.error}
+          data={listing.data}
+          isEmpty={(data) =>
+            data.entries.filter((entry) => !isStorageArtifact(entry.name)).length === 0
+          }
+          emptyTitle="此目录没有业务文件"
+          emptyHint="目录真实存在，但 AI 员工尚未写出任何业务文件；系统存储文件不在列表中显示。"
+          onRetry={listing.reload}
+        >
+          {() => (
+            <>
+              <div className="os-table-wrap">
+                <table className="os-table">
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>类型</th>
+                      <th>大小</th>
+                      <th>修改时间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.map((entry) => (
+                      <tr
+                        key={entry.rel_path}
+                        className="os-clickable"
+                        onClick={() => openEntry(entry)}
+                      >
+                        <td>
+                          <span className={`os-dot os-tone-${entry.type === 'dir' ? 'accent' : 'muted'}`} />
+                          {entry.name}
+                        </td>
+                        <td>{entry.type === 'dir' ? '目录' : '文件'}</td>
+                        <td>{formatSize(entry.size)}</td>
+                        <td>{formatMtime(entry.mtime)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {shown.map((entry) => (
-                        <tr
-                          key={entry.rel_path}
-                          className="os-clickable"
-                          onClick={() => openEntry(entry)}
-                        >
-                          <td>
-                            <span className={`os-dot os-tone-${entry.type === 'dir' ? 'accent' : 'muted'}`} />
-                            {entry.name}
-                          </td>
-                          <td>{entry.type === 'dir' ? '目录' : '文件'}</td>
-                          <td>{formatSize(entry.size)}</td>
-                          <td>{formatMtime(entry.mtime)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {shown.length !== visibleEntries.length && (
-                  <p className="os-hint">
-                    搜索「{query}」过滤后显示 {shown.length} / {visibleEntries.length} 项。
-                  </p>
-                )}
-                {hiddenCount > 0 && (
-                  <p className="os-hint">
-                    另有 {hiddenCount} 个系统存储文件未列出（数据库及其临时文件，不属于业务产物）。
-                  </p>
-                )}
-              </>
-            )}
-          </Guard>
-        )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {shown.length !== visibleEntries.length && (
+                <p className="os-hint">
+                  搜索「{query}」过滤后显示 {shown.length} / {visibleEntries.length} 项。
+                </p>
+              )}
+              {hiddenCount > 0 && (
+                <p className="os-hint">
+                  另有 {hiddenCount} 个系统存储文件未列出（数据库及其临时文件，不属于业务产物）。
+                </p>
+              )}
+            </>
+          )}
+        </Guard>
       </Card>
 
-      {selected && content && !contentError && (
-        <Card title="内容预览" sub="UTF-8 文本；二进制或超大文件会被拒绝并说明原因" span={4}>
-          <pre className="os-code-block">{content.content}</pre>
-        </Card>
-      )}
+      {selected && <ArtifactPreview path={selected} onClose={() => setSelected(null)} />}
 
       {!selected && (
         <Card title="说明" sub="这个视图能证明什么" span={12}>
           <ul className="os-list">
             <li>列出的每一项都来自工作区真实文件系统，实时读取，无缓存、无模拟。</li>
-            <li>点目录进入、点文件读取；右侧预览区只在真实读回文本后出现。</li>
+            <li>
+              点目录进入、点文件打开预览抽屉；文本与 Markdown 就地渲染，二进制会说明原因并给出路径。
+            </li>
             <li>
               越界路径（如 <code>../</code> 逃逸）会被拒绝；文件不存在、体积过大、或内容不是
               文本时，同样会如实说明原因，不会伪装成空内容。

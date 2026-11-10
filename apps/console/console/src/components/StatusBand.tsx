@@ -28,10 +28,12 @@ import {
   goalProgressLabel,
   goalProgressRatio,
   goalStateLabel,
+  hasCompletedAt,
   pendingSummary,
   pickCompletedGoals,
   pickPendingApprovals,
   pickRunningGoals,
+  resolveVisibleScope,
   riskLabel,
   riskToneFor,
   waitingLabel,
@@ -120,6 +122,8 @@ export function StatusBand({ onNavigate }: { onNavigate: (key: string) => void }
   const running = pickRunningGoals(goals.data?.goals)
   const pending = pickPendingApprovals(approvals.data?.items)
   const completed = pickCompletedGoals(goals.data?.goals)
+  // 「空」有两种原因：真的没有，或你看不到别人的。只有后端明确说 `self` 才补后一句。
+  const scope = resolveVisibleScope(goals.data)
 
   // 只有响应确实带了 `enforcement.enabled === false` 才补这句话；字段缺失时不猜。
   const enforcementOff = approvals.data?.enforcement?.enabled === false
@@ -154,6 +158,7 @@ export function StatusBand({ onNavigate }: { onNavigate: (key: string) => void }
           ) : running.length === 0 ? (
             <div className="os-band-empty">
               <span>现在没有正在执行或排队的目标。</span>
+              {scope === 'self' && <span>这里只显示你自己的目标；别人名下的执行不会出现在这一行。</span>}
               <button type="button" className="os-link" onClick={() => onNavigate('butler')}>
                 交办一件事 →
               </button>
@@ -242,6 +247,9 @@ export function StatusBand({ onNavigate }: { onNavigate: (key: string) => void }
                 还没有「跑完并写出文件」的目标。
                 跑完但没写出文件的目标不会放在这里，可以去任务页看原因。
               </span>
+              {scope === 'self' && (
+                <span>这里只显示你自己的目标；别人完成的目标不会出现在这一行。</span>
+              )}
               <button type="button" className="os-link" onClick={() => onNavigate('goals')}>
                 去任务页看看 →
               </button>
@@ -383,10 +391,11 @@ function CompletedRow({ goal, now }: { goal: GoalSummary; now: number }) {
   const sub = [
     artifacts.length > 0 ? artifactName(artifacts[0]) : '产物路径未记录',
     extra > 0 ? `另有 ${extra} 个产物` : '',
-    completedAgoLabel(goal.created_at, now),
+    completedAgoLabel(goal.created_at, now, goal.completed_at),
   ]
     .filter(Boolean)
     .join(' · ')
+  const finishedKnown = hasCompletedAt(goal)
 
   return (
     <div className="os-row">
@@ -395,7 +404,14 @@ function CompletedRow({ goal, now }: { goal: GoalSummary; now: number }) {
         <div className="os-row-title" title={goal.natural_language}>
           {goal.natural_language || '未命名目标'}
         </div>
-        <div className="os-row-sub" title="这里显示目标创建时间；完成时间还没有单独记录">
+        <div
+          className="os-row-sub"
+          title={
+            finishedKnown
+              ? '完成时间来自本地服务的完成记录'
+              : '本地服务还没给出完成时间，这里显示的是创建时间'
+          }
+        >
           {sub}
         </div>
       </div>

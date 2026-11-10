@@ -2087,6 +2087,249 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   color: var(--os-text, #e6edf3);
 }
 
+/* 任务详情：一步一步排开，失败那一步单独标红。 */
+.os-detail-title {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--os-text-faint);
+}
+
+.os-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.os-step {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--os-border);
+  border-radius: 8px;
+  background: var(--os-panel-2);
+}
+
+.os-step-current {
+  border-color: var(--os-accent);
+}
+
+.os-step-failed {
+  border-color: var(--os-danger);
+  background: rgba(255, 93, 108, 0.08);
+}
+
+.os-step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.os-step-index {
+  flex: none;
+  font-size: 12px;
+  color: var(--os-text-faint);
+}
+
+.os-step-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--os-text);
+  word-break: break-word;
+}
+
+.os-step-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--os-text-dim);
+}
+
+.os-step-meta,
+.os-step-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--os-text-dim);
+}
+
+.os-step-label {
+  margin-right: 6px;
+  font-size: 12px;
+  color: var(--os-text-faint);
+}
+
+.os-step-result {
+  font-size: 12.5px;
+  color: var(--os-text-dim);
+  word-break: break-word;
+}
+
+.os-step-error {
+  padding-left: 8px;
+  border-left: 2px solid var(--os-danger);
+  font-size: 12.5px;
+  color: var(--os-danger-ink);
+  word-break: break-word;
+}
+
+.os-step-error strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.os-step-error code {
+  color: inherit;
+}
+
+/* 产物预览抽屉：右侧滑出，不新开窗口，也不改变背后页面的位置。 */
+.os-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(4, 8, 16, 0.55);
+}
+
+.os-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 92vw);
+  background: var(--os-panel, #0b1120);
+  border-left: 1px solid var(--os-border, #2a2f3a);
+  box-shadow: -24px 0 48px rgba(0, 0, 0, 0.35);
+}
+
+.os-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--os-border, #2a2f3a);
+}
+
+.os-drawer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--os-text, #e6edf3);
+  word-break: break-all;
+}
+
+.os-drawer-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--os-text-faint, #8a9ac0);
+}
+
+.os-drawer-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.os-drawer-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  overflow: auto;
+}
+
+@media (max-width: 720px) {
+  .os-drawer {
+    width: 100%;
+  }
+}
+
+/* 产物预览里的 Markdown：只做标题 / 列表 / 引用 / 代码块的行内排版。 */
+.os-md {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--os-text, #e6edf3);
+  word-break: break-word;
+}
+
+.os-md h1,
+.os-md h2,
+.os-md h3,
+.os-md h4,
+.os-md h5,
+.os-md h6 {
+  margin: 6px 0 0;
+  line-height: 1.35;
+}
+
+.os-md h1 { font-size: 19px; }
+.os-md h2 { font-size: 17px; }
+.os-md h3 { font-size: 15px; }
+.os-md h4,
+.os-md h5,
+.os-md h6 { font-size: 13.5px; }
+
+.os-md p {
+  margin: 0;
+}
+
+.os-md ul,
+.os-md ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.os-md li + li {
+  margin-top: 3px;
+}
+
+.os-md blockquote {
+  margin: 0;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--os-border, #2a2f3a);
+  color: var(--os-text-dim, #9aa4b2);
+}
+
+.os-md hr {
+  width: 100%;
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--os-border, #2a2f3a);
+}
+
+.os-md code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--os-bg-2, #0d1117);
+  font-size: 12px;
+}
+
+.os-md .os-pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.os-md a {
+  color: var(--os-accent, #58a6ff);
+}
+
 /* ==========================================================================
    模型管理
    ========================================================================== */

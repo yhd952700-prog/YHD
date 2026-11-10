@@ -462,6 +462,14 @@ export interface GoalSummary {
   assigned_employee?: string | null
   assigned_employees?: string[]
   employees?: EmployeeRollup[]
+  /**
+   * 最后一次进入终态的时间（Unix 秒）；重试后重新计时。
+   * 旧数据没有这个字段、非终态目标为 null —— 读侧必须能接受三种情况，
+   * 缺失时退回 `created_at` 并把措辞说成「创建于」，不能显示空值或猜一个时间。
+   */
+  completed_at?: number | null
+  /** 这条目标对你的可见范围：self=自己的，subtree=含下属。缺失不猜。 */
+  visible_scope?: 'self' | 'subtree' | string | null
 }
 
 /** 后端 `_attach_employee_attribution` 的 goal 级汇总（每人一行）。 */
@@ -547,6 +555,12 @@ export interface GoalDetail {
 export interface GoalsResponse {
   goals: GoalSummary[]
   count: number
+  /**
+   * 本次列表的可见口径：`self` = 只含你自己的目标，`subtree` = 含你下属的。
+   * 空列表配上 `self` 时，界面要说「这里只显示你自己的目标」，
+   * 否则用户会把「你看不到」误读成「系统里没有」。
+   */
+  visible_scope?: 'self' | 'subtree' | string | null
 }
 
 /** 列表：随轮询自动刷新。 */

@@ -91,7 +91,10 @@ describe('目标与任务', () => {
 
   test('详情与产物读取失败都用 role="alert"', () => {
     expect(GOALS).toMatch(/className="os-error" role="alert">\s*\{detailError\}/)
-    expect(GOALS).toMatch(/className="os-error" role="alert">\s*\{artifactError\}/)
+    // 产物读取的 alert 跟着预览抽屉走，Goals 只负责打开抽屉。
+    expect(GOALS).toContain('<ArtifactPreview')
+    const preview = read('./components/ArtifactPreview.tsx')
+    expect(preview).toMatch(/className="os-error" role="alert">\s*\{error\}/)
   })
 
   test('没有纯图标无名称按钮', () => {

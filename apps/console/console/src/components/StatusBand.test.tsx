@@ -299,6 +299,56 @@ describe('今天的状态 · 刚完成', () => {
   })
 })
 
+describe('今天的状态 · 完成时间', () => {
+  test('有 completed_at 说「完成于」，没有则退回「创建于」，不混用也不填空值', async () => {
+    goalsResponse.body = {
+      count: 2,
+      goals: [
+        goal({
+          goal_id: 'g-done-finished',
+          state: 'completed',
+          natural_language: '刚跑完的复盘',
+          artifacts: ['reports/q3.md'],
+          // 三天前创建、两分钟前完成：两个时间必须分开说。
+          created_at: ago(3 * 86400),
+          completed_at: ago(120),
+        }),
+        goal({
+          goal_id: 'g-done-legacy',
+          state: 'completed',
+          natural_language: '历史目标',
+          artifacts: ['archive/old.md'],
+          created_at: ago(4 * 86400),
+        }),
+      ],
+    }
+
+    renderBand()
+    const region = await screen.findByRole('region', { name: /刚完成/ })
+    const subs = Array.from(region.querySelectorAll('.os-row-sub')).map(
+      (node) => node.textContent ?? '',
+    )
+    // 完成时间优先：按完成时间排序，刚完成的两分钟前那条在前。
+    expect(subs[0]).toContain('完成于 2 分钟前')
+    expect(subs[0]).not.toContain('创建于')
+    // 缺失 completed_at 的历史目标仍说创建时间，绝不写成「完成于」。
+    expect(subs[1]).toContain('创建于 4 天前')
+    expect(subs[1]).not.toContain('完成于')
+    expect(region.textContent).not.toContain('undefined')
+  })
+})
+
+describe('今天的状态 · 可见范围', () => {
+  test('visible_scope=self 的空态说明只看自己的目标', async () => {
+    goalsResponse.body = { count: 0, goals: [], visible_scope: 'self' }
+
+    renderBand()
+    await screen.findByText('现在没有正在执行或排队的目标。')
+    // 「正在做」和「刚完成」两行都来自 /v1/goals，都要解释空的原因。
+    expect(screen.getAllByText(/这里只显示你自己的目标/)).toHaveLength(2)
+  })
+})
+
 describe('今天的状态 · 空态与失败态', () => {
   test('三行各自有空态，不显示假数字', async () => {
     approvalsResponse.body = {
@@ -316,6 +366,8 @@ describe('今天的状态 · 空态与失败态', () => {
     expect(screen.getByText(/当前没有启用策略拦截/)).toBeTruthy()
     expect(screen.getByText(/还没有「跑完并写出文件」的目标/)).toBeTruthy()
     expect(screen.queryByText('0 条')).toBeNull()
+    // 后端没给 visible_scope 时不补「只看自己的」——不替后端猜可见范围。
+    expect(screen.queryByText(/这里只显示你自己的目标/)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: '交办一件事 →' }))
     expect(onNavigate).toHaveBeenCalledWith('butler')
