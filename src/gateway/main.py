@@ -2761,6 +2761,9 @@ def get_app() -> FastAPI:
     from .plugins import router as plugins_router
     app.include_router(plugins_router, dependencies=[Depends(_require_human)])
 
+    from .skills import router as skills_router
+    app.include_router(skills_router, dependencies=[Depends(_require_human)])
+
     # 事件流面（LHX-C-008 缺口）：把事件内核总线里**真实发生**的近期事件摊开给人看，
     # 只读、人类主权闸门。后端直接复用 event kernel 的内存近期事件缓冲
     # get_event_history，绝不另建一份可能分叉/造假的环形缓冲。与 Projects/Apps 面
