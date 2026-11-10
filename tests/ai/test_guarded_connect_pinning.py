@@ -146,7 +146,18 @@ class _TlsHitLogger:
             conn.close()
 
     def close(self):
+        # Linux 上若 accept() 线程仍阻塞在监听 socket 上，仅 close() 不会唤醒它
+        # （POSIX close() 不中断别的线程阻塞中的 accept()），内核继续持有
+        # 127.0.0.1:8443，下一个用例绑定同端口即 EADDRINUSE；Windows 的
+        # closesocket 会唤醒阻塞线程，所以此问题只在 Linux 复现。
+        # shutdown() 是跨平台的「唤醒阻塞 accept()」手段；join 保证返回时
+        # 监听线程已退出、端口确已释放，哨兵语义（命中即记录）不变。
+        try:
+            self._srv.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self._srv.close()
+        self._thread.join(timeout=2.0)
 
 
 @pytest.fixture()
