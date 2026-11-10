@@ -19,8 +19,8 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 版本 | `0.1.2.1` |
-| 安装包文件名 | `LiuHao-Setup-0.1.2.1.exe` |
+| 版本 | `0.2.0` |
+| 安装包文件名 | `LiuHao-Setup-0.2.0.exe` |
 | 文件大小 | 由出包记录填写（`FREEZE-RECORD.json` → `installer.size`，字节） |
 | SHA256 | 由出包记录填写（`FREEZE-RECORD.json` → `installer.sha256`，与 `SHA256SUMS.txt` 同文件名的值一致） |
 | 发布渠道 | 只从本页给出的链接/网盘获取；转存、转发来的安装包请先核对 SHA256 |
@@ -30,8 +30,8 @@
 ```powershell
 $r = Get-Content -Raw .\FREEZE-RECORD.json | ConvertFrom-Json
 $r.installer.filename; $r.installer.size; $r.installer.sha256
-Get-Item .\LiuHao-Setup-0.1.2.1.exe | Select-Object Name, Length
-Get-FileHash .\LiuHao-Setup-0.1.2.1.exe -Algorithm SHA256 | Select-Object Hash
+Get-Item .\LiuHao-Setup-0.2.0.exe | Select-Object Name, Length
+Get-FileHash .\LiuHao-Setup-0.2.0.exe -Algorithm SHA256 | Select-Object Hash
 ```
 
 ---
