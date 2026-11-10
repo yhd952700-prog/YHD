@@ -3,12 +3,19 @@
 """发布来源唯一性门禁：只允许从 dist\\installer 顶层发布。
 
 回答一个具体问题：如果有人从 dist\\_archive（或 brand-verify / encpath /
-任何快照目录）拿了个旧包去发布，这个脚本能不能拦住？——能，三条硬规则：
+任何快照目录）拿了个旧包去发布，这个脚本能不能拦住？——能，四条硬规则：
 
   1) 来源目录必须是 <repo>\\dist\\installer 顶层；归档/快照目录直接 FAIL；
   2) 待发布 exe 的文件名在 dist 下（排除 *_archive*）不得有第二个不同哈希的副本；
   3) 待发布 exe 的字节/SHA256 必须与同目录 SHA256SUMS.txt 首行一致；
      有 FREEZE-RECORD.json 时，记录里的 filename/version/size/sha256 也必须一致。
+  4) FREEZE-RECORD 必须带 payload 指纹（file_count / bytes / sha256 / prune_ledger），
+     给了 --payload-dir 时逐项复核该 payload 树；对不上即拒发。缺这一段说明
+     「这个 exe 是哪棵 payload 编的」没有证据，不允许发布。
+
+  第 4 条是 2026-11-10 的补丁：同一个 dist 下曾同时存在两份同名 0.1.2 exe
+  （29,428,128 B / 6443A1AB… 与 36,948,984 B / E92D364F…），后者是没跑 prune 的
+  payload 编出来的，签名有效、版本号相同，任何检查都没吭声。
 
 可选 --page 时，再调用 scripts/verify_release_page_values.py 核对发布页，
 页面上的版本/哈希/字节/文件名/data-copy 全部必须等于本目录的实测值。
@@ -207,6 +214,71 @@ def check_sums(installer_dir: Path, exe_path: Path, report: Report) -> tuple[str
     return sums_name, sums_hash, actual_size
 
 
+def payload_fingerprint(root: Path) -> tuple[int, int, str]:
+    """与 package-frozen.ps1 同一算法：相对路径|字节数，序数排序，LF 连接，SHA256。"""
+    lines: list[str] = []
+    total = 0
+    count = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        size = path.stat().st_size
+        rel = str(path.relative_to(root)).replace("/", "\\")
+        lines.append(f"{rel}|{size}")
+        total += size
+        count += 1
+    lines.sort()
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest().upper()
+    return count, total, digest
+
+
+def check_payload_fingerprint(
+    data: dict,
+    payload_dir: Path | None,
+    report: Report,
+) -> None:
+    """复核 FREEZE-RECORD 的 payload 指纹；给了 payload_dir 就逐项对比实际树。"""
+    payload = data.get("payload") or {}
+    problems: list[str] = []
+    try:
+        file_count = int(payload["file_count"])
+        byte_count = int(payload["bytes"])
+        digest = str(payload["sha256"]).upper()
+    except (KeyError, TypeError, ValueError):
+        report.fail("FREEZE-RECORD 缺 payload 指纹（file_count/bytes/sha256）：无法证明 exe 来自已裁剪的 payload")
+        return
+    if file_count <= 0 or byte_count <= 0:
+        problems.append(f"payload.file_count={file_count} / bytes={byte_count}（必须为正数）")
+    if not re.fullmatch(r"[0-9A-F]{64}", digest):
+        problems.append(f"payload.sha256={digest!r} 不是 64 位十六进制")
+    if payload.get("prune_ledger") != "prune-import-ledger.jsonl":
+        problems.append(f"payload.prune_ledger={payload.get('prune_ledger')!r} ≠ 'prune-import-ledger.jsonl'")
+    if problems:
+        report.fail("FREEZE-RECORD 的 payload 指纹不完整：" + "；".join(problems))
+        return
+
+    if payload_dir is None:
+        report.ok(f"payload 指纹已记录：{file_count} 文件 / {byte_count} 字节 / {digest[:8]}…{digest[-4:]}（未给 --payload-dir，未复核实物）")
+        return
+
+    if not payload_dir.is_dir():
+        report.fail(f"--payload-dir 不是目录：{payload_dir}")
+        return
+    ledger = payload_dir / "prune-import-ledger.jsonl"
+    if not ledger.is_file() or ledger.stat().st_size <= 0:
+        report.fail(f"payload 树缺 prune-import-ledger.jsonl（或为空）：{payload_dir} —— 未裁剪 payload 不得发布")
+        return
+    real_count, real_bytes, real_digest = payload_fingerprint(payload_dir)
+    if (real_count, real_bytes, real_digest) != (file_count, byte_count, digest):
+        report.fail(
+            "payload 指纹与实际树不一致："
+            f"记录 {file_count} 文件/{byte_count} 字节/{digest[:8]}…，"
+            f"实际 {real_count} 文件/{real_bytes} 字节/{real_digest[:8]}…"
+        )
+    else:
+        report.ok(f"payload 指纹与实际树一致：{real_count} 文件 / {real_bytes} 字节 / {real_digest[:8]}…{real_digest[-4:]}")
+
+
 def check_record(
     installer_dir: Path,
     exe_path: Path,
@@ -215,6 +287,7 @@ def check_record(
     expected_version: str | None,
     require_record: bool,
     report: Report,
+    payload_dir: Path | None = None,
 ) -> str | None:
     record_path = installer_dir / "FREEZE-RECORD.json"
     if not record_path.is_file():
@@ -241,6 +314,9 @@ def check_record(
         report.fail("FREEZE-RECORD 与实际产物不一致：" + "；".join(problems))
     else:
         report.ok(f"FREEZE-RECORD 与产物一致：version={version}、size={exe_size}、sha256={exe_hash[:8]}…")
+    # 发布态强制要求 payload 指纹；给了 --payload-dir 就顺带复核实物树。
+    if require_record or payload_dir is not None:
+        check_payload_fingerprint(data, payload_dir, report)
     return version
 
 
@@ -299,6 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--page-script", help="页面核对脚本路径（默认 scripts/verify_release_page_values.py）")
     parser.add_argument("--expected-version", help="本次构建版本；给了就要求 exe/记录与它一致")
     parser.add_argument("--require-record", action="store_true", help="缺 FREEZE-RECORD.json 即失败（发布态应开）")
+    parser.add_argument(
+        "--payload-dir",
+        help="构建用的 payload\\app 目录；给了就按 FREEZE-RECORD 的 payload 指纹逐项复核，对不上拒发",
+    )
     parser.add_argument("--staging", action="store_true", help="暂存目录模式：允许非 dist\\installer，但不代表可发布")
     args = parser.parse_args(argv)
 
@@ -306,6 +386,11 @@ def main(argv: list[str] | None = None) -> int:
     installer_dir = Path(args.installer_dir)
     if not installer_dir.is_absolute():
         installer_dir = (repo_root / installer_dir).resolve()
+    payload_dir: Path | None = None
+    if args.payload_dir:
+        payload_dir = Path(args.payload_dir)
+        if not payload_dir.is_absolute():
+            payload_dir = (repo_root / payload_dir).resolve()
     if not installer_dir.is_dir():
         print(f"[ERROR] 来源目录不存在：{installer_dir}")
         return 2
@@ -341,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
             args.expected_version,
             args.require_record and not args.staging,
             report,
+            payload_dir,
         )
         if args.page:
             effective_version = args.expected_version or version or _version_from_name(exe_name)

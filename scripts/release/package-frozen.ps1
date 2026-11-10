@@ -458,6 +458,51 @@ if (-not $moduleMatch.Success) {
 $moduleCount = [int]$moduleMatch.Groups[1].Value
 Write-Host "  前端模块数 $moduleCount"
 
+# ---------------------------------------- 6.1 payload 裁剪硬断言（缺台账即失败）
+# 背景：2026-11-10 出现过一个没跑 prune 的 36.9 MB 同名产物，签名有效、版本号 0.1.2，
+# 躺在 dist\freeze-0.1.2\installer\ 里，只靠人眼比文件数才被发现。是否裁剪过
+# payload 从来没被断言过，这里补上：没有 prune-import-ledger.jsonl 直接失败。
+Write-Step "payload 裁剪断言（prune-import-ledger.jsonl 必须存在）"
+$pruneLedger = Join-Path $payloadApp "prune-import-ledger.jsonl"
+if (-not (Test-Path $pruneLedger -PathType Leaf)) {
+    Add-Check "payload 已裁剪" "FAIL" ("payload 缺 prune-import-ledger.jsonl（{0}）：本轮未跑 prune，拒绝出包。若确需回滚裁剪，必须显式重打并在记录里说明。" -f $pruneLedger)
+} elseif ((Get-Item $pruneLedger).Length -le 0) {
+    Add-Check "payload 已裁剪" "FAIL" ("prune-import-ledger.jsonl 为空（0 字节）：无法证明裁剪规则被执行过")
+} else {
+    $pruneEnabled = $null
+    $payloadManifestForPrune = Join-Path $OutRoot "payload\manifest.json"
+    if (Test-Path $payloadManifestForPrune) {
+        $pmPrune = Get-Content -Raw -LiteralPath $payloadManifestForPrune | ConvertFrom-Json
+        if ($pmPrune.prune) { $pruneEnabled = $pmPrune.prune.enabled }
+    }
+    if ($pruneEnabled -eq $false) {
+        Add-Check "payload 已裁剪" "FAIL" "manifest.json 记录 prune.enabled=false（回滚模式产物不得发布）"
+    } else {
+        Add-Check "payload 已裁剪" "PASS" ("台账 {0} 字节；manifest.prune.enabled={1}" -f (Get-Item $pruneLedger).Length, $pruneEnabled)
+    }
+}
+
+# payload 指纹：文件数 + 字节数 + 路径/大小清单摘要。写进 FREEZE-RECORD 后，
+# 发布复核可以拿它反问「这个 exe 对应的 payload 到底是什么」。
+$payloadFiles = @(Get-ChildItem $payloadApp -Recurse -File -Force -ErrorAction SilentlyContinue)
+$payloadCount = $payloadFiles.Count
+$payloadBytes = 0
+if ($payloadCount -gt 0) { $payloadBytes = [int64](($payloadFiles | Measure-Object Length -Sum).Sum) }
+$payloadIndexLines = @($payloadFiles | ForEach-Object {
+    ($_.FullName.Substring($payloadApp.Length).TrimStart('\') + '|' + $_.Length)
+})
+# 必须用序数排序（ordinal），与 verify_publish_source.py 的 sorted() 同一口径；
+# Sort-Object 走的是区域文化排序，跨语言复核会对不上。
+[Array]::Sort($payloadIndexLines, [System.StringComparer]::Ordinal)
+$payloadIndex = $payloadIndexLines -join "`n"
+$payloadHasher = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $payloadDigest = ([BitConverter]::ToString(
+        $payloadHasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($payloadIndex))
+    ) -replace '-', '')
+} finally { $payloadHasher.Dispose() }
+Write-Host ("  payload 指纹 {0} 文件 / {1} 字节 / {2}…{3}" -f $payloadCount, $payloadBytes, $payloadDigest.Substring(0, 8), $payloadDigest.Substring($payloadDigest.Length - 4))
+
 # ------------------------------------------------- 7. 环境复检（编译前）
 Write-Step "环境复检（编译前，确认构建期间没人动环境）"
 Invoke-PyGate "环境变量复检" @("env", "--repo", $RepoRoot)
@@ -665,7 +710,16 @@ if ($unpackOk) {
         }
     }
 
-    # 9.2.4 升级包文件数必须等于 LIUHAO_RELEASE.json 的 files 清单条数。
+    # 9.2.4 裁剪台账必须出现在「解包后的成品树」里：签名的是 exe，不是 payload 目录。
+    # 只查 payload 目录不够——被签走的可能是另一棵树（2026-11-10 的 36.9 MB 事件）。
+    $extractLedger = Join-Path $appRoot "prune-import-ledger.jsonl"
+    if (-not (Test-Path $extractLedger -PathType Leaf)) {
+        Add-Check "成品包含裁剪台账" "FAIL" ("解包后 {app}\ 里没有 prune-import-ledger.jsonl：这个 exe 是用未裁剪 payload 编的，拒绝出包")
+    } else {
+        Add-Check "成品包含裁剪台账" "PASS" ("{0}（{1} 字节）" -f $extractLedger, (Get-Item $extractLedger).Length)
+    }
+
+    # 9.2.5 升级包文件数必须等于 LIUHAO_RELEASE.json 的 files 清单条数。
     $releaseManifestPath = Join-Path $OutRoot "release\LIUHAO_RELEASE.json"
     if (-not (Test-Path $releaseManifestPath)) {
         Add-Check "升级包清单计数" "FAIL" "缺少 $releaseManifestPath"
@@ -716,6 +770,15 @@ $record = [ordered]@{
     iscc = $IsccPath
     iscc_version = (Get-Item $IsccPath).VersionInfo.FileVersion
     frontend_module_count = $moduleCount
+    # payload 指纹：verify_publish_source.py 在发布态复核这一块（缺字段即拒发）。
+    # 这是把「exe 到底是哪棵 payload 编出来的」写进记录，避免同名不同内容的包互相冒充。
+    payload = [ordered]@{
+        file_count = $payloadCount
+        bytes = $payloadBytes
+        size_mib = [math]::Round($payloadBytes / 1MB, 1)
+        sha256 = $payloadDigest
+        prune_ledger = "prune-import-ledger.jsonl"
+    }
     # 发布页只从这里取值（docs/RELEASE-PAGE-CONTENT.md）：字节数与 SHA256 是
     # 硬字段，页面不许手抄旧值。
     installer = [ordered]@{
@@ -769,6 +832,22 @@ if ($sumsHash -ne $exeHashNow) {
 }
 if (-not $sourceCommit -or -not $sourceTree) {
     $recordProblems += "记录缺 source_commit/source_tree（提交与树 ID 必须写入）"
+}
+# payload 指纹必须与刚测出来的这棵 payload 树逐项一致；不一致说明记录被改过、
+# 或写记录时用的不是本次 payload——两种情况都不许出包。
+$recPayload = $recordReread.payload
+if (-not $recPayload) {
+    $recordProblems += "记录缺 payload 指纹（file_count/bytes/sha256），无法复核 exe 对应的 payload"
+} else {
+    if ([int64]$recPayload.file_count -ne [int64]$payloadCount) {
+        $recordProblems += "记录 payload.file_count=$($recPayload.file_count) ≠ 实际 $payloadCount"
+    }
+    if ([int64]$recPayload.bytes -ne [int64]$payloadBytes) {
+        $recordProblems += "记录 payload.bytes=$($recPayload.bytes) ≠ 实际 $payloadBytes"
+    }
+    if ([string]$recPayload.sha256 -ne $payloadDigest) {
+        $recordProblems += "记录 payload.sha256=$($recPayload.sha256) ≠ 实际 $payloadDigest"
+    }
 }
 $recordProblems += @(Get-Content -LiteralPath $sums | Where-Object {
     $line = $_.Trim(); $line -and ($line -split '\s+').Count -ge 2 -and
@@ -826,6 +905,43 @@ if ((Resolve-Path $OutRoot).Path -ne (Resolve-Path $distRoot).Path) {
     Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD-$Version.json") -Force
 }
 
+# ---------------------- 11.1 dist 同名产物冲突：同名不同哈希即失败
+# 历史事实：dist\freeze-0.1.2\installer\ 与 dist\installer\ 可以各躺一份
+# LiuHao-Setup-0.1.2.exe，内容不同，没有任何检查吭声。谁是要发的那份只能靠猜。
+# 这里不看版本号，只看「同名文件是否唯一」：多一份不同字节的同名 exe 就失败。
+Write-Step "dist 同名产物冲突检查"
+$distSetupExes = @(Get-ChildItem (Join-Path $RepoRoot "dist") -Recurse -Filter "LiuHao-Setup-*.exe" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -notmatch '\\_archive\\' })
+$sameNameProblems = @()
+foreach ($group in ($distSetupExes | Group-Object { $_.Name.ToLower() })) {
+    $hashes = @($group.Group | ForEach-Object {
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+    } | Sort-Object -Unique)
+    if ($hashes.Count -gt 1) {
+        $detailParts = foreach ($f in $group.Group) {
+            $fh = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash
+            "{0}（{1} 字节 / {2}…{3}）" -f $f.FullName.Replace($RepoRoot + '\', ''), $f.Length, $fh.Substring(0, 8), $fh.Substring(56)
+        }
+        $sameNameProblems += ("{0} 存在 {1} 个不同哈希：{2}" -f $group.Name, $hashes.Count, ($detailParts -join "；"))
+    }
+}
+if ($sameNameProblems.Count -gt 0) {
+    $sameNameProblems | ForEach-Object { Write-Host "  !! $_" -ForegroundColor Red }
+    Add-Check "dist 同名产物唯一" "FAIL" (($sameNameProblems -join " | ") + " → 把非发布副本移到 dist\_archive\ 或改名（文件名带哈希）后重跑，别让「哪份要发」靠猜")
+} else {
+    Add-Check "dist 同名产物唯一" "PASS" ("{0} 个非归档 LiuHao-Setup-*.exe，同名均只有 1 个哈希" -f $distSetupExes.Count)
+}
+
+# 本门禁在记录落盘之后才跑，把结果补写回记录，避免「记录里的检查项」与实际门禁脱节。
+if ($record -and (Test-Path $recordPath)) {
+    $record.checks = @($script:Checks | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Name; Status = $_.Status; Detail = $_.Detail }
+    })
+    $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
+    Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD.json") -Force
+    Copy-Item -LiteralPath $recordPath -Destination (Join-Path $distInstaller "FREEZE-RECORD-$Version.json") -Force
+}
+
 # ------------------- 12. 发布门禁：数值来源唯一 + 发布页数值一致（硬失败）
 # 规矩不再靠人记：这两条不过，绝不打印「冻结打包完成」。
 Write-Step "发布门禁：数值来源唯一性与发布页数值一致性"
@@ -846,7 +962,7 @@ if (-not $ReleasePageFile -or -not (Test-Path $ReleasePageFile)) {
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
-    $guardOut = & $PythonExe $publishGuard --repo-root $RepoRoot --installer-dir $distInstaller --expected-version $Version --require-record 2>&1 | Out-String
+    $guardOut = & $PythonExe $publishGuard --repo-root $RepoRoot --installer-dir $distInstaller --expected-version $Version --require-record --payload-dir $payloadApp 2>&1 | Out-String
     $guardCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $prevEap
