@@ -25,10 +25,11 @@ from pathlib import Path
 # 由 tests/test_guardrail_scripts.py 对所有 verify_*.py 强制检查。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# 页面里的版本号（0.1.1 / 0.1.2）。不接数字、不接 `.数字`，避免把 127.0.0.1 当成版本；
+# 页面里的版本号（三段 0.1.2 / 四段 0.1.2.1）。不接数字、不接 `.数字`；
+# 前面的 `/` 与后面的 `:端口` 用来把 http://127.0.0.1:8080 排除在版本之外；
 # 允许 `v0.1.1`（前面是字母）和 `0.1.1.exe`（后面是 .exe）。
-VERSION_RE = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?!\d)(?!\.\d)")
-VERSION_ONLY_RE = re.compile(r"\d+\.\d+\.\d+")
+VERSION_RE = re.compile(r"(?<![\d./])\d+\.\d+\.\d+(?:\.\d+)?(?!\d)(?!\.\d)(?!:\d)")
+VERSION_ONLY_RE = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
 SHA_RE = re.compile(r"\b[a-fA-F0-9]{64}\b")
 EXE_RE = re.compile(r"LiuHao-Setup-([0-9][0-9A-Za-z.\-]*)\.exe", re.IGNORECASE)
 DATA_COPY_RE = re.compile(r'data-copy\s*=\s*"([^"]*)"', re.IGNORECASE)

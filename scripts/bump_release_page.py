@@ -35,7 +35,8 @@ import sys
 from pathlib import Path
 
 # 与 verify_release_page_values.py 保持同一套匹配口径。
-VERSION_RE = re.compile(r"(?<![\d.])\d+\.\d+\.\d+(?!\d)(?!\.\d)")
+# 三段或四段（0.1.2 / 0.1.2.1）；前面的 / 与后面的 :端口 用来排除 http://127.0.0.1:8080。
+VERSION_RE = re.compile(r"(?<![\d./])\d+\.\d+\.\d+(?:\.\d+)?(?!\d)(?!\.\d)(?!:\d)")
 SHA_RE = re.compile(r"\b[a-fA-F0-9]{64}\b")
 EXE_RE = re.compile(r"LiuHao-Setup-([0-9][0-9A-Za-z.\-]*)\.exe", re.IGNORECASE)
 GROUPED_BYTE_RE = re.compile(r"\b\d{1,3}(?:,\d{3}){2,}\b(?=\s*字节)")
