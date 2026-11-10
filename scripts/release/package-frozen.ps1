@@ -564,17 +564,35 @@ if (-not $verifyScript -or -not (Test-Path $verifyScript)) {
 }
 
 # 本次构建专属 SBOM：不复用基线，避免“用旧 SBOM 验新包”。
+# SBOM 审计会调用 payload 里的 runtime\python.exe 探测版本，探针导入标准库时
+# 默认会往 payload 里写 __pycache__。那批 .pyc 产生于 ISCC 编译之后（不在 exe 里），
+# 却会让 §6.1 的 payload 指纹与盘上树对不上——校验动作不能改构建输入，故禁写字节码。
+#
+# 全链路已排查「会执行 payload\runtime\python.exe 的动作」，逐一确认保护：
+#   * scripts\release\freeze_checks.py deps       → _run_measure 已设 PYTHONDONTWRITEBYTECODE=1
+#   * packaging\smoke_payload.py                  → _isolated_env 已设，且 build §4 会清 __pycache__/.pyc
+#   * dist\release-gate\sbom_audit.py probe_runtime → 由本处（调用方）设，见下
+#   * verify_package_compliance.py / verify_publish_source.py / verify_release_page_values.py
+#                                                 → 只读解包与哈希，不执行包内任何内容
+# 新增会跑 payload 解释器的校验时，必须走同一道保护并在上面这行清单里补一条。
 $rgOut = Join-Path $OutRoot "release-gate"
 New-Item -ItemType Directory -Force -Path $rgOut | Out-Null
 $sbomJson = Join-Path $rgOut "sbom-cyclonedx.json"
 $auditScript = Join-Path $ReleaseGateDir "sbom_audit.py"
 $previousEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
+$prevPycEnv = $env:PYTHONDONTWRITEBYTECODE
+$env:PYTHONDONTWRITEBYTECODE = "1"
 try {
     $auditOut = & $PythonExe $auditScript --app $payloadApp --out $rgOut --report (Join-Path $rgOut "SBOM-LICENSE-COMPLIANCE-REPORT.md") 2>&1 | Out-String
     $auditCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $previousEap
+    if ($null -eq $prevPycEnv) {
+        Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
+    } else {
+        $env:PYTHONDONTWRITEBYTECODE = $prevPycEnv
+    }
 }
 if ($auditCode -eq 0 -and (Test-Path $sbomJson)) {
     Add-Check "本次构建 SBOM" "PASS" $sbomJson
