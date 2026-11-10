@@ -137,7 +137,11 @@ def _gui_first_run_if_needed() -> tuple[int, bool]:
             "[first-run] 首次启动：正在打开设置向导（管理员账号 → 选择模型 → 完成）…",
             flush=True,
         )
+        # 埋点：这两行能区分"卡在向导里"与"向导返回后卡住"——
+        # 只写事件与退出码，不写用户名/密码/恢复码/令牌。
+        print("[wizard] start", flush=True)
         code = gui.run_wizard(port=None, tray_planned=True)
+        print(f"[wizard] returned rc={code}", flush=True)
         if code != 0:
             _report_failure(f"[FAIL] 首次设置未完成（退出码 {code}），未启动桌面壳。")
             return code, False

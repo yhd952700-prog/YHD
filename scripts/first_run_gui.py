@@ -84,6 +84,10 @@ _PRINCIPAL = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,31}$")
 #: commit() 的返回值：``(是否成功, 给用户看的中文说明)``。
 CommitResult = tuple[bool, str]
 
+#: 自检的硬超时：正常约 3 秒完成；到点必须把按钮恢复可点，不能让用户干等。
+CHECK_TIMEOUT_SECONDS = 30.0
+CHECK_TIMEOUT_HINT = "自检超时，可以先进入，稍后在系统状态里看结果。"
+
 
 # ---------------------------------------------------------------------------
 # 纯逻辑：默认值 / 校验 / 落盘
@@ -1088,6 +1092,12 @@ class _WizardWindow:
         self._model_mode = "skip"
         self._check_results: list[CheckResult] = []
         self._check_running = False
+        #: 自检还没结束就点了「进入鎏灏」：排队，等自检收尾后自动进入。
+        self._finish_pending = False
+        #: 自检的开始时间与次数，只用于日志与超时兜底（不含任何凭据）。
+        self._check_seq = 0
+        self._check_started_at = 0.0
+        self._check_poll_failures = 0
         self._ready = False
         self._wrapped_labels: list[tuple[Any, int]] = []
 
@@ -1729,8 +1739,21 @@ class _WizardWindow:
     # -- 自检页的动作 -------------------------------------------------------
     def _start_checks(self) -> None:
         if self._check_running:
+            _write_log(
+                self.data_dir,
+                f"evt=startup.check.start_ignored seq={self._check_seq}"
+                " reason=already_running next_state=disabled",
+            )
             return
         self._check_running = True
+        self._check_seq += 1
+        self._check_started_at = time.monotonic()
+        self._check_poll_failures = 0
+        self._finish_pending = False
+        self._write_check_event(
+            f"evt=startup.check.start seq={self._check_seq}"
+            " next_state=disabled next_text=正在自检…"
+        )
         self._check_summary_label.configure(text="正在本机自检…", fg="#555555")
         for widgets in self._check_widgets.values():
             widgets["badge"].configure(text="检测中…", fg="#777777")
@@ -1782,16 +1805,70 @@ class _WizardWindow:
         threading.Thread(target=worker, name="first-run-self-check", daemon=True).start()
         self.root.after(100, lambda: self._poll_checks(results_box))
 
+    def _write_check_event(self, text: str) -> None:
+        """自检链路的埋点：只写事件名/序号/计数/按钮状态，绝不写凭据与用户名。"""
+        _write_log(self.data_dir, text)
+
+    def _check_timed_out(self) -> bool:
+        if not self._check_running:
+            return False
+        return (time.monotonic() - self._check_started_at) >= CHECK_TIMEOUT_SECONDS
+
+    def _force_check_timeout(self, reason: str) -> None:
+        """自检卡住时的兜底：把按钮一定恢复成可点，并给用户一行中文提示。
+
+        正常自检约 3 秒完成，这里只在异常路径触发；结果全部标成不阻塞，
+        所以按钮会变成「进入鎏灏」，用户可以先进控制台再回头看结果。
+        """
+        if not self._check_running:
+            return
+        self._write_check_event(
+            f"evt=startup.check.timeout seq={self._check_seq}"
+            f" reason={reason} elapsed={int(time.monotonic() - self._check_started_at)}"
+            " blocking=0 next_state=normal"
+        )
+        results = [
+            CheckResult(
+                key=key,
+                title=title,
+                ok=False,
+                detail="这项检查没有在预期时间内完成，结果暂缺。",
+                action="",
+                advice="可以先进入控制台，稍后在系统状态里再检查。",
+                code="timeout",
+            )
+            for key, title in (
+                ("port", "网关端口"),
+                ("data_dir", "数据目录"),
+                ("tray", "托盘驻留（关窗后继续运行）"),
+                ("model", "默认模型"),
+            )
+        ]
+        self._show_checks(results, summary_override=CHECK_TIMEOUT_HINT)
+
     def _poll_checks(self, results_box: queue.Queue[list[CheckResult]]) -> None:
         try:
             results = results_box.get_nowait()
         except queue.Empty:
-            with contextlib.suppress(Exception):
+            if self._check_timed_out():
+                self._force_check_timeout("deadline")
+                return
+            try:
                 self.root.after(100, lambda: self._poll_checks(results_box))
+            except Exception:  # noqa: BLE001 - after() 失败不能再静默吞掉
+                self._check_poll_failures += 1
+                self._write_check_event(
+                    "evt=startup.check.poll_error"
+                    f" seq={self._check_seq} failures={self._check_poll_failures}"
+                )
+                if self._check_poll_failures >= 3:
+                    self._force_check_timeout("poll_error")
             return
         self._show_checks(results)
 
-    def _show_checks(self, results: list[CheckResult]) -> None:
+    def _show_checks(
+        self, results: list[CheckResult], *, summary_override: str = ""
+    ) -> None:
         self._check_running = False
         self._check_results = list(results)
         by_key = {item.key: item for item in results}
@@ -1840,12 +1917,52 @@ class _WizardWindow:
                 text="四项全部通过：账号、数据目录、端口和模型都可用。",
                 fg="#0a7d33",
             )
+        if summary_override:
+            # 超时兜底要有一行明确的中文提示，不能只留日志让用户去翻。
+            self._check_summary_label.configure(text=summary_override, fg="#b45309")
         if any(item.blocking for item in failures):
             self._next.configure(state="disabled", text="请先处理上面的问题")
         else:
             self._next.configure(state="normal", text="进入鎏灏")
+        blocking_count = len([item for item in failures if item.blocking])
+        self._write_check_event(
+            f"evt=startup.check.rendered seq={self._check_seq}"
+            f" results={len(results)} blocking={blocking_count}"
+            f" summary_override={1 if summary_override else 0}"
+            f" next_state={'disabled' if blocking_count else 'normal'}"
+        )
         if self._ready:
-            self.root.after_idle(lambda: self._apply_geometry(center=False))
+            # 几何调整只是外观：它失败不能反过来把窗口留在「正在自检…」这种异常态。
+            try:
+                self.root.after_idle(lambda: self._apply_geometry(center=False))
+            except Exception:  # noqa: BLE001
+                self._write_check_event(
+                    f"evt=startup.check.geometry_deferred_error seq={self._check_seq}"
+                )
+        self._resume_deferred_finish()
+
+    def _resume_deferred_finish(self) -> None:
+        """自检收尾：若用户此前已点过「进入鎏灏」，在这里自动接着走。
+
+        用户在按钮还是「正在自检…」时点的那一下不能被丢掉——排队后由这里兑现。
+        自检真有阻塞项时不替用户越过，把决定权交回界面。
+        """
+        if not self._finish_pending:
+            return
+        self._finish_pending = False
+        blocking = [item for item in self._check_results if item.blocking]
+        if blocking:
+            _write_log(
+                self.data_dir,
+                "evt=wizard.finish_resume skipped=1"
+                f" blocking={len(blocking)} next_state=disabled",
+            )
+            return
+        _write_log(
+            self.data_dir,
+            "evt=wizard.finish_resume auto=1 blocking=0 next_text=进入鎏灏",
+        )
+        self._finish()
 
     def _run_check_action(self, key: str) -> None:
         result = next(
@@ -1894,7 +2011,20 @@ class _WizardWindow:
     def _finish(self) -> None:
         """自检页的「进入控制台」：设置已保存，关闭窗口让启动器继续。"""
         if self._check_running:
+            # 自检还没结束就点了：不静默丢弃，也不只写一行日志让用户干等。
+            # 按钮改成明确的等待文案并禁用，自检收尾时由 _show_checks 自动接着走 _finish。
+            self._finish_pending = True
+            self._next.configure(state="disabled", text="自检完成后自动进入…")
+            _write_log(
+                self.data_dir,
+                "evt=wizard.finish_deferred self_check_running=1"
+                " next_state=disabled next_text=自检完成后自动进入",
+            )
             return
+        _write_log(
+            self.data_dir,
+            f"evt=wizard.finish accepted=1 check_running=0 checks={len(self._check_results)}",
+        )
         self.accepted = True
         self.error_message = ""
         self._stop_dpi_watcher()
@@ -1952,8 +2082,25 @@ class _WizardWindow:
         tk.Button(buttons, text="复制恢复码", command=_copy).pack(side="left")
         tk.Button(buttons, text="我已保存，关闭", command=_close).pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", _close)
+
+        # 这个弹窗只显示一次恢复码，绝不能自动关闭；但必须保证它不会被主窗挡住：
+        # 一旦被挡住，主窗在 grab_set() 期间对点击完全无响应，用户只会看到"卡死"。
+        # 日志只记事件，不记码本身。
+        with contextlib.suppress(Exception):
+            dialog.update_idletasks()
+            dialog.lift()
+            dialog.focus_force()
+            dialog.attributes("-topmost", True)
+
+            def _drop_topmost() -> None:
+                with contextlib.suppress(Exception):
+                    dialog.attributes("-topmost", False)
+
+            dialog.after(400, _drop_topmost)
+        _write_log(self.data_dir, "evt=wizard.recovery_dialog.show topmost=1 grab=1")
         dialog.grab_set()
         dialog.wait_window()
+        _write_log(self.data_dir, "evt=wizard.recovery_dialog.hide")
 
     def _submit(self) -> None:
         if self._submitted:

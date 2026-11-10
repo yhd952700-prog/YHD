@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import gc
 import os
+import queue
 import socket
+import time
 from pathlib import Path
 
 import pytest
@@ -539,4 +541,191 @@ def test_check_page_buttons_exist_and_are_clickable(isolated_env, monkeypatch):
         except Exception:  # noqa: BLE001
             pass
         gc.collect()
+
+
+# ---------------------------------------------------------------------------
+# 「进入鎏灏」这一跳的兜底：不许静默丢弃点击，也不许让按钮永久停在禁用态。
+# ---------------------------------------------------------------------------
+
+_WINDOW_SKIP = pytest.mark.skipif(
+    os.name != "nt",
+    reason="真实 Tk 窗口依赖 Windows tcl86t 运行时（同 test_check_page_buttons_exist_and_are_clickable）",
+)
+
+
+def _open_window(data_dir: Path, log_path: Path):
+    window = gui._WizardWindow(data_dir, lambda _v: (True, "ok"), log_path, port=0)
+    window.committed = True
+    return window
+
+
+def _close_window(window) -> None:
+    """与 test_check_page_buttons_exist_and_are_clickable 相同的收尾顺序。"""
+    try:
+        window._stop_dpi_watcher()
+        root = window.root
+        window.__dict__.clear()
+        root.destroy()
+        del root
+    except Exception:  # noqa: BLE001
+        pass
+    gc.collect()
+
+
+def _skip_without_desktop() -> None:
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        probe = tkinter.Tk()
+        probe.withdraw()
+        probe.destroy()
+    except Exception:  # noqa: BLE001 - 无桌面会话时跳过 UI 断言
+        pytest.skip("当前会话没有可用的 Tk 桌面")
+
+
+def _all_green() -> list:
+    return [
+        gui.CheckResult("port", "网关端口", True, "可用", action="", advice="", code="free"),
+        gui.CheckResult("data_dir", "数据目录", True, "可写", action="", advice="", code="writable"),
+        gui.CheckResult(
+            "tray", "托盘驻留（关窗后继续运行）", True, "可用", action="", advice="", code="ok"
+        ),
+        gui.CheckResult("model", "默认模型", True, "可用", action="", advice="", code="ok"),
+    ]
+
+
+@_WINDOW_SKIP
+def test_finish_while_checking_is_queued_then_auto_enters(isolated_env):
+    """自检未完成时点「进入鎏灏」：必须排队并在自检收尾后自动进入，而不是静默丢弃。"""
+    _skip_without_desktop()
+    log_path = isolated_env / "logs" / "first_run.log"
+    window = _open_window(isolated_env, log_path)
+    try:
+        window._check_running = True
+        window._finish()
+
+        # 窗口不能关：点了但自检还没结束
+        assert window.accepted is False
+        assert window._finish_pending is True
+        # 而且用户要看得见自己去哪了
+        assert window._next.cget("state") == "disabled"
+        assert window._next.cget("text") == "自检完成后自动进入…"
+
+        # 自检收尾 → 自动进入，不需要用户再点一次
+        window._check_running = False
+        window._show_checks(_all_green())
+
+        assert window.accepted is True
+        assert window._finish_pending is False
+        text = log_path.read_text(encoding="utf-8")
+        assert "evt=wizard.finish_deferred" in text
+        assert "evt=wizard.finish_resume auto=1" in text
+        assert "evt=wizard.finish accepted=1" in text
+    finally:
+        _close_window(window)
+
+
+@_WINDOW_SKIP
+def test_deferred_finish_does_not_bypass_blocking_check(isolated_env):
+    """自检真有阻塞项时，排队的那次点击不能被自动兑现——决定权交回界面。"""
+    _skip_without_desktop()
+    log_path = isolated_env / "logs" / "first_run.log"
+    window = _open_window(isolated_env, log_path)
+    try:
+        window._check_running = True
+        window._finish()
+        assert window._finish_pending is True
+
+        window._check_running = False
+        window._show_checks(
+            [
+                gui.CheckResult(
+                    "data_dir",
+                    "数据目录",
+                    False,
+                    "不可写",
+                    action="打开数据目录",
+                    blocking=True,
+                    advice="必须先处理。",
+                    code="unwritable",
+                )
+            ]
+        )
+
+        assert window.accepted is False
+        assert window._finish_pending is False
+        assert window._next.cget("state") == "disabled"
+        text = log_path.read_text(encoding="utf-8")
+        assert "evt=wizard.finish_resume skipped=1" in text
+        assert "blocking=1" in text
+    finally:
+        _close_window(window)
+
+
+@_WINDOW_SKIP
+def test_check_timeout_restores_enter_button_with_chinese_hint(isolated_env):
+    """自检卡住到超时：按钮必须恢复可点，并给一行中文提示，不能只写日志。"""
+    _skip_without_desktop()
+    log_path = isolated_env / "logs" / "first_run.log"
+    window = _open_window(isolated_env, log_path)
+    try:
+        window._check_running = True
+        window._check_seq = 1
+        window._check_started_at = time.monotonic() - (gui.CHECK_TIMEOUT_SECONDS + 5)
+
+        window._poll_checks(queue.Queue())
+
+        assert window._check_running is False
+        assert window._next.cget("state") == "normal"
+        assert window._next.cget("text") == "进入鎏灏"
+        assert window._check_summary_label.cget("text") == gui.CHECK_TIMEOUT_HINT
+        assert gui.CHECK_TIMEOUT_HINT == "自检超时，可以先进入，稍后在系统状态里看结果。"
+
+        text = log_path.read_text(encoding="utf-8")
+        assert "evt=startup.check.timeout" in text
+        assert "reason=deadline" in text
+        assert "next_state=normal" in text
+
+        # 兜底之后仍然能正常进入
+        window._finish()
+        assert window.accepted is True
+    finally:
+        _close_window(window)
+
+
+@_WINDOW_SKIP
+def test_poll_after_failure_forces_finish_after_three_attempts(isolated_env, monkeypatch):
+    """轮询重排连续失败 3 次必须强制收尾，不能把按钮永久留在「正在自检…」。"""
+    _skip_without_desktop()
+    log_path = isolated_env / "logs" / "first_run.log"
+    window = _open_window(isolated_env, log_path)
+    try:
+        window._check_running = True
+        window._check_seq = 1
+        window._check_started_at = time.monotonic()  # 未到超时点，只能靠失败计数兜底
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("after() 失败")
+
+        monkeypatch.setattr(window.root, "after", _boom)
+
+        for _ in range(2):
+            window._poll_checks(queue.Queue())
+        assert window._check_running is True
+        assert window._check_poll_failures == 2
+
+        window._poll_checks(queue.Queue())
+        assert window._check_poll_failures == 3
+        assert window._check_running is False
+        assert window._next.cget("state") == "normal"
+
+        text = log_path.read_text(encoding="utf-8")
+        assert "evt=startup.check.poll_error" in text
+        assert "failures=3" in text
+        assert "reason=poll_error" in text
+    finally:
+        # monkeypatch 的撤销表会反向持有 root 的绑定方法，必须先撤销再销毁窗口，
+        # 否则 Tk 对象活过 teardown，护栏会按设计 fail-closed。
+        monkeypatch.undo()
+        _close_window(window)
+
 
