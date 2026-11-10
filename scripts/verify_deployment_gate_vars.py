@@ -310,7 +310,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
         ),
         "refs": (
             "src/ai/providers.py:3612",
-            "src/kernels/execution/__init__.py:499",
+            "src/kernels/execution/__init__.py:501",
         ),
     },
     {
