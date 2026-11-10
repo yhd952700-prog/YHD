@@ -1,0 +1,106 @@
+/**
+ * 「本地服务还没提供」与「无权限查看」两种状态的局部样式。
+ * 这里只放这两个组件的规则，不往 os.css 里加任何东西。
+ */
+
+.lg-gap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px dashed var(--os-border);
+  border-radius: 12px;
+  background: var(--os-panel-2);
+}
+
+.lg-gap-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--os-text);
+  font-size: 14px;
+}
+
+.lg-gap-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--os-warn) 45%, transparent);
+  background: color-mix(in srgb, var(--os-warn) 12%, transparent);
+  color: var(--os-warn-ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lg-gap-summary {
+  margin: 0;
+  color: var(--os-text-dim);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.lg-gap-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lg-gap-label {
+  color: var(--os-text-faint);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.lg-gap-missing ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--os-text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.lg-gap-missing li {
+  overflow-wrap: anywhere;
+}
+
+.lg-gap-note {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--os-border-soft);
+  color: var(--os-text-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.lg-denied {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--os-danger) 36%, var(--os-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--os-danger) 8%, transparent);
+  color: var(--os-text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.lg-denied strong {
+  color: var(--os-danger-ink);
+  font-size: 14px;
+}
+
+[data-mode='mobile'] .lg-gap {
+  padding: 12px 13px;
+}
+
+[data-mode='mobile'] .lg-denied {
+  padding: 12px 13px;
+}
