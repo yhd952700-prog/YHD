@@ -674,7 +674,17 @@ if ($unpackOk) {
     } else {
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         $rm = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
-        $listedCount = @($rm.files).Count
+        # files 清单在 releases[0] 里，顶层没有 files：顶层取不到时 @($null).Count 会等于 1，
+        # 不要回退到那种写法（会把「读不到」当成「1 条」静默放行）。必须先判「有没有」再计数。
+        $rel = @($rm.releases)[0]
+        if ($rel -and $rel.files) {
+            $listedFiles = @($rel.files)
+        } elseif ($rm.files) {
+            $listedFiles = @($rm.files)
+        } else {
+            throw "升级包清单缺少 files（顶层与 releases[0] 均未找到）：$releaseManifestPath"
+        }
+        $listedCount = $listedFiles.Count
         $zipHandle = [System.IO.Compression.ZipFile]::OpenRead($releaseZip)
         try { $zipEntryCount = $zipHandle.Entries.Count } finally { $zipHandle.Dispose() }
         if ($zipEntryCount -ne $listedCount) {
