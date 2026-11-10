@@ -489,7 +489,7 @@ if (-not (Test-Path $pruneLedger -PathType Leaf)) {
     $pruneEnabled = $null
     $payloadManifestForPrune = Join-Path $OutRoot "payload\manifest.json"
     if (Test-Path $payloadManifestForPrune) {
-        $pmPrune = Get-Content -Raw -LiteralPath $payloadManifestForPrune | ConvertFrom-Json
+        $pmPrune = Get-Content -Raw -Encoding UTF8 -LiteralPath $payloadManifestForPrune | ConvertFrom-Json
         if ($pmPrune.prune) { $pruneEnabled = $pmPrune.prune.enabled }
     }
     if ($pruneEnabled -eq $false) {
@@ -733,7 +733,7 @@ if ($unpackOk) {
     if (-not (Test-Path $payloadManifest)) {
         Add-Check "payload 清单入口" "FAIL" "缺少 $payloadManifest"
     } else {
-        $pm = Get-Content -Raw -LiteralPath $payloadManifest | ConvertFrom-Json
+        $pm = Get-Content -Raw -Encoding UTF8 -LiteralPath $payloadManifest | ConvertFrom-Json
         $entryBad = @()
         foreach ($name in @("LiuHao.bat", "START-HERE.txt", "assets/liuhao.ico")) {
             if (-not $pm.entry_files -or $pm.entry_files.$name -ne $true) { $entryBad += $name }
@@ -762,7 +762,7 @@ if ($unpackOk) {
         Add-Check "升级包清单计数" "FAIL" "缺少 $releaseZip"
     } else {
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-        $rm = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
+        $rm = Get-Content -Raw -Encoding UTF8 -LiteralPath $releaseManifestPath | ConvertFrom-Json
         # files 清单在 releases[0] 里，顶层没有 files：顶层取不到时 @($null).Count 会等于 1，
         # 不要回退到那种写法（会把「读不到」当成「1 条」静默放行）。必须先判「有没有」再计数。
         $rel = @($rm.releases)[0]
@@ -850,7 +850,7 @@ Copy-Item -LiteralPath $recordPath -Destination $recordDeliveryPath -Force
 # 出包后硬自检：记录里的字节数/哈希必须与 SHA256SUMS 首行、实际 exe 三处一致。
 # 任何一处不一致都说明「页面拿到的数值」和「用户下载的文件」可能是两个东西。
 Write-Step "校验 FREEZE-RECORD ↔ SHA256SUMS ↔ 实际 exe"
-$recordReread = Get-Content -Raw -LiteralPath $recordPath | ConvertFrom-Json
+$recordReread = Get-Content -Raw -Encoding UTF8 -LiteralPath $recordPath | ConvertFrom-Json
 $sumsFirst = (Get-Content -LiteralPath $sums | Select-Object -First 1)
 $sumsHash = ($sumsFirst -split '\s+')[0].Trim()
 $exeBytesNow = (Get-Item $setupExe).Length
