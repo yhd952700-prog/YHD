@@ -654,6 +654,34 @@ class EmployeeStore:
         """Names of all employees present in the store."""
         return list(self._load_store().get("employees", {}).keys())
 
+    def capability_assignments(self, *, strict: bool = False) -> List[Dict[str, Any]]:
+        """员工 → 默认能力（只读，不构造 Employee/Agent）。
+
+        与 ``list_summaries`` 同样的理由：``load()`` 会重建 Employee 并拉起
+        可观测性依赖，而"某项能力正被哪些员工使用"只用到两个字段。字段名与
+        ``_serialize_employee`` 落盘时写的键保持一致（``default_capabilities``）。
+
+        ``strict=True`` 时读取失败会抛出 ``EmployeeStoreError``，让调用方能区分
+        "确实没人用"与"读不出来"——需要据此拦截删除的调用方必须用 strict。
+        """
+        store = self._load_store(strict=strict)
+        rows: List[Dict[str, Any]] = []
+        for key, data in (store.get("employees") or {}).items():
+            if not isinstance(data, dict):
+                continue
+            rows.append(
+                {
+                    "name": str(data.get("name") or key),
+                    "employment_status": str(
+                        data.get("employment_status") or Employee.ACTIVE
+                    ),
+                    "default_capabilities": [
+                        str(cap) for cap in (data.get("default_capabilities") or [])
+                    ],
+                }
+            )
+        return rows
+
     def list_summaries(self) -> List[Dict[str, Any]]:
         """只读摘要（名册专用）：直接读 JSON，不构造 Employee/Agent。
 
