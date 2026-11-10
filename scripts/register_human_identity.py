@@ -270,9 +270,39 @@ def issue_root_recovery_code(store, principal: str) -> Optional[str]:
         _restore_env(previous)
 
 
-# ---------------------------------------------------------------------------
-# credential helpers
-# ---------------------------------------------------------------------------
+def emit_recovery_code(code: str) -> bool:
+    """把恢复码写到当前 stdout；不可写时返回 False。
+
+    被脚本调用但 stdout 重定向到文件时，码会留在调用方指定的文件里，
+    仍然可复制；只有 stdout 根本不存在（如 pythonw）才会失败。
+    """
+    stream = sys.stdout
+    if stream is None:
+        return False
+    try:
+        print()
+        print("recovery code (shown ONCE only -- copy or write it down now):")
+        print(f"  {code}")
+        print("Only a hash is stored, so it cannot be shown again. Use it on")
+        print("another machine, or if you forget the password.")
+        stream.flush()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def discard_root_recovery_code(store, principal: str) -> None:
+    """撤销刚生成但无法交付给用户的恢复码，避免用户拿不到码却被锁死。"""
+    previous = _point_kernel_at(store)
+    try:
+        IdentityManager().clear_recovery_code(principal, reason="delivery_failed")
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warning: could not revoke undelivered recovery code for {principal!r}: {exc}",
+            file=sys.stderr,
+        )
+    finally:
+        _restore_env(previous)
 
 
 def credential_summary(secret_store, principal: str) -> str:
@@ -436,13 +466,20 @@ def cmd_register(store, secret_store, args: argparse.Namespace, principal: str,
         # 否则根账号的 recovery_hash 会一直为空，自救入口也查不到码。
         recovery_code = issue_root_recovery_code(store, principal)
         if recovery_code:
-            print()
-            print("recovery code (shown ONCE only -- copy or write it down now):")
-            print(f"  {recovery_code}")
-            print("Only a hash is stored, so it cannot be shown again. Use it on")
-            print("another machine, or if you forget the password.")
             if recovery_out is not None:
+                # 图形向导弹窗展示；把展示责任交给调用方。
                 recovery_out.append(recovery_code)
+            elif not emit_recovery_code(recovery_code):
+                # 码已生成但没有任何可写终端：明确失败并撤销，绝不静默成功。
+                discard_root_recovery_code(store, principal)
+                print(
+                    "ERROR: recovery code was generated but could not be printed "
+                    "(no writable stdout). The code was revoked; re-run this "
+                    "command from a terminal (or with stdout redirected to a file) "
+                    "to receive a new one.",
+                    file=sys.stderr,
+                )
+                return 1
 
     print()
     print("To make it live, set these in the service environment:")
