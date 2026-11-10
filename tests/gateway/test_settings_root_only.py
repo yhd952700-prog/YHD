@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -149,7 +150,10 @@ def test_member_about_has_no_absolute_paths(_isolate):
 
         root_view = client.get("/v1/about", headers=root)
         assert root_view.status_code == 200, root_view.text
-        assert _ABS_PATH.search(root_view.json()["app_dir"]), root_view.json()
+        root_body = root_view.json()
+        # 根账号必须看到真实的绝对程序目录（成员侧是占位符，上方已断言）。
+        # 盘符正则只认 Windows 路径；POSIX 上改用 pathlib 的绝对性判据，语义不变。
+        assert Path(root_body["app_dir"]).is_absolute(), root_body
 
 
 def test_member_file_listing_has_no_absolute_root(_isolate):

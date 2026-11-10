@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
@@ -175,7 +176,10 @@ def test_unwritable_data_dir_still_leaves_a_bootstrap_record(tmp_path, monkeypat
 
     text = bootstrap.read_text(encoding="utf-8")
     assert "evt=boot.log_dir.unwritable" in text
-    assert "winerror=" in text
+    if os.name == "nt":
+        # Windows 记录里必须有可行动的 winerror 细节；POSIX 没有 winerror，
+        # 产品按设计省略该字段（errno 细节见下一条断言）。
+        assert "winerror=" in text
     assert "errno=" in text
     assert "action=" in text
 

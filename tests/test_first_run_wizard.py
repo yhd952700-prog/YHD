@@ -55,7 +55,11 @@ def test_ensure_integrity_key_writes_data_dir_file(tmp_path, monkeypatch):
     assert _ik.read_key_file(key_file) == os.environ.get(
         HUMAN_IDENTITIES_INTEGRITY_KEY_ENV
     )
-    assert key_file.read_bytes().startswith(b"LIUHAO-DPAPI-1:")
+    if os.name == "nt":
+        assert key_file.read_bytes().startswith(b"LIUHAO-DPAPI-1:")
+    else:
+        # POSIX 无 DPAPI：按设计降级为 RAW 形态落盘（读回校验已在上方断言）。
+        assert key_file.read_bytes().startswith(b"LIUHAO-RAW-1:")
     # 不再写进程序目录。
     assert not (tmp_path / ".env").exists()
 

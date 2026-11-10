@@ -45,7 +45,11 @@ def test_fresh_install_generates_key_in_data_dir(tmp_path, capsys, monkeypatch):
     key_file = tmp_path / "config" / "integrity.key"
     assert key_file.is_file()
     assert ik.read_key_file(key_file) == key
-    assert key_file.read_bytes().startswith(b"LIUHAO-DPAPI-1:")
+    if os.name == "nt":
+        assert key_file.read_bytes().startswith(b"LIUHAO-DPAPI-1:")
+    else:
+        # POSIX 无 DPAPI：RAW 形态 + 下方 0600 权限就是本平台的落盘形态。
+        assert key_file.read_bytes().startswith(b"LIUHAO-RAW-1:")
     # 密钥值本身绝不打印到控制台。
     captured = capsys.readouterr()
     assert key not in captured.out and key not in captured.err

@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -31,6 +32,21 @@ from src.upgrade.orchestrator import (
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _reap_process_while(proc: subprocess.Popen, stop: threading.Event) -> None:
+    """后台线程持续 ``poll()`` 回收指定子进程（仅 POSIX 需要）。
+
+    POSIX 上子进程退出后若父进程不 wait() 会一直保持僵尸态，而
+    ``os.kill(pid, 0)`` / ``psutil.pid_exists`` 对僵尸进程都返回 True，
+    「等 pid 消失」的判据就永远等不到；Windows 没有这个语义。
+    这里在测试侧异步调用 ``Popen.poll()``（waitpid WNOHANG）及时收割
+    僵尸，不改变被测代码的任何行为。
+    """
+    while not stop.is_set():
+        if proc.poll() is not None:
+            return
+        stop.wait(0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +120,12 @@ def test_wait_for_lock_release_waits_for_the_holder_process(tmp_path):
         stderr=subprocess.STDOUT,
         text=True,
     )
+    # POSIX 上 holder 退出后会变僵尸，先起回收线程让 pid 判据能真正消失。
+    stop = threading.Event()
+    reaper = threading.Thread(
+        target=_reap_process_while, args=(holder, stop), daemon=True
+    )
+    reaper.start()
     try:
         assert holder.stdout is not None
         assert holder.stdout.readline().strip() == "held"
@@ -114,6 +136,8 @@ def test_wait_for_lock_release_waits_for_the_holder_process(tmp_path):
         assert result["attempts"] >= 2, "持有进程活着时不能提前判为已释放"
         assert elapsed >= 0.8, f"没等到锁真正释放就返回了（{elapsed:.2f}s）"
     finally:
+        stop.set()
+        reaper.join(timeout=5)
         holder.kill()
         holder.wait(timeout=10)
 
@@ -142,6 +166,13 @@ def test_stop_kills_only_the_recorded_pid(tmp_path):
     bystander = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)", "src.gateway"]
     )
+    # POSIX 上 target 被 SIGTERM 后会变僵尸，stop 的「等 pid 消失」需要回收
+    # 线程配合；bystander 绝不能被回收或误杀。
+    stop = threading.Event()
+    reaper = threading.Thread(
+        target=_reap_process_while, args=(target, stop), daemon=True
+    )
+    reaper.start()
     try:
         (tmp_path / "run").mkdir()
         (tmp_path / "run" / "instance.json").write_text(
@@ -154,6 +185,8 @@ def test_stop_kills_only_the_recorded_pid(tmp_path):
         assert target.poll() is not None
         assert bystander.poll() is None, "同名的旁观进程不能被杀"
     finally:
+        stop.set()
+        reaper.join(timeout=5)
         for proc in (target, bystander):
             if proc.poll() is None:
                 proc.kill()

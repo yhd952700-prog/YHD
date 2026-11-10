@@ -8,9 +8,21 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def _declared_temp_root() -> Path:
+    """守卫扫描用例里「已声明的临时根」的平台样例。
+
+    Windows 构建机用盘符路径；POSIX 用系统临时目录下的固定子目录。
+    两者的共同语义：位于仓库之外、且被显式声明为临时根。
+    """
+    if os.name == "nt":
+        return Path(r"D:\cache\temp")
+    return Path(tempfile.gettempdir()) / "liuhao-env-guard-temp"
 
 
 def _load(name: str, relative: str):
@@ -37,10 +49,11 @@ def test_repo_path_in_process_env_is_flagged():
 
 
 def test_temp_dir_path_is_flagged():
+    temp_root = _declared_temp_root()
     findings = guard.scan(
-        {"AUDIT_DB_PATH": r"D:\cache\temp\somewhere\audit_store.db"},
+        {"AUDIT_DB_PATH": str(temp_root / "somewhere" / "audit_store.db")},
         REPO,
-        [Path(r"D:\cache\temp")],
+        [temp_root],
     )
     assert [item["name"] for item in findings] == ["AUDIT_DB_PATH"]
     assert "临时目录" in findings[0]["reason"]
@@ -56,10 +69,17 @@ def test_non_path_value_is_ignored():
 
 
 def test_clean_env_has_no_findings():
+    if os.name == "nt":
+        data_dir_value = r"E:\Somewhere\LiuHaoData"
+        path_env = r"C:\Windows"
+    else:
+        # POSIX 样例：仓库之外、系统临时目录之外的用户目录路径。
+        data_dir_value = str(Path.home() / "Somewhere" / "LiuHaoData")
+        path_env = "/usr/bin"
     findings = guard.scan(
-        {"LIUHAO_DATA_DIR": r"E:\Somewhere\LiuHaoData", "PATH": r"C:\Windows"},
+        {"LIUHAO_DATA_DIR": data_dir_value, "PATH": path_env},
         REPO,
-        [Path(r"D:\cache\temp")],
+        [_declared_temp_root()],
     )
     assert findings == []
 
