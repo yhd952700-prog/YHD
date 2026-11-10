@@ -76,6 +76,11 @@ import { Preflight } from './pages/Preflight'
 import { Settings } from './pages/Settings'
 import { About } from './pages/About'
 import { Workbench } from './pages/Workbench'
+import { EnterpriseOverview, ENTERPRISE_OVERVIEW_PAGE } from './pages/EnterpriseOverview'
+import { Org, ORG_PAGE } from './pages/Org'
+import { TaskCenter, TASK_CENTER_PAGE } from './pages/TaskCenter'
+import { SkillCenter, SKILLS_CENTER_PAGE } from './pages/SkillCenter'
+import { ToolCenter, TOOLS_CENTER_PAGE } from './pages/ToolCenter'
 import { Backup } from './pages/Backup'
 import { Members } from './pages/Members'
 import { AccountSecurity } from './pages/AccountSecurity'
@@ -124,7 +129,15 @@ const EMPTY_STATE: ApprovalUiState = {
 
 /** 页面标题。与 `lib/nav.ts` 的导航项一一对应，key 是唯一的关联方式。 */
 const PAGE_META: Record<string, { title: string; sub: string }> = {
-  overview: { title: '总览', sub: '真实运行状态 —— 每一项都能追溯到来源' },
+  overview: { title: '运行看板', sub: '真实运行状态 —— 每一项都能追溯到来源' },
+  [ENTERPRISE_OVERVIEW_PAGE.key]: {
+    title: ENTERPRISE_OVERVIEW_PAGE.title,
+    sub: ENTERPRISE_OVERVIEW_PAGE.sub,
+  },
+  [ORG_PAGE.key]: { title: ORG_PAGE.title, sub: ORG_PAGE.sub },
+  [TASK_CENTER_PAGE.key]: { title: TASK_CENTER_PAGE.title, sub: TASK_CENTER_PAGE.sub },
+  [SKILLS_CENTER_PAGE.key]: { title: SKILLS_CENTER_PAGE.title, sub: SKILLS_CENTER_PAGE.sub },
+  [TOOLS_CENTER_PAGE.key]: { title: TOOLS_CENTER_PAGE.title, sub: TOOLS_CENTER_PAGE.sub },
   butler: { title: '鎏灏管家', sub: '你下目标，它拆解分派，给结论' },
   employees: { title: '能力注册表', sub: '14 个能力模块与 14 个执行层；只读' },
   'my-employees': { title: '我的员工', sub: '创建、调整、停用，或直接把一件事派给它' },
@@ -176,14 +189,14 @@ const KNOWN_PAGES = new Set(Object.keys(PAGE_META))
  * 存在的理由是 PWA：`manifest.webmanifest` 的 `shortcuts` 只能通过 URL 表达"直接
  * 打开某一页"，而装成独立窗口后没有地址栏，深链是唯一的入口方式。
  */
-function readInitialPage(): string {
+function readInitialPage(fallback: string = ENTERPRISE_OVERVIEW_PAGE.key): string {
   try {
     const param = new URLSearchParams(window.location.search).get('p')
     if (param && KNOWN_PAGES.has(param)) return param
   } catch {
     // 非浏览器环境或受限 location：退回默认页。
   }
-  return 'overview'
+  return fallback
 }
 
 /**
@@ -224,7 +237,11 @@ function App() {
   }, [])
 
   const [session, setSession] = useState<Session | null>(() => getSession())
-  const [active, setActive] = useState<string>(() => readInitialPage())
+  // 桌面端与网页版打开工作台先看到企业总览；手机端底栏固定以「运行看板」为首项，
+  // 落地页保持 overview，避免底栏 6 项里没有当前项的高亮。
+  const [active, setActive] = useState<string>(() =>
+    readInitialPage(device.mode === 'mobile' ? 'overview' : ENTERPRISE_OVERVIEW_PAGE.key),
+  )
   /** 设置页要自动展开的模型（来自深链或控制台里的「去填写 Key」）。 */
   const [focusModel, setFocusModel] = useState<string>(() =>
     readInitialPage() === 'settings' ? readDeepLinkModel() : '',
@@ -323,8 +340,8 @@ function App() {
   const pagesSettled = !session || profile?.loaded === true || Boolean(profile?.error)
   const visiblePages = useMemo(() => visibleNavKeys(caps), [caps])
   const shown = !pagesSettled
-    ? active === 'overview'
-      ? 'overview'
+    ? active === 'overview' || active === ENTERPRISE_OVERVIEW_PAGE.key
+      ? active
       : null
     : visiblePages.has(active)
       ? active
@@ -453,7 +470,8 @@ function App() {
     setFocusModel(model)
     try {
       const url = new URL(window.location.href)
-      if (key === 'overview') url.searchParams.delete('p')
+      // 企业总览是桌面/网页端的默认页；回首页时不保留 `?p=`，保持干净地址。
+      if (key === 'overview' || key === ENTERPRISE_OVERVIEW_PAGE.key) url.searchParams.delete('p')
       else url.searchParams.set('p', key)
       // `model` 只对设置页有意义；离开设置页就清掉，避免下次进来莫名展开旧模型。
       if (model) url.searchParams.set('model', model)
@@ -924,10 +942,13 @@ function App() {
         </div>
       )}
 
-      <div className="os-page-head">
-        <h1 className="os-page-title">{meta.title}</h1>
-        <p className="os-page-sub">{meta.sub}</p>
-      </div>
+      {/* 企业总览自带页头，这里不再重复渲染同一组标题与副说明。 */}
+      {shown !== ENTERPRISE_OVERVIEW_PAGE.key && (
+        <div className="os-page-head">
+          <h1 className="os-page-title">{meta.title}</h1>
+          <p className="os-page-sub">{meta.sub}</p>
+        </div>
+      )}
 
       {shown === null && (
         <div className="os-grid">
@@ -947,6 +968,13 @@ function App() {
           isRoot={caps.isRoot}
         />
       )}
+      {shown === ENTERPRISE_OVERVIEW_PAGE.key && (
+        <EnterpriseOverview principal={session.principal} onNavigate={navigate} />
+      )}
+      {shown === ORG_PAGE.key && <Org query={query} />}
+      {shown === TASK_CENTER_PAGE.key && <TaskCenter query={query} />}
+      {shown === SKILLS_CENTER_PAGE.key && <SkillCenter query={query} />}
+      {shown === TOOLS_CENTER_PAGE.key && <ToolCenter query={query} />}
       {shown === 'butler' && (
         <Butler
           query={query}

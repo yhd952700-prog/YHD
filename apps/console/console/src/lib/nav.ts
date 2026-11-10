@@ -30,11 +30,18 @@ import {
   IconApps,
   IconSettings,
   IconShield,
+  IconSparkle,
   IconTrust,
   IconWorkbench,
   IconServer,
 } from '../components/icons'
 import type { AccountCaps } from './accountCaps'
+// 页面登记信息由页面自己导出，导航只引用，避免标题/副说明两处各写一份。
+import { ENTERPRISE_OVERVIEW_PAGE } from '../pages/EnterpriseOverview'
+import { ORG_PAGE } from '../pages/Org'
+import { TASK_CENTER_PAGE } from '../pages/TaskCenter'
+import { SKILLS_CENTER_PAGE } from '../pages/SkillCenter'
+import { TOOLS_CENTER_PAGE } from '../pages/ToolCenter'
 
 export type NavRequirement = 'root' | 'manage' | 'grant' | 'recovery'
 
@@ -52,7 +59,26 @@ export interface NavItem {
 }
 
 export const PRIMARY_NAV: NavItem[] = [
-  { key: 'overview', label: '总览', icon: IconDashboard },
+  {
+    key: ENTERPRISE_OVERVIEW_PAGE.key,
+    label: ENTERPRISE_OVERVIEW_PAGE.navLabel,
+    icon: IconDashboard,
+    hint: ENTERPRISE_OVERVIEW_PAGE.sub,
+  },
+  {
+    key: 'overview',
+    label: '运行看板',
+    icon: IconDashboard,
+    hint: '系统健康、告警与实时活动；企业规模与任务进度看企业总览',
+  },
+  {
+    key: ORG_PAGE.key,
+    label: ORG_PAGE.title,
+    icon: IconBusiness,
+    hint: ORG_PAGE.sub,
+    // 建企业、调部门与汇报关系是根专属动作；成员看不到这一项。
+    requires: 'root',
+  },
   {
     key: 'butler',
     label: '鎏灏管家',
@@ -66,14 +92,42 @@ export const PRIMARY_NAV: NavItem[] = [
     hint: '创建、改名、停用，或直接把一件事派给它',
   },
   {
+    key: TASK_CENTER_PAGE.key,
+    label: TASK_CENTER_PAGE.navLabel,
+    icon: IconGoals,
+    hint: TASK_CENTER_PAGE.sub,
+  },
+  {
     key: 'employees',
     label: '能力注册表',
     icon: IconEmployees,
     hint: '只读：系统预置了哪些能力模块',
   },
   { key: 'business', label: '业务中心', icon: IconBusiness },
-  { key: 'knowledge', label: '知识中心', icon: IconKnowledge },
-  { key: 'memory', label: '记忆', icon: IconData },
+  {
+    key: 'knowledge',
+    label: '知识中心',
+    icon: IconKnowledge,
+    hint: '文档上传、切块与检索；含入库进度和失败处理',
+  },
+  {
+    key: 'memory',
+    label: '记忆',
+    icon: IconData,
+    hint: '按范围与员工查看记忆，可纠正、删除与导出',
+  },
+  {
+    key: SKILLS_CENTER_PAGE.key,
+    label: SKILLS_CENTER_PAGE.navLabel,
+    icon: IconSparkle,
+    hint: SKILLS_CENTER_PAGE.sub,
+  },
+  {
+    key: TOOLS_CENTER_PAGE.key,
+    label: TOOLS_CENTER_PAGE.navLabel,
+    icon: IconServer,
+    hint: TOOLS_CENTER_PAGE.sub,
+  },
   {
     key: 'workbench',
     label: '自由对话',
