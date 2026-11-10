@@ -608,6 +608,20 @@ def _as_viewer(value: Any) -> Optional[GoalViewer]:
     return value if isinstance(value, GoalViewer) else None
 
 
+def _visible_scope(viewer: Optional[GoalViewer]) -> str:
+    """本次查询实际生效的可见范围：``subtree``（含下属/全租户）或 ``self``。
+
+    只表达"范围"，不携带条数；前端据此区分"真的没有任务"与"有但都不属于你"。
+    取不到请求视角（内部调用/测试）时按 ``subtree`` 如实标注"未做成员收敛"。
+    """
+    if viewer is None:
+        return "subtree"
+    subtree = {str(item) for item in (viewer.subtree or ()) if str(item)}
+    if viewer.is_root or len(subtree) > 1:
+        return "subtree"
+    return "self"
+
+
 def _audit_employee_action(
     action: str,
     viewer: Optional[GoalViewer],
@@ -772,6 +786,12 @@ class AIStateManager:
         # 4.96 MB in 2h, +2.42 MB/h, and every save rewrote the whole file).
         self._archived_summaries: Dict[str, Dict[str, Any]] = {}
         self._archived_summaries_loaded = False
+        # 任务台账（SQLite）：执行真源仍是 goals 文件，台账是可查询的投影。
+        # 写穿透失败只会计入这里的计数并记日志，绝不影响目标创建/执行。
+        self._task_ledger_instance = None
+        self._task_ledger_lock = threading.Lock()
+        self._ledger_projection_failures = 0
+        self._ledger_last_error = ""
         # Recover any goals persisted across a previous process restart.
         self._load_goals()
         if len(self._goals) > self._goals_active_limit():
@@ -783,6 +803,9 @@ class AIStateManager:
                 logger.warning(
                     "AIStateManager: startup goal compaction skipped: %s", exc
                 )
+        # 启动时把历史目标迁进台账并补齐当前活跃目标的投影。
+        # 迁移失败不影响任何执行路径；补偿入口见 task_ledger_repair()。
+        self._bootstrap_task_ledger()
 
     def _ensure_runtime(self):
         """懒初始化 AgentRuntime（延迟到首次使用，避免 import 时副作用）。
@@ -1268,6 +1291,9 @@ class AIStateManager:
             "natural_language": item.get("natural_language", ""),
             "scope": item.get("scope", ""),
             "created_at": item.get("created_at"),
+            # 最后一次进入终态的时间；旧数据没有就留空（读侧退回 created_at），
+            # 绝不在这里现补一个"看起来像完成时间"的假值。
+            "completed_at": item.get("completed_at"),
             "error": error_copy["message"] or None,
             "technical_detail": error_copy["technical_detail"] or None,
             "replan_suggested": item.get("replan_suggested", False),
@@ -1679,6 +1705,146 @@ class AIStateManager:
                 logger.error("AIStateManager: backfill goals persist failed: %s", exc)
         return changed
 
+    # ── 任务台账（SQLite 投影，写穿透）────────────────────────
+
+    #: goal 进入终态的判定（写 ``completed_at`` 用；interrupted 单独在收敛处打点）
+    _TERMINAL_GOAL_STATES = frozenset({"completed", "failed", "cancelled"})
+
+    def task_ledger(self):
+        """懒加载任务台账；台账不可用时返回 ``None``（绝不影响目标执行）。"""
+        ledger = getattr(self, "_task_ledger_instance", None)
+        if ledger is not None:
+            return ledger
+        with self._task_ledger_lock:
+            if self._task_ledger_instance is None:
+                try:
+                    from .task_ledger import get_task_ledger
+
+                    self._task_ledger_instance = get_task_ledger()
+                except Exception as exc:  # noqa: BLE001 - 台账故障不能拖垮执行
+                    self._ledger_projection_failures += 1
+                    self._ledger_last_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "AIStateManager: task ledger unavailable: %s", exc
+                    )
+                    return None
+            return self._task_ledger_instance
+
+    def _project_to_ledger(self, entry: Optional[Dict[str, Any]]) -> None:
+        """把一条 goal 记录投影进台账；失败只计数 + 记日志（热路径 fail-soft）。"""
+        if not isinstance(entry, dict):
+            return
+        ledger = self.task_ledger()
+        if ledger is None:
+            return
+        try:
+            ledger.sync_goal(entry, default_owner=default_account_id())
+        except Exception as exc:  # noqa: BLE001 - 台账缺一条，不能中断执行
+            self._ledger_projection_failures += 1
+            self._ledger_last_error = f"{type(exc).__name__}: {exc}"
+            try:
+                ledger.note_write_failure(exc)
+            except Exception:  # noqa: BLE001 - 连计数都失败时保持热路径
+                pass
+            logger.warning(
+                "AIStateManager: task ledger projection failed for goal %s: %s",
+                entry.get("goal_id"), exc,
+            )
+
+    def _bootstrap_task_ledger(self) -> None:
+        """启动期：迁移历史目标 + 补齐当前活跃目标（全程 fail-soft）。"""
+        ledger = self.task_ledger()
+        if ledger is None:
+            return
+        try:
+            result = ledger.migrate_from_goals(
+                self._goals_path, default_owner=default_account_id()
+            )
+            logger.info(
+                "AIStateManager: task ledger migration %s (tasks=%s steps=%s skipped=%s)",
+                result.get("status"), result.get("tasks_imported"),
+                result.get("steps_imported"), result.get("skipped"),
+            )
+        except Exception as exc:  # noqa: BLE001 - 迁移失败不影响启动
+            self._ledger_projection_failures += 1
+            self._ledger_last_error = f"{type(exc).__name__}: {exc}"
+            try:
+                ledger.note_write_failure(exc)
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning("AIStateManager: task ledger bootstrap migration failed: %s", exc)
+        with self._goal_lock:
+            entries = [
+                copy.deepcopy(entry)
+                for entry in self._goals.values()
+                if isinstance(entry, dict)
+            ]
+        for entry in entries:
+            self._project_to_ledger(entry)
+
+    def task_ledger_status(self) -> Dict[str, Any]:
+        """台账概览 + 落后自检（供 ``GET /v1/tasks/ledger/status``）。"""
+        from .task_ledger import LedgerError
+
+        ledger = self.task_ledger()
+        if ledger is None:
+            raise LedgerError(503, "ledger_unavailable", "任务台账不可用")
+        summary = ledger.summary()
+        lag = ledger.lag_report(
+            self._goals_path, default_owner=default_account_id()
+        )
+        lag["projection_failures"] = self._ledger_projection_failures
+        lag["last_projection_error"] = self._ledger_last_error
+        return {"ledger": summary, "lag": lag}
+
+    def task_ledger_migrate(self, *, force: bool = False) -> Dict[str, Any]:
+        from .task_ledger import LedgerError
+
+        ledger = self.task_ledger()
+        if ledger is None:
+            raise LedgerError(503, "ledger_unavailable", "任务台账不可用")
+        return ledger.migrate_from_goals(
+            self._goals_path, force=force, default_owner=default_account_id()
+        )
+
+    def task_ledger_repair(self) -> Dict[str, Any]:
+        """补偿写穿透失败：按热文件重放一遍投影（幂等）。"""
+        from .task_ledger import LedgerError
+
+        ledger = self.task_ledger()
+        if ledger is None:
+            raise LedgerError(503, "ledger_unavailable", "任务台账不可用")
+        result = ledger.repair_from_source(
+            self._goals_path, default_owner=default_account_id()
+        )
+        with self._goal_lock:
+            entries = [
+                copy.deepcopy(entry)
+                for entry in self._goals.values()
+                if isinstance(entry, dict)
+            ]
+        for entry in entries:
+            self._project_to_ledger(entry)
+        result["projection_failures"] = self._ledger_projection_failures
+        return result
+
+    @classmethod
+    def _stamp_goal_completed_at(cls, entry: Dict[str, Any]) -> None:
+        """维护 ``completed_at``＝"最后一次进入终态的时间"。
+
+        * 只在**本次真的发生状态迁移**时调用（不能在全量保存里扫，否则老数据
+          会被补上一个假时间）；
+        * 终态写入一次时间；重试/重新规划把目标拉回非终态时清除，重试后再失败
+          会重新计时；
+        * 老数据没有该字段就保持没有，读侧退回 ``created_at``。
+        """
+        state = str(entry.get("state") or "").strip().lower()
+        if state in cls._TERMINAL_GOAL_STATES:
+            if not entry.get("completed_at"):
+                entry["completed_at"] = time.time()
+        else:
+            entry.pop("completed_at", None)
+
     def _load_goals(self) -> None:
         """Reload ``_goals`` from the persisted JSON (no-op if absent).
 
@@ -1724,6 +1890,9 @@ class AIStateManager:
                     continue
                 entry["state"] = "interrupted"
                 entry["interrupted_at"] = now
+                # 进入终态（失败侧）打点：completed_at 记录"最后一次进入终态"，
+                # 重试把目标拉回 running 时会被清除并重新计时。
+                entry["completed_at"] = now
                 self._touch(entry)
                 entry["error"] = (
                     "目标在进程中断前仍未结束（上次状态 running）；重启后已标记为 "
@@ -1863,6 +2032,7 @@ class AIStateManager:
                 "assigned_employee": self._employee_name_for_agent(pinned_agent),
             }
             self._stamp_owner(running_entry, owner)
+            self._stamp_goal_completed_at(running_entry)
             with self._goal_lock:
                 self._goals[goal_id] = running_entry
             try:
@@ -1886,6 +2056,8 @@ class AIStateManager:
                     f"目标未能启动：{exc.detail}。目标没有开始执行，"
                     "内存中的临时记录已回滚。"
                 ) from exc
+            # 落盘成功后才投影：台账写失败不影响已经启动的目标。
+            self._project_to_ledger(running_entry)
             t = threading.Thread(
                 target=self._run_bound_goal,
                 args=(goal_id, natural_language, scope, plan_mode,
@@ -2068,6 +2240,8 @@ class AIStateManager:
                 key_owner=str(getattr(employee, "owner_account_id", "") or owner_account_id),
                 goal_id=goal_id,
             )
+            # 终态时间：只在本次真的进入终态时打点（重试会清除并重新计时）。
+            self._stamp_goal_completed_at(entry)
             with self._goal_lock:
                 self._goals[goal_id] = entry
             try:
@@ -2084,6 +2258,8 @@ class AIStateManager:
                         f"目标已执行结束（真实状态：{entry.get('state')}），"
                         f"但{exc.detail}；重启后该目标记录会丢失。"
                     ) from exc
+            # 台账投影：执行已经结束，台账失败只记日志，不回滚目标结果。
+            self._project_to_ledger(entry)
             # 后台派活：任务结束必须让用户知道（托盘气泡 + 出站队列），
             # 页面关着也能收到；同步调用时用户就在界面前，不重复打扰。
             if notify_outcome:
@@ -2389,6 +2565,9 @@ class AIStateManager:
             if changed:
                 entry["tasks"] = current
                 self._touch(entry)
+                projection = copy.deepcopy(entry)
+            else:
+                projection = None
         if changed:
             try:
                 self._save_goals()
@@ -2404,6 +2583,8 @@ class AIStateManager:
                     if isinstance(live, dict):
                         live["persisted"] = False
                         live["persist_error"] = exc.detail
+            # 进度写穿透（事件式：只在状态/产物真的变化时落 run）。
+            self._project_to_ledger(projection)
 
     # ── 单独指派员工 / 单任务重试 ──
 
@@ -2481,6 +2662,9 @@ class AIStateManager:
         )
         entry["assigned_agent"] = agent.id
         entry["assigned_employee"] = employee.name
+        # 指派结果同步进台账（负责人/员工名），后台路径下一次快照会再补全。
+        self._touch(entry)
+        self._project_to_ledger(entry)
         self._audit_goal_action(
             goal_id=str(entry.get("goal_id") or ""),
             action="assign_task",
@@ -2637,6 +2821,8 @@ class AIStateManager:
             running_entry = dict(entry)
             running_entry["state"] = "running"
             running_entry["error"] = None
+            # 重试＝重新开始计时：清掉上一次的完成时间，成功后重新打点。
+            self._stamp_goal_completed_at(running_entry)
             self._stamp_owner(running_entry, owner)
             self._touch(running_entry)
             self._goals[goal_id] = running_entry
@@ -2647,6 +2833,7 @@ class AIStateManager:
             with self._goal_lock:
                 self._goals[goal_id] = entry
             raise
+        self._project_to_ledger(running_entry)
 
         def _progress(snapshots: List[Dict[str, Any]]) -> None:
             for snap in snapshots:
@@ -2658,6 +2845,7 @@ class AIStateManager:
                     snap = dict(snap, id=task_id)
                 snap = dict(snap, owner_account_id=owner)
                 self._attach_employee_attribution({"tasks": [snap]})
+                projection: Optional[Dict[str, Any]] = None
                 with self._goal_lock:
                     live = self._goals.get(goal_id)
                     if live is None or live.get("state") != "running":
@@ -2672,6 +2860,7 @@ class AIStateManager:
                         live_tasks.append(snap)
                     live["tasks"] = live_tasks
                     self._touch(live)
+                    projection = copy.deepcopy(live)
                 # 快照很小，但也不在锁内落盘。
                 try:
                     self._save_goals()
@@ -2686,6 +2875,7 @@ class AIStateManager:
                         if isinstance(live, dict):
                             live["persisted"] = False
                             live["persist_error"] = exc.detail
+                self._project_to_ledger(projection)
 
         result: Any = None
         error: Optional[str] = None
@@ -2775,6 +2965,8 @@ class AIStateManager:
         final_entry["tasks"] = merged
         final_entry["state"] = final_state
         final_entry["error"] = final_error
+        # 重试成功/再次失败都是一次真实的终态迁移：重新记录完成时间。
+        self._stamp_goal_completed_at(final_entry)
         self._stamp_owner(final_entry, owner)
         self._touch(final_entry)
         if result is not None and serialized is not None:
@@ -2802,6 +2994,8 @@ class AIStateManager:
             final_entry["persisted"] = False
             final_entry["persist_error"] = exc.detail
             raise
+        # 台账仅在落盘成功后跟进，避免台账先于执行真源"抢跑"。
+        self._project_to_ledger(final_entry)
 
         self._audit_goal_action(
             goal_id=goal_id,
@@ -2942,6 +3136,7 @@ class AIStateManager:
         # Replan 不改变归属：无论执行线程能不能拿到请求上下文，owner 都是
         # 原目标的主人。
         self._stamp_owner(entry, owner_of_entry(prior_entry))
+        self._stamp_goal_completed_at(entry)
         self._touch(entry)
         with self._goal_lock:
             self._goals[goal_id] = entry
@@ -2951,6 +3146,7 @@ class AIStateManager:
             entry["persisted"] = False
             entry["persist_error"] = exc.detail
             raise
+        self._project_to_ledger(entry)
         return entry
 
     def list_goals(
@@ -3067,6 +3263,8 @@ class AIStateManager:
                     item["state"] = "cancelled"
                     item["error"] = item.get("error") or "aborted by human operator"
                     item["replan_suggested"] = False
+                    # 进入终态打点；已终态的目标保持原有完成时间，不补假时间。
+                    self._stamp_goal_completed_at(item)
                 self._stamp_owner(item)
                 self._touch(item)
                 self._goals[goal_id] = item
@@ -3080,7 +3278,7 @@ class AIStateManager:
                     live["persisted"] = False
                     live["persist_error"] = exc.detail
             raise
-
+        self._project_to_ledger(item)
         # Keep the employee KPI honest about the cancellation -- and only about
         # a cancellation. Counting every stop POST as a failed goal meant one
         # completed goal was booked BOTH as completed and as failed, inflating
@@ -4361,7 +4559,9 @@ def list_goals(viewer: Optional[GoalViewer] = Depends(_goal_viewer)) -> Dict[str
     viewer = _as_viewer(viewer)
     mgr = AIStateManager()
     goals = mgr.list_goals(viewer)
-    return {"goals": goals, "count": len(goals)}
+    # ``visible_scope`` 让前端区分"一条都没有"和"有但都不属于你"。
+    # 只下发范围标签，不下发被隐藏的条数（那等于泄露别人手上有多少任务）。
+    return {"goals": goals, "count": len(goals), "visible_scope": _visible_scope(viewer)}
 
 
 @router.post("/goals")
@@ -4967,3 +5167,10 @@ def get_workflow(
             status_code=404,
             detail="要查看的目标不存在。请刷新列表后重试。",
         ) from exc
+
+# ── 任务台账接口（/v1/tasks*）────────────────────────────────
+# 编进本模块已挂载的 /v1 路由：不新增 main.py 挂载点（避开组织架构数据层那条线），
+# 复用同一道 require_human_principal 与同一套 _goal_viewer 可见范围。
+from .tasks_api import build_router as _build_task_ledger_router  # noqa: E402
+
+router.include_router(_build_task_ledger_router(_goal_viewer))
