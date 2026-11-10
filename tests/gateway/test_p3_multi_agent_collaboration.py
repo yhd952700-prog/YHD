@@ -93,6 +93,11 @@ def _isolate():
         ("LIUHAO_WORKSPACE_ROOT", ws),
         ("LIUHAO_ALERTS_STORE_PATH", alerts),
         ("AUDIT_DB_PATH", audit),
+        # 数据根也一并指向临时目录：POSIX 上 local_proof broker 的
+        # local_proof.sock 落在 <数据根>/config/ 下；不隔离就会落在真实用户
+        # 数据目录（仓库外、temp 根外），broker.stop() 的 unlink 会触发
+        # conftest 删除护栏 fail-closed。Windows 命名管道不受影响。
+        ("LIUHAO_DATA_DIR", os.path.join(base, "data")),
     ):
         saved[key] = os.environ.get(key)
         os.environ[key] = val
