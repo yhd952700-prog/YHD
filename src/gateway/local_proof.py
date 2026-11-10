@@ -27,9 +27,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..common.local_proof_ipc import (
-    HANDOFF_HEADER,  # noqa: F401  re-export: src/gateway/accounts.py 按属性引用
-    RESET_HEADER,  # noqa: F401  re-export: src/gateway/accounts.py 按属性引用
+from ..common.local_proof_ipc import (  # noqa: F401  re-export: src/gateway/accounts.py 按属性引用
+    HANDOFF_HEADER,
+    RESET_HEADER,
     TRUSTED_LAUNCH_ENV,
     channel_name,
 )
