@@ -197,6 +197,69 @@ components:
       - instruction
       title: AssignTaskRequest
       type: object
+    AssignmentCreateRequest:
+      properties:
+        is_lead:
+          default: false
+          title: Is Lead
+          type: boolean
+        is_primary:
+          default: false
+          title: Is Primary
+          type: boolean
+        reports_to_assignment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reports To Assignment Id
+        subject_id:
+          title: Subject Id
+          type: string
+        subject_label:
+          default: ''
+          title: Subject Label
+          type: string
+        subject_type:
+          default: employee
+          description: employee 或 human
+          title: Subject Type
+          type: string
+        title:
+          default: ''
+          title: Title
+          type: string
+      required:
+      - subject_id
+      title: AssignmentCreateRequest
+      type: object
+    AssignmentPatchRequest:
+      properties:
+        clear_reports_to:
+          default: false
+          title: Clear Reports To
+          type: boolean
+        is_lead:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Lead
+        is_primary:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Primary
+        reports_to_assignment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reports To Assignment Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+      title: AssignmentPatchRequest
+      type: object
     BackupExportRequest:
       properties:
         passphrase:
@@ -243,6 +306,16 @@ components:
       required:
       - employees
       title: BatchHireEmployeesRequest
+      type: object
+    Body_import_skill_v1_skills_import_post:
+      properties:
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_import_skill_v1_skills_import_post
       type: object
     Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post:
       properties:
@@ -478,6 +551,24 @@ components:
       - enabled
       title: CustodyRequest
       type: object
+    DeviceLoginRequest:
+      properties:
+        device_id:
+          description: 中继分配的设备 ID
+          maxLength: 64
+          minLength: 4
+          title: Device Id
+          type: string
+        device_name:
+          default: 手机
+          description: 设备名（仅用于展示）
+          maxLength: 64
+          title: Device Name
+          type: string
+      required:
+      - device_id
+      title: DeviceLoginRequest
+      type: object
     DiscoverPayload:
       properties:
         api_key:
@@ -542,6 +633,14 @@ components:
           - type: 'null'
           title: Role Description
       title: EmployeeUpdateRequest
+      type: object
+    EnableRequest:
+      properties:
+        confirm_risk:
+          default: false
+          title: Confirm Risk
+          type: boolean
+      title: EnableRequest
       type: object
     ExportAllRequest:
       properties:
@@ -656,6 +755,39 @@ components:
       - name
       title: HireEmployeeRequest
       type: object
+    ImpactRequest:
+      properties:
+        action:
+          description: delete_node / move_node / clear_lead / remove_assignment
+          title: Action
+          type: string
+        assignment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assignment Id
+        cascade:
+          default: false
+          title: Cascade
+          type: boolean
+        clear_reports:
+          default: false
+          title: Clear Reports
+          type: boolean
+        node_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Node Id
+        target_parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Parent Id
+      required:
+      - action
+      title: ImpactRequest
+      type: object
     IngestJobRequest:
       properties:
         doc_id:
@@ -734,6 +866,24 @@ components:
       - message
       - detail
       title: KnowledgeNeutralNotFound
+      type: object
+    LeadRequest:
+      properties:
+        subject_id:
+          title: Subject Id
+          type: string
+        subject_type:
+          default: employee
+          description: employee 或 human
+          title: Subject Type
+          type: string
+        title:
+          default: ''
+          title: Title
+          type: string
+      required:
+      - subject_id
+      title: LeadRequest
       type: object
     LoginRequest:
       properties:
@@ -864,6 +1014,15 @@ components:
       required:
       - text
       title: MemoryWriteRequest
+      type: object
+    MigrateRequest:
+      properties:
+        force:
+          default: false
+          description: 源指纹未变也重跑一次
+          title: Force
+          type: boolean
+      title: MigrateRequest
       type: object
     ModelPayload:
       properties:
@@ -1019,6 +1178,61 @@ components:
       - message
       - detail
       title: NeutralNotFound
+      type: object
+    NodeCreateRequest:
+      properties:
+        description:
+          default: ''
+          description: 节点说明
+          title: Description
+          type: string
+        kind:
+          default: department
+          description: 节点类型
+          title: Kind
+          type: string
+        name:
+          description: 节点名称（同一父节点下不可重名）
+          title: Name
+          type: string
+        parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 上级节点；空表示根节点
+          title: Parent Id
+      required:
+      - name
+      title: NodeCreateRequest
+      type: object
+    NodeMoveRequest:
+      properties:
+        parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 新上级；空表示移到根
+          title: Parent Id
+      title: NodeMoveRequest
+      type: object
+    NodePatchRequest:
+      properties:
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      title: NodePatchRequest
       type: object
     PasswordResetRequest:
       description: '改密请求。
@@ -1226,20 +1440,21 @@ components:
       - max_total_bytes
       title: RetentionUpdate
       type: object
-    RollbackRequest:
+    RetryRequest:
       properties:
-        backup_id:
+        reason:
+          anyOf:
+          - maxLength: 500
+            type: string
+          - type: 'null'
+          title: Reason
+        step_key:
           anyOf:
           - type: string
           - type: 'null'
-          description: 可选；不传时回滚到最近一次成功升级前的备份。
-          title: Backup Id
-        confirm:
-          default: false
-          description: 必须为 true；缺少时返回 400，防止误触回滚。
-          title: Confirm
-          type: boolean
-      title: RollbackRequest
+          description: 要重试的子步骤 key（内核 task id）；缺省取第一个失败步骤
+          title: Step Key
+      title: RetryRequest
       type: object
     SearchRequest:
       properties:
@@ -1298,6 +1513,46 @@ components:
       - allow
       title: SelfRegistrationSettingsRequest
       type: object
+    SkillCreateRequest:
+      properties:
+        description:
+          default: ''
+          title: Description
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - name
+      title: SkillCreateRequest
+      type: object
+    SkillEnableRequest:
+      properties:
+        acknowledge_risk:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Acknowledge Risk
+        confirm:
+          default: false
+          title: Confirm
+          type: boolean
+      title: SkillEnableRequest
+      type: object
+    SkillUpdateRequest:
+      properties:
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      title: SkillUpdateRequest
+      type: object
     StatusRequest:
       properties:
         reason:
@@ -1312,6 +1567,16 @@ components:
       required:
       - status
       title: StatusRequest
+      type: object
+    TakeoverRequest:
+      properties:
+        reason:
+          anyOf:
+          - maxLength: 500
+            type: string
+          - type: 'null'
+          title: Reason
+      title: TakeoverRequest
       type: object
     TestPayload:
       properties:
@@ -1560,6 +1825,31 @@ components:
       - msg
       - type
       title: ValidationError
+      type: object
+    src__gateway__tasks_api__RollbackRequest:
+      properties:
+        migration_id:
+          minLength: 1
+          title: Migration Id
+          type: string
+      required:
+      - migration_id
+      title: RollbackRequest
+      type: object
+    src__upgrade__api__RollbackRequest:
+      properties:
+        backup_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 可选；不传时回滚到最近一次成功升级前的备份。
+          title: Backup Id
+        confirm:
+          default: false
+          description: 必须为 true；缺少时返回 400，防止误触回滚。
+          title: Confirm
+          type: boolean
+      title: RollbackRequest
       type: object
 info:
   description: "GENERATED SNAPSHOT of the REAL runtime contract, exported from\n`src.gateway.main.get_app().openapi()`\
@@ -2736,7 +3026,7 @@ paths:
       - accounts
   /v1/accounts/recovery/reset:
     post:
-      description: '用根恢复码重置密码；改密**成功之后**才消费恢复码。
+      description: '用恢复码重置**码所属账号**的密码（根或登录页自助注册账号）；改密**成功之后**才消费恢复码。
 
 
         顺序契约（P1-6）：先改密、后作废。反序（先消费再改密）在改密失败时会把
@@ -2780,7 +3070,16 @@ paths:
       - accounts
   /v1/accounts/recovery/rotate:
     post:
-      description: '生成/重发恢复码（仅根账号；旧码立即失效）。
+      description: '生成/重发**本账号**的恢复码（旧码立即失效）。
+
+
+        可签发对象：根账号，以及登录页自助注册的账号（``source`` 为
+
+        ``self_service``）—— 后者没有管理员可代发激活码，不给恢复码就等于
+
+        "换机或忘记密码后永久进不去"。管理员创建的成员仍由管理员重置密码，
+
+        这里保持中性拒绝。
 
 
         这是"老根账号（0.1.0 时代创建、``recovery_hash`` 为空串）"的正规补发
@@ -2895,7 +3194,16 @@ paths:
 
         * 作用域恒为最小集合（不能建下级、不能授权、不能借 Key）；
 
-        * 主账号关闭开关后返回结构化拒绝 ``ACCOUNT_SELF_REGISTER_DISABLED``。'
+        * 主账号关闭开关后返回结构化拒绝 ``ACCOUNT_SELF_REGISTER_DISABLED``。
+
+
+        恢复码：自助注册的账号没有管理员可代发激活码，因此与根账号一样**当场**
+
+        签发一枚恢复码（库中只存 sha256，明文只出现在本次响应里）。签发失败
+
+        不回滚已经建好的账号（用户会误以为没建成功并重试同名 → 409），而是
+
+        如实返回空码并指路「我的 → 恢复码」补发。'
       operationId: self_register_v1_accounts_self_register_post
       requestBody:
         content:
@@ -4014,6 +4322,34 @@ paths:
                 type: object
           description: Successful Response
       summary: Auth Config
+      tags:
+      - auth
+  /v1/auth/device:
+    post:
+      description: 用设备身份换一张令牌：只接受局域网中继的回环请求。
+      operationId: auth_device_v1_auth_device_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceLoginRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Auth Device V1 Auth Device Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Auth Device
       tags:
       - auth
   /v1/auth/login:
@@ -7356,6 +7692,284 @@ paths:
       tags:
       - knowledge
       - knowledge
+  /v1/lan-access/devices:
+    get:
+      operationId: lan_access_devices_v1_lan_access_devices_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Devices V1 Lan Access Devices Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Devices
+      tags:
+      - lan-access
+  /v1/lan-access/devices/revoke-all:
+    post:
+      operationId: lan_access_revoke_all_v1_lan_access_devices_revoke_all_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Revoke All V1 Lan Access Devices Revoke All Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Revoke All
+      tags:
+      - lan-access
+  /v1/lan-access/devices/{device_id}/revoke:
+    post:
+      operationId: lan_access_revoke_v1_lan_access_devices__device_id__revoke_post
+      parameters:
+      - in: path
+        name: device_id
+        required: true
+        schema:
+          title: Device Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Revoke V1 Lan Access Devices  Device Id  Revoke Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Revoke
+      tags:
+      - lan-access
+  /v1/lan-access/disable:
+    post:
+      operationId: lan_access_disable_v1_lan_access_disable_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Disable V1 Lan Access Disable Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Disable
+      tags:
+      - lan-access
+  /v1/lan-access/enable:
+    post:
+      operationId: lan_access_enable_v1_lan_access_enable_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnableRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Enable V1 Lan Access Enable Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Enable
+      tags:
+      - lan-access
+  /v1/lan-access/pair/rotate:
+    post:
+      operationId: lan_access_rotate_v1_lan_access_pair_rotate_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Rotate V1 Lan Access Pair Rotate Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Rotate
+      tags:
+      - lan-access
+  /v1/lan-access/status:
+    get:
+      operationId: lan_access_status_v1_lan_access_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lan Access Status V1 Lan Access Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lan Access Status
+      tags:
+      - lan-access
   /v1/memory/adopt:
     post:
       description: '主账号把子树记忆**复制**进自己的记忆库（可搜索、可引用）。
@@ -8784,6 +9398,753 @@ paths:
       summary: Observability Metrics
       tags:
       - observability
+  /v1/org/assignments/{assignment_id}:
+    delete:
+      description: 卸载成员；若其是负责人则一并取消负责人。有下级汇报时默认 409。
+      operationId: remove_assignment_v1_org_assignments__assignment_id__delete
+      parameters:
+      - in: path
+        name: assignment_id
+        required: true
+        schema:
+          title: Assignment Id
+          type: string
+      - description: 该成员有下级汇报时是否自动解绑
+        in: query
+        name: clear_reports
+        required: false
+        schema:
+          default: false
+          description: 该成员有下级汇报时是否自动解绑
+          title: Clear Reports
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Remove Assignment V1 Org Assignments  Assignment Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Remove Assignment
+      tags:
+      - org
+    patch:
+      description: 调整任职：岗位称谓、主/兼岗、是否负责人、汇报对象。
+      operationId: patch_assignment_v1_org_assignments__assignment_id__patch
+      parameters:
+      - in: path
+        name: assignment_id
+        required: true
+        schema:
+          title: Assignment Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignmentPatchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Assignment V1 Org Assignments  Assignment Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Assignment
+      tags:
+      - org
+  /v1/org/impact:
+    post:
+      description: 只读预演一次组织调整的影响面（不写入任何数据）。
+      operationId: check_impact_v1_org_impact_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpactRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Check Impact V1 Org Impact Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Check Impact
+      tags:
+      - org
+  /v1/org/nodes:
+    post:
+      description: 创建一个组织节点（任意层级；不预设任何部门）。
+      operationId: create_node_v1_org_nodes_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeCreateRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Node V1 Org Nodes Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Node
+      tags:
+      - org
+  /v1/org/nodes/{node_id}:
+    delete:
+      description: 删除节点。默认拒绝有子节点的删除并返回影响面；cascade=true 才级联。
+      operationId: delete_node_v1_org_nodes__node_id__delete
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - description: 有子节点时是否显式级联删除整棵子树
+        in: query
+        name: cascade
+        required: false
+        schema:
+          default: false
+          description: 有子节点时是否显式级联删除整棵子树
+          title: Cascade
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Node V1 Org Nodes  Node Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Node
+      tags:
+      - org
+    get:
+      description: 查看单个节点：自身、祖先链、直接子节点、任职记录。
+      operationId: get_node_v1_org_nodes__node_id__get
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Node V1 Org Nodes  Node Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Node
+      tags:
+      - org
+    patch:
+      description: 改名 / 改类型 / 改说明。
+      operationId: patch_node_v1_org_nodes__node_id__patch
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodePatchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Node V1 Org Nodes  Node Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Node
+      tags:
+      - org
+  /v1/org/nodes/{node_id}/lead:
+    delete:
+      description: 取消负责人（删除这条任职记录）。有下级汇报关系时默认 409。
+      operationId: clear_lead_v1_org_nodes__node_id__lead_delete
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - description: 该负责人有下级汇报时是否自动解绑
+        in: query
+        name: clear_reports
+        required: false
+        schema:
+          default: false
+          description: 该负责人有下级汇报时是否自动解绑
+          title: Clear Reports
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Clear Lead V1 Org Nodes  Node Id  Lead Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Clear Lead
+      tags:
+      - org
+    put:
+      description: 设置/更换节点负责人。已在岗的成员会被就地提升为负责人，不重复建记录。
+      operationId: set_lead_v1_org_nodes__node_id__lead_put
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeadRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Lead V1 Org Nodes  Node Id  Lead Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Lead
+      tags:
+      - org
+  /v1/org/nodes/{node_id}/members:
+    post:
+      description: 把 AI 员工 / 账号挂到节点上，可设主岗与汇报对象。
+      operationId: add_member_v1_org_nodes__node_id__members_post
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignmentCreateRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Add Member V1 Org Nodes  Node Id  Members Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Add Member
+      tags:
+      - org
+  /v1/org/nodes/{node_id}/move:
+    post:
+      description: 移动节点到新的上级（空表示移到根）；环检测在写入前完成。
+      operationId: move_node_v1_org_nodes__node_id__move_post
+      parameters:
+      - in: path
+        name: node_id
+        required: true
+        schema:
+          title: Node Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeMoveRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Move Node V1 Org Nodes  Node Id  Move Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Move Node
+      tags:
+      - org
+  /v1/org/tree:
+    get:
+      description: 返回账号可见的整棵组织树（含负责人、成员、层级深度）。
+      operationId: get_tree_v1_org_tree_get
+      parameters:
+      - description: 主账号可按子树账号视角查看（只读）
+        in: query
+        name: view_account
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 主账号可按子树账号视角查看（只读）
+          title: View Account
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Tree V1 Org Tree Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Tree
+      tags:
+      - org
+  /v1/org/versions:
+    get:
+      description: 历史版本列表（不含快照正文，避免响应过大）。
+      operationId: list_versions_v1_org_versions_get
+      parameters:
+      - description: 最多返回多少条历史版本
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          description: 最多返回多少条历史版本
+          maximum: 500
+          minimum: 1
+          title: Limit
+          type: integer
+      - description: 主账号可按子树账号视角查看
+        in: query
+        name: view_account
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 主账号可按子树账号视角查看
+          title: View Account
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Versions V1 Org Versions Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Versions
+      tags:
+      - org
+  /v1/org/versions/{version_id}:
+    get:
+      description: 查看某一版的完整快照。
+      operationId: get_version_v1_org_versions__version_id__get
+      parameters:
+      - in: path
+        name: version_id
+        required: true
+        schema:
+          title: Version Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Version V1 Org Versions  Version Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Version
+      tags:
+      - org
+  /v1/org/versions/{version_id}/rollback:
+    post:
+      description: 回滚到某一版：重建当时的结构（含已被删除的节点），并追加一版新历史。
+      operationId: rollback_version_v1_org_versions__version_id__rollback_post
+      parameters:
+      - in: path
+        name: version_id
+        required: true
+        schema:
+          title: Version Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Rollback Version V1 Org Versions  Version Id  Rollback Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Rollback Version
+      tags:
+      - org
   /v1/plugins:
     get:
       description: 'List every **loadable** registered plugin with its real status.
@@ -10158,6 +11519,394 @@ paths:
       summary: Prune Logs
       tags:
       - settings
+  /v1/skills:
+    get:
+      description: 技能清单：风险、所需权限、使用员工都在这里现算，不读缓存、不读死值。
+      operationId: list_skills_v1_skills_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Skills V1 Skills Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Skills
+      tags:
+      - skills
+    post:
+      description: '登记一个新技能（名称 + 说明）。
+
+
+        新建技能不声明任何执行器能力，因此不会凭空获得执行权限；它的风险由服务端
+
+        在读取时按"没有能力 → 低风险"判定，绝不从前端取值。'
+      operationId: create_skill_v1_skills_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillCreateRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Skill V1 Skills Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Skill
+      tags:
+      - skills
+  /v1/skills/import:
+    post:
+      description: '从技能文件导入（``.md`` / ``.json``）。
+
+
+        压缩包一律拒绝：解包任意 zip 会引入 zip-slip 与"导入即执行"风险，而本版
+
+        并没有沙箱化的技能运行时。拒绝比假装支持诚实。'
+      operationId: import_skill_v1_skills_import_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_import_skill_v1_skills_import_post'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Import Skill V1 Skills Import Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Import Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}:
+    delete:
+      description: 删除技能。**有员工在用时返回 409 并点名**，不静默级联删除。
+      operationId: delete_skill_v1_skills__skill_id__delete
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Skill V1 Skills  Skill Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Skill
+      tags:
+      - skills
+    patch:
+      description: 改名称 / 说明。能力、风险、来源与占用关系不可通过本接口篡改。
+      operationId: update_skill_v1_skills__skill_id__patch
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillUpdateRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Skill V1 Skills  Skill Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/disable:
+    post:
+      description: 停用技能。停用永远不需要确认：收紧权限不该有摩擦。
+      operationId: disable_skill_v1_skills__skill_id__disable_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Disable Skill V1 Skills  Skill Id  Disable Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Disable Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/enable:
+    post:
+      description: '启用技能。
+
+
+        高危与风险未知的技能必须显式确认：``confirm=true`` 且 ``acknowledge_risk``
+
+        复述当前风险档位（``high`` / ``unknown``）。**刻意没有批量启用接口** ——
+
+        不允许一键把所有技能打开。'
+      operationId: enable_skill_v1_skills__skill_id__enable_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/SkillEnableRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Enable Skill V1 Skills  Skill Id  Enable Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Enable Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/test:
+    post:
+      description: '核对技能声明的能力在本机是否真的注册且可用。
+
+
+        这是**真实校验**（读执行器目录 + 状态），不是跑一段演示脚本：没声明能力的
+
+        技能返回 ``passed=null`` 并说明"没有可验证的执行面"，绝不返回"通过"。'
+      operationId: test_skill_v1_skills__skill_id__test_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Test Skill V1 Skills  Skill Id  Test Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Test Skill
+      tags:
+      - skills
   /v1/startup:
     get:
       description: '只读启动状态探针（免鉴权、无副作用）。注意：源路由 `src/gateway/startup.py` 用 `include_in_schema=False` 把它从
@@ -10179,6 +11928,551 @@ paths:
       summary: 只读启动状态
       tags:
       - startup
+  /v1/tasks:
+    get:
+      operationId: list_tasks_v1_tasks_get
+      parameters:
+      - in: query
+        name: status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - in: query
+        name: assignee_type
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assignee Type
+      - in: query
+        name: assignee_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assignee Id
+      - in: query
+        name: assignee_name
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assignee Name
+      - in: query
+        name: goal_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Goal Id
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 20
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      - in: query
+        name: sort_by
+        required: false
+        schema:
+          default: created_at
+          title: Sort By
+          type: string
+      - in: query
+        name: sort_order
+        required: false
+        schema:
+          default: desc
+          title: Sort Order
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Tasks V1 Tasks Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Tasks
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/ledger/migrate:
+    post:
+      description: 幂等迁移（同一源指纹只导入一次；force=True 重跑补新目标）。
+      operationId: ledger_migrate_v1_tasks_ledger_migrate_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/MigrateRequest'
+              - type: 'null'
+              title: Req
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Ledger Migrate V1 Tasks Ledger Migrate Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Ledger Migrate
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/ledger/repair:
+    post:
+      description: 写穿透失败后的补偿：按热文件重放投影（幂等）。
+      operationId: ledger_repair_v1_tasks_ledger_repair_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Ledger Repair V1 Tasks Ledger Repair Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Ledger Repair
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/ledger/rollback:
+    post:
+      description: 回滚一次迁移：删掉该次导入的台账行，源文件不受影响。
+      operationId: ledger_rollback_v1_tasks_ledger_rollback_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/src__gateway__tasks_api__RollbackRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Ledger Rollback V1 Tasks Ledger Rollback Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Ledger Rollback
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/ledger/status:
+    get:
+      description: 台账概览 + 落后自检：缺多少条、偏差多少条、写穿透失败几次。
+      operationId: ledger_status_v1_tasks_ledger_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Ledger Status V1 Tasks Ledger Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Ledger Status
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/{task_id}:
+    get:
+      operationId: get_task_v1_tasks__task_id__get
+      parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          title: Task Id
+          type: string
+      - in: query
+        name: run_limit
+        required: false
+        schema:
+          default: 50
+          maximum: 200
+          minimum: 1
+          title: Run Limit
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Task V1 Tasks  Task Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Task
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/{task_id}/retry:
+    post:
+      description: 失败重试：委托 ``AIStateManager.retry_task``，不另造执行路径。
+      operationId: retry_task_endpoint_v1_tasks__task_id__retry_post
+      parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          title: Task Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RetryRequest'
+              - type: 'null'
+              title: Req
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Retry Task Endpoint V1 Tasks  Task Id  Retry Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Retry Task Endpoint
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/{task_id}/runs:
+    get:
+      operationId: list_runs_v1_tasks__task_id__runs_get
+      parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          title: Task Id
+          type: string
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Runs V1 Tasks  Task Id  Runs Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Runs
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/{task_id}/steps:
+    get:
+      operationId: list_steps_v1_tasks__task_id__steps_get
+      parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          title: Task Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Steps V1 Tasks  Task Id  Steps Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Steps
+      tags:
+      - ai-management
+      - task-ledger
+  /v1/tasks/{task_id}/takeover:
+    post:
+      description: 人工接管：转给人类操作员，状态落"待执行"，不伪造执行。
+      operationId: takeover_task_v1_tasks__task_id__takeover_post
+      parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          title: Task Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/TakeoverRequest'
+              - type: 'null'
+              title: Req
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Takeover Task V1 Tasks  Task Id  Takeover Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Takeover Task
+      tags:
+      - ai-management
+      - task-ledger
   /v1/trust/{entity_id}:
     get:
       description: '读取某个实体的真实信任状态（只读）。
@@ -10340,7 +12634,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RollbackRequest'
+              $ref: '#/components/schemas/src__upgrade__api__RollbackRequest'
         required: true
       responses:
         '200':
