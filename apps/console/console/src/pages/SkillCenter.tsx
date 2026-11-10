@@ -79,6 +79,7 @@ export function SkillCenter({ query = '' }: { query?: string }) {
   const [feedback, setFeedback] = useState<Feedback | null>(null)
   const [draft, setDraft] = useState({ name: '', description: '' })
   const [importFile, setImportFile] = useState<File | null>(null)
+  const [importNotice, setImportNotice] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ id: string; name: string; description: string } | null>(
     null,
   )
@@ -366,9 +367,25 @@ export function SkillCenter({ query = '' }: { query?: string }) {
             <input
               className="st-input"
               type="file"
-              accept=".md,.json,.zip"
+              accept=".md,.json"
               disabled={!writable}
-              onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
+              onChange={(event) => {
+                const input = event.target
+                const file = input.files?.[0] ?? null
+                if (file && !/\.(md|json)$/i.test(file.name)) {
+                  // 不接受就明确说出来，不能静默忽略。
+                  setImportFile(null)
+                  setImportNotice(
+                    /\.zip$/i.test(file.name)
+                      ? '当前版本不支持导入压缩包（.zip）：本地服务出于安全考虑不做解包，避免路径穿越（zip-slip）和「导入即执行」风险。请改用 .md 或 .json 单文件技能包。'
+                      : '只支持 .md 或 .json 单文件技能包，请重新选择文件。',
+                  )
+                  input.value = ''
+                  return
+                }
+                setImportNotice(null)
+                setImportFile(file)
+              }}
             />
           </label>
           <button
@@ -387,8 +404,14 @@ export function SkillCenter({ query = '' }: { query?: string }) {
           >
             {busy === '导入技能' ? '导入中…' : '导入技能'}
           </button>
+          {importNotice && (
+            <p className="st-warning" role="alert" data-testid="skills-import-notice">
+              {importNotice}
+            </p>
+          )}
           <p className="os-hint">
-            导入前请确认文件来源。来源未知的技能不会被标成安全，风险等级由服务端判定。
+            只支持 .md 或 .json 单文件技能包。当前版本不支持压缩包（.zip）导入：本地服务出于安全考虑不做解包，
+            避免路径穿越与「导入即执行」风险。导入前请确认文件来源，风险等级由服务端判定。
           </p>
           {!writable && <p className="os-hint">{missingHint}</p>}
         </div>

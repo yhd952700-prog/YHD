@@ -135,4 +135,24 @@ describe('技能中心', () => {
     expect(feedback.textContent).toContain('通过')
     expect(calls).toContain('POST /v1/skills/weekly-report/test')
   })
+
+  test('导入只收 .md / .json；选 zip 时明确提示不支持及安全原因', async () => {
+    stubSkills(() => json({ skills: [] }))
+    render(<SkillCenter />)
+
+    const input = (await screen.findByLabelText('技能包文件')) as HTMLInputElement
+    expect(input.accept).toBe('.md,.json')
+
+    fireEvent.change(input, {
+      target: { files: [new File(['zip'], 'skill.zip', { type: 'application/zip' })] },
+    })
+
+    const notice = await screen.findByTestId('skills-import-notice')
+    expect(notice.textContent).toContain('不支持导入压缩包')
+    expect(notice.textContent).toContain('解包')
+    expect(notice.textContent).toContain('安全')
+    expect(notice.textContent).toContain('.md 或 .json')
+    // 没有被接受的文件不能触发导入。
+    expect(screen.getByRole('button', { name: '导入技能' })).toHaveProperty('disabled', true)
+  })
 })
