@@ -110,11 +110,15 @@ def _has_loginable_human() -> bool:
     principals.discard("")
     if not principals:
         return False
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         from src.gateway.auth import resolve_secret_store
 
         credentials = resolve_secret_store().load()
     except Exception:  # noqa: BLE001 - 凭据库读不了时不把配置误判成"没人"
+        # 结辩：凭据库读不了（损坏/权限/后端异常）时按「已配置过」处理，
+        # 避免把现有安装误判成首启而重复弹向导、覆盖既有凭据；
+        # True 语义是保守默认，不是谎报成功。
         return True
     return any(principal in credentials for principal in principals)
 

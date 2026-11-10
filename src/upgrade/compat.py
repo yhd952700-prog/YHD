@@ -511,9 +511,13 @@ def _check_vector_index(data_dir: Path) -> CompatFinding:
 def _target_is_legacy(target_version: str | None) -> bool:
     if not target_version:
         return True
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         return Version(str(target_version)) < Version(COMPONENT_MIN_BUILD)
     except InvalidVersion:
+        # 结辩：版本号无法解析（非规范版本）时按「可能读不懂旧数据」处理，
+        # 回滚评估宁可多降级一次（与 keyformat._target_is_legacy 同口径），
+        # True 语义是保守默认，不是谎报成功。
         return True
 
 

@@ -1005,6 +1005,7 @@ class ModelConfigStore:
         path = Path(self._key_path)
         if path.exists():
             return True
+        # nosemgrep: liuhao-swallow-exception-return-success
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = wrap_machine_bound(bytes(raw), purpose=KEY_DPAPI_PURPOSE)
@@ -1024,6 +1025,9 @@ class ModelConfigStore:
                 return False
             return True
         except FileExistsError:
+            # 结辩：FileExistsError 来自 O_CREAT|O_EXCL —— 目标已被前次恢复或
+            # 并发进程占位，密钥正文已落在目标位置，恢复目标达成（幂等成功），
+            # 不是谎报成功；其余异常一律 False 并告警（见下一个分支）。
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not restore model key material: %s", exc)

@@ -322,11 +322,15 @@ def _pid_alive(pid: int) -> bool:
             return bool(psutil.pid_exists(pid))
         except Exception:
             return False
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
+        # 结辩：os.kill(pid, 0) 抛 PermissionError 说明目标进程存在
+        # （EPERM：无法发信号 ≠ 进程消失），这里 True 是事实判断，
+        # 不是吞掉异常谎报成功。
         return True
     except OSError:
         return False

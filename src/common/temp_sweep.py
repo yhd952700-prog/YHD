@@ -249,6 +249,7 @@ def _has_keep_marker(path: str) -> bool:
     for name in _EVIDENCE_KEEP_MARKERS:
         if os.path.exists(os.path.join(path, name)):
             return True
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         with os.scandir(path) as scanner:
             return any(
@@ -256,6 +257,8 @@ def _has_keep_marker(path: str) -> bool:
                 for entry in scanner
             )
     except OSError:
+        # 结辩：扫描失败（权限/IO）无法证明没有保留标记，按「要保留」处理
+        # （docstring 明示的 fail-closed 保守默认），不是谎报成功。
         return True
 
 

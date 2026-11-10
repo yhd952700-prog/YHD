@@ -185,7 +185,9 @@ def scan_log_for_key(inst: Instance, key_path: str) -> bool:
         with open(inst.log_path, "rb") as handle:
             log = handle.read()
     except OSError:
-        return True
+        # 读不到输入就无从证明「未泄露」：审计口径 fail-closed——
+        # 宁可误报失败重跑取证，不可静默放行。
+        return False
     body = blob.split(b"\n", 1)[1] if b"\n" in blob else blob
     return body not in log
 
@@ -196,7 +198,8 @@ def key_material_absent(key_path: str, payload: bytes) -> bool:
         with open(key_path, "rb") as handle:
             raw = handle.read()
     except OSError:
-        return True
+        # 同上：无法读取即无法证明未泄露，审计口径 fail-closed。
+        return False
     body = raw.split(b"\n", 1)[1] if b"\n" in raw else raw
     return body not in payload and raw not in payload
 

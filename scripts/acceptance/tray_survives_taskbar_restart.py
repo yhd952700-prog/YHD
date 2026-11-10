@@ -67,6 +67,7 @@ def _interactive_session() -> bool:
 
 def _explorer_running() -> bool:
     """通知区由 Explorer 提供；没有它就无法判断图标是否恢复。"""
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         result = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq explorer.exe", "/NH"],
@@ -76,6 +77,9 @@ def _explorer_running() -> bool:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception:  # noqa: BLE001
+        # 结辩：这是前置探测而非验收结论——tasklist 失败时按「Explorer 在跑」
+        # 处理并继续走真实托盘恢复校验，由后续判定给出最终结论；
+        # True 语义是保守默认，不是谎报成功。
         return True
     return "explorer.exe" in (result.stdout or "").lower()
 

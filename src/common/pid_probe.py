@@ -30,6 +30,7 @@ def pid_is_alive(pid: int) -> bool:
     if pid == os.getpid():
         return True
     if os.name == "nt":
+        # nosemgrep: liuhao-swallow-exception-return-success
         try:
             import ctypes
             from ctypes import wintypes
@@ -62,12 +63,18 @@ def pid_is_alive(pid: int) -> bool:
                 kernel32.CloseHandle(handle)
         except Exception as exc:  # noqa: BLE001 - 探测失败按存活处理
             logger.debug("进程存活探测失败（pid=%s）：%s", pid, exc)
+            # 结辩：这里 return True 不是谎报成功——本函数的 True 语义是
+            # 「按存活处理（宁可不删）」的 fail-closed 保守默认（见 docstring），
+            # 只有能证明退出才允许把 pid 当垃圾。
             return True
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except OSError:
+        # 结辩：POSIX 探测失败（权限等）无法证明已退出，按存活处理（宁可不删），
+        # 语义见 docstring；不是谎报成功。
         return True
     return True
 

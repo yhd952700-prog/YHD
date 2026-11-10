@@ -252,9 +252,12 @@ def _target_is_legacy(target_version: Optional[str]) -> bool:
     if not target_version:
         # 版本未知时按"可能读不懂"处理：回滚场景下宁可多降级一次。
         return True
+    # nosemgrep: liuhao-swallow-exception-return-success
     try:
         return Version(str(target_version)) < Version(KEY_FORMAT_MIN_BUILD)
     except InvalidVersion:
+        # 结辩：版本号无法解析（非规范版本）时按「可能读不懂」处理：
+        # 回滚场景下宁可多降级一次（docstring 明示），不是谎报成功。
         return True
 
 
