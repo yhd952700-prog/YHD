@@ -293,7 +293,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "registry stays in memory, so every issued key is lost on restart "
             "in a container deployment"
         ),
-        "refs": ("src/security/api_keys.py:392",),
+        "refs": ("src/security/api_keys.py:391",),
     },
     {
         "var": "LIUHAO_ALLOW_SIMULATED_EXECUTION",
@@ -309,7 +309,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "shipped system"
         ),
         "refs": (
-            "src/ai/providers.py:3625",
+            "src/ai/providers.py:3612",
             "src/kernels/execution/__init__.py:499",
         ),
     },
@@ -356,7 +356,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "any non-production deployment that sets it gets a non-durable, "
             "non-audited secret store)"
         ),
-        "refs": ("src/security/secret_store.py:728",),
+        "refs": ("src/security/secret_store.py:727",),
     },
 )
 
