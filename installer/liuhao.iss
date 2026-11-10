@@ -143,19 +143,22 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "launchnow"; Description: "安装完成后立即启动鎏灏"; GroupDescription: "附加任务："; Flags: checkedonce
 
 [Files]
-; 合规材料单独列示并带 uninsneveruninstall：卸载**保留**许可证记录（用户有权留档，
-; LGPL 也要求接收者能继续持有许可证文本）。下方的递归条目必须用 Excludes 排除
-; 这些同名文件，否则同一目标会被装两遍（Inno 报重复文件）。
+; 合规材料与程序一起安装、一起卸载：许可义务在分发环节已经履行（安装包内带全
+; licenses\、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE，发布页
+; 与仓库长期公开源码获取途径）。卸载是用户明确要求移除软件本身，因此不再用
+; uninsneveruninstall 把这些文件钉在磁盘上。
+; 下方的递归条目必须用 Excludes 排除这些同名文件，否则同一目标会被装两遍
+; （Inno 报重复文件）。
 ; ISPP 的 #if 表达式里不能写 {#PayloadDir}（插入符只在脚本体里展开，预处理器
 ; 表达式会拿到字面量而恒为 false）；这里直接用 PayloadDir 变量。
 #if FileExists(AddBackslash(PayloadDir) + "LICENSE")
-Source: "{#PayloadDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall
+Source: "{#PayloadDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 #endif
-Source: "{#PayloadDir}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall
+Source: "{#PayloadDir}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 #if FileExists(AddBackslash(PayloadDir) + "sbom-cyclonedx.json")
-Source: "{#PayloadDir}\sbom-cyclonedx.json"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall
+Source: "{#PayloadDir}\sbom-cyclonedx.json"; DestDir: "{app}"; Flags: ignoreversion
 #endif
-Source: "{#PayloadDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall
+Source: "{#PayloadDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Excludes 里的前导反斜杠表示「只匹配 Source 根目录」：不带它时
 ; `licenses\*` 会递归匹配任意层级的 licenses 目录，把 runtime 下
 ; `*.dist-info\licenses\*`（lxml/aiohttp 等 109 个许可证全文）一并排除；
@@ -269,6 +272,16 @@ Type: files; Name: "{app}\run\instance.json"
 Type: files; Name: "{app}\bootstrap.log"
 Type: files; Name: "{app}\安装位置说明.txt"
 Type: files; Name: "{app}\.liuhao-startup-probe-*"
+; ── 应用目录里的自有内容：合规材料与运行锁 ──────────────────────────────
+; 0.1.2 及更早把这些文件钉成 uninsneveruninstall，升级用户的卸载日志里仍会
+; 保留条目，所以这里显式列出；[Code] 在 usUninstall 里先删一遍并把被占用项
+; 记进残留清单，确保删不掉也不会让卸载失败退出非 0。
+Type: filesandordirs; Name: "{app}\licenses"
+Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\THIRD-PARTY-NOTICES.txt"
+Type: files; Name: "{app}\sbom-cyclonedx.json"
+Type: files; Name: "{app}\run\instance.lock"
+Type: dirifempty; Name: "{app}\run"
 ; 数据目录里的运行痕迹改由 [Code] 按「实例归属」清理，这里不再写死路径：
 ;   * {code:GetDataDir} 在卸载阶段拿不到安装期解析结果（ResolvedDataDir 为空），
 ;     写成常量实际是空路径，一条也删不到；
@@ -326,6 +339,9 @@ var
   UninstallDataDir: String;
   { 数据目录是否确属当前卸载的这份副本；False 时任何数据目录清理都不做。 }
   UninstallDataDirOwned: Boolean;
+  { 卸载时删不掉的应用自有文件/目录（被占用、权限不足等），换行分隔；
+    usPostUninstall 只写日志并在交互模式下告知，绝不让卸载失败退出。 }
+  UninstallResidue: String;
   { 数据目录选择页：默认值来自 ResolvedDataDir；D 盘不可用或原目录不可写时
     为空，用户必须自己选一个可写目录才能继续（不静默回退 C 盘）。 }
   DataDirPage: TInputDirWizardPage;
@@ -1579,6 +1595,39 @@ begin
   end;
 end;
 
+{ 卸载时删应用自有文件：被占用/权限不足只记日志并登记残留，绝不 Abort。
+  典型场景是 run\instance.lock 仍被残留进程持有——不能因为一个锁文件让整个
+  卸载失败退出非 0，也不能因此跳过其余文件。 }
+function TryDeleteOwnedFile(const Path: String): Boolean;
+begin
+  Result := True;
+  if not FileExists(Path) then
+    Exit;
+  if DeleteFile(Path) then
+    Exit;
+  Log('卸载：无法删除 ' + Path + '（可能仍被占用），继续清理其余项。');
+  if UninstallResidue <> '' then
+    UninstallResidue := UninstallResidue + #13#10;
+  UninstallResidue := UninstallResidue + Path;
+  Result := False;
+end;
+
+{ 同上，用于 licenses\ 这类目录。DelTree 部分失败时返回 False，目录仍存在。 }
+function TryDeleteOwnedDir(const Dir: String): Boolean;
+begin
+  Result := True;
+  if not DirExists(Dir) then
+    Exit;
+  DelTree(Dir, True, True, True);
+  if not DirExists(Dir) then
+    Exit;
+  Log('卸载：目录未能完全删除 ' + Dir + '（可能有文件仍被占用），继续清理其余项。');
+  if UninstallResidue <> '' then
+    UninstallResidue := UninstallResidue + #13#10;
+  UninstallResidue := UninstallResidue + Dir + '\*';
+  Result := False;
+end;
+
 { 卸载一开始就把「本实例自己的」数据目录读出来：等到 usPostUninstall 时
   程序目录下的 data-dir.txt 已被 [UninstallDelete] 删掉，读不到就只剩 C 盘默认路径。
 
@@ -1595,6 +1644,7 @@ var
   RegInstall: String;
 begin
   Result := True;
+  UninstallResidue := '';
   Marker := ReadDataDirMarker(ExpandConstant('{app}') + '\data-dir.txt');
   if Marker = '' then
   begin
@@ -1653,6 +1703,7 @@ var
   I, J: Integer;
   Duplicate: Boolean;
   StopCode: Integer;
+  HadCompliance: Boolean;
 begin
   if CurUninstallStep = usUninstall then
   begin
@@ -1667,17 +1718,27 @@ begin
       MsgBox('警告：仍有鎏灏进程或端口占用未释放。' + #13#10#13#10 +
              '卸载会继续，但部分文件可能删不掉（下次登录仍可能连回旧服务）。' + #13#10 +
              '建议先手动退出托盘图标，再重新运行卸载。', mbInformation, MB_OK);
-    { 许可证/第三方声明默认保留（[Files] 里带 uninsneveruninstall），这里只做告知：
-      静默卸载不弹窗；没有合规材料的老版本也不打扰。 }
-    if (not UninstallSilent) and
-       (FileExists(ExpandConstant('{app}\THIRD-PARTY-NOTICES.txt')) or
-        DirExists(ExpandConstant('{app}\licenses')) or
-        FileExists(ExpandConstant('{app}\sbom-cyclonedx.json')) or
-        FileExists(ExpandConstant('{app}\LICENSE'))) then
-      MsgBox('本机许可证记录会保留：' + #13#10 +
+    { 合规材料与运行锁随程序一并移除。删除在 [UninstallDelete] 之前先做一遍：
+      被占用时 DeleteFile/DelTree 只返回 False，我们登记到 UninstallResidue 并
+      继续删其余项，卸载整体仍然成功（退出码不受影响）。 }
+    HadCompliance :=
+      FileExists(ExpandConstant('{app}\THIRD-PARTY-NOTICES.txt')) or
+      DirExists(ExpandConstant('{app}\licenses')) or
+      FileExists(ExpandConstant('{app}\sbom-cyclonedx.json')) or
+      FileExists(ExpandConstant('{app}\LICENSE'));
+    TryDeleteOwnedDir(ExpandConstant('{app}\licenses'));
+    TryDeleteOwnedFile(ExpandConstant('{app}\LICENSE'));
+    TryDeleteOwnedFile(ExpandConstant('{app}\THIRD-PARTY-NOTICES.txt'));
+    TryDeleteOwnedFile(ExpandConstant('{app}\sbom-cyclonedx.json'));
+    TryDeleteOwnedFile(ExpandConstant('{app}\run\instance.lock'));
+    { 如实告知：许可义务在分发环节已经履行，完整清单仍可从发布页获取，
+      别让用户以为删掉就再也查不到。静默卸载不弹窗。 }
+    if (not UninstallSilent) and HadCompliance then
+      MsgBox('许可证与第三方声明随程序一并移除：' + #13#10 +
              ExpandConstant('{app}') + #13#10 + #13#10 +
-             '卸载不会删除 licenses\、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE。' + #13#10 +
-             '这些是你可以保留的合规记录；不需要时卸载完成后手动删除安装目录即可。',
+             'licenses\、THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE 已删除。' + #13#10 +
+             '这些材料在分发时已随安装包提供；完整清单仍可在发布页获取，' +
+             '源码与许可证文本在仓库长期公开。',
              mbInformation, MB_OK);
 
     { 运行痕迹只在本实例自己的数据目录里清（放在停进程之后、文件删除之前）：
@@ -1700,6 +1761,18 @@ begin
 
   if CurUninstallStep = usPostUninstall then
   begin
+    { 应用自有残留清单：删不掉的文件已经跳过，其余内容照常清理完。
+      静默卸载只写日志；交互模式额外告知，并说明重启后通常会自动清除。 }
+    if UninstallResidue <> '' then
+    begin
+      Log('卸载：以下应用自有文件/目录未能立即删除（可能仍被占用），' +
+          '已继续清理其余项：' + #13#10 + UninstallResidue);
+      if not UninstallSilent then
+        MsgBox('以下文件这次没能删掉（可能仍被占用）：' + #13#10 + #13#10 +
+               UninstallResidue + #13#10 + #13#10 +
+               '卸载已完成，其余内容不受影响；重启后一般会自动清除，' +
+               '仍残留时可手动删除。', mbInformation, MB_OK);
+    end;
     { 静默卸载（/SILENT、/VERYSILENT）无法交互：按安全默认保留数据。 }
     if UninstallSilent then
       Exit;
