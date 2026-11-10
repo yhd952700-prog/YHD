@@ -65,6 +65,7 @@ import { Goals } from './pages/Goals'
 import { Projects } from './pages/Projects'
 import { Apps } from './pages/Apps'
 import { Events } from './pages/Events'
+import { Notifications } from './pages/Notifications'
 import { Trust } from './pages/Trust'
 import { Network } from './pages/Network'
 import { Identity } from './pages/Identity'
@@ -138,6 +139,10 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   projects: { title: '项目', sub: '把 AI 员工的目标分类到真实项目之下' },
   apps: { title: '应用', sub: '真实插件与应用 —— 由你激活' },
   events: { title: '事件流', sub: '真实系统事件流 —— 实时记录每一次动作' },
+  notifications: {
+    title: '通知中心',
+    sub: '值得你留意的事件；已读只记在这台设备上',
+  },
   trust: { title: '信任', sub: '真实信任状态（只读）—— 撤销标记 / 信任分 / 自信任链' },
   network: { title: '网络', sub: '网络总线真实状态（只读）—— 统计 / 消息历史' },
   identity: { title: '身份与权限', sub: '真实身份与权限清单（只读，可观测）' },
@@ -961,6 +966,7 @@ function App() {
       {shown === 'projects' && <Projects query={query} />}
       {shown === 'apps' && <Apps query={query} canManage={caps.isRoot} />}
       {shown === 'events' && <Events query={query} />}
+      {shown === 'notifications' && <Notifications />}
       {shown === 'trust' && <Trust query={query} />}
       {shown === 'network' && <Network query={query} />}
       {shown === 'identity' && <Identity query={query} profile={profile} />}

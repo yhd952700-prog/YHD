@@ -15,6 +15,7 @@ import type { ReactElement } from 'react'
 import type { IconProps } from '../components/icons'
 import {
   IconActivity,
+  IconBell,
   IconBusiness,
   IconButler,
   IconDashboard,
@@ -84,6 +85,12 @@ export const PRIMARY_NAV: NavItem[] = [
   { key: 'apps', label: '应用', icon: IconApps },
   { key: 'data', label: '数据中心', icon: IconData },
   { key: 'events', label: '事件流', icon: IconEvents },
+  {
+    key: 'notifications',
+    label: '通知中心',
+    icon: IconBell,
+    hint: '只看未读、逐条标为已读；已读状态只记在这台设备上',
+  },
 ]
 
 /** 独立于主导航的治理入口。 */

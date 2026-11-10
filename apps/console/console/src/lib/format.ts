@@ -102,6 +102,15 @@ const EVENT_LABELS: Record<string, string> = {
   permission_check: '权限校验',
   conditional_access: '条件放行',
   deferred_access: '延后处理',
+  // 执行链事件：通知中心按这几类呈现"谁在替你干活"。
+  execution_started: '目标开始执行',
+  goal_decomposed: '目标已拆解',
+  plan_created: '计划已生成',
+  task_started: '任务开始',
+  action_completed: '动作完成',
+  task_completed: '任务完成',
+  execution_completed: '执行完成',
+  execution_failed: '执行失败',
 }
 
 export function eventLabel(type: string): string {
