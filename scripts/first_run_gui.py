@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import queue
 import re
@@ -205,6 +206,23 @@ def volume_risk_message(raw: str) -> str:
 def klog_path(data_dir: Path) -> Path:
     """向导自己的日志：即使根本没走到网关，也要有可查的中文记录。"""
     return Path(data_dir) / "logs" / "first_run.log"
+
+
+def mask_principal(principal: str) -> str:
+    """把用户名收敛成可辨认、但不足以还原身份的写法。
+
+    这份日志会随诊断包一起转给外人，用户名属于真实身份信息；排查只需要
+    "看到像谁"和"是不是同一个人"，不需要全文。``liuhao`` -> ``li***``。
+    不足 3 个字符时整体掩掉——只留两位就等于把名字全给出去了。
+    """
+    text = (principal or "").strip()
+    return f"{text[:2]}***" if len(text) > 2 else "***"
+
+
+def principal_fingerprint(principal: str) -> str:
+    """用户名指纹：同一台机器上对账用（sha256 前 8 位，不可逆）。"""
+    text = (principal or "").strip().encode("utf-8")
+    return hashlib.sha256(text).hexdigest()[:8]
 
 
 def _write_log(data_dir: Path, text: str) -> Path | None:
@@ -723,7 +741,10 @@ def commit(
     clear_current_url(dir_value)
     _write_log(
         dir_value,
-        f"first-run done: principal={principal} model={mode} port={api_port}",
+        "first-run done:"
+        f" principal={mask_principal(principal)}"
+        f" principal_hash={principal_fingerprint(principal)}"
+        f" model={mode} port={api_port}",
     )
     return True, "设置完成，正在启动鎏灏窗口…"
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import os
 import queue
 import socket
@@ -235,6 +236,35 @@ def test_commit_creates_loginable_admin_and_marks_data_dir(isolated_env):
     # 首启完成前不允许留下旧的控制台地址；成功提交同样不能替网关写地址。
     assert not (data_dir / "config" / "current_url.txt").exists()
     assert (data_dir / "logs" / "first_run.log").is_file()
+
+
+def test_first_run_log_masks_principal_and_keeps_fingerprint(isolated_env):
+    """日志会随诊断包转给外人：用户名只留两位 + 指纹，不留全文。"""
+    ok, message = gui.commit(_values(isolated_env), port=0)
+    assert ok is True, message
+
+    log = isolated_env / "logs" / "first_run.log"
+    done = [
+        line
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if "first-run done:" in line
+    ]
+    assert len(done) == 1
+    assert "principal=li***" in done[0]
+    assert "principal_hash=" in done[0]
+    assert "liuhao" not in done[0]
+    # 指纹必须是可复算的 sha256 前 8 位，否则"同一台机器上对账"无从核起。
+    expected = hashlib.sha256(b"liuhao").hexdigest()[:8]
+    assert f"principal_hash={expected}" in done[0]
+
+
+@pytest.mark.parametrize(
+    ("principal", "expected"),
+    [("liuhao", "li***"), ("ab", "***"), ("a", "***"), ("", "***")],
+)
+def test_mask_principal_never_reveals_short_names(principal, expected):
+    """不足 3 个字符时全掩：留两位就等于把整个名字给出去了。"""
+    assert gui.mask_principal(principal) == expected
 
 
 def test_changing_data_dir_updates_marker_for_next_launch(isolated_env, tmp_path):
