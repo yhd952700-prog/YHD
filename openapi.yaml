@@ -60,6 +60,12 @@ components:
           description: 必须为 true；缺少时返回 400，防止误触升级。
           title: Confirm
           type: boolean
+        mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 缺省=synchronous（只装不重启，保持原语义）；orchestrated=写请求文件并返回 202，由独立 supervisor 停服、安装、重启并做健康复核。
+          title: Mode
         version:
           anyOf:
           - type: string
@@ -67,6 +73,25 @@ components:
           description: 必须明确指定要安装的版本号；与当前可升级版本不一致时返回 400。
           title: Version
       title: ApplyRequest
+      type: object
+    ApprovalRejection:
+      description: 审批拒绝请求。理由可为空，但字段固定存在并写进审计。
+      properties:
+        pending_id:
+          description: 待处理条目 id（pending:<seq>）
+          maxLength: 64
+          minLength: 1
+          title: Pending Id
+          type: string
+        reason:
+          default: ''
+          description: 拒绝理由（可留空，记入审计）
+          maxLength: 500
+          title: Reason
+          type: string
+      required:
+      - pending_id
+      title: ApprovalRejection
       type: object
     ApprovalRequest:
       description: '审批凭据签发请求。
@@ -95,6 +120,12 @@ components:
           description: 把 target 设为 '*' 时的二次确认。仅为全目标授权时需要；默认 false，此时通配会被拒绝。
           title: Confirm Wildcard
           type: boolean
+        pending_id:
+          default: ''
+          description: 可选的待处理条目 id（pending:<seq>）。审批中心带上它，同一张卡片重复点击只会得到同一条凭据，不会因为多点一次而叠加第二份授权。
+          maxLength: 64
+          title: Pending Id
+          type: string
         reason:
           default: ''
           description: 授权理由（记入审计）
@@ -8957,7 +8988,9 @@ paths:
         （``deny`` / ``error`` 是硬拒绝，不需要人批，因此不计入）。
 
 
-        已有一条有效凭据覆盖的动作不再算"待处理"——它已经批过了。
+        已有一条有效凭据覆盖的动作不再算"待处理"——它已经批过了；被用户明确
+
+        拒绝的条目也不再显示（拒绝记录同样在审计链里）。
 
         ``approve`` 字段给出可照抄的下一步请求，使页面能直接处理而不是只显示。
 
@@ -9001,6 +9034,60 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: List Pending Approvals
+      tags:
+      - policy
+  /v1/policy/approvals/reject:
+    post:
+      description: '明确拒绝一条待确认动作（审计留痕，不产生任何可执行权限）。
+
+
+        为什么需要：此前审批中心只有「批准」，用户面对高危动作只剩「同意」这一个
+
+        选择，等同于强制放行。拒绝的语义是「明确不批」：动作在被拦下时就没有执行，
+
+        拒绝只做两件事——写审计、让卡片不再显示为等待中；它不会制造授权，
+
+        也不会重放或自动重试原动作。'
+      operationId: reject_pending_approval_v1_policy_approvals_reject_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalRejection'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reject Pending Approval V1 Policy Approvals Reject Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reject Pending Approval
       tags:
       - policy
   /v1/policy/approvals/{grant_id}:
