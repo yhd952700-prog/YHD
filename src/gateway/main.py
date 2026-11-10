@@ -2728,6 +2728,11 @@ def get_app() -> FastAPI:
     from .projects import router as projects_router
     app.include_router(projects_router, dependencies=[Depends(_require_human)])
 
+    # 组织架构数据面（企业工作台 P3A）：任意层级组织/岗位/任职 + 版本与影响检查。
+    # 与 Projects 面一致挂人类主权闸门；组织数据按账号归属隔离，写入只作用于自己。
+    from .org import router as org_router
+    app.include_router(org_router, dependencies=[Depends(_require_human)])
+
     # Apps 面（Top-3 #2 缺口）：把"插件"真实呈现给人类，并允许激活（真实加载）。
     # 与 Projects 面一致，挂 require_human_principal 人类主权闸门。
     from .plugins import router as plugins_router
