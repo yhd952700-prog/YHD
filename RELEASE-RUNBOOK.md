@@ -268,7 +268,8 @@ Remove-Item Env:\LIUHAO_DPI_TARGET_ROOT
 ## 7. 合规材料：包里有 + 装完本机有
 
 > §1 第 11 项证明「包里有」，第 12 项证明「装完本机有」。二者不能互相替代：
-> 材料在包里但安装器漏装、或卸载误删，用户照样拿不到许可证记录。
+> 材料在包里但安装器漏装，用户照样拿不到许可证记录。注意 0.1.2.1 起卸载会把这些材料
+> 随程序一并删除（见本节表格），那是预期行为，不要当成卸载误删；要留存请重新下载安装包或查发布页。
 
 **包里有**（成品包校验，只读：payload 直扫 / exe 用 innounp 解包 / zip 用 zipfile 解包）：
 
@@ -292,10 +293,16 @@ python dist\release-gate\verify_installed_compliance.py --app $app --json-out "$
 
 | 安装目录里的路径 | 来源 | 卸载行为 |
 |---|---|---|
-| `{app}\licenses\`（16 项全文） | `packaging\licenses\` | **保留**（`uninsneveruninstall`） |
-| `{app}\THIRD-PARTY-NOTICES.txt` | 按实装分发树现生成 | **保留** |
-| `{app}\sbom-cyclonedx.json` | 本次 payload 现算（`liuhao:audit-source-tree` 改写为 `.`，构建机路径不入安装目录） | **保留** |
-| `{app}\LICENSE` | 仓库根 `LICENSE`/`LICENSE.txt`/`COPYING`（有才装） | **保留** |
+| `{app}\licenses\`（16 项全文） | `packaging\licenses\` | **随程序一并移除**（许可义务在分发环节履行；发布页与仓库长期公开源码与许可证文本） |
+| `{app}\THIRD-PARTY-NOTICES.txt` | 按实装分发树现生成 | **随程序一并移除** |
+| `{app}\sbom-cyclonedx.json` | 本次 payload 现算（`liuhao:audit-source-tree` 改写为 `.`，构建机路径不入安装目录） | **随程序一并移除** |
+| `{app}\LICENSE` | 仓库根 `LICENSE`/`LICENSE.txt`/`COPYING`（有才装） | **随程序一并移除** |
+
+> 行为变更（0.1.2.1 起）：`[Files]` 不再用 `uninsneveruninstall` 钉住这四个条目，卸载即删；
+> `[UninstallDelete]` 额外显式列出 `licenses` / `LICENSE` / `THIRD-PARTY-NOTICES.txt` /
+> `sbom-cyclonedx.json` / `run\instance.lock`，让**从 0.1.2 及更早升级上来**的用户也能被清干净
+> （老版本卸载日志里还带着「永不删除」标记，不显式列就会留下来）。
+> 数据目录（`D:\LiuHaoData`）与备份目录仍按原口径默认保留，不在此列。
 
 **当前状态（2026-11-08）**：仓库根 `LICENSE` 已定为**短版专有声明**（著作权归属 + 保留所有权利 +
 禁止未经书面许可再分发/转售/反向工程 + 第三方组件见 `licenses\` 与 `LGPL-SOURCE-OFFER.txt`），
@@ -343,7 +350,9 @@ python dist\release-gate\verify_installed_compliance.py --app $app --json-out "$
 
 
 卸载保留的已知差异：**0.1.0 旧版本**的安装清单没有这组标记，卸载仍会删掉它自己装过的文件；
-0.1.1 起的包卸载保留，非静默卸载会在删除前弹一次说明，静默卸载不打扰。
+**0.1.1–0.1.2** 的包把合规材料钉成 `uninsneveruninstall`，卸载保留 `licenses\`、`LICENSE`、
+`THIRD-PARTY-NOTICES.txt`、`sbom-cyclonedx.json`；**0.1.2.1 起**改为随程序一并移除，
+并用 `[UninstallDelete]` 兼容从旧版升级上来的目录——非静默卸载会在删除前弹一次说明，静默卸载不打扰。
 
 ## 9. 已知未修（内部基线，不影响运行）
 
