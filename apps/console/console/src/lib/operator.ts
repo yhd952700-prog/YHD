@@ -1066,3 +1066,17 @@ export function approvePending(body: Json): Promise<Json> {
     body: JSON.stringify(body),
   })
 }
+
+/**
+ * 明确拒绝一条待确认动作。`reason` 可留空，但字段必传（后端写进审计）。
+ *
+ * 拒绝只做两件事：写一条拒绝审计、让卡片退出等待队列。它不签发凭据、
+ * 不执行、也不重试原动作——拒绝之后同一请求仍然是被拦状态。
+ * 403 = 没有审批权限；404 = 卡片已经处理过。
+ */
+export function rejectPending(pendingId: string, reason: string): Promise<Json> {
+  return apiFetch<Json>('/v1/policy/approvals/reject', {
+    method: 'POST',
+    body: JSON.stringify({ pending_id: pendingId, reason }),
+  })
+}

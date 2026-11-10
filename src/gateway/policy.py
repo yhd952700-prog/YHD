@@ -362,6 +362,14 @@ class ApprovalRequest(BaseModel):
         ),
     )
     reason: str = Field("", max_length=500, description="授权理由（记入审计）")
+    pending_id: str = Field(
+        "",
+        max_length=64,
+        description=(
+            "可选的待处理条目 id（pending:<seq>）。审批中心带上它，同一张卡片"
+            "重复点击只会得到同一条凭据，不会因为多点一次而叠加第二份授权。"
+        ),
+    )
     ttl_seconds: float = Field(
         DEFAULT_GRANT_TTL_SECONDS,
         gt=0,
@@ -376,6 +384,20 @@ def create_approval(
     principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
     """签发一条审批凭据（审计留痕）。主体取自令牌，请求体无法指定。"""
+    if req.pending_id:
+        # 一次批准只生效一次：同一张待确认卡片重复提交时复用已有凭据，
+        # 不叠加第二份授权（界面双击、网络重试都不会放大权限）。
+        wanted = set(req.actions)
+        for existing in list_grants():
+            if str(existing.principal) != principal:
+                continue
+            if set(existing.actions) != wanted or str(existing.target) != req.target:
+                continue
+            return {
+                "approved": True,
+                "already_approved": True,
+                "grant": existing.to_dict(),
+            }
     try:
         grant = issue_grant(
             principal,
@@ -453,29 +475,14 @@ def list_approvals(
 #: being counted as "waiting on me right now" after a week.
 _PENDING_LOOKBACK_SECONDS = 7 * 24 * 3600
 _PENDING_SCAN_LIMIT = 500
+#: 用户在审批中心明确拒绝的标记；与内核拦截记录同源（审计链），不另造台账。
+_REJECT_DECISION = "reject"
 
 
-@router.get("/policy/approvals/pending", response_model=Dict[str, Any])
-def list_pending_approvals(
-    principal: str = Depends(require_admin_principal),
-) -> Dict[str, Any]:
-    """列出**等待当前人工确认**的动作（只读）。
-
-    审批中心此前只有"已签发凭据"，没有"还有什么在等我"。数据来源是内核
-    真实的拦截记录：HIGH/CRITICAL 动作被 ``PolicyEffect.DEFER`` 拦下时，审计
-    链会写一条 ``outcome="blocked"``、``policy_decision="defer"`` 的事件
-    （``deny`` / ``error`` 是硬拒绝，不需要人批，因此不计入）。
-
-    已有一条有效凭据覆盖的动作不再算"待处理"——它已经批过了。
-    ``approve`` 字段给出可照抄的下一步请求，使页面能直接处理而不是只显示。
-
-    可见性：只有**能真正签发凭据**的人类主体才看得到这个队列
-    （``require_admin_principal``，与 ``POST /v1/policy/approvals`` 同一道
-    门）。非管理员不是"看到空列表"，而是 403 —— 跨主体不泄露。
-    """
+def _pending_items(now: float) -> List[Dict[str, Any]]:
+    """从审计链派生「还在等我确认」的动作（未经拒绝过滤）。"""
     from .audit import _read_events
 
-    now = time.time()
     events = _read_events(
         outcome="blocked",
         since=now - _PENDING_LOOKBACK_SECONDS,
@@ -506,8 +513,9 @@ def list_pending_approvals(
         if action in covered:
             continue
         risk = details.get("risk_level") or "UNKNOWN"
+        pending_id = f"pending:{event.get('seq')}"
         items.append({
-            "pending_id": f"pending:{event.get('seq')}",
+            "pending_id": pending_id,
             "action": action,
             "risk_level": risk,
             "policy_rule": details.get("policy_rule"),
@@ -524,9 +532,130 @@ def list_pending_approvals(
                     "target": "*",
                     "reason": "通过审批中心确认挂起的动作",
                     "ttl_seconds": 900,
+                    # 同一张卡片重复提交只会复用同一条凭据（见 create_approval）。
+                    "pending_id": pending_id,
                 },
             },
         })
+    return items
+
+
+def _rejected_pending_ids(now: float) -> set:
+    """读回审计链里"用户已拒绝"的 pending id。"""
+    from .audit import _read_events
+
+    rejected: set = set()
+    events = _read_events(
+        outcome="denied",
+        since=now - _PENDING_LOOKBACK_SECONDS,
+        limit=_PENDING_SCAN_LIMIT,
+        reverse=True,
+    )
+    for event in events:
+        details = event.get("details") or {}
+        if details.get("policy_decision") != _REJECT_DECISION:
+            continue
+        pending_id = str(details.get("pending_id") or "")
+        if pending_id:
+            rejected.add(pending_id)
+    return rejected
+
+
+class ApprovalRejection(BaseModel):
+    """审批拒绝请求。理由可为空，但字段固定存在并写进审计。"""
+
+    pending_id: str = Field(..., min_length=1, max_length=64,
+                            description="待处理条目 id（pending:<seq>）")
+    reason: str = Field("", max_length=500, description="拒绝理由（可留空，记入审计）")
+
+
+@router.post("/policy/approvals/reject", response_model=Dict[str, Any])
+def reject_pending_approval(
+    req: ApprovalRejection,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """明确拒绝一条待确认动作（审计留痕，不产生任何可执行权限）。
+
+    为什么需要：此前审批中心只有「批准」，用户面对高危动作只剩「同意」这一个
+    选择，等同于强制放行。拒绝的语义是「明确不批」：动作在被拦下时就没有执行，
+    拒绝只做两件事——写审计、让卡片不再显示为等待中；它不会制造授权，
+    也不会重放或自动重试原动作。
+    """
+    from src.kernels.audit import AuditEventType, AuditScope, log_event
+
+    now = time.time()
+    item = next(
+        (i for i in _pending_items(now) if i["pending_id"] == req.pending_id),
+        None,
+    )
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="这条待确认动作不存在或已经被处理，请刷新后重新查看。",
+        )
+    if req.pending_id in _rejected_pending_ids(now):
+        # 重复点击幂等：不再写第二条审计。
+        return {
+            "rejected": True,
+            "already_rejected": True,
+            "pending_id": req.pending_id,
+            "action": item["action"],
+            "reason": req.reason,
+        }
+    try:
+        log_event(
+            AuditEventType.HUMAN_SOVEREIGNTY_OVERRIDE,
+            principal_id=principal,
+            scope=AuditScope.L0,
+            outcome="denied",
+            details={
+                "action": item["action"],
+                "risk_level": item["risk_level"],
+                "policy_decision": _REJECT_DECISION,
+                "policy_rule": item.get("policy_rule"),
+                "policy_enforced": True,
+                "pending_id": req.pending_id,
+                "rejection_reason": req.reason,
+                "summary": f"用户在审批中心拒绝了 {item['action']}",
+            },
+            correlation_id=item.get("correlation_id"),
+        )
+    except Exception as exc:  # 拒绝本身也要留痕；审计写不进去就不能报成功
+        raise HTTPException(
+            status_code=503,
+            detail="这次拒绝没有记录下来，请稍后重试。",
+        ) from exc
+    return {
+        "rejected": True,
+        "already_rejected": False,
+        "pending_id": req.pending_id,
+        "action": item["action"],
+        "reason": req.reason,
+    }
+
+
+@router.get("/policy/approvals/pending", response_model=Dict[str, Any])
+def list_pending_approvals(
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """列出**等待当前人工确认**的动作（只读）。
+
+    审批中心此前只有"已签发凭据"，没有"还有什么在等我"。数据来源是内核
+    真实的拦截记录：HIGH/CRITICAL 动作被 ``PolicyEffect.DEFER`` 拦下时，审计
+    链会写一条 ``outcome="blocked"``、``policy_decision="defer"`` 的事件
+    （``deny`` / ``error`` 是硬拒绝，不需要人批，因此不计入）。
+
+    已有一条有效凭据覆盖的动作不再算"待处理"——它已经批过了；被用户明确
+    拒绝的条目也不再显示（拒绝记录同样在审计链里）。
+    ``approve`` 字段给出可照抄的下一步请求，使页面能直接处理而不是只显示。
+
+    可见性：只有**能真正签发凭据**的人类主体才看得到这个队列
+    （``require_admin_principal``，与 ``POST /v1/policy/approvals`` 同一道
+    门）。非管理员不是"看到空列表"，而是 403 —— 跨主体不泄露。
+    """
+    now = time.time()
+    rejected = _rejected_pending_ids(now)
+    items = [i for i in _pending_items(now) if i["pending_id"] not in rejected]
 
     return {
         "count": len(items),

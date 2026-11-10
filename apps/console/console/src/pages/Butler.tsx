@@ -11,6 +11,7 @@
  *   * POST /v1/goals/{goal_id}/tasks/{task_id}/retry  只重跑一个失败任务（同步）；
  *   * GET  /v1/policy/approvals/pending      待审批队列（只对能签发凭据的主体可见）；
  *   * POST /v1/policy/approvals              采用队列返回的请求体签发凭据；
+ *   * POST /v1/policy/approvals/reject       拒绝这个待确认动作（写审计，不放行、不重放）；
  *   * GET  /v1/goals                          历史执行；
  *   * GET  /v1/employees                      员工名册（指派选择器）；
  *   * GET  /v1/projects                       可选的归属项目；
@@ -55,6 +56,7 @@ import {
   assignTask,
   createGoal,
   readFile,
+  rejectPending,
   replanGoal,
   retryGoalTask,
   stopGoal,
@@ -236,6 +238,10 @@ export function Butler({
   const [approveErrors, setApproveErrors] = useState<Record<string, string>>({})
   const [approveNotices, setApproveNotices] = useState<Record<string, string>>({})
   const [wildcardConfirmed, setWildcardConfirmed] = useState<Record<string, boolean>>({})
+  // 拒绝：审批不能只有「同意」。拒绝按钮与批准并列，理由可留空。
+  const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [rejectOpenId, setRejectOpenId] = useState<string | null>(null)
+  const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({})
 
   // ── 主权动作 ─────────────────────────────────────────────────
   const [stopping, setStopping] = useState(false)
@@ -617,6 +623,44 @@ export function Butler({
       }
     },
     [detailApi.reload, pendingApi.reload],
+  )
+
+  const reject = useCallback(
+    async (item: PendingApprovalItem, reason: string) => {
+      setRejectingId(item.pending_id)
+      setApproveErrors((current) => {
+        const next = { ...current }
+        delete next[item.pending_id]
+        return next
+      })
+      setApproveNotices((current) => {
+        const next = { ...current }
+        delete next[item.pending_id]
+        return next
+      })
+      try {
+        await rejectPending(item.pending_id, reason.trim())
+        setApproveNotices((current) => ({
+          ...current,
+          [item.pending_id]: '已拒绝。这个动作不会被执行，也不会自动重试；需要时请重新发起。',
+        }))
+        setRejectOpenId(null)
+        setRejectReasons((current) => {
+          const next = { ...current }
+          delete next[item.pending_id]
+          return next
+        })
+        pendingApi.reload()
+      } catch (error) {
+        setApproveErrors((current) => ({
+          ...current,
+          [item.pending_id]: `拒绝失败：${errorText(error)}`,
+        }))
+      } finally {
+        setRejectingId(null)
+      }
+    },
+    [pendingApi.reload],
   )
 
   const openArtifact = useCallback(async (path: string) => {
@@ -1385,12 +1429,54 @@ export function Butler({
                     >
                       {busy ? '批准中…' : '确认并允许'}
                     </button>
+                    <button
+                      className="os-btn os-btn-ghost"
+                      onClick={() =>
+                        setRejectOpenId(rejectOpenId === item.pending_id ? null : item.pending_id)
+                      }
+                      disabled={busy || rejectingId === item.pending_id}
+                    >
+                      {rejectingId === item.pending_id ? '拒绝中…' : '拒绝'}
+                    </button>
                     <span className="os-hint">
                       {wildcard
                         ? '当前只能整类放行，不能只批一个文件或一个项目；需要你再次确认。'
-                        : '按列表里的动作批准，参数不改。'}
+                        : '按列表里的动作批准，参数不改；拒绝不会放行这个动作。'}
                     </span>
                   </div>
+                  {rejectOpenId === item.pending_id && (
+                    <div className="os-butler-pending-confirm">
+                      <input
+                        className="os-input"
+                        maxLength={500}
+                        placeholder="拒绝理由（可留空，会记入审计）"
+                        value={rejectReasons[item.pending_id] ?? ''}
+                        onChange={(event) =>
+                          setRejectReasons((current) => ({
+                            ...current,
+                            [item.pending_id]: event.target.value,
+                          }))
+                        }
+                      />
+                      <div className="os-kb-actions">
+                        <button
+                          className="os-btn"
+                          onClick={() =>
+                            void reject(item, rejectReasons[item.pending_id] ?? '')
+                          }
+                          disabled={rejectingId === item.pending_id}
+                        >
+                          {rejectingId === item.pending_id ? '拒绝中…' : '确认拒绝'}
+                        </button>
+                        <button
+                          className="os-btn os-btn-ghost"
+                          onClick={() => setRejectOpenId(null)}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {approveErrors[item.pending_id] && (
                     <p className="os-kb-error" role="alert">
                       {approveErrors[item.pending_id]}

@@ -150,3 +150,154 @@ class TestPendingApprovals:
         resp = client.get("/v1/policy/approvals/pending", headers=_auth(ADMIN_ID))
         assert resp.status_code == 200
         assert resp.json()["count"] == 1
+
+
+def _reject_events(correlation: str | None = None) -> list:
+    from src.gateway.audit import _read_events
+
+    events = _read_events(outcome="denied", limit=100, reverse=True)
+    return [
+        event for event in events
+        if (event.get("details") or {}).get("policy_decision") == "reject"
+        and (correlation is None or event.get("correlation_id") == correlation)
+    ]
+
+
+class TestRejectPendingApproval:
+    """审批不能只有「同意」：拒绝必须可用、留痕、且不产生任何放行。"""
+
+    def test_reject_removes_card_and_writes_audit(self, client):
+        _seed_deferred(correlation="exec-reject")
+        item = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["items"][0]
+
+        resp = client.post(
+            "/v1/policy/approvals/reject",
+            headers=_auth(ADMIN_ID),
+            json={"pending_id": item["pending_id"], "reason": "这笔删除不该做"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["rejected"] is True
+        assert body["already_rejected"] is False
+        assert body["action"] == _ACTION
+
+        after = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()
+        assert after["count"] == 0, "拒绝后这张卡片不应继续显示为等待中"
+
+        rejects = _reject_events("exec-reject")
+        assert len(rejects) == 1
+        details = rejects[0]["details"]
+        assert details["action"] == _ACTION
+        assert details["pending_id"] == item["pending_id"]
+        assert details["rejection_reason"] == "这笔删除不该做"
+        assert rejects[0]["outcome"] == "denied"
+        assert rejects[0]["correlation_id"] == "exec-reject"
+
+    def test_reject_reason_may_be_empty_but_field_is_recorded(self, client):
+        _seed_deferred(correlation="exec-empty-reason")
+        item = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["items"][0]
+        resp = client.post(
+            "/v1/policy/approvals/reject",
+            headers=_auth(ADMIN_ID),
+            json={"pending_id": item["pending_id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["reason"] == ""
+        assert "rejection_reason" in _reject_events("exec-empty-reason")[0]["details"]
+
+    def test_reject_is_idempotent_and_audited_once(self, client):
+        _seed_deferred(correlation="exec-dup-reject")
+        item = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["items"][0]
+        payload = {"pending_id": item["pending_id"], "reason": "不做"}
+        first = client.post(
+            "/v1/policy/approvals/reject", headers=_auth(ADMIN_ID), json=payload
+        )
+        second = client.post(
+            "/v1/policy/approvals/reject", headers=_auth(ADMIN_ID), json=payload
+        )
+        assert first.status_code == 200 and second.status_code == 200
+        assert second.json()["already_rejected"] is True
+        assert len(_reject_events("exec-dup-reject")) == 1, "重复拒绝不能再写第二条审计"
+
+    def test_rejected_action_gets_no_authority_and_is_not_replayed(self, client):
+        """拒绝之后：没有凭据、没有自动重放，同一动作仍只能继续被拦。"""
+        from src.kernels._sovereignty import list_grants
+
+        _seed_deferred(correlation="exec-no-replay")
+        item = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["items"][0]
+        client.post(
+            "/v1/policy/approvals/reject",
+            headers=_auth(ADMIN_ID),
+            json={"pending_id": item["pending_id"], "reason": "拒绝"},
+        )
+        assert list_grants() == [], "拒绝不能签发任何授权"
+        # 审计里只有「拒绝」，没有「批准」或「已执行」这类放行痕迹。
+        assert len(_reject_events("exec-no-replay")) == 1
+        assert (event := _reject_events("exec-no-replay")[0])["outcome"] == "denied"
+        assert (event.get("details") or {})["policy_decision"] == "reject"
+        # 同一张卡片再查一次仍是 0：拒绝是终态，不会过一会儿自动变回待批。
+        assert client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["count"] == 0
+
+    def test_unknown_pending_id_is_404(self, client):
+        resp = client.post(
+            "/v1/policy/approvals/reject",
+            headers=_auth(ADMIN_ID),
+            json={"pending_id": "pending:does-not-exist", "reason": ""},
+        )
+        assert resp.status_code == 404
+
+    def test_ordinary_human_cannot_reject(self, client):
+        _seed_deferred(correlation="exec-ordinary-reject")
+        item = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["items"][0]
+        resp = client.post(
+            "/v1/policy/approvals/reject",
+            headers=_auth(ORDINARY_ID, "L1"),
+            json={"pending_id": item["pending_id"], "reason": ""},
+        )
+        assert resp.status_code == 403
+
+
+class TestApproveOnceOnly:
+    """一次批准只生效一次：同一张卡片重复提交不叠加第二份授权。"""
+
+    def test_repeated_approve_reuses_the_same_grant(self, client):
+        from src.kernels._sovereignty import list_grants
+
+        _seed_deferred(correlation="exec-approve-once")
+        item = client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["items"][0]
+        payload = dict(item["approve"]["body"])
+        payload["confirm_wildcard"] = True
+
+        first = client.post(
+            "/v1/policy/approvals", headers=_auth(ADMIN_ID), json=payload
+        )
+        second = client.post(
+            "/v1/policy/approvals", headers=_auth(ADMIN_ID), json=payload
+        )
+        assert first.status_code == 200, first.text
+        assert second.status_code == 200, second.text
+        assert second.json()["already_approved"] is True
+        assert (
+            second.json()["grant"]["grant_id"]
+            == first.json()["grant"]["grant_id"]
+        )
+        assert len(list_grants()) == 1
+        assert client.get(
+            "/v1/policy/approvals/pending", headers=_auth(ADMIN_ID)
+        ).json()["count"] == 0

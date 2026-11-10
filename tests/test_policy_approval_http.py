@@ -234,6 +234,10 @@ class TestPrincipalIsTokenOnly:
             "confirm_wildcard",
             "reason",
             "ttl_seconds",
+            # 审批中心卡片 id（2026-11-11）：只用于「同一张卡片重复点击复用
+            # 同一条凭据」，不让一次批准叠加出第二份授权。它不是主体字段，
+            # 换成别的 pending_id 也不会改变 principal（主体仍只取令牌）。
+            "pending_id",
         }, fields
         assert "principal" not in fields and "approver" not in fields, fields
 
@@ -497,6 +501,10 @@ class TestThePolicySurfaceIsFixedAndHasNoExecutionRoute:
             ("GET", "/v1/policy/approvals/{grant_id}"),
             ("GET", "/v1/policy/enforcement"),
             ("POST", "/v1/policy/approvals"),
+            # 拒绝待处理动作（2026-11-11）：审批不能只有「同意」。它只写一条
+            # 拒绝审计并让卡片退出等待队列，不签发凭据、不执行、不重放任何
+            # 内核动作，因此同样不构成 §10.8.3-1 的"远程执行路由"。
+            ("POST", "/v1/policy/approvals/reject"),
         ], (
             "the policy surface changed. If this is a new *execution* route, it "
             "is a reversal of §10.8.3-1 and needs its own decision, not a test edit"

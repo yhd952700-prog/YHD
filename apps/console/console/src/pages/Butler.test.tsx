@@ -218,6 +218,8 @@ let assignBodies: Array<Record<string, unknown>>
 let retryResponses: Record<string, { status: number; body: unknown }>
 let pendingItems: unknown[]
 let pendingForbidden: boolean
+let rejectBodies: Array<Record<string, unknown>>
+let rejectResponse: { status: number; body: unknown } | null
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -238,6 +240,8 @@ beforeEach(() => {
   retryResponses = {}
   pendingItems = []
   pendingForbidden = false
+  rejectBodies = []
+  rejectResponse = null
 
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -288,6 +292,14 @@ beforeEach(() => {
         lookback_seconds: 604800,
         enforcement: {},
       })
+    }
+    if (url === '/v1/policy/approvals/reject' && method === 'POST') {
+      rejectBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+      const next = rejectResponse ?? {
+        status: 200,
+        body: { rejected: true, already_rejected: false, pending_id: 'p1' },
+      }
+      return json(next.status, next.body)
     }
     if (url === '/v1/policy/approvals' && method === 'POST') {
       return json(201, { grant: { grant_id: 'grant-1' } })
@@ -699,6 +711,80 @@ describe('鎏灏管家 · 待我确认', () => {
       confirm_wildcard: true,
     })
     await waitFor(() => expect(screen.getByText(/已批准。/)).toBeTruthy())
+  })
+
+  test('「拒绝」与批准并列；拒绝发送 pending_id 与理由，成功后重新拉队列且不签发票据', async () => {
+    pendingItems = [PENDING_ITEM]
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('publish')).toBeTruthy())
+    const card = screen.getByText('publish').closest('article') as HTMLElement
+    const reject = within(card).getByRole('button', { name: '拒绝' })
+    // 拒绝不是藏起来的次要操作：与「确认并允许」同在一个操作区、默认可用。
+    expect(within(card).getByRole('button', { name: '确认并允许' })).toBeTruthy()
+    expect((reject as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(reject)
+    fireEvent.change(within(card).getByPlaceholderText('拒绝理由（可留空，会记入审计）'), {
+      target: { value: '这次不该发布到外部' },
+    })
+    fireEvent.click(within(card).getByRole('button', { name: '确认拒绝' }))
+
+    await waitFor(() => expect(rejectBodies).toHaveLength(1))
+    expect(rejectBodies[0]).toEqual({ pending_id: 'p1', reason: '这次不该发布到外部' })
+
+    await waitFor(() =>
+      expect(screen.getByText(/已拒绝。这个动作不会被执行，也不会自动重试/)).toBeTruthy(),
+    )
+    // 拒绝后必须重新拉真实队列，而不是本地删卡片冒充已处理。
+    const pendingGets = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        String(url) === '/v1/policy/approvals/pending' &&
+        ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET',
+    )
+    expect(pendingGets.length).toBeGreaterThan(1)
+    // 拒绝绝不签发票据，也绝不重发被拦的动作。
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === '/v1/policy/approvals' && init?.method === 'POST',
+      ),
+    ).toBe(false)
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/retry')),
+    ).toBe(false)
+  })
+
+  test('拒绝理由可以留空，但字段仍然发送', async () => {
+    pendingItems = [PENDING_ITEM]
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('publish')).toBeTruthy())
+    const card = screen.getByText('publish').closest('article') as HTMLElement
+    fireEvent.click(within(card).getByRole('button', { name: '拒绝' }))
+    fireEvent.click(within(card).getByRole('button', { name: '确认拒绝' }))
+
+    await waitFor(() => expect(rejectBodies).toHaveLength(1))
+    expect(rejectBodies[0]).toEqual({ pending_id: 'p1', reason: '' })
+  })
+
+  test('没有拒绝权限时如实报错，不冒充已拒绝', async () => {
+    pendingItems = [PENDING_ITEM]
+    rejectResponse = {
+      status: 403,
+      body: errorBody('permission_denied', 'permission denied'),
+    }
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('publish')).toBeTruthy())
+    const card = screen.getByText('publish').closest('article') as HTMLElement
+    fireEvent.click(within(card).getByRole('button', { name: '拒绝' }))
+    fireEvent.click(within(card).getByRole('button', { name: '确认拒绝' }))
+
+    await waitFor(() =>
+      expect(within(card).getByText(/拒绝失败：权限不足/)).toBeTruthy(),
+    )
+    expect(screen.queryByText(/已拒绝。/)).toBeNull()
   })
 
   test('403 如实说没有批准权限，而不是说队列为空', async () => {
