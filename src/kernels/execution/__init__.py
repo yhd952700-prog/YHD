@@ -207,7 +207,9 @@ def make_action_id(goal_id: str, task_name: str, attempt: int = 0) -> str:
     由拆解器/重试快照稳定保留。同一次执行的所有重试复用同一个 action id，
     这正是幂等账本能识别「重复投递」的前提。
     """
-    digest = hashlib.sha1(f"{goal_id}:{task_name}".encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(
+        f"{goal_id}:{task_name}".encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:12]
     return f"act-{digest}-{attempt}"
 
 

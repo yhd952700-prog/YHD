@@ -221,7 +221,7 @@ def single_instance_name(data_dir: Any) -> str:
     用数据目录而不是程序目录做键：测试/多实例并存时各自独立数据目录，互不
     抢占；同一份用户数据则严格单实例，避免两个壳同时启动/停止同一个网关。
     """
-    digest = hashlib.sha1(str(data_dir).lower().encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(str(data_dir).lower().encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"Local\\LiuHaoDesktopShell_{digest}"
 
 

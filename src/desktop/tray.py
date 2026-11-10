@@ -136,7 +136,7 @@ def tray_class_name(instance_key: str) -> str:
     （旧实现）只能保证"不冲突"，做不到"找得到"，于是第二次双击只能报失败。
     ``instance_key`` 取数据目录：同一份数据 = 同一个实例，不同数据目录互不干扰。
     """
-    digest = hashlib.sha1(str(instance_key).lower().encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(str(instance_key).lower().encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"{TRAY_CLASS_PREFIX}_{digest}"
 
 

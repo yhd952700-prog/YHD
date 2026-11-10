@@ -1176,7 +1176,7 @@ _NON_MEMORY_KERNEL_TAGS = frozenset(
 def _quarantine_id(source: str, rowid: Any, source_ref: str, reason: str) -> str:
     """隔离记录 id：同一源行、同一原因在任何一次重跑里都得到同一个 id。"""
     raw = f"{source}|{rowid}|{source_ref}|{reason}"
-    return f"q-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:20]}"
+    return f"q-{hashlib.sha1(raw.encode('utf-8'), usedforsecurity=False).hexdigest()[:20]}"
 
 
 def _quarantine_row(
@@ -1409,7 +1409,8 @@ def _copy_personal_context(
                 continue
             owner = _owner_for_profile(principal_id, known)
             digest = hashlib.sha1(
-                f"{principal_id}|{kind}|{key}".encode("utf-8")
+                f"{principal_id}|{kind}|{key}".encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest()[:20]
             entry_id = f"legacy-pc-{digest}"
             try:
