@@ -1,6 +1,6 @@
 [project]
 name = "liuhao-ai-os"
-version = "0.1.2.1"
+version = "0.2.0"
 description = "LiuHao AI OS · 鎏灏智能中枢 - Y1 Implementation"
 readme = "README.md"
 # 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
