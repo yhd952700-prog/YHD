@@ -20,6 +20,10 @@ COPY apps/console/console/package.json apps/console/console/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY apps/console/console/ ./
+# src/brand.ts 通过 '../../../../src/brand.json' 引用品牌条款文件（在仓库根 src/ 下，
+# 已随仓库入库）；镜像内工作目录被展平为 /console，该相对引用解析到 /src/brand.json。
+# 不补这一行，npm run build 就会 TS2307：Cannot find module '../../../../src/brand.json'。
+COPY src/brand.json /src/brand.json
 RUN npm run build
 
 
