@@ -40,7 +40,6 @@ from .agent_factory import (
 )
 from .providers import (
     BaseProvider,
-    GENERATION_FAILURE_MESSAGE,
     ProviderStreamIncompleteError,
     ProviderTruncatedError,
     TRUNCATED_RESPONSE_MESSAGE,
@@ -111,6 +110,7 @@ def _tool_cache_max() -> int:
     except ValueError:
         value = _TOOL_CACHE_MAX_DEFAULT
     return max(1, value)
+
 
 #: 当前正在执行工具调用的 assistant。工具表共享后，``system_status`` 不能再把
 #: 某一个 assistant 的 ``stats`` 绑死在闭包里；执行时按当前上下文解析会话。
@@ -401,7 +401,6 @@ def _log_llm_call_failure(
             exc,
             exc_info=True,
         )
-
 
 
 def _json_safe_output(value: Any) -> Any:

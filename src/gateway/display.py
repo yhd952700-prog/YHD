@@ -608,7 +608,6 @@ def is_public_5xx_detail_safe(text: Any) -> bool:
     return not any(pattern.search(raw) for pattern in _FORBIDDEN_PUBLIC_5XX_RE)
 
 
-
 #: 每个分类的"发生了什么 + 下一步"。英文原文（``Max retries`` /
 #: ``Execution timeout`` / ``Blocked:``）只作为 ``technical_detail`` 折叠展示。
 _TASK_ERROR_COPY: Tuple[Tuple[Tuple[str, ...], str], ...] = (

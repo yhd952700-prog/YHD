@@ -587,7 +587,7 @@ class KnowledgeDocumentService:
         self._record_index_meta(store, embedder, dimension)
         # ``removed`` 是本次替换掉的旧分块数：>0 说明同名文档的上一版本被
         # 本次上传整体替换。把它显式回给调用方，用户至少能知道"旧版本不在了"
-        #（MEM-015：不再静默覆盖）。
+        # （MEM-015：不再静默覆盖）。
         previous_chunks = int(outcome.get("removed") or 0)
         return {
             "document_id": document_id,
@@ -737,7 +737,7 @@ class KnowledgeDocumentService:
             new_prefix = f"{new_token}--"
             if not old_id.startswith(f"{legacy_token}--"):
                 continue
-            base = old_id[len(legacy_token) + 2 :]
+            base = old_id[len(legacy_token) + 2:]
             display = (
                 str(document.get("filename") or "").strip()
                 or str(document.get("source") or "").strip()
@@ -1055,7 +1055,7 @@ class KnowledgeDocumentService:
             if not str(document.get("owner") or "")
         ]
         total = len(documents)
-        page = documents[offset : offset + limit + 1]
+        page = documents[offset:offset + limit + 1]
         has_more = len(page) > limit
         items: List[Dict[str, Any]] = []
         for document in page[:limit]:

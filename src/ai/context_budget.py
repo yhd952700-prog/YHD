@@ -68,6 +68,7 @@ def _split_sentences(text: Any, *, max_chars: int = SUMMARY_SENTENCE_MAX_CHARS) 
     pieces = [part.strip() for part in _SENTENCE_BREAK.split(normalized) if part.strip()]
     return [piece[:max_chars] for piece in pieces]
 
+
 #: 已知模型的上下文窗口（按 "provider model" 小写串做前缀匹配）。
 #: 只收录确定值；不确定的一律落到 DEFAULT_WINDOW_TOKENS，不猜大窗口。
 _KNOWN_WINDOW_PREFIXES = (
@@ -424,7 +425,7 @@ def trim_history(
         # 分层合并：持久化的"已丢弃历史摘要"（early_summary）在前，本次窗口
         # 内新裁掉的消息摘要在后；只取其一都会丢一半记忆。
         # 兼容契约：显式传入 ``summarize`` 回调时，early_summary 仍独占摘要位
-        #（回调方自己负责滚动合并，不能被本模块偷偷再调一次）。
+        # （回调方自己负责滚动合并，不能被本模块偷偷再调一次）。
         pieces: List[str] = []
         if early_summary:
             pieces.append(early_summary)

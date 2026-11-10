@@ -63,7 +63,7 @@ def _session_account(session_principal: str, known: Tuple[str, ...]) -> str:
     raw = str(session_principal or "")
     if not raw.startswith("liuhao-"):
         return raw
-    rest = raw[len("liuhao-") :]
+    rest = raw[len("liuhao-"):]
     for candidate in sorted({str(item) for item in known if item}, key=len, reverse=True):
         if rest == candidate or rest.startswith(f"{candidate}-"):
             return candidate
@@ -81,13 +81,13 @@ def _memory_visible_to(
             owner = owner[len("user-"):]
         return owner in accounts
     if key.startswith("turn:"):
-        rest = key[len("turn:") :]
+        rest = key[len("turn:"):]
         session_principal, _, _turn = rest.partition(":")
         return _session_account(session_principal, known) in accounts
     tags = {str(tag) for tag in (getattr(entry, "tags", ()) or ())}
     for tag in tags:
         if tag.startswith("agent:liuhao-"):
-            owner = tag[len("agent:liuhao-") :]
+            owner = tag[len("agent:liuhao-"):]
             owner = _session_account(f"liuhao-{owner}", known) if "-" in owner else owner
             return owner in accounts
     # 没有归属标记的历史/全局条目：宁可检索不到，也不跨账号泄漏。

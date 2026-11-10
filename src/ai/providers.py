@@ -292,6 +292,7 @@ def _retry_min_timeout_from_env() -> float:
         return DEFAULT_RETRY_MIN_TIMEOUT
     return value if value >= 0 else DEFAULT_RETRY_MIN_TIMEOUT
 
+
 #: 自动重试时给用户看的可见反馈（由流式链路作为 notice 事件下发）。
 RETRY_NOTICE_MESSAGE = "生成较慢，正在重试（模型：{model}）…"
 #: 跨厂商静默切换是最危险的"看不见"：用户以为还是主模型，账本也该记在主模型上。
@@ -3302,9 +3303,8 @@ class MoonshotProvider(BaseProvider):
             rate_limit_tpm=40000,
         )
 
-
-
     # ─── 统一解析（Moonshot 只走这一条路径） ─────────
+
     def _post(self, messages, *, stream: bool, **kwargs):
         """一次真实请求：``(model, response)``；非 200 已转成中性异常。"""
         import requests

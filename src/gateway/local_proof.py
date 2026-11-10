@@ -28,8 +28,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..common.local_proof_ipc import (
-    HANDOFF_HEADER,
-    RESET_HEADER,
     TRUSTED_LAUNCH_ENV,
     channel_name,
 )

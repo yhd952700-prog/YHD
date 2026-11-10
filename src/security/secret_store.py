@@ -32,9 +32,8 @@ import os
 import secrets
 import shutil
 import threading
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, List, Optional
 
 from src.common.atomic_write import atomic_write_bytes, exclusive_file_lock
 from src.common.data_paths import resolve_store_path

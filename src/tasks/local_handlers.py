@@ -104,6 +104,7 @@ def register_local_jobs(
         _make_reminder_digest_handler(scheduler, reminder_service),
         reentrant=True,
     )
+
     # 重试耗尽的提醒不能静默消失：排程器死信时回调提醒服务记 missed + 摘要。
     def _on_dead_letter(info: Dict[str, Any]) -> None:
         if info.get("job_name") not in (REMINDER_FIRE_JOB, REMINDER_DIGEST_JOB):

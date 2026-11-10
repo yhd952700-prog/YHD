@@ -1724,8 +1724,8 @@ class AuditStore:
                     except sqlite3.Error:
                         pass
                 if free_pages or (
-                        self._wal_bytes() >=
-                        self._storage["wal_truncate_min_bytes"]):
+                        self._wal_bytes()
+                        >= self._storage["wal_truncate_min_bytes"]):
                     self._wal_truncate()
         except Exception:  # noqa: BLE001 - maintenance must never fail appends
             logger.warning(

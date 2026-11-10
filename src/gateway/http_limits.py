@@ -22,7 +22,6 @@ from src.common.input_guard import (
     field_label_from_info,
     scan_json_shape,
     translate_validation_error,
-    trim_for_error,
 )
 
 

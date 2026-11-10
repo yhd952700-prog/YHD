@@ -1152,5 +1152,3 @@ def collect_status(
         "databases": {"checked": len(databases), "corrupt": corrupt},
         "assets": assets,
     }
-
-

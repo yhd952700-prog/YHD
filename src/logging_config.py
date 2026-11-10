@@ -850,7 +850,6 @@ class RotatingTextWriter:
             handle.write(text)
 
 
-
 def resolve_log_config_path(default: Path | None = None) -> Path:
     """Return the configured log-config path (env override wins)."""
     raw = (os.environ.get(LOG_CONFIG_ENV) or "").strip()

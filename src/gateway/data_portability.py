@@ -30,7 +30,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
 from ..kernels.identity import _accounts, get_identity_manager

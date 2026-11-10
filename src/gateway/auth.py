@@ -236,7 +236,6 @@ class SecretStore:
     :class:`CredentialStoreError`，绝不把"没写进去"吞成 ``True``。
     """
 
-
     def __init__(self, path: str):
         self.path = str(path or "")
 

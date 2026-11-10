@@ -1104,7 +1104,6 @@ async def lifespan(app: FastAPI):
             pass
         logger.error("MASTER KEY ACL CHECK FAILED: %s", _acl_exc, exc_info=True)
 
-
     # 旧 .env 里的 AI_PROVIDER_* 配置迁移成一条可编辑模型记录（只做一次）。
     # 迁移不覆盖任何已有数据；失败只记日志，绝不阻断启动。
     try:

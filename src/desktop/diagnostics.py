@@ -116,6 +116,7 @@ def _check_priority(check_id: Any) -> int:
     except ValueError:
         return len(_CHECK_ORDER)
 
+
 #: 这些提供方必须填 Key；本地推理（ollama 等）不填 Key 是正常配置，不能误报。
 _KEY_REQUIRED_PROVIDERS = frozenset(
     {

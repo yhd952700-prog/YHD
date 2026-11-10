@@ -211,7 +211,6 @@ def read_text_with_retry(
     raise last
 
 
-
 def _replace_with_retry(tmp: Path, target: Path) -> None:
     """``os.replace`` with a bounded retry for transient Windows sharing errors."""
     last: OSError | None = None

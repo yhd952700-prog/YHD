@@ -1021,7 +1021,6 @@ class AIStateManager:
         except Exception as exc:  # noqa: BLE001 - 记忆写入失败不影响目标结果
             logger.warning("AIStateManager: employee memory note failed: %s", exc)
 
-
     # ── Goal persistence (restart recovery) ──
 
     @staticmethod
@@ -1289,7 +1288,6 @@ class AIStateManager:
             "employees": item.get("employees", []),
             "archived": True,
         }
-
 
     def _save_goals(self) -> None:
         """Persist ``_goals`` to JSON so executed-goal history survives restart.

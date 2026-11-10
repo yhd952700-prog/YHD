@@ -453,5 +453,3 @@ def open_repair_dialog(app: Any) -> RepairDialog:
 
 
 __all__ = ["RepairDialog", "open_repair_dialog"]
-
-

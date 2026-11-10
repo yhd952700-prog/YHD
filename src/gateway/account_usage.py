@@ -84,7 +84,6 @@ def usage_health() -> Dict[str, Any]:
         }
 
 
-
 def db_path() -> str:
     """用量账本落盘路径：``LIUHAO_ACCOUNT_USAGE_DB`` > ``LIUHAO_WORKSPACE_ROOT``
     > ``LIUHAO_DATA_DIR`` > ``data/account_usage.sqlite3``。"""

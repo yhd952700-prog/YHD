@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sqlite3
 import threading
@@ -1011,7 +1010,6 @@ class PersistentVectorStore(VectorStore):
             for chunk_id, embedding, metadata in payload:
                 self._store[chunk_id] = (embedding, metadata)
             return {"renamed": True, "reason": None, "chunks": len(payload)}
-
 
     def list_documents(
         self,

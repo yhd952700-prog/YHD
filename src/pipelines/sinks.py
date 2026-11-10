@@ -44,6 +44,7 @@ def _assert_sql_identifier(value: Any, kind: str) -> str:
         )
     return text
 
+
 Record = Dict[str, Any]
 Records = List[Record]
 

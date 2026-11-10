@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
 
+from .memory_system import MemoryService, Memory, MemoryType  # noqa: F401  (re-export)
+
 #: mem0（及其传递依赖 openai / qdrant_client）**按需**导入，绝不在模块导入期拉起。
 #: 实测：冷进程 ``import src.knowledge.memory`` 曾因这条链花 8.4 秒，而所有
 #: 真实调用方（``src/ai/goal_task_graph.py``、``src/ai/langgraph_workflow.py``、
@@ -49,6 +51,7 @@ def mem0_available() -> bool:
     """mem0 后端是否可用（首次调用才会真正尝试导入）。"""
     return _mem0() is not None
 
+
 try:
     from ..ai.observability import observe
 except ImportError:
@@ -61,8 +64,7 @@ except ImportError:
 # --- Memory System refactor (DB-backed MemoryService) ---
 # Completed 2026-09-15. Kept separate from the Mem0-compatible MemoryManager
 # API above so existing callers (src/ai/*) and tests/test_knowledge_memory.py
-# keep working. Re-exported here for convenience.
-from .memory_system import MemoryService, Memory, MemoryType  # noqa: F401  (re-export)
+# keep working. Re-exported at the top of this module for convenience.
 
 
 class MemoryTier(Enum):

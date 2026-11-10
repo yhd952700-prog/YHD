@@ -421,7 +421,7 @@ def _guard_pdf_decompression(
         end = raw.find(b"endstream", start)
         if end <= start:
             continue
-        header = raw[max(0, match.start() - 512) : match.start()]
+        header = raw[max(0, match.start() - 512):match.start()]
         if b"/FlateDecode" not in header:
             continue
         data = raw[start:end]

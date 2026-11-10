@@ -161,7 +161,7 @@ def _strip_owner_prefix(path: str, owner: str, mode: str) -> str:
         if rel == prefix:
             return ""
         if rel.startswith(prefix + "/"):
-            return rel[len(prefix) + 1 :]
+            return rel[len(prefix) + 1:]
     return rel
 
 

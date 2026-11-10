@@ -22,7 +22,6 @@
 """
 from __future__ import annotations
 
-import errno as _errno
 import hashlib
 import logging
 import os
@@ -33,7 +32,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger("liuhao.boot")
 

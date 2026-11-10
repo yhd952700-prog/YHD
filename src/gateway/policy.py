@@ -258,6 +258,7 @@ def _approval_refusal(exc: BaseException, *, fallback: str) -> str:
     logger.warning("approval request failed (%s): %s", type(exc).__name__, text)
     return fallback
 
+
 #: Every scope the identity kernel can issue. Anything else in a token's
 #: metadata is unknown and therefore non-authorising (fail-closed).
 _KNOWN_SCOPES = frozenset({"L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7"})

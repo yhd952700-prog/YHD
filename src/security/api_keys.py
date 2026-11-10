@@ -48,7 +48,6 @@ class APIKeyStoreError(RuntimeError):
 _PROCESS_WRITE_LOCK = threading.Lock()
 
 
-
 class PermissionLockdownError(OSError):
     """Raised when the API-key registry file could not be locked down to 0600.
 

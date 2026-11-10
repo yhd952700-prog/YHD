@@ -38,6 +38,7 @@ class ConversationStoreError(RuntimeError):
     直接抛给用户。
     """
 
+
 # 默认落在项目根目录，而不是写死某一台机器的绝对路径：保留"数据不入库内"
 # 的约定，同时保证在任何机器上 checkout 后都能直接运行（写死路径会在 CI 的
 # 工作区里造出名为 "D:" 的目录，upload-artifact 因路径含冒号而失败）。
@@ -236,7 +237,7 @@ class ConversationStore:
                 """
             )
             # MEM-007：租户边界必须是精确归属列，而不是 principal_id 的前缀包含
-            #（``prefix`` 会命中 ``prefix-child``）。老库补列 + 回填由
+            # （``prefix`` 会命中 ``prefix-child``）。老库补列 + 回填由
             # ``_backfill_owner_principals`` 在首次搜索时完成。
             columns = {
                 row[1]
@@ -916,7 +917,7 @@ class ConversationStore:
         pid = str(principal_id or "")
         if not pid.startswith("liuhao-"):
             return pid
-        rest = pid[len("liuhao-") :]
+        rest = pid[len("liuhao-"):]
         for candidate in sorted(
             {str(item) for item in known_principals if item}, key=len, reverse=True
         ):

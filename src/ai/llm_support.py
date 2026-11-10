@@ -757,8 +757,6 @@ def _sanitize_record_names(
     return sanitized
 
 
-
-
 def _unverified_staff_mentions(
     summary: str, records: Sequence[Dict[str, Any]]
 ) -> List[str]:
@@ -905,7 +903,6 @@ def failure_summary(error: Any) -> str:
         f"未完成：任务执行中断（{reason}）。本次没有生成任何文件，"
         f"也没有任何可交付的产物路径。{advice}"
     )
-
 
 
 #: Arithmetic a summary may state: "128 + 64 = 192" / "128 + 64 的结果是 204".
