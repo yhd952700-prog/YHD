@@ -110,6 +110,12 @@ class ProviderMetricsRepository:
         path_value = parsed.path
         if path_value.startswith("/") and not path_value.startswith("//"):
             path_value = path_value.lstrip("/")
+        elif path_value.startswith("//") and not path_value.startswith("///"):
+            # POSIX 绝对路径：``default_metrics_database_url`` 拼出
+            # ``sqlite:////abs/path``（"sqlite:///" + "/abs/path"），
+            # urlparse 会把 path 解析成 '//abs/path'。归一成单斜杠的
+            # POSIX 绝对路径；Windows 盘符分支（'/D:/...'）不受影响。
+            path_value = "/" + path_value.lstrip("/")
 
         database_file = Path(path_value)
         if not database_file.is_absolute():
