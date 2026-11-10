@@ -676,13 +676,29 @@ def _make_file_write(root: str):
                     "error": "owner_account_id 含有非法路径字符，拒绝写入。",
                 }
         try:
-            rel_path = sanitize_workspace_path(path.strip()).lstrip("/")
+            sanitized = sanitize_workspace_path(path.strip())
         except WorkspaceViolation as exc:
             return {
                 "success": False,
                 "status": "rejected",
                 "error": f"路径被拒绝：{exc}",
             }
+        rel_path = sanitized.lstrip("/")
+        if sanitized.startswith("/") and rel_path != sanitized and os.path.isabs(
+            sanitized
+        ):
+            # POSIX 形态的绝对路径可能恰好指向工作区内（调用方直接给出 root 内
+            # 的绝对路径）。先剥前导斜杠会把目标悄悄搬到 root/<原绝对路径> 下，
+            # 造成「报告 executed 但文件在另一处」；工作区内的绝对路径必须按
+            # 原样落盘（报告=实际）。root 外的绝对路径仍走剥斜杠的容忍，由
+            # 随后的 resolve_in_workspace 做包含性裁决（fail-closed）。
+            try:
+                from .workspace import resolve_in_workspace
+
+                resolve_in_workspace(sanitized, fs_root)
+                rel_path = sanitized
+            except WorkspaceViolation:
+                rel_path = sanitized.lstrip("/")
         if owner_text and not rel_path.startswith("accounts/"):
             rel_path = f"accounts/{owner_text}/{rel_path}"
 
