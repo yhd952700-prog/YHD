@@ -224,6 +224,35 @@ function modelsPayload(models: ModelRecord[]) {
   }
 }
 
+describe('模型列表的验证状态', () => {
+  test('未验证显示「未测试」，真实调用成功后显示「已验证」', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/v1/models/presets')) return Promise.resolve(json({ presets: [] }))
+      return Promise.resolve(
+        json(
+          modelsPayload([
+            {
+              ...MODEL,
+              id: 'm-ok',
+              name: '真实模型',
+              verified: true,
+              last_verified_at: '2026-11-10T12:00:00',
+            },
+            { ...MODEL, id: 'm-new', name: '新建模型', verified: false },
+          ]),
+        ),
+      )
+    })
+
+    render(<ModelManager session={SESSION} />)
+
+    expect(await screen.findByText('已验证')).toBeTruthy()
+    expect(screen.getByText('未测试')).toBeTruthy()
+    expect(screen.getByTitle(/最近一次真实对话成功于 2026-11-10T12:00:00/)).toBeTruthy()
+  })
+})
+
 describe('describeModelDiff', () => {
   test('只列出真正变化的字段，忽略 updated_at 本身', () => {
     const latest: ModelRecord = {

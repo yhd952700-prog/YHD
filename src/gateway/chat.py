@@ -709,6 +709,60 @@ def _record_chat_usage(
     return recorded
 
 
+def _is_mock_provider(provider) -> bool:
+    """判断这轮应答是否来自 Mock/演示 provider（不能算“真实可用”）。"""
+    from ..ai.providers import MockProvider
+
+    if isinstance(provider, MockProvider):
+        return True
+    # FailoverProvider 内部还包着一层；任何一个候选是 Mock 都保守跳过，
+    # 不把“演示应答”写成“真实模型已验证”。
+    for inner in getattr(provider, "_providers", ()) or ():
+        if isinstance(inner, MockProvider):
+            return True
+    return False
+
+
+def _mark_served_model_verified(assistant: LiuHaoAssistant, principal: str) -> None:
+    """真实模型成功应答后回写「已验证」，让模型列表不再显示“未测试”。
+
+    只在单次真实调用成功、且没有切到备用模型时回写：failover 后的主配置
+    未必可用，不能冒领；Mock/演示应答也不算真实可用。回写失败不阻断对话。
+    """
+    provider = getattr(assistant, "provider", None)
+    if provider is None or _is_mock_provider(provider):
+        return
+    if getattr(provider, "last_fell_back_from", None):
+        return
+    model_id = str(getattr(provider, "model_config_id", "") or "")
+    if not model_id:
+        return
+    try:
+        from ..ai.model_config import get_model_config_store
+        from ..ai.providers import provider_mode_for
+
+        store = get_model_config_store()
+        config = store.resolve(model_id)
+        # 诚实性判据：只有 provider 类型是真实服务时才回写。mock/未配置
+        # （provider_mode_for 判为 "mock"）即使这一轮"成功"，也不能标成
+        # 「已验证」——否则这个字段会被演示应答污染，用户会以为真的连通过。
+        provider_type = str((config or {}).get("provider") or "")
+        if provider_mode_for(provider_type) != "real":
+            logger.debug(
+                "skip marking model %s verified: provider mode is not real (%r)",
+                model_id,
+                provider_type,
+            )
+            return
+        store.mark_verified(model_id, True, actor=principal or "chat")
+    except Exception as exc:  # noqa: BLE001 -- 回写失败不影响本轮对话
+        logger.warning(
+            "could not mark model %s verified after successful chat: %s",
+            model_id,
+            exc,
+        )
+
+
 # ─── 重复提交去重（幂等）──────────────────────────────────────
 #
 # 缺陷背景：用户连点两次发送，或网络抖动导致同一请求重发时，后端会真的
@@ -1024,6 +1078,7 @@ def chat(
                     correlation_id=str(result.get("correlation_id") or ""),
                     estimated=estimated,
                 )
+                _mark_served_model_verified(assistant, principal)
         if result.get("status") == "denied":
             raise _denial_http_error(result)
         response = ChatResponse(
@@ -1321,6 +1376,9 @@ def chat_stream(
             if isinstance(turn_detail, str) and turn_detail:
                 done["technical_detail"] = turn_detail
         if turn_status == "completed":
+            # 真实模型这一轮成功了：把“已验证”回写到模型配置，模型列表
+            # 不再显示“未测试”。Mock/failover 由 helper 内部排除。
+            _mark_served_model_verified(assistant, principal)
             # 只有成功轮次才把完整内容缓存给重发请求复用。
             outcome["payload"] = {
                 "reply": reply_text,

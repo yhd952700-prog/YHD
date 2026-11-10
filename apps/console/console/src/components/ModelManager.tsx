@@ -345,7 +345,9 @@ export interface ModelManagerProps {
 
 export function ModelManager({ session, focusModelId }: ModelManagerProps) {
   const canWrite = canManageModels(session)
-  const list = useApi<ModelsResponse>('/v1/models', 0)
+  // 20 秒轮询：真实对话成功后 verified 由后端回写，停在模型管理页时应自动
+  // 从「未测试」变成「已验证」，不能只改数据库、等用户手动刷新才看得见。
+  const list = useApi<ModelsResponse>('/v1/models', 20_000)
   const presets = useApi<PresetsResponse>('/v1/models/presets', 0)
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
@@ -1172,8 +1174,24 @@ export function ModelManager({ session, focusModelId }: ModelManagerProps) {
                             默认
                           </span>
                         )}
-                        {!item.verified && (
-                          <span className="os-badge" data-tone="muted" title="保存后点「测试连接」通过，才能设为默认">
+                        {item.verified ? (
+                          <span
+                            className="os-badge"
+                            data-tone="ok"
+                            title={
+                              item.last_verified_at
+                                ? `最近一次真实对话成功于 ${item.last_verified_at}`
+                                : '已通过真实模型调用验证'
+                            }
+                          >
+                            已验证
+                          </span>
+                        ) : (
+                          <span
+                            className="os-badge"
+                            data-tone="muted"
+                            title="真实对话成功或点「测试连接」通过后，才会标记为已验证"
+                          >
                             未测试
                           </span>
                         )}
