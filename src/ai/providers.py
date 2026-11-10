@@ -354,18 +354,6 @@ def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
     return seen
 
 
-def _is_certificate_failure(exc: BaseException) -> bool:
-    """TLS 证书校验失败（SDK 常包成 ``APIConnectionError``，方向极易误诊）。"""
-    for err in _exception_chain(exc):
-        name = type(err).__name__.lower()
-        if "ssl" in name or "cert" in name:
-            return True
-        text = str(err).lower()
-        if "certificate" in text or "self signed" in text or "self-signed" in text:
-            return True
-    return False
-
-
 def is_address_rejected_error(exc: BaseException) -> bool:
     """net_guard 的运行时目标拒绝（DNS 不可解析 / 私网端点）。"""
     return isinstance(exc, RuntimeTargetRejected) or "runtimetargetrejected" in type(
@@ -1877,13 +1865,11 @@ class BaseProvider:
             except Exception:  # noqa: BLE001 - 提示失败不能影响生成
                 logger.debug("retry notification failed", exc_info=True)
 
-        last_error: Optional[BaseException] = None
         last_empty_detail = ""
         for attempt in range(self.max_retries + 1):
             try:
                 response = self.generate(prompt, **kwargs)
             except Exception as e:
-                last_error = e
                 if not _is_retryable_failure(e):
                     raise
                 # 超时/连接类只重试一次：第一次多半是模型还在加载，第二次
@@ -2402,7 +2388,8 @@ def _guarded_transport_cls(module):
     import importlib
 
     core_name = "httpcore2" if module.__name__ == "httpx2" else "httpcore"
-    core = importlib.import_module(core_name)
+    # 仅为副作用导入（预热 httpcore 模块缓存），不使用返回值。
+    importlib.import_module(core_name)
 
     class GuardedHTTPTransport(module.HTTPTransport):
         def __init__(

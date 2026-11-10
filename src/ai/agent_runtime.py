@@ -486,7 +486,7 @@ class AgentRuntime:
                 preflight_notices=preflight_notices,
                 decomposition_source=decomposition_source,
             )
-        except GoalCancelled as exc:
+        except GoalCancelled:
             # Cooperative cancellation: the goal was aborted by a stop request.
             # Report it honestly as CANCELLED -- never as success.
             return AgentRunResult(

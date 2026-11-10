@@ -2371,22 +2371,22 @@ class AIStateManager:
             positions = {
                 t.get("id"): i for i, t in enumerate(current) if t.get("id")
             }
-            for snapshot in tasks:
-                task_id = snapshot.get("id")
+            for snap in tasks:
+                task_id = snap.get("id")
                 if not task_id:
                     continue
                 # 子任务自带归属：重试/下载判定不必回看 goal，也不会因为快照
                 # 来自内核就丢掉 owner。
-                snapshot = dict(snapshot, owner_account_id=owner)
-                self._attach_employee_attribution({"tasks": [snapshot]})
+                snap = dict(snap, owner_account_id=owner)
+                self._attach_employee_attribution({"tasks": [snap]})
                 position = positions.get(task_id)
                 if position is not None:
-                    if current[position] != snapshot:
-                        current[position] = snapshot
+                    if current[position] != snap:
+                        current[position] = snap
                         changed = True
                 else:
                     positions[task_id] = len(current)
-                    current.append(snapshot)
+                    current.append(snap)
                     changed = True
             if changed:
                 entry["tasks"] = current
@@ -2651,27 +2651,27 @@ class AIStateManager:
             raise
 
         def _progress(snapshots: List[Dict[str, Any]]) -> None:
-            for snapshot in snapshots:
-                name = str(snapshot.get("name") or "")
+            for snap in snapshots:
+                name = str(snap.get("name") or "")
                 if name not in retry_names:
                     continue
                 # 保留原卡片 id：前端按 id 渲染，重跑不应换一张卡。
                 if name == task_name:
-                    snapshot = dict(snapshot, id=task_id)
-                snapshot = dict(snapshot, owner_account_id=owner)
-                self._attach_employee_attribution({"tasks": [snapshot]})
+                    snap = dict(snap, id=task_id)
+                snap = dict(snap, owner_account_id=owner)
+                self._attach_employee_attribution({"tasks": [snap]})
                 with self._goal_lock:
                     live = self._goals.get(goal_id)
                     if live is None or live.get("state") != "running":
                         return
                     live_tasks = list(live.get("tasks") or [])
                     for index, item in enumerate(live_tasks):
-                        if item.get("id") == snapshot.get("id") or \
+                        if item.get("id") == snap.get("id") or \
                                 item.get("name") == name:
-                            live_tasks[index] = snapshot
+                            live_tasks[index] = snap
                             break
                     else:
-                        live_tasks.append(snapshot)
+                        live_tasks.append(snap)
                     live["tasks"] = live_tasks
                     self._touch(live)
                 # 快照很小，但也不在锁内落盘。

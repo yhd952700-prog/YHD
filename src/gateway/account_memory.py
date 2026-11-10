@@ -1461,7 +1461,6 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
     返回 ``{"ran": bool, ...计数}``。``force=True`` 忽略完成标记，用于备份
     导入后立即把带过来的内核记忆映射进账号记忆表。
     """
-    global _migration_done_paths, _migration_backoff
     with _migration_lock:
         path = db_path()
         if not force:
