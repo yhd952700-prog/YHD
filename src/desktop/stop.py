@@ -101,6 +101,17 @@ def stop_installed(
         matched.append({"pid": pid, "cmd": cmdline[:300]})
         victims.append(proc)
 
+    if victims:
+        # 外部停止也要在桌面日志里留一行"谁停的"：本进程 PID 就是调用者。
+        # 写失败不影响停止/卸载流程。
+        from .stop_log import append_stop_attribution
+
+        append_stop_attribution(
+            base / "logs" / "desktop.log",
+            "external",
+            caller_pid=os.getpid(),
+        )
+
     for proc in victims:
         try:
             proc.terminate()

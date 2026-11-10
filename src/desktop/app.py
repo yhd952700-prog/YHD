@@ -57,6 +57,7 @@ from .service import (
     save_saved_port,
 )
 from .startup import STARTUP_TIMEOUT, unavailable_gate, wait_until_ready
+from .stop_log import describe_stop_attribution
 from .tray import (
     ACTION_CLEAR_AUTO_LOGIN,
     ACTION_LOGOUT,
@@ -442,6 +443,10 @@ class DesktopApp:
         self._closing = False
         self._stopping = False
         self._stop_result: dict[str, Any] | None = None
+        #: 本次停止的触发者：button / tray / restart / unknown。
+        self._stop_source = ""
+        #: 同一次停止只记一次归因，避免「停止」后紧接「退出」时重复落两行。
+        self._stop_logged = False
         self._stop_thread: threading.Thread | None = None
         self._boot_thread: threading.Thread | None = None
         self._health_thread: threading.Thread | None = None
@@ -1365,7 +1370,7 @@ class DesktopApp:
         if self.service.is_running():
             logger.info("用户从托盘请求重新启动网关：先停止，再启动")
             self._restart_after_stop = True
-            self._stop_service()
+            self._stop_service(source="restart")
             return
         logger.info("用户从托盘请求启动网关（当前未运行）")
         self._begin_boot(note="正在重新启动")
@@ -1377,6 +1382,8 @@ class DesktopApp:
         self._boot_pending = True
         self._boot_result = None
         self._stop_result = None
+        self._stop_source = ""
+        self._stop_logged = False
         self._last_health_ok = None
         self._data_dir_writable = None
         # 新的网关进程会有新的令牌与任务状态：旧快照不能继承，否则重启后
@@ -1671,12 +1678,12 @@ class DesktopApp:
         if "data" in self._labels and path:
             self._labels["data"].config(text=f"数据目录：{path}（本次已切换，网关已按新目录重启）")
 
-    def _stop_service_and_show(self) -> None:
+    def _stop_service_and_show(self, *, source: str = "button") -> None:
         """「停止服务」的唯一实现：托盘菜单与窗口按钮共用，行为必须一致。"""
-        self._stop_service()
+        self._stop_service(source=source)
         self._show_window()
 
-    def _stop_service(self) -> None:
+    def _stop_service(self, *, source: str = "button") -> None:
         """停止网关（UI 线程只负责发起，最多 10s 的等待放到后台线程）。"""
         if self._stopping:
             return
@@ -1695,7 +1702,9 @@ class DesktopApp:
             self._labels["stop"].config(
                 text=f"最近停止：正在优雅停止（最多 {GRACEFUL_TIMEOUT:.0f} 秒，超时才强杀）…"
             )
-        logger.info("用户从桌面壳请求停止网关")
+        self._stop_source = source
+        self._stop_logged = False
+        logger.info("用户从桌面壳请求停止网关（source=%s）", source)
         self._stop_thread = threading.Thread(target=self._stop_worker, name="liuhao-stop", daemon=True)
         self._stop_thread.start()
 
@@ -1714,6 +1723,16 @@ class DesktopApp:
         self._stop_state_poller()
         self._clear_token()
         self._tray_snapshot = None
+        if not self._stop_logged:
+            self._stop_logged = True
+            logger.info(
+                describe_stop_attribution(
+                    self._stop_source or "unknown",
+                    caller_pid=os.getpid(),
+                    graceful=result.get("graceful"),
+                    forced=result.get("forced"),
+                )
+            )
         logger.info("网关停止结果：%s", result)
         if "stop" in self._labels:
             self._labels["stop"].config(text=f"最近停止：{_describe_stop(result)}")
@@ -1747,9 +1766,12 @@ class DesktopApp:
             # 停止完成后才启动新的网关：「重新启动服务」不会并发起两份。
             self._begin_boot(note="正在重新启动")
 
-    def _quit(self) -> None:
+    def _quit(self, *, source: str = "button") -> None:
         if self._closing:
             return
+        if not self._stop_source:
+            # 没有先点「停止服务」时，退出就是这次停止的触发者。
+            self._stop_source = source
         self._closing = True
         self._stop_event.set()
         self._stop_state_poller()
@@ -1862,7 +1884,7 @@ class DesktopApp:
         elif action == ACTION_RESTART_SERVICE:
             self._restart_service()
         elif action == ACTION_STOP_SERVICE:
-            self._stop_service_and_show()
+            self._stop_service_and_show(source="tray")
         elif action == ACTION_OPEN_LOGS:
             self._open_logs()
         elif action == ACTION_TOGGLE_PAUSE_EMPLOYEES:
@@ -1870,7 +1892,7 @@ class DesktopApp:
         elif action in (ACTION_LOGOUT, ACTION_CLEAR_AUTO_LOGIN):
             self._sign_out()
         elif action == ACTION_QUIT:
-            self._quit()
+            self._quit(source="tray")
 
     def _handle_native_action(self, payload: dict[str, Any]) -> None:
         """窗口内本地页面的按钮（重试 / 换端口）。"""
