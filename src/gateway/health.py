@@ -1259,6 +1259,10 @@ def _readiness_payload_sync(
         checks["kernel_policy_enforcement"] = {
             "status": "unhealthy",
             "error": "安全策略自检暂时无法运行，请到诊断页查看技术细节。",
+            "user_message": (
+                "安全策略自检暂时无法运行；请到系统状态页查看，"
+                "或导出诊断包后重启服务。"
+            ),
         }
         errors.append("安全策略自检暂时无法运行，请到诊断页查看技术细节。")
 

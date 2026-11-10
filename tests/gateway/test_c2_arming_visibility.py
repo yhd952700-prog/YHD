@@ -91,6 +91,17 @@ class TestProductionWithoutArmingIsVisible:
         )
         assert ENV_VAR in line
 
+    def test_user_message_is_human_readable_and_leaks_no_env_name(self):
+        """前端未鉴权探针只展示 user_message；它必须是人话且不含环境变量名。"""
+        verdict = evaluate_c2_arming(
+            _snapshot(enabled=False, enforced_actions=[]), production=True
+        )
+        check = verdict.to_check()
+        message = check.get("user_message")
+        assert message, "告警检查项缺少 user_message，界面只能显示通用占位文案"
+        assert ENV_VAR not in message
+        assert "只记录、不拦截" in message
+
     def test_empty_override_is_caught_too(self):
         """Explicitly overriding the var to '' is not the same as deleting it."""
         unset = evaluate_c2_arming(
@@ -116,6 +127,9 @@ class TestInvalidSpecIsVisible:
         assert verdict.config_error == "unknown tier"
         assert verdict.status == "degraded"
         assert verdict.alerting
+        assert verdict.to_check().get("user_message"), (
+            "配置损坏也必须给用户一句能看懂的话"
+        )
 
     def test_invalid_spec_outranks_the_non_production_exemption(self):
         """Precedence guard: config_error must win over the config-choice escape."""

@@ -111,6 +111,25 @@ class C2ArmingVerdict:
     def enforced_action_count(self) -> int:
         return len(self.enforced_actions)
 
+    def user_message(self) -> Optional[str]:
+        """面向最终用户的中文说明（不含环境变量名/内部路径）。
+
+        前端对未鉴权探针只展示人话字段；缺失时只能显示"这项检查没有通过"，
+        用户既不知道发生了什么，也不知道要不要处理。
+        """
+        if self.state is C2ArmingState.UNARMED_PRODUCTION:
+            return (
+                "安全策略闸没有启用：当前版本声明为生产环境，高风险内核动作"
+                "只记录、不拦截。安装版启动时会自动启用；如果你手动清空过"
+                "相关设置，请恢复后重启。"
+            )
+        if self.state is C2ArmingState.INVALID_SPEC:
+            return (
+                "安全策略配置无法识别：当前没有任何高风险动作被拦截。"
+                "请检查策略配置后重启服务。"
+            )
+        return None
+
     def to_check(self) -> Dict[str, Any]:
         """Projection consumed by a readiness probe's ``checks`` mapping.
 
@@ -130,6 +149,9 @@ class C2ArmingVerdict:
             check["error"] = self.error
         if self.note:
             check["note"] = self.note
+        message = self.user_message()
+        if message:
+            check["user_message"] = message
         return check
 
     def to_error_line(self) -> Optional[str]:
