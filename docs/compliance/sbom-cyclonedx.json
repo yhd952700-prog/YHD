@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:65278c27-29aa-5531-a55b-237a1a146120",
+  "serialNumber": "urn:uuid:0ebf5458-3516-5e8e-9596-4223c8b8b29c",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-10T16:59:03+00:00",
+    "timestamp": "2026-11-10T21:37:19+00:00",
     "tools": [
       {
         "vendor": "LiuHao AI OS",
@@ -14,9 +14,9 @@
     ],
     "component": {
       "type": "application",
-      "bom-ref": "pkg:generic/liuhao-ai-os@0.1.2.1",
+      "bom-ref": "pkg:generic/liuhao-ai-os@0.2.0",
       "name": "鎏灏 LiuHao AI OS",
-      "version": "0.1.2.1",
+      "version": "0.2.0",
       "licenses": [
         {
           "license": {
@@ -35,7 +35,7 @@
         },
         {
           "name": "liuhao:python-distributions",
-          "value": "99"
+          "value": "94"
         },
         {
           "name": "liuhao:embedded-components",
@@ -50,7 +50,7 @@
     "properties": [
       {
         "name": "liuhao:notices-sha256",
-        "value": "84dad0ac062f9b0b0ca79fae303b67a6801ebe0623c492876f44eaf4535dd3ae"
+        "value": "89bf4eeb98466210a4c429f97c38f89ffcc827f9d65296e221832eb529aed2ba"
       },
       {
         "name": "liuhao:notices-exact-match",
@@ -325,10 +325,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/anyio@4.15.0",
+      "bom-ref": "pkg:pypi/anyio@4.15.1",
       "name": "anyio",
-      "version": "4.15.0",
-      "purl": "pkg:pypi/anyio@4.15.0",
+      "version": "4.15.1",
+      "purl": "pkg:pypi/anyio@4.15.1",
       "licenses": [
         {
           "license": {
@@ -353,11 +353,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "anyio-4.15.0.dist-info/licenses/LICENSE"
+          "value": "anyio-4.15.1.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "anyio-4.15.0.dist-info"
+          "value": "anyio-4.15.1.dist-info"
         }
       ]
     },
@@ -591,10 +591,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/click@8.4.2",
+      "bom-ref": "pkg:pypi/click@8.5.0",
       "name": "click",
-      "version": "8.4.2",
-      "purl": "pkg:pypi/click@8.4.2",
+      "version": "8.5.0",
+      "purl": "pkg:pypi/click@8.5.0",
       "licenses": [
         {
           "license": {
@@ -619,11 +619,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "click-8.4.2.dist-info/licenses/LICENSE.txt"
+          "value": "click-8.5.0.dist-info/licenses/LICENSE.txt"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "click-8.4.2.dist-info"
+          "value": "click-8.5.0.dist-info"
         }
       ]
     },
@@ -893,86 +893,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/google-ai-generativelanguage@0.6.15",
-      "name": "google-ai-generativelanguage",
-      "version": "0.6.15",
-      "purl": "pkg:pypi/google-ai-generativelanguage@0.6.15",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "website",
-          "url": "https://github.com/googleapis/google-cloud-python/tree/main/packages/google-ai-generativelanguage"
-        }
-      ],
-      "properties": [
-        {
-          "name": "liuhao:license-class",
-          "value": "permissive"
-        },
-        {
-          "name": "liuhao:license-text-present",
-          "value": "true"
-        },
-        {
-          "name": "liuhao:license-files",
-          "value": "google_ai_generativelanguage-0.6.15.dist-info/LICENSE"
-        },
-        {
-          "name": "liuhao:dist-info",
-          "value": "google_ai_generativelanguage-0.6.15.dist-info"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:pypi/google-api-core@2.33.0",
-      "name": "google-api-core",
-      "version": "2.33.0",
-      "purl": "pkg:pypi/google-api-core@2.33.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "website",
-          "url": "https://github.com/googleapis/google-cloud-python/tree/main/packages/google-api-core"
-        }
-      ],
-      "properties": [
-        {
-          "name": "liuhao:license-class",
-          "value": "permissive"
-        },
-        {
-          "name": "liuhao:license-text-present",
-          "value": "true"
-        },
-        {
-          "name": "liuhao:license-files",
-          "value": "google_api_core-2.33.0.dist-info/licenses/LICENSE"
-        },
-        {
-          "name": "liuhao:dist-info",
-          "value": "google_api_core-2.33.0.dist-info"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:pypi/google-auth@2.58.0",
+      "bom-ref": "pkg:pypi/google-auth@2.57.1",
       "name": "google-auth",
-      "version": "2.58.0",
-      "purl": "pkg:pypi/google-auth@2.58.0",
+      "version": "2.57.1",
+      "purl": "pkg:pypi/google-auth@2.57.1",
       "licenses": [
         {
           "license": {
@@ -997,20 +921,20 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "google_auth-2.58.0.dist-info/licenses/LICENSE"
+          "value": "google_auth-2.57.1.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "google_auth-2.58.0.dist-info"
+          "value": "google_auth-2.57.1.dist-info"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/google-genai@2.23.0",
+      "bom-ref": "pkg:pypi/google-genai@2.22.0",
       "name": "google-genai",
-      "version": "2.23.0",
-      "purl": "pkg:pypi/google-genai@2.23.0",
+      "version": "2.22.0",
+      "purl": "pkg:pypi/google-genai@2.22.0",
       "licenses": [
         {
           "license": {
@@ -1035,58 +959,20 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "google_genai-2.23.0.dist-info/licenses/LICENSE"
+          "value": "google_genai-2.22.0.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "google_genai-2.23.0.dist-info"
+          "value": "google_genai-2.22.0.dist-info"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/google-generativeai@0.8.6",
-      "name": "google-generativeai",
-      "version": "0.8.6",
-      "purl": "pkg:pypi/google-generativeai@0.8.6",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "website",
-          "url": "https://github.com/google/generative-ai-python"
-        }
-      ],
-      "properties": [
-        {
-          "name": "liuhao:license-class",
-          "value": "permissive"
-        },
-        {
-          "name": "liuhao:license-text-present",
-          "value": "true"
-        },
-        {
-          "name": "liuhao:license-files",
-          "value": "google_generativeai-0.8.6.dist-info/LICENSE"
-        },
-        {
-          "name": "liuhao:dist-info",
-          "value": "google_generativeai-0.8.6.dist-info"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:pypi/googleapis-common-protos@1.75.0",
+      "bom-ref": "pkg:pypi/googleapis-common-protos@1.75.3",
       "name": "googleapis-common-protos",
-      "version": "1.75.0",
-      "purl": "pkg:pypi/googleapis-common-protos@1.75.0",
+      "version": "1.75.3",
+      "purl": "pkg:pypi/googleapis-common-protos@1.75.3",
       "licenses": [
         {
           "license": {
@@ -1111,11 +997,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "googleapis_common_protos-1.75.0.dist-info/licenses/LICENSE"
+          "value": "googleapis_common_protos-1.75.3.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "googleapis_common_protos-1.75.0.dist-info"
+          "value": "googleapis_common_protos-1.75.3.dist-info"
         }
       ]
     },
@@ -2031,82 +1917,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-requests@0.65b0",
-      "name": "opentelemetry-instrumentation-requests",
-      "version": "0.65b0",
-      "purl": "pkg:pypi/opentelemetry-instrumentation-requests@0.65b0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "website",
-          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-requests"
-        }
-      ],
-      "properties": [
-        {
-          "name": "liuhao:license-class",
-          "value": "permissive"
-        },
-        {
-          "name": "liuhao:license-text-present",
-          "value": "true"
-        },
-        {
-          "name": "liuhao:license-files",
-          "value": "opentelemetry_instrumentation_requests-0.65b0.dist-info/licenses/LICENSE"
-        },
-        {
-          "name": "liuhao:dist-info",
-          "value": "opentelemetry_instrumentation_requests-0.65b0.dist-info"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-threading@0.65b0",
-      "name": "opentelemetry-instrumentation-threading",
-      "version": "0.65b0",
-      "purl": "pkg:pypi/opentelemetry-instrumentation-threading@0.65b0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "website",
-          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/instrumentation/opentelemetry-instrumentation-threading"
-        }
-      ],
-      "properties": [
-        {
-          "name": "liuhao:license-class",
-          "value": "permissive"
-        },
-        {
-          "name": "liuhao:license-text-present",
-          "value": "true"
-        },
-        {
-          "name": "liuhao:license-files",
-          "value": "opentelemetry_instrumentation_threading-0.65b0.dist-info/licenses/LICENSE"
-        },
-        {
-          "name": "liuhao:dist-info",
-          "value": "opentelemetry_instrumentation_threading-0.65b0.dist-info"
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:pypi/opentelemetry-proto@1.44.0",
       "name": "opentelemetry-proto",
       "version": "1.44.0",
@@ -2331,10 +2141,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/platformdirs@4.11.8",
+      "bom-ref": "pkg:pypi/platformdirs@4.11.7",
       "name": "platformdirs",
-      "version": "4.11.8",
-      "purl": "pkg:pypi/platformdirs@4.11.8",
+      "version": "4.11.7",
+      "purl": "pkg:pypi/platformdirs@4.11.7",
       "licenses": [
         {
           "license": {
@@ -2359,11 +2169,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "platformdirs-4.11.8.dist-info/licenses/LICENSE"
+          "value": "platformdirs-4.11.7.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "platformdirs-4.11.8.dist-info"
+          "value": "platformdirs-4.11.7.dist-info"
         }
       ]
     },
@@ -2443,10 +2253,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/protobuf@5.29.6",
+      "bom-ref": "pkg:pypi/protobuf@6.33.6",
       "name": "protobuf",
-      "version": "5.29.6",
-      "purl": "pkg:pypi/protobuf@5.29.6",
+      "version": "6.33.6",
+      "purl": "pkg:pypi/protobuf@6.33.6",
       "licenses": [
         {
           "license": {
@@ -2471,11 +2281,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "protobuf-5.29.6.dist-info/LICENSE"
+          "value": "protobuf-6.33.6.dist-info/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "protobuf-5.29.6.dist-info"
+          "value": "protobuf-6.33.6.dist-info"
         }
       ]
     },
@@ -4711,10 +4521,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/react@19.2.8",
+      "bom-ref": "pkg:npm/react@19.3.1",
       "name": "react",
-      "version": "19.2.8",
-      "purl": "pkg:npm/react@19.2.8",
+      "version": "19.3.1",
+      "purl": "pkg:npm/react@19.3.1",
       "licenses": [
         {
           "license": {
@@ -4749,10 +4559,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/react-dom@19.2.8",
+      "bom-ref": "pkg:npm/react-dom@19.3.1",
       "name": "react-dom",
-      "version": "19.2.8",
-      "purl": "pkg:npm/react-dom@19.2.8",
+      "version": "19.3.1",
+      "purl": "pkg:npm/react-dom@19.3.1",
       "licenses": [
         {
           "license": {
@@ -4787,10 +4597,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/scheduler@0.27.0",
+      "bom-ref": "pkg:npm/scheduler@0.28.0",
       "name": "scheduler",
-      "version": "0.27.0",
-      "purl": "pkg:npm/scheduler@0.27.0",
+      "version": "0.28.0",
+      "purl": "pkg:npm/scheduler@0.28.0",
       "licenses": [
         {
           "license": {
@@ -4826,7 +4636,7 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:generic/liuhao-ai-os@0.1.2.1",
+      "ref": "pkg:generic/liuhao-ai-os@0.2.0",
       "dependsOn": [
         "pkg:pypi/aiohappyeyeballs@2.7.1",
         "pkg:pypi/aiohttp@3.14.4",
@@ -4835,14 +4645,14 @@
         "pkg:pypi/annotated-doc@0.0.5",
         "pkg:pypi/annotated-types@0.8.0",
         "pkg:pypi/anthropic@1.3.0",
-        "pkg:pypi/anyio@4.15.0",
+        "pkg:pypi/anyio@4.15.1",
         "pkg:pypi/attrs@26.1.0",
         "pkg:pypi/bcrypt@5.0.0",
         "pkg:pypi/bottle@0.13.4",
         "pkg:pypi/certifi@2026.10.23",
         "pkg:pypi/cffi@2.1.1",
         "pkg:pypi/charset-normalizer@3.5.1",
-        "pkg:pypi/click@8.4.2",
+        "pkg:pypi/click@8.5.0",
         "pkg:pypi/clr-loader@0.3.1",
         "pkg:pypi/cryptography@50.0.1",
         "pkg:pypi/docstring-parser@0.18.0",
@@ -4850,12 +4660,9 @@
         "pkg:pypi/fastapi@0.141.1",
         "pkg:pypi/fastmcp-slim@4.0.3",
         "pkg:pypi/frozenlist@1.8.0",
-        "pkg:pypi/google-ai-generativelanguage@0.6.15",
-        "pkg:pypi/google-api-core@2.33.0",
-        "pkg:pypi/google-auth@2.58.0",
-        "pkg:pypi/google-genai@2.23.0",
-        "pkg:pypi/google-generativeai@0.8.6",
-        "pkg:pypi/googleapis-common-protos@1.75.0",
+        "pkg:pypi/google-auth@2.57.1",
+        "pkg:pypi/google-genai@2.22.0",
+        "pkg:pypi/googleapis-common-protos@1.75.3",
         "pkg:pypi/greenlet@3.5.5",
         "pkg:pypi/h11@0.16.0",
         "pkg:pypi/h2@4.4.1",
@@ -4880,18 +4687,16 @@
         "pkg:pypi/opentelemetry-instrumentation@0.65b0",
         "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
         "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
-        "pkg:pypi/opentelemetry-instrumentation-requests@0.65b0",
-        "pkg:pypi/opentelemetry-instrumentation-threading@0.65b0",
         "pkg:pypi/opentelemetry-proto@1.44.0",
         "pkg:pypi/opentelemetry-sdk@1.44.0",
         "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
         "pkg:pypi/opentelemetry-util-http@0.65b0",
         "pkg:pypi/orjson@3.12.0",
         "pkg:pypi/packaging@26.3",
-        "pkg:pypi/platformdirs@4.11.8",
+        "pkg:pypi/platformdirs@4.11.7",
         "pkg:pypi/prometheus-client@0.26.0",
         "pkg:pypi/propcache@0.5.2",
-        "pkg:pypi/protobuf@5.29.6",
+        "pkg:pypi/protobuf@6.33.6",
         "pkg:pypi/proxy-tools@0.1.0",
         "pkg:pypi/psutil@7.2.2",
         "pkg:pypi/pycparser@3.0",
@@ -4949,9 +4754,9 @@
         "pkg:generic/zlib-lxml@未标注",
         "pkg:generic/adodbapi-pywin32-311@2.6.2.0",
         "pkg:generic/iconv-lxml-6.1.3-wheel@未标注（参考上游",
-        "pkg:npm/react@19.2.8",
-        "pkg:npm/react-dom@19.2.8",
-        "pkg:npm/scheduler@0.27.0"
+        "pkg:npm/react@19.3.1",
+        "pkg:npm/react-dom@19.3.1",
+        "pkg:npm/scheduler@0.28.0"
       ]
     }
   ]
