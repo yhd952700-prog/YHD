@@ -241,6 +241,35 @@ def verify_round_trip_many(store, principals: List[Any]) -> set:
         _restore_env(previous)
 
 
+def issue_root_recovery_code(store, principal: str) -> Optional[str]:
+    """为新任根账号生成一次性恢复码；明文只交给本次调用方展示。
+
+    只在「该主体就是根账号」且「根账号还没有 recovery_hash」时生成：
+    已有恢复码时静默不轮换，避免把用户手里那张码悄悄作废；
+    非根成员没有恢复码（他们走邀请/激活流程）。
+    内核只落 hash，明文不写磁盘、不入日志。
+    """
+    previous = _point_kernel_at(store)
+    try:
+        manager = IdentityManager()
+        root = manager.account_root()
+        if root is None or str(getattr(root, "principal", "") or "") != principal:
+            return None
+        if str(getattr(root, "recovery_hash", "") or ""):
+            return None
+        return manager.rotate_recovery_code(principal)
+    # nosemgrep: liuhao-swallow-exception-return-success -- 账号已创建成功，
+    # 恢复码生成失败不该回滚注册；降级为 stderr 警告，本机自救入口仍可用。
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warning: could not issue a recovery code for {principal!r}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    finally:
+        _restore_env(previous)
+
+
 # ---------------------------------------------------------------------------
 # credential helpers
 # ---------------------------------------------------------------------------
@@ -325,7 +354,8 @@ def cmd_list(store, secret_store, args: argparse.Namespace) -> int:
 
 def cmd_register(store, secret_store, args: argparse.Namespace, principal: str,
                  display_name: Optional[str], permissions: List[str],
-                 password: Optional[str]) -> int:
+                 password: Optional[str],
+                 recovery_out: Optional[List[str]] = None) -> int:
     principal = principal.strip()
     if not principal:
         print("--principal is required", file=sys.stderr)
@@ -401,6 +431,18 @@ def cmd_register(store, secret_store, args: argparse.Namespace, principal: str,
             print(f"   login still fails: {failure}")
             return 1
         print("verified  : an actual sign-in with this credential succeeded.")
+
+        # 管理员账号创建成功后立刻发一次性恢复码：换机/忘密时靠它回到账号，
+        # 否则根账号的 recovery_hash 会一直为空，自救入口也查不到码。
+        recovery_code = issue_root_recovery_code(store, principal)
+        if recovery_code:
+            print()
+            print("recovery code (shown ONCE only -- copy or write it down now):")
+            print(f"  {recovery_code}")
+            print("Only a hash is stored, so it cannot be shown again. Use it on")
+            print("another machine, or if you forget the password.")
+            if recovery_out is not None:
+                recovery_out.append(recovery_code)
 
     print()
     print("To make it live, set these in the service environment:")

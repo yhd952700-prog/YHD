@@ -601,12 +601,19 @@ def _resolve_port(values: dict[str, Any], port: int | None) -> int | None:
     return _env_api_port()
 
 
-def commit(values: dict[str, Any], *, port: int | None = None) -> CommitResult:
+def commit(
+    values: dict[str, Any],
+    *,
+    port: int | None = None,
+    recovery_out: list[str] | None = None,
+) -> CommitResult:
     """校验并执行首启动作（不依赖窗口，可被测试直接调用）。
 
     ``values`` 字段：``data_dir``、``principal``、``display``、``password``、
     ``model``（``skip`` / ``ollama`` / ``cloud``）、``api_port``（可选）以及
     模型相关字段。失败时返回「中文原因 + 日志路径」，技术细节只写日志。
+    ``recovery_out`` 收集管理员恢复码明文，供图形向导当场「只展示一次」；
+    其余调用方（CLI / 测试）不传即可，恢复码仍会由 CLI 打印。
     """
     current = chosen_data_dir()
     dir_value, dir_error = validate_data_dir(str(values.get("data_dir") or ""))
@@ -653,7 +660,10 @@ def commit(values: dict[str, Any], *, port: int | None = None) -> CommitResult:
     principal = str(values.get("principal") or "").strip()
     display = str(values.get("display") or "").strip() or principal
     try:
-        rc = cli.register_admin(principal, display, str(values.get("password") or ""))
+        rc = cli.register_admin(
+            principal, display, str(values.get("password") or ""),
+            recovery_out=recovery_out,
+        )
     except Exception as exc:  # noqa: BLE001
         return _fail(
             dir_value,
@@ -1895,6 +1905,56 @@ class _WizardWindow:
             self._hide_actions()
             self._show(self._index - 1)
 
+    def _show_recovery_code(self, code: str) -> None:
+        """一次性展示管理员恢复码；关闭后系统只剩哈希，无法再次查看。"""
+        tk = self._tk
+        dialog = tk.Toplevel(self.root)
+        dialog.title("管理员恢复码（只显示这一次）")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        body = tk.Frame(dialog, padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body,
+            text=(
+                "请立即复制或抄下这张恢复码。\n"
+                "关闭本窗口后将无法再次查看——系统只保存它的哈希。\n"
+                "换电脑或忘记密码时，用它恢复管理员账号。"
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=460,
+        ).pack(fill="x")
+        code_var = tk.StringVar(master=dialog, value=code)
+        entry = tk.Entry(
+            body,
+            textvariable=code_var,
+            font=("Consolas", 13),
+            justify="center",
+            state="readonly",
+        )
+        entry.pack(fill="x", pady=(12, 8))
+        with contextlib.suppress(Exception):
+            entry.selection_range(0, "end")
+        hint = tk.Label(body, text="", fg="#b45309", anchor="w")
+        hint.pack(fill="x")
+
+        def _copy() -> None:
+            dialog.clipboard_clear()
+            dialog.clipboard_append(code)
+            hint.configure(text="已复制到剪贴板。")
+
+        def _close() -> None:
+            dialog.destroy()
+
+        buttons = tk.Frame(body)
+        buttons.pack(fill="x", pady=(10, 0))
+        tk.Button(buttons, text="复制恢复码", command=_copy).pack(side="left")
+        tk.Button(buttons, text="我已保存，关闭", command=_close).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", _close)
+        dialog.grab_set()
+        dialog.wait_window()
+
     def _submit(self) -> None:
         if self._submitted:
             return
@@ -1930,6 +1990,10 @@ class _WizardWindow:
             self.committed = True
             self._submitted = False
             self._hide_actions()
+            recovery_code = str(getattr(self._on_submit, "recovery_code", "") or "")
+            if recovery_code:
+                setattr(self._on_submit, "recovery_code", "")
+                self._show_recovery_code(recovery_code)
             self._show(4)
             return
         self._submitted = False
@@ -2017,7 +2081,16 @@ def run_wizard(
 
     def on_submit(values: dict[str, Any]) -> CommitResult:
         # 界面上改过端口就以界面为准；没有端口字段（测试替身）则用启动器传入值。
-        return commit(values, port=None if "api_port" in values else effective_port)
+        recovery: list[str] = []
+        result = commit(
+            values,
+            port=None if "api_port" in values else effective_port,
+            recovery_out=recovery,
+        )
+        if recovery and result[0]:
+            # 挂到回调上而不是窗口上：测试替身会在 ui 赋值前同步调用本回调。
+            on_submit.recovery_code = recovery[0]
+        return result
 
     try:
         ui = (ui_factory or _create_ui)(data_dir, on_submit, log_path, effective_port)

@@ -161,11 +161,17 @@ def _ensure_integrity_key() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def register_admin(principal: str, display_name: Optional[str], password: str) -> int:
+def register_admin(
+    principal: str,
+    display_name: Optional[str],
+    password: str,
+    recovery_out: Optional[List[str]] = None,
+) -> int:
     """注册一个管理员人类身份并写入登录凭据。
 
     复用 ``register_human_identity.cmd_register`` 的完整逻辑（注册表、凭据、
-    内核往返校验、真实登录校验），不重造轮子。
+    内核往返校验、真实登录校验），不重造轮子。``recovery_out`` 用于把
+    「只展示一次」的恢复码回传给调用方（图形向导）以便当场展示。
     """
     import scripts.register_human_identity as rhi
 
@@ -178,6 +184,7 @@ def register_admin(principal: str, display_name: Optional[str], password: str) -
     )
     return rhi.cmd_register(
         store, secret_store, args, principal, display_name, ["admin"], password,
+        recovery_out=recovery_out,
     )
 
 
