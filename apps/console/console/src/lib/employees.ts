@@ -142,6 +142,45 @@ export function employeeCapabilities(
     .join('、')
 }
 
+/** 能力风险级别 → 人话标签；未知级别如实说「未标注」，不替服务端猜。 */
+export function capabilityRisk(risk?: string): {
+  label: string
+  tone: 'ok' | 'warn' | 'danger' | 'muted'
+} | null {
+  const level = String(risk ?? '').trim().toUpperCase()
+  if (!level) return null
+  if (level === 'LOW') return { label: '低风险', tone: 'ok' }
+  if (level === 'MEDIUM') return { label: '中风险', tone: 'warn' }
+  if (level === 'HIGH') return { label: '高风险', tone: 'danger' }
+  if (level === 'CRITICAL') return { label: '极高风险', tone: 'danger' }
+  return { label: '风险未标注', tone: 'muted' }
+}
+
+/**
+ * 一位员工的默认能力 + 各自风险级别，供列表行一眼判断
+ * 「它能不能删文件 / 能不能联网」。
+ */
+export function employeeCapabilityRisks(
+  employee: MyEmployee,
+  catalog?: Array<Pick<EmployeeCapability, 'id' | 'name' | 'risk'>>,
+): string {
+  const ids = Array.isArray(employee.default_capabilities)
+    ? employee.default_capabilities
+    : []
+  if (ids.length === 0) return ''
+  return ids
+    .map((id) => {
+      const item = catalog?.find((entry) => entry.id === id)
+      const name =
+        item?.name && /[\u4e00-\u9fa5]/.test(item.name)
+          ? item.name
+          : capabilityLabel(id)
+      const risk = capabilityRisk(item?.risk)
+      return risk ? `${name}（${risk.label}）` : name
+    })
+    .join('、')
+}
+
 export function employeeAgentId(employee: MyEmployee): string {
   const usable = (employee.agents ?? []).find((agent) => agent.status !== 'paused')
   return String((usable ?? employee.agents?.[0])?.id ?? '')
@@ -317,4 +356,128 @@ export function agentStatusLabel(agent: AgentInfo): string {
   if (raw === 'error' || raw === 'failed') return '异常'
   if (raw === 'idle' || raw === 'ready' || raw === 'available') return '空闲'
   return '状态未知'
+}
+
+// ─── 批量创建 ────────────────────────────────────────────────
+
+export interface BatchEmployeeLine {
+  name: string
+  role: string
+  capabilities: string[]
+}
+
+export interface ParsedEmployeeBatch {
+  items: BatchEmployeeLine[]
+  /** 名字为空的行数：如实计数，不静默丢掉。 */
+  skipped: number
+}
+
+/**
+ * 解析批量粘贴：一行一位员工，`名字 | 职责 | 能力,能力`，后两段可省略。
+ *
+ * 只做切分不做校验 —— 名字是否合法由服务端判定，前端不替它猜。
+ */
+export function parseEmployeeBatch(text: string): ParsedEmployeeBatch {
+  const items: BatchEmployeeLine[] = []
+  let skipped = 0
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const [namePart, rolePart, capsPart] = line.split('|')
+    const name = (namePart ?? '').trim()
+    if (!name) {
+      skipped += 1
+      continue
+    }
+    items.push({
+      name,
+      role: (rolePart ?? '').trim(),
+      capabilities: (capsPart ?? '')
+        .split(/[,，、\s]+/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    })
+  }
+  return { items, skipped }
+}
+
+export interface BatchHireFailure {
+  name?: string
+  code?: string
+  message?: string
+}
+
+export interface BatchHireResult {
+  created: MyEmployee[]
+  existing: MyEmployee[]
+  failed: BatchHireFailure[]
+  created_count: number
+  existing_count: number
+  failed_count: number
+  requested_count: number
+}
+
+/** 单批上限与后端一致：超过就得自己分批，否则整单被 422 拒绝。 */
+export const BATCH_HIRE_LIMIT = 50
+
+/** 一次提交多位员工；重名不覆盖，由服务端归到 existing。 */
+export async function createEmployeesBatch(
+  items: BatchEmployeeLine[],
+): Promise<BatchHireResult> {
+  const payload =
+    (await apiFetch<Partial<BatchHireResult>>('/v1/employees/batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        employees: items.map((item) => ({
+          name: item.name,
+          role_description: item.role,
+          default_capabilities: item.capabilities,
+          agent_count: 3,
+          agent_types: [],
+        })),
+      }),
+    })) ?? {}
+  return {
+    created: Array.isArray(payload.created) ? payload.created : [],
+    existing: Array.isArray(payload.existing) ? payload.existing : [],
+    failed: Array.isArray(payload.failed) ? payload.failed : [],
+    created_count: Number(payload.created_count ?? 0),
+    existing_count: Number(payload.existing_count ?? 0),
+    failed_count: Number(payload.failed_count ?? 0),
+    requested_count: Number(payload.requested_count ?? items.length),
+  }
+}
+
+// ─── 员工级记忆（只读） ─────────────────────────────────────
+
+export interface EmployeeMemoryEntry {
+  id: string
+  text: string
+  source?: string
+  tags?: string[]
+  account_id?: string
+  created_at?: string
+}
+
+export interface EmployeeMemoriesPayload {
+  employee?: { name?: string; display_name?: string }
+  owner_account_id?: string
+  memories: EmployeeMemoryEntry[]
+  count?: number
+}
+
+/** 某位员工自己记住的内容；只读，纠错仍回「记忆」总表。 */
+export async function fetchEmployeeMemories(
+  name: string,
+): Promise<EmployeeMemoriesPayload> {
+  const payload = await apiFetch<EmployeeMemoriesPayload>(
+    `/v1/employees/${encodeURIComponent(name)}/memories`,
+  )
+  const memories = Array.isArray(payload?.memories) ? payload.memories : []
+  return {
+    employee: payload?.employee,
+    owner_account_id: payload?.owner_account_id,
+    memories,
+    count: Number(payload?.count ?? memories.length),
+  }
 }

@@ -25,10 +25,14 @@ import { capabilityLabel } from '../lib/format'
 import {
   agentStatusLabel,
   assignEmployeeTask,
+  BATCH_HIRE_LIMIT,
+  capabilityRisk,
   createEmployee,
+  createEmployeesBatch,
   deleteEmployee,
   employeeAssignable,
   employeeCapabilities,
+  employeeCapabilityRisks,
   employeeDisplayName,
   employeeLastActivity,
   employeeRole,
@@ -36,10 +40,11 @@ import {
   employeeStatus,
   employeesOf,
   isSeedEmployee,
+  parseEmployeeBatch,
   readableError,
   updateEmployee,
 } from '../lib/employees'
-import type { MyEmployee } from '../lib/employees'
+import type { BatchHireResult, MyEmployee } from '../lib/employees'
 import { BudgetDenialActions, Card, Empty, Failure, Guard } from '../components/ui'
 import { isBudgetDenialMessage } from '../lib/errorMessage'
 
@@ -49,6 +54,7 @@ const EMPLOYEE_PAGE_SIZE = 50
 function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
   id: string
   label: string
+  risk?: string
 }> {
   return (payload?.capabilities ?? []).map((item) => ({
     id: item.id,
@@ -57,6 +63,8 @@ function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
       item.name && /[\u4e00-\u9fa5]/.test(item.name)
         ? item.name
         : capabilityLabel(item.id),
+    // 风险级别原样带下来，由展示层翻成人话；不在这里猜。
+    risk: item.risk,
   }))
 }
 
@@ -90,6 +98,10 @@ export function MyEmployees({
   const [assignValue, setAssignValue] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [pageIndex, setPageIndex] = useState(0)
+  const [batchText, setBatchText] = useState('')
+  const [batchResult, setBatchResult] = useState<BatchHireResult | null>(null)
+  const [batchError, setBatchError] = useState<string | null>(null)
+  const [batchBusy, setBatchBusy] = useState(false)
 
   // 派活时焦点接力：展开后进输入框，提交/取消后回"单独指派一个任务"。
   // 不用 autoFocus，是因为同一个员工行会被重渲染，只有当前名字的引用有效。
@@ -197,6 +209,29 @@ export function MyEmployees({
     })
   }
 
+  function submitBatch() {
+    const parsed = parseEmployeeBatch(batchText)
+    setBatchError(null)
+    setBatchResult(null)
+    if (parsed.items.length === 0) {
+      setBatchError('没有可提交的内容：每行至少要有员工名字。')
+      return
+    }
+    if (parsed.items.length > BATCH_HIRE_LIMIT) {
+      setBatchError(`一次最多 ${BATCH_HIRE_LIMIT} 位，请分批粘贴（当前 ${parsed.items.length} 位）。`)
+      return
+    }
+    setBatchBusy(true)
+    void createEmployeesBatch(parsed.items)
+      .then((result) => {
+        setBatchResult(result)
+        list.reload()
+        if (result.created_count > 0) setBatchText('')
+      })
+      .catch((err) => setBatchError(readableError(err)))
+      .finally(() => setBatchBusy(false))
+  }
+
   const renderEmployee = (employee: MyEmployee) => {
     const status = employeeStatus(employee)
     const seed = isSeedEmployee(employee)
@@ -205,6 +240,7 @@ export function MyEmployees({
     const isAssigning = assigning === employee.name
     const failed = Number(employee.stats?.total_tasks_failed ?? 0)
     const lastActivity = employeeLastActivity(employee)
+    const riskText = employeeCapabilityRisks(employee, catalogApi.data?.capabilities)
 
     return (
       <div className="os-row" key={employee.name}>
@@ -229,6 +265,11 @@ export function MyEmployees({
             职责：{employeeRole(employee)} · 默认能力：
             {employeeCapabilities(employee, catalogLabels)}
           </div>
+          {riskText && (
+            // 能力只列名字看不出危险度：这里把每项的实际风险级别摆到同一行，
+            // 一眼判断它能不能删文件、能不能联网。
+            <div className="os-emp-meta">能力风险：{riskText}</div>
+          )}
           <div className="os-emp-meta">
             {employeeStatsText(employee)} · {employee.agent_count} 位执行个体
             {failed > 0 ? ' · 有失败任务，可在「目标与任务」看原因' : ''}
@@ -516,16 +557,34 @@ export function MyEmployees({
               <p className="os-hint">暂时没有可用能力；可以先创建员工，之后再补。</p>
             ) : (
               <div className="os-emp-actions" style={{ marginTop: 6 }}>
-                {catalog.map((item) => (
-                  <label key={item.id} className="os-emp-meta os-check-hit" style={{ display: 'inline-flex', gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.capabilities.includes(item.id)}
-                      onChange={() => toggleCapability(item.id)}
-                    />
-                    {item.label}
-                  </label>
-                ))}
+                {catalog.map((item) => {
+                  const risk = capabilityRisk(item.risk)
+                  return (
+                    <span
+                      key={item.id}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    >
+                      <label className="os-emp-meta os-check-hit" style={{ display: 'inline-flex', gap: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.capabilities.includes(item.id)}
+                          onChange={() => toggleCapability(item.id)}
+                        />
+                        {item.label}
+                      </label>
+                      {risk && (
+                        // 选之前就能看见危险度：高风险项不会被当成普通开关随手勾上。
+                        <span
+                          className="os-badge"
+                          data-tone={risk.tone}
+                          title={`这一项的真实风险级别：${risk.label}`}
+                        >
+                          {risk.label}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -536,6 +595,57 @@ export function MyEmployees({
             </button>
           </div>
         </form>
+      </Card>
+
+      <Card
+        title="批量创建"
+        sub="一行一位：名字 | 职责 | 默认能力（后两段可省略，能力用逗号分隔）"
+        span={12}
+      >
+        <div className="os-field">
+          <label htmlFor="emp-batch">粘贴员工清单</label>
+          <div className="os-input">
+            <textarea
+              id="emp-batch"
+              rows={6}
+              maxLength={20000}
+              placeholder={'小周 | 整理会议纪要 | 写作,搜索\n小陈 | 跟进客户回访'}
+              value={batchText}
+              onChange={(event) => setBatchText(event.target.value)}
+            />
+          </div>
+          <span className="os-hint">
+            重名不会覆盖，会如实回报为「已存在」；单次最多 {BATCH_HIRE_LIMIT} 位。
+          </span>
+        </div>
+        <div className="os-model-form-foot">
+          <button className="os-btn" type="button" disabled={batchBusy} onClick={submitBatch}>
+            {batchBusy ? '提交中…' : '批量创建'}
+          </button>
+        </div>
+        {batchError && (
+          <div className="os-alert" role="alert">
+            {batchError}
+          </div>
+        )}
+        {batchResult && (
+          <div className="os-note" role="status" aria-live="polite">
+            <div>
+              共提交 {batchResult.requested_count} 位：新建 {batchResult.created_count} 位 ·
+              已存在 {batchResult.existing_count} 位 · 失败 {batchResult.failed_count} 位
+            </div>
+            {batchResult.failed.length > 0 && (
+              <ul style={{ margin: '6px 0 0 18px' }}>
+                {batchResult.failed.map((item, index) => (
+                  <li key={`${item.name ?? 'item'}-${index}`}>
+                    {item.name ? `${item.name}：` : ''}
+                    {item.message || '没有创建成功，原因未返回'}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </Card>
 
       {error && (

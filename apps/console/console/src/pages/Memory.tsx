@@ -22,6 +22,10 @@ import {
   updateMemoryEntry,
   useAccountData,
 } from '../lib/accounts'
+import { useApi } from '../lib/api'
+import type { EmployeesPayload } from '../lib/contracts'
+import { employeeDisplayName, employeesOf } from '../lib/employees'
+import type { EmployeeMemoriesPayload } from '../lib/employees'
 import { Card, Guard } from '../components/ui'
 
 /** 记忆来源的内部工程名 → 中文标签；未收录的原样显示（不猜语义）。 */
@@ -78,6 +82,15 @@ export function Memory({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [pageIndex, setPageIndex] = useState(0)
+  const [employeeName, setEmployeeName] = useState('')
+  // 员工名册只为「按员工看记忆」这张表服务；名册读不到时这一块如实降级，
+  // 不影响上面属于你自己的记忆。
+  const roster = useApi<EmployeesPayload>('/v1/employees', 0)
+  const employees = employeesOf(roster.data)
+  const employeeMemory = useApi<EmployeeMemoriesPayload>(
+    employeeName ? `/v1/employees/${encodeURIComponent(employeeName)}/memories` : null,
+    0,
+  )
 
   const memory = useAccountData(() =>
     loadMemory({ principal: profile.principal, isRoot: profile.isRoot }, scope, applied),
@@ -383,6 +396,92 @@ export function Memory({
 
         {caps.canSubtreeMemory && (
           <p className="os-hint">整棵范围只读检索；导出结果会带上来源账号。</p>
+        )}
+      </Card>
+
+      <Card
+        title="按员工看记忆"
+        sub="选中一位员工，看它自己记住了什么；这里只读"
+        span={12}
+      >
+        {roster.error ? (
+          <p className="os-hint">
+            员工名册暂时读不到，这一块先空着。
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto', marginLeft: 8 }}
+              onClick={roster.reload}
+            >
+              重试
+            </button>
+          </p>
+        ) : roster.loading && employees.length === 0 ? (
+          <p className="os-hint">正在读取员工名册…</p>
+        ) : employees.length === 0 ? (
+          <p className="os-hint">还没有员工。先到「我的员工」创建，再回这里看它记住了什么。</p>
+        ) : (
+          <>
+            <select
+              aria-label="选择员工"
+              className="os-input-plain"
+              style={{ width: 'auto', minWidth: 200 }}
+              value={employeeName}
+              onChange={(event) => setEmployeeName(event.target.value)}
+            >
+              <option value="">选择一位员工</option>
+              {employees.map((employee) => (
+                <option key={employee.name} value={employee.name}>
+                  {employeeDisplayName(employee)}
+                </option>
+              ))}
+            </select>
+
+            {employeeName && (
+              <Guard
+                loading={employeeMemory.loading}
+                error={employeeMemory.error}
+                data={employeeMemory.data}
+                isEmpty={(data) => data.memories.length === 0}
+                emptyTitle="这位员工还没有记忆"
+                emptyHint="它执行任务或对话后产生的记忆会出现在这里。"
+                onRetry={employeeMemory.reload}
+              >
+                {(data) => (
+                  <>
+                    <div className="os-table-wrap" style={{ marginTop: 8 }}>
+                      <table className="os-table">
+                        <thead>
+                          <tr>
+                            <th>时间</th>
+                            <th>来源</th>
+                            <th>标签</th>
+                            <th>内容</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.memories.map((entry) => (
+                            <tr key={entry.id}>
+                              <td>{entryTime(entry.created_at)}</td>
+                              <td>{sourceLabel(entry.source)}</td>
+                              <td>
+                                {Array.isArray(entry.tags) && entry.tags.length > 0
+                                  ? entry.tags.join('、')
+                                  : '—'}
+                              </td>
+                              <td>{entry.text}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="os-hint">
+                      共 {data.memories.length} 条。要纠正某一条，请在上面的记忆表里按内容找到它再改。
+                    </p>
+                  </>
+                )}
+              </Guard>
+            )}
+          </>
         )}
       </Card>
 
