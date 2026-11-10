@@ -34,7 +34,7 @@
 | 8 | `identity`（改造） | 身份与权限 | 所有人 | `GET /v1/accounts`、`GET /v1/identity/summary`（根）、`GET /v1/identity/principals`（根） |
 | 9 | `templates` | 角色模板 | 根 | `GET /v1/accounts/roles`（只读） |
 | 10 | `backup` | 备份导出 / 迁移认领 | 根 | `POST /v1/accounts/backup/export`、`POST /v1/accounts/backup/import` |
-| 11 | `recovery` | 恢复码 | 根 | `POST /v1/accounts/recovery/rotate` |
+| 11 | `recovery` | 恢复码 | 根 + 登录页自助注册账号 | `POST /v1/accounts/recovery/rotate` |
 | 12 | `settings`（改造） | 系统设置 | 根 | 既有设置页；非根不渲染入口 |
 | 13 | 全局 | 身份条 / 只读横幅 | 已登录 | `GET /v1/auth/me`、`GET /v1/accounts` |
 
@@ -126,7 +126,7 @@
 | `/v1/accounts/backup/import` | POST | `bundle, passphrase` | 导入结果；本机已有账号 → **409 `IMPORT_NOT_ALLOWED`** | **已实现**（运行时 409） |
 | `/v1/accounts/migrate` | POST | — | 迁移结果；仅根 | 已实现（accounts.py:392-396）；本轮无页面 |
 | `/v1/accounts/migrate/rollback` | POST | — | 回滚结果；仅根 | 已实现（accounts.py:399-405）；本轮无页面 |
-| `/v1/accounts/recovery/rotate` | POST | — | `recovery_code`（**无 `expires_at`**：恢复码没有 TTL） | 已实现；老根账号补发入口，旧码立即作废 |
+| `/v1/accounts/recovery/rotate` | POST | — | `recovery_code`（**无 `expires_at`**：恢复码没有 TTL） | 已实现；根与登录页自助注册账号可补发自己的码，旧码立即作废；管理员创建的成员返回 403 中性拒绝 |
 | `/v1/accounts/recovery/local` | POST | — | `written`、`file`、`notice`、`security_note`；**响应不含恢复码** | 已实现；忘记密码且无恢复码时，把码写到本机 `<数据目录>/config/recovery_code.txt`；已有恢复码 → 403 `ACCOUNT_RECOVERY_UNAVAILABLE` |
 | `/v1/audit/events` | GET | `principal?` | 事件列表；非 L0 被强制为令牌主体（audit.py:270-280） | 已实现，但范围与规格 §3.6 冲突 |
 | `/v1/memory/entries` | GET | `scope=self|subtree, q` | 记忆条目 | **前端拟定，后端无端点** |

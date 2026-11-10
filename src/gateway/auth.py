@@ -758,11 +758,15 @@ def _account_epoch(principal: str) -> int:
 
 
 def _account_is_root(principal: str) -> Dict[str, Any]:
-    """本人是否为账号树根。
+    """本人是否为账号树根，以及能否自助管理自己的恢复码。
 
-    只回答"是不是根"这一个布尔值：前端做入口裁剪够用，但不返回
-    ``parent_account_id`` / ``path`` / ``depth`` —— 子账号不应从任何接口
-    得知自己是被谁创建的、自己在第几层。
+    只回答"是不是根"和"能不能自助补发恢复码"这两个布尔值：前端做入口裁剪
+    够用，但不返回 ``parent_account_id`` / ``path`` / ``depth`` —— 子账号
+    不应从任何接口得知自己是被谁创建的、自己在第几层。
+
+    ``can_rotate_recovery`` 与内核 ``_can_hold_recovery`` 同口径：根账号、
+    以及登录页自助注册的账号（没有管理员可代发激活码）为真；管理员创建的
+    成员为假（由管理员重置密码）。
 
     只有**完全没有账号树**的老部署 / 单机令牌才按独立根处理。账号树一旦
     存在，树外主体的令牌（例如内部工具直接签出的服务/测试令牌、或账号树
@@ -776,10 +780,17 @@ def _account_is_root(principal: str) -> Dict[str, Any]:
         node = manager.get_account(principal)
         tree_exists = bool(manager.account_nodes())
     except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述，且须 fail-closed
-        return {"is_root": False}
+        return {"is_root": False, "can_rotate_recovery": False}
     if node is not None:
-        return {"is_root": bool(node.is_root)}
-    return {"is_root": not tree_exists}
+        return {
+            "is_root": bool(node.is_root),
+            "can_rotate_recovery": bool(
+                node.is_root
+                or (node.source == "self_service" and node.is_active)
+            ),
+        }
+    standalone = not tree_exists
+    return {"is_root": standalone, "can_rotate_recovery": standalone}
 
 
 def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:

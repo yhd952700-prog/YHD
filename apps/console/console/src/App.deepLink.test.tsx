@@ -226,6 +226,25 @@ describe('恢复码即时可见（PROD-006）', () => {
 
     await screen.findByText(/下面是恢复码/)
     expect(document.body.textContent).toContain('REC-INSTANT-2026')
+    // 文案必须说清代价：只显示这一次，换机/忘密时用它。
+    expect(document.body.textContent).toContain('只显示这一次')
+    expect(document.body.textContent).toContain('换机或忘记密码时用它重置')
+  })
+
+  test('恢复码横幅可一键复制，且下载入口仍在', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+    open('?p=overview', true)
+    await flush()
+    savePendingRecovery({ account: 'root', code: 'REC-COPY-2026', warning: null })
+
+    fireEvent.click(await screen.findByRole('button', { name: '复制恢复码' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('REC-COPY-2026'))
+    await screen.findByRole('button', { name: '已复制' })
+    expect(screen.getByRole('button', { name: '下载恢复材料' })).toBeTruthy()
   })
 })
 

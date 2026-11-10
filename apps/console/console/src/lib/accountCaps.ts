@@ -58,6 +58,8 @@ export interface AccountProfile {
   identityPermissions: string[]
   accountPermissions: string[]
   isRoot: boolean
+  /** 能否自助补发本账号的恢复码（根账号 + 登录页自助注册账号）。 */
+  canSelfRecover: boolean
   members: AccountMember[]
   /** 可管理的成员数（根 = 子树人数；成员 = 可见人数 - 自己）。 */
   memberCount: number
@@ -88,6 +90,7 @@ export function buildProfile(
     // 里的主体权限，否则成员会丢掉 `account:manage_children`，"我的成员"入口消失。
     accountPermissions: self?.permissions ?? session.permissions,
     isRoot,
+    canSelfRecover: session.canRotateRecovery === true,
     members,
     memberCount,
     source,
@@ -106,7 +109,7 @@ export function deriveCaps(profile: AccountProfile | null): AccountCaps {
     canMatrix: isRoot,
     canTemplates: isRoot,
     canBackup: isRoot,
-    canRecovery: isRoot,
+    canRecovery: isRoot || profile?.canSelfRecover === true,
     canSettings: isRoot,
     canSystemStatus: isRoot,
     canAllKeys: isRoot,

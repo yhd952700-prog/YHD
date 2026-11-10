@@ -261,6 +261,12 @@ function App() {
   const [pendingRecovery, setPendingRecovery] = useState<PendingRecovery | null>(() =>
     readPendingRecovery(),
   )
+  /** 恢复码横幅的"复制"反馈：'done' 成功，'fail' 剪贴板不可用。 */
+  const [recoveryCopy, setRecoveryCopy] = useState<'idle' | 'done' | 'fail'>('idle')
+
+  useEffect(() => {
+    if (pendingRecovery) setRecoveryCopy('idle')
+  }, [pendingRecovery])
 
   /**
    * 注册响应可能晚于本组件挂载（登录页在同一个 App 里）。保存恢复码后
@@ -872,7 +878,8 @@ function App() {
           <strong>账号已就绪。下面是恢复码（只显示这一次）</strong>
           <code style={{ fontSize: 14, wordBreak: 'break-all' }}>{pendingRecovery.code}</code>
           <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
-            忘记密码时用它重置。请保存到离线介质，不要截图发到聊天工具。
+            换机或忘记密码时用它重置本账号的密码。请复制/下载后保存到离线介质，
+            不要截图发到聊天工具。
           </span>
           {pendingRecovery.warning && (
             <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
@@ -880,6 +887,21 @@ function App() {
             </span>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="os-btn"
+              onClick={async () => {
+                try {
+                  if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+                  await navigator.clipboard.writeText(pendingRecovery.code)
+                  setRecoveryCopy('done')
+                } catch {
+                  setRecoveryCopy('fail')
+                }
+              }}
+            >
+              {recoveryCopy === 'done' ? '已复制' : '复制恢复码'}
+            </button>
             <button type="button" className="os-btn" onClick={() => downloadRecovery(pendingRecovery)}>
               下载恢复材料
             </button>
@@ -894,6 +916,11 @@ function App() {
               我已保存
             </button>
           </div>
+          {recoveryCopy === 'fail' && (
+            <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
+              浏览器不允许自动复制，请手动选中上面的恢复码复制。
+            </span>
+          )}
         </div>
       )}
 

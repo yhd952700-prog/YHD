@@ -31,6 +31,9 @@ export interface Session {
   /** 是否账号树根。仅用于前端裁剪入口，不构成授权依据。
    *  不下发 parent/path/depth：子账号不应知道自己被谁创建、在第几层。 */
   isRoot: boolean
+  /** 能否自助补发**本账号**的恢复码。根账号与登录页自助注册的账号为真；
+   *  管理员创建的成员为假（由管理员重置密码）。仅用于前端裁剪入口。 */
+  canRotateRecovery?: boolean
 }
 
 /** `GET /v1/auth/config` 的响应：登录页据此解释当前状态。 */
@@ -201,6 +204,7 @@ function parseSession(raw: string | null): Session | null {
         ? (parsed.client as ClientMode)
         : 'web',
       isRoot: parsed.isRoot === true,
+      canRotateRecovery: parsed.canRotateRecovery === true,
     }
   } catch {
     return null
@@ -493,6 +497,7 @@ export async function login(
     expires_at: number
     client: string
     is_root?: boolean
+    can_rotate_recovery?: boolean
   }
   const session: Session = {
     token: body.access_token,
@@ -505,6 +510,7 @@ export async function login(
       ? (body.client as ClientMode)
       : options.client,
     isRoot: body.is_root === true,
+    canRotateRecovery: body.can_rotate_recovery === true,
   }
   saveSession(session, options.remember)
   return session
@@ -518,6 +524,10 @@ export async function login(
  * `SelfRegisterRequest` 及其余账号接口（注册 / 激活 / 改密）保持一致，都是
  * `password`；`secret` 只属于登录接口（它可承载密码或恢复码）。
  * 层级与权限完全由服务端决定，前端不补字段。
+ *
+ * 恢复码：自助注册的账号没有管理员可代发激活码，服务端会在本次响应里
+ * 当场签发一枚（明文只出现这一次）。这里立刻暂存到本机，交给主界面
+ * 横幅一次性展示；用户关掉后仍可在「我的 → 恢复码」重新补发。
  */
 export async function registerSelf(
   principal: string,
@@ -537,9 +547,17 @@ export async function registerSelf(
   if (!response.ok) {
     throw new AuthError(response.status, await selfRegistrationMessage(response))
   }
-  const body = (await response.json()) as { token?: string; access_token?: string }
+  const body = (await response.json()) as {
+    token?: string
+    access_token?: string
+    recovery_code?: string
+  }
   const token = body.token || body.access_token || ''
   if (!token) throw new AuthError(0, '账户已创建，但未能取得登录状态，请重新登录')
+  const recoveryCode = typeof body.recovery_code === 'string' ? body.recovery_code : ''
+  if (recoveryCode) {
+    savePendingRecovery({ account: principal, code: recoveryCode, warning: null })
+  }
   return sessionFromToken(token, options)
 }
 
@@ -584,6 +602,7 @@ export async function sessionFromToken(
     permissions?: string[]
     expires_at?: number | null
     is_root?: boolean
+    can_rotate_recovery?: boolean
   }
   const session: Session = {
     token,
@@ -594,6 +613,7 @@ export async function sessionFromToken(
     expiresAt: Number(body.expires_at ?? decoded.expiresAt) || decoded.expiresAt,
     client: options.client,
     isRoot: body.is_root === true,
+    canRotateRecovery: body.can_rotate_recovery === true,
   }
   saveSession(session, options.remember)
   return session

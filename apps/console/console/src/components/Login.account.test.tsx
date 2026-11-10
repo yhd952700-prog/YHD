@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Login } from './Login'
 import type { Session } from '../lib/auth'
+import { clearPendingRecovery, readPendingRecovery } from '../lib/auth'
 import { buildProfile, deriveCaps, findBannedTerms } from '../lib/accountCaps'
 import { visibleNavKeys } from '../lib/nav'
 
@@ -303,6 +304,56 @@ describe('登录页状态机', () => {
     }
     expect(visible.has('overview')).toBe(true)
     expect(visible.has('my-keys')).toBe(true)
+  })
+
+  test('自助注册当场拿到一次恢复码，并开放「我的 → 恢复码」补发入口', async () => {
+    clearPendingRecovery()
+    const token = tokenFor('newcomer')
+    const code = 'RC-4N7K-2QX9-8M3D'
+    const onSuccess = vi.fn()
+    mockRoutes(config(), {
+      '/v1/accounts/self-register': () =>
+        json(200, {
+          token,
+          recovery_code: code,
+          notice: '账号已创建并自动登录。恢复码只显示这一次，请离线保存；换机或忘记密码时用它重置。',
+        }),
+      '/v1/auth/me': () =>
+        json(200, {
+          principal: 'newcomer',
+          display_name: null,
+          scope: 'L3',
+          permissions: ['account:read'],
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          is_root: false,
+          can_rotate_recovery: true,
+        }),
+    })
+
+    render(<Login mode="web" onSuccess={onSuccess} />)
+    fireEvent.click(await screen.findByRole('tab', { name: '创建账户' }))
+    // 建号前就告知"会显示一次恢复码"，避免用户建完才第一次听说。
+    expect(document.body.textContent).toContain('创建成功会显示一次恢复码')
+    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'newcomer' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'password123' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建并进入' }))
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1))
+    // 响应里的恢复码必须立刻落进本机待展示位（主界面横幅只展示这一次）。
+    expect(readPendingRecovery()).toMatchObject({ account: 'newcomer', code })
+    const session = onSuccess.mock.calls[0][0] as Session
+    expect(session.isRoot).toBe(false)
+    expect(session.canRotateRecovery).toBe(true)
+
+    const caps = deriveCaps(buildProfile(session, { members: [], count: 0 }, 'live', null))
+    expect(caps.canRecovery).toBe(true)
+    const visible = visibleNavKeys(caps)
+    expect(visible.has('recovery')).toBe(true)
+    // 恢复码入口之外，成员仍然看不到主账号专属页面。
+    for (const key of ['members', 'matrix', 'templates', 'backup', 'settings', 'status']) {
+      expect(visible.has(key)).toBe(false)
+    }
+    clearPendingRecovery()
   })
 
   test('本机生成恢复码：码直接显示在页面上，并自动填入输入框', async () => {

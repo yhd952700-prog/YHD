@@ -36,7 +36,7 @@ import {
 } from '../components/icons'
 import type { AccountCaps } from './accountCaps'
 
-export type NavRequirement = 'root' | 'manage' | 'grant'
+export type NavRequirement = 'root' | 'manage' | 'grant' | 'recovery'
 
 export interface NavItem {
   key: string
@@ -120,7 +120,9 @@ export const GOVERNANCE_NAV: NavItem[] = [
   { key: 'matrix', label: '权限矩阵', icon: IconLock, requires: 'root' },
   { key: 'templates', label: '角色模板', icon: IconShield, requires: 'root' },
   { key: 'backup', label: '备份与迁移', icon: IconServer, requires: 'root' },
-  { key: 'recovery', label: '恢复码', icon: IconTrust, requires: 'root' },
+  // 根账号 + 登录页自助注册的账号：后者没有管理员可代发激活码，必须有
+  // 自己补发恢复码的入口；管理员创建的成员不出现（由管理员重置密码）。
+  { key: 'recovery', label: '恢复码', icon: IconTrust, requires: 'recovery' },
   // 成员面：只有含管理范围的账号才出现；更深层默认没有该范围。
   { key: 'my-members', label: '我的账号', icon: IconEmployees, requires: 'manage' },
   { key: 'my-keys', label: '我的 Key', icon: IconLock },
@@ -149,6 +151,7 @@ function itemVisible(item: NavItem, caps: AccountCaps): boolean {
   if (!item.requires) return true
   if (item.requires === 'root') return caps.isRoot
   if (item.requires === 'grant') return caps.isRoot || caps.canGrant || caps.canApproveQueue
+  if (item.requires === 'recovery') return caps.canRecovery
   // "我的成员"是成员面的入口；根已经有完整的"成员与权限管理"，不需要这一项。
   return !caps.isRoot && caps.canMyMembers
 }

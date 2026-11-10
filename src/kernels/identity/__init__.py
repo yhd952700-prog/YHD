@@ -2110,23 +2110,40 @@ class IdentityManager:
 
     # ---- 根恢复 / 备份 ---------------------------------------------------
 
+    @staticmethod
+    def _can_hold_recovery(node: _accounts.AccountNode) -> bool:
+        """哪些账号可以有**自己的**恢复码。
+
+        根账号是唯一的管理者，必须有；登录页自助注册的账号（``source ==
+        "self_service"``）没有管理员可代发激活码，不给恢复码就等于"换机或
+        忘记密码后永久进不去"。管理员创建的成员维持文档约定：不签发恢复码，
+        忘记密码由管理员重置密码。
+        """
+        return node.is_root or node.source == "self_service"
+
     def rotate_recovery_code(self, principal: str) -> str:
-        """为根账号生成/重发一次性恢复码（只存哈希，明文只返回一次）。
+        """为本账号生成/重发一次性恢复码（只存哈希，明文只返回一次）。
+
+        可签发对象见 :meth:`_can_hold_recovery`：根账号与登录页自助注册账号。
+        恢复码只作用于**本账号**的密码重置，不会碰根或他人的凭据。
 
         返回**只有码本身**，不再把 ``updated_at`` 当作 ``expires_at`` 一起返回：
         恢复码没有 TTL（见 docs/account-hierarchy.md §9.11），把生成时刻做成
         "有效期至"会让界面展示一条并不存在的事实。
         """
         with self._lock:
-            root = self.account_root()
-            if root is None or root.principal != principal:
+            node = self._accounts.get(principal)
+            if (
+                node is None
+                or not self._can_hold_recovery(node)
+                or (not node.is_root and not node.is_active)
+            ):
                 self._audit_denial(
                     action="account.recovery.rotate", actor=principal,
                     target=principal, code="ACCOUNT_SCOPE_DENIED",
                 )
                 raise _accounts.neutral_denied()
             code = _accounts.generate_code("RC")
-            node = self._accounts[principal]
             updated = node.with_changes(recovery_hash=_accounts.hash_code(code))
             self._accounts[principal] = updated
             self._persist_account(updated)
@@ -2147,10 +2164,10 @@ class IdentityManager:
         又只对无码账号开放 —— 用户会被永久挡在门外。
         """
         with self._lock:
-            root = self.account_root()
-            if root is None or root.principal != principal:
+            node = self._accounts.get(principal)
+            if node is None or not self._can_hold_recovery(node):
                 return False
-            updated = root.with_changes(recovery_hash="")
+            updated = node.with_changes(recovery_hash="")
             self._accounts[principal] = updated
             self._persist_account(updated)
             self._account_audit(
@@ -2163,16 +2180,20 @@ class IdentityManager:
             return True
 
     def verify_recovery_code(self, code: str) -> str:
-        """校验根恢复码但**不消费**；返回根 principal。
+        """校验恢复码但**不消费**；返回码所属的 principal。
 
         调用方需要"先改密成功、再作废恢复码"（与激活流程同序）：改密失败时
         恢复码必须仍然可用，否则用户既进不去、也无法重试。失败计数落在限次器，
         不修改任何落盘状态。
         """
-        return self._verified_recovery_root(code).principal
+        return self._verified_recovery_account(code).principal
 
-    def _verified_recovery_root(self, code: str) -> _accounts.AccountNode:
-        """校验恢复码并返回根节点（不消费）；验证逻辑的唯一实现。"""
+    def _verified_recovery_account(self, code: str) -> _accounts.AccountNode:
+        """校验恢复码并返回**它所属的账号**（不消费）；验证逻辑的唯一实现。
+
+        恢复码按账号签发（根 + 自助注册账号），因此这里按哈希反查；恢复码
+        本身约 100 bit 高熵，反查不会泄露账号名。已停用的账号不参与匹配。
+        """
         key = "recover:root"
         try:
             _accounts.limiter.check(
@@ -2187,55 +2208,65 @@ class IdentityManager:
                 429, _accounts.CODE_RECOVERY_LOCKED, "尝试次数过多，请稍后再试。"
             ) from exc
         with self._lock:
-            root = self.account_root()
-            if root is None or not root.recovery_hash:
-                _accounts.limiter.register(key)
-                raise _accounts.AccountError(
-                    400,
-                    _accounts.CODE_RECOVERY_CODE_INVALID,
-                    "恢复码无效或已失效。",
-                )
-            # 兼容旧版本：早期恢复码绑定本机完整性密钥；新码不再绑定。
-            stored = root.recovery_hash
             legacy_key = _persistence.integrity_key() or ""
-            if not (
-                _accounts.code_matches(code, stored)
-                or (legacy_key and _accounts.code_matches(code, stored, legacy_key))
-            ):
-                _accounts.limiter.register(key)
-                self._audit_denial(
-                    action="account.recovery.use", actor="anonymous",
-                    target=root.principal, code=_accounts.CODE_RECOVERY_CODE_INVALID,
-                )
+            candidates = [
+                node
+                for node in self._accounts.values()
+                if node.recovery_hash
+                and self._can_hold_recovery(node)
+                and (node.is_root or node.is_active)
+            ]
+            for node in candidates:
+                # 兼容旧版本：早期恢复码绑定本机完整性密钥（只有根用过）；
+                # 新码不再绑定，必须能随备份搬到另一台电脑继续可用。
+                if _accounts.code_matches(code, node.recovery_hash) or (
+                    legacy_key
+                    and node.is_root
+                    and _accounts.code_matches(code, node.recovery_hash, legacy_key)
+                ):
+                    return node
+            _accounts.limiter.register(key)
+            if not candidates:
                 raise _accounts.AccountError(
                     400,
                     _accounts.CODE_RECOVERY_CODE_INVALID,
                     "恢复码无效或已失效。",
                 )
-            return root
+            self._audit_denial(
+                action="account.recovery.use", actor="anonymous",
+                target="-", code=_accounts.CODE_RECOVERY_CODE_INVALID,
+            )
+            raise _accounts.AccountError(
+                400,
+                _accounts.CODE_RECOVERY_CODE_INVALID,
+                "恢复码无效或已失效。",
+            )
 
     def consume_recovery_code(self, code: str) -> str:
-        """校验并消费根恢复码；返回根 principal。
+        """校验并消费恢复码；返回码所属的 principal。
 
         顺序契约：本方法只应在凭据已经改密成功后调用（见 ``gateway/accounts.py``
         的恢复路由）。校验失败时不修改恢复码，用户仍可用同一恢复码重试。
         """
         key = "recover:root"
-        root = self._verified_recovery_root(code)
+        node = self._verified_recovery_account(code)
         with self._lock:
-            updated = root.with_changes(recovery_hash="", status=_accounts.ACCOUNT_STATUS_ACTIVE).bump(
-                "recovery"
-            )
-            self._accounts[root.principal] = updated
+            changes: Dict[str, Any] = {"recovery_hash": ""}
+            if node.is_root:
+                # 沿用旧行为：根用恢复码重置时回到 active。自助注册账号在
+                # 校验阶段就要求 active，不会被这一步"复活"。
+                changes["status"] = _accounts.ACCOUNT_STATUS_ACTIVE
+            updated = node.with_changes(**changes).bump("recovery")
+            self._accounts[node.principal] = updated
             self._persist_account(updated)
             _accounts.limiter.reset(key)
             self._account_audit(
                 action="account.recovery.used",
-                actor=root.principal,
-                target=root.principal,
+                actor=node.principal,
+                target=node.principal,
                 outcome="allowed",
             )
-            return root.principal
+            return node.principal
 
     def build_backup_payload(
         self, actor: str, scope: str = "all"

@@ -712,7 +712,7 @@ def activate(payload: ActivateRequest) -> Dict[str, Any]:
 
 @router.post("/recovery/reset")
 def recovery_reset(payload: RecoveryResetRequest, request: Request) -> Dict[str, Any]:
-    """用根恢复码重置密码；改密**成功之后**才消费恢复码。
+    """用恢复码重置**码所属账号**的密码（根或登录页自助注册账号）；改密**成功之后**才消费恢复码。
 
     顺序契约（P1-6）：先改密、后作废。反序（先消费再改密）在改密失败时会把
     恢复码一起作废且不能重发，用户彻底锁死。这里与激活流程
@@ -751,8 +751,10 @@ def recovery_reset(payload: RecoveryResetRequest, request: Request) -> Dict[str,
         # 改密成功后才作废一次性证明：成功一次即失效。
         if proof:
             local_proof.consume_token(proof)
-        # 本机交接文件里的码已经被作废，删除它避免用户下次误用。
-        _clear_local_recovery_file()
+        # 本机交接文件只承载根恢复码；非根账号重置时不能顺手删掉根的那份。
+        root = manager.account_root()
+        if root is not None and root.principal == principal:
+            _clear_local_recovery_file()
         token = issue_token_for(principal, client="web")
         written = _recovery_http_audit(
             request,
@@ -798,6 +800,11 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
     * 上级恒为本机根账号的第 1 层（不接受请求体里的父子/深度字段）；
     * 作用域恒为最小集合（不能建下级、不能授权、不能借 Key）；
     * 主账号关闭开关后返回结构化拒绝 ``ACCOUNT_SELF_REGISTER_DISABLED``。
+
+    恢复码：自助注册的账号没有管理员可代发激活码，因此与根账号一样**当场**
+    签发一枚恢复码（库中只存 sha256，明文只出现在本次响应里）。签发失败
+    不回滚已经建好的账号（用户会误以为没建成功并重试同名 → 409），而是
+    如实返回空码并指路「我的 → 恢复码」补发。
     """
     if not account_settings.allow_self_registration():
         raise deny(
@@ -812,12 +819,26 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
     )
     if not rotate_credential(payload.principal, payload.password):
         raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号初始化失败")
+    recovery_code = ""
+    try:
+        recovery_code = _kernel_call(manager.rotate_recovery_code, payload.principal)
+    except Exception:  # noqa: BLE001 - 账号与凭据已落盘，不能因此把注册判失败
+        # 日志只写主体名，绝不写码本身（明文只允许出现在响应里）。
+        logger.warning(
+            "自助注册后未能签发恢复码 principal=%s，可在设置页补发", payload.principal
+        )
     token = issue_token_for(payload.principal, client="web")
     response = {
         "account": _public_member(node),
+        "recovery_code": recovery_code,
         "token": token["access_token"],
         "access_token": token["access_token"],
-        "notice": "账号已创建并自动登录；当前使用的是最小权限，如需更多能力可在账号设置中查看。",
+        "notice": (
+            "账号已创建并自动登录。恢复码只显示这一次，请离线保存；"
+            "换机或忘记密码时用它重置。"
+            if recovery_code
+            else "账号已创建并自动登录；恢复码暂未生成，可稍后到「我的 → 恢复码」补发。"
+        ),
     }
     response.update(audit_notice_after(snapshot, "自助注册"))
     return response
@@ -967,7 +988,12 @@ def backup_import(payload: BackupImportRequest, request: Request) -> Dict[str, A
 def recovery_rotate(
     context: AccountContext = Depends(require_account_principal)
 ) -> Dict[str, Any]:
-    """生成/重发恢复码（仅根账号；旧码立即失效）。
+    """生成/重发**本账号**的恢复码（旧码立即失效）。
+
+    可签发对象：根账号，以及登录页自助注册的账号（``source`` 为
+    ``self_service``）—— 后者没有管理员可代发激活码，不给恢复码就等于
+    "换机或忘记密码后永久进不去"。管理员创建的成员仍由管理员重置密码，
+    这里保持中性拒绝。
 
     这是"老根账号（0.1.0 时代创建、``recovery_hash`` 为空串）"的正规补发
     入口：只要还能登录，就能在这里拿到一枚**立刻可用**的新码。响应里没有
@@ -976,7 +1002,9 @@ def recovery_rotate(
     """
     manager = get_identity_manager()
     code = _kernel_call(manager.rotate_recovery_code, context.principal)
-    _clear_local_recovery_file()
+    if context.is_root:
+        # 本机交接文件只承载根恢复码；非根账号重发时不能顺手删掉根的那份。
+        _clear_local_recovery_file()
     return {
         "recovery_code": code,
         "notice": "恢复码只显示这一次，请离线保存；它没有有效期，但一经使用即失效。",

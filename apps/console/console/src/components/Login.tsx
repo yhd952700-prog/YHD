@@ -1013,7 +1013,8 @@ function SelfRegisterForm({
   return (
     <form onSubmit={submit}>
       <p className="os-login-sub" style={{ marginBottom: 14 }}>
-        输入用户名和密码即可创建账户，创建后直接进入系统。
+        输入用户名和密码即可创建账户，创建后直接进入系统。创建成功会显示一次恢复码，
+        请保存好 —— 换机或忘记密码时要用它重置。
       </p>
       <div className="os-field">
         <label htmlFor="reg-principal">用户名</label>
