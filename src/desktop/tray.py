@@ -54,6 +54,14 @@ ACTION_TOGGLE_STATUS = "toggle_status"
 #: 「打开日志目录」：排障时不必让用户自己去找数据目录。
 ACTION_OPEN_LOGS = "open_logs"
 
+#: 「暂停 / 恢复 AI 员工接活」：逐个暂停（恢复）当前账号可见的执行个体。
+#: 文案由 :func:`pause_label` 动态生成，菜单项名称固定为此动作名。
+ACTION_TOGGLE_PAUSE_EMPLOYEES = "toggle_pause_employees"
+#: 「退出登录」：撤销令牌 + 删除本机免密凭据 + 回登录页。
+ACTION_LOGOUT = "logout"
+#: 「清除本机免密」：只删凭据文件（不解密、不额外确认）+ 回登录页。
+ACTION_CLEAR_AUTO_LOGIN = "clear_auto_login"
+
 #: 第二个桌面实例唤起已有窗口用的注册消息（跨进程，按类名找隐藏窗口）。
 SHOW_MESSAGE_NAME = "LiuHao.ShowStatusWindow"
 
@@ -80,17 +88,40 @@ LABEL_RESTART_SERVICE = "重新启动服务"
 LABEL_OPEN_LOGS = "打开日志目录"
 LABEL_STOP_SERVICE = "停止服务（仅停网关，托盘保留）"
 LABEL_QUIT = "退出（停止网关并关闭托盘）"
+LABEL_PAUSE_EMPLOYEES = "暂停 AI 员工接活"
+LABEL_RESUME_EMPLOYEES = "恢复 AI 员工接活"
+LABEL_LOGOUT = "退出登录"
+LABEL_CLEAR_AUTO_LOGIN = "清除本机免密（下次需输密码）"
 
-#: 菜单项顺序即产品要求：打开窗口 / 查看状态 / 在浏览器中打开 / 打开日志目录 /
-#: 停止服务 / 退出。「停止服务」只停网关（托盘与窗口仍在）；「退出」才会停止
-#: 网关并移除托盘 —— 标签里写清楚，避免用户把"停止"当成"退出"。
-#: 「在浏览器中打开」是网页模式的入口；默认启动不会自动打开浏览器。
+#: 暂停菜单的解释口径：只影响已有员工的指派，不阻止用户直接对话。
+#: 菜单项本身没有 tooltip（Win32 弹出菜单不支持），因此这句话写进托盘图标
+#: tooltip 和暂停成功的气泡里，避免用户把"暂停接活"误解成"后端全局拒单"。
+PAUSE_SCOPE_HINT = "只影响已有员工的指派，不阻止你直接对话"
+
+
+def pause_label(*, paused: bool, count: int | None) -> str:
+    """生成暂停/恢复菜单文案；数量未知时**不编数字**。"""
+    if paused:
+        suffix = f"（已暂停 {count} 位）" if count is not None else ""
+        return LABEL_RESUME_EMPLOYEES + suffix
+    suffix = f"（当前 {count} 位）" if count is not None else ""
+    return LABEL_PAUSE_EMPLOYEES + suffix
+
+
+#: 菜单项顺序即产品要求：打开窗口 / 查看状态 / 暂停接活 / 在浏览器中打开 /
+#: 打开日志目录 / 退出登录 / 清除免密 / 停止服务 / 退出。「停止服务」只停网关
+#: （托盘与窗口仍在）；「退出」才会停止网关并移除托盘 —— 标签里写清楚，避免
+#: 用户把"停止"当成"退出"。「在浏览器中打开」是网页模式的入口；默认启动不会
+#: 自动打开浏览器。
 MENU_ITEMS: tuple[tuple[int, str, str], ...] = (
     (1001, ACTION_OPEN_CONSOLE, LABEL_OPEN_CONSOLE),
     (1002, ACTION_SHOW_STATUS, LABEL_SHOW_STATUS),
+    (1008, ACTION_TOGGLE_PAUSE_EMPLOYEES, LABEL_PAUSE_EMPLOYEES),
     (1007, ACTION_RESTART_SERVICE, LABEL_RESTART_SERVICE),
     (1006, ACTION_OPEN_BROWSER, LABEL_OPEN_BROWSER),
     (1005, ACTION_OPEN_LOGS, LABEL_OPEN_LOGS),
+    (1009, ACTION_LOGOUT, LABEL_LOGOUT),
+    (1010, ACTION_CLEAR_AUTO_LOGIN, LABEL_CLEAR_AUTO_LOGIN),
     (1003, ACTION_STOP_SERVICE, LABEL_STOP_SERVICE),
     (1004, ACTION_QUIT, LABEL_QUIT),
 )
@@ -107,14 +138,21 @@ def menu_items_for(*, include_browser: bool) -> tuple[tuple[int, str, str], ...]
     return tuple(item for item in MENU_ITEMS if item[1] != ACTION_OPEN_BROWSER)
 
 
-#: 图标状态：运行中（绿）/ 有错误（红）/ 已停止（灰）。
-STATE_RUNNING = "running"
+#: 图标状态：空闲（绿）/ 执行中（蓝）/ 等你确认（琥珀）/ 出错（红）/ 已停止（灰）。
+#: ``STATE_RUNNING`` 保留为旧接口（等同空闲），避免外部调用方与既有测试断裂。
+STATE_IDLE = "idle"
+STATE_WORKING = "working"
+STATE_WAITING = "waiting"
 STATE_ERROR = "error"
 STATE_STOPPED = "stopped"
+STATE_RUNNING = "running"
 STATE_COLORS: dict[str, tuple[int, int, int]] = {
-    STATE_RUNNING: (46, 160, 67),
+    STATE_IDLE: (46, 160, 67),
+    STATE_WORKING: (56, 139, 253),
+    STATE_WAITING: (210, 153, 34),
     STATE_ERROR: (218, 54, 51),
     STATE_STOPPED: (120, 120, 120),
+    STATE_RUNNING: (46, 160, 67),
 }
 
 _TIP_MAX = 127
@@ -317,10 +355,13 @@ class SystemTray:
         tooltip: str = BRAND_LOCKUP,
         instance_key: str | None = None,
         menu_items: tuple[tuple[int, str, str], ...] | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         self._on_action = on_action
         self._menu_items = MENU_ITEMS if menu_items is None else tuple(menu_items)
         self._tooltip = tooltip[:_TIP_MAX]
+        #: 图标资产目录的兜底根（测试/多实例可显式传入；None 时读 DATA_DIR）。
+        self._data_dir = data_dir
         #: 稳定的实例键：第二个桌面实例据此找到本窗口并请求显示状态窗口。
         self._instance_key = instance_key or ""
         self._thread: threading.Thread | None = None
@@ -342,6 +383,9 @@ class SystemTray:
         self.last_notify_error: str | None = None
         self._state = ""
         self._icon_cache: dict[str, Any] = {}
+        #: 外部资产/换图接口：state → ICO 路径。未登记的状态走 tray_icons 解析，
+        #: 再找不到就用占位圆点 —— 资产到了只需登记，不改状态机。
+        self._icon_paths: dict[str, Path] = {}
         #: 置灰动作（启动/停止进行中时「重新启动服务」不可点）；从 UI 线程写、
         #: 托盘线程读，用短锁保护。
         self._disabled_actions: set[str] = set()
@@ -493,7 +537,12 @@ class SystemTray:
             return cached
         hicon = 0
         try:
-            path = write_state_icon(state_icon_path(state), STATE_COLORS[state])
+            from . import DATA_DIR
+            from .tray_icons import resolve
+
+            path = self._icon_paths.get(state) or resolve(
+                state, STATE_COLORS[state], self._data_dir or DATA_DIR
+            )
             # 明确要通知区的小图标尺寸（SM_CXSMICON，随 DPI 是 16/24/32…），
             # 让 Windows 从多尺寸 ICO 里挑**正好匹配**的那一档；用
             # LR_DEFAULTSIZE 会固定拿 SM_CXICON（32）再由外壳缩到 16/24，
@@ -512,14 +561,34 @@ class SystemTray:
             hicon = 0
         if not hicon:
             stock_name = {
+                STATE_IDLE: "IDI_APPLICATION",
                 STATE_RUNNING: "IDI_APPLICATION",
+                STATE_WORKING: "IDI_INFORMATION",
+                STATE_WAITING: "IDI_WARNING",
                 STATE_ERROR: "IDI_ERROR",
                 STATE_STOPPED: "IDI_INFORMATION",
-            }[state]
+            }.get(state, "IDI_APPLICATION")
             hicon = win32gui.LoadIcon(0, getattr(win32con, stock_name, win32con.IDI_APPLICATION))
         if hicon:
             self._icon_cache[state] = hicon
         return hicon
+
+    def set_state_icon(self, state: str, path: Path | str | None) -> None:
+        """换图接口：登记某个状态使用的 ICO；``None`` 表示恢复自动解析。
+
+        资产线产出新图标后，由 ``app`` 启动时调用（或直接把文件放进
+        ``tray_icons.candidate_dirs()`` 的某个目录）。不重启托盘，下一次
+        ``set_state`` 就会用新图。
+        """
+        with self._menu_lock:
+            if path is None:
+                self._icon_paths.pop(state, None)
+            else:
+                self._icon_paths[state] = Path(path)
+            # 旧 HICON 交给系统缓存，这里只需要让下一次 set_state 重新加载。
+            self._icon_cache.pop(state, None)
+        if self._state == state:
+            self.set_state(state)
 
     # ------------------------------------------------------------------ #
     # 图标注册与重建（托盘线程）
@@ -720,7 +789,8 @@ class SystemTray:
         try:
             with self._menu_lock:
                 disabled = set(self._disabled_actions)
-            for menu_id, action, label in self._menu_items:
+                items = tuple(self._menu_items)
+            for menu_id, action, label in items:
                 flags = win32con.MF_STRING
                 if action in disabled:
                     flags |= win32con.MF_GRAYED
@@ -749,9 +819,28 @@ class SystemTray:
         with self._menu_lock:
             self._disabled_actions = set(actions or ())
 
+    def set_action_label(self, action: str, label: str) -> None:
+        """更新单个菜单项的文案（暂停接活要显示真实员工数）。
+
+        托盘线程在下一次 ``_show_menu`` 时读取新文案；重复设置同一个文案是
+        幂等的，不会造成闪烁或重建菜单。
+        """
+        with self._menu_lock:
+            self._menu_items = tuple(
+                (menu_id, item_action, label if item_action == action else item_label)
+                for menu_id, item_action, item_label in self._menu_items
+            )
+
+    def action_labels(self) -> dict[str, str]:
+        """当前菜单文案快照（测试与排障用）。"""
+        with self._menu_lock:
+            return {action: label for _menu_id, action, label in self._menu_items}
+
     def handle_command(self, menu_id: int) -> None:
         """菜单命令入口（右键菜单与 ``WM_COMMAND`` 共用；测试直接调用它）。"""
-        for candidate, action, _label in self._menu_items:
+        with self._menu_lock:
+            items = tuple(self._menu_items)
+        for candidate, action, _label in items:
             if candidate == menu_id:
                 self._dispatch(action)
                 return
@@ -762,6 +851,8 @@ class SystemTray:
 
 
 __all__ = [
+    "ACTION_CLEAR_AUTO_LOGIN",
+    "ACTION_LOGOUT",
     "ACTION_OPEN_BROWSER",
     "ACTION_OPEN_CONSOLE",
     "ACTION_OPEN_LOGS",
@@ -769,21 +860,31 @@ __all__ = [
     "ACTION_RESTART_SERVICE",
     "ACTION_SHOW_STATUS",
     "ACTION_STOP_SERVICE",
+    "ACTION_TOGGLE_PAUSE_EMPLOYEES",
     "ACTION_TOGGLE_STATUS",
+    "LABEL_CLEAR_AUTO_LOGIN",
+    "LABEL_LOGOUT",
     "LABEL_OPEN_BROWSER",
     "LABEL_OPEN_CONSOLE",
     "LABEL_OPEN_LOGS",
+    "LABEL_PAUSE_EMPLOYEES",
     "LABEL_QUIT",
     "LABEL_RESTART_SERVICE",
+    "LABEL_RESUME_EMPLOYEES",
     "LABEL_SHOW_STATUS",
     "LABEL_STOP_SERVICE",
     "MENU_ITEMS",
+    "PAUSE_SCOPE_HINT",
     "menu_items_for",
+    "pause_label",
     "SHOW_MESSAGE_NAME",
     "STATE_COLORS",
     "STATE_ERROR",
+    "STATE_IDLE",
     "STATE_RUNNING",
     "STATE_STOPPED",
+    "STATE_WAITING",
+    "STATE_WORKING",
     "SystemTray",
     "TASKBAR_CREATED_NAME",
     "available",

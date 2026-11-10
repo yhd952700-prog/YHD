@@ -20,6 +20,7 @@ pywebview 的 WinForms 后端在检测不到 WebView2 时会**静默回退到 ms
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -29,6 +30,96 @@ from typing import Any
 from src.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
+
+#: 前端会话在 localStorage 里的键名（必须与 apps/console 的 auth.ts 一致）。
+SESSION_STORAGE_KEY = "liuhao.session"
+LAST_PRINCIPAL_KEY = "liuhao.last_principal"
+
+
+def session_bootstrap_js(session: dict[str, Any]) -> str:
+    """返回"把会话写进 localStorage"的 JS。
+
+    只在**隐藏窗口**里执行然后 reload，用户看不到登录页闪一下；会话内容来自
+    本机 ``POST /v1/auth/login``，与前端自己登录后写入的结构完全一致。
+    """
+    payload = json.dumps(dict(session), ensure_ascii=False)
+    principal = json.dumps(str(session.get("principal") or ""), ensure_ascii=False)
+    key = json.dumps(SESSION_STORAGE_KEY)
+    last_key = json.dumps(LAST_PRINCIPAL_KEY)
+    return (
+        "(function(){try{"
+        f"localStorage.setItem({key}, {json.dumps(payload)});"
+        f"localStorage.setItem({last_key}, {principal});"
+        "return true;}catch(e){return false;}})()"
+    )
+
+
+def auth_hook_js() -> str:
+    """登录/退出钩子：把凭据交给桌面壳，用于"下次免密"与"退出即删凭据"。
+
+    * 登录/自助注册成功 → ``pywebview.api.remember_login(principal, secret, token)``；
+    * 任意退出登录 → ``pywebview.api.signed_out()``。
+    钩子不改前端代码，只在桌面窗口内包裹 ``window.fetch``；页面刷新后重新安装，
+    用 ``__liuhaoDesktopAuthHook`` 防重复。凭据只随本次请求交给本机 Python，
+    不写 console、不写 localStorage 的额外键。
+    """
+    return r"""
+(function(){
+  if (window.__liuhaoDesktopAuthHook) return true;
+  window.__liuhaoDesktopAuthHook = true;
+  var original = window.fetch;
+  if (!original) return true;
+  window.fetch = function(input, init){
+    var url = '', method = 'GET', body = null;
+    try { url = typeof input === 'string' ? input : ((input && input.url) || ''); } catch(e) {}
+    try { method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase(); } catch(e) {}
+    try { if (init && typeof init.body === 'string') body = init.body; } catch(e) {}
+    var promise = original.apply(this, arguments);
+    try {
+      var isLogin = method === 'POST' && url.indexOf('/v1/auth/login') !== -1;
+      var isRegister = method === 'POST' && url.indexOf('/v1/accounts/self-register') !== -1;
+      if (isLogin || isRegister) {
+        var parsed = null;
+        try { parsed = body ? JSON.parse(body) : null; } catch(e) {}
+        var principal = parsed && (parsed.principal || parsed.login_name);
+        var secret = parsed && (parsed.secret || parsed.password);
+        if (principal && secret) {
+          promise.then(function(resp){
+            if (!resp || !resp.ok) return;
+            resp.clone().json().then(function(data){
+              var bridge = window.pywebview && window.pywebview.api;
+              if (bridge && bridge.remember_login) {
+                bridge.remember_login(String(principal), String(secret),
+                  data && data.access_token ? String(data.access_token) : '');
+              }
+            }).catch(function(){});
+          }).catch(function(){});
+        }
+      }
+      if (method === 'POST' && url.indexOf('/v1/auth/logout') !== -1) {
+        promise.then(function(){
+          var bridge = window.pywebview && window.pywebview.api;
+          if (bridge && bridge.signed_out) bridge.signed_out();
+        }).catch(function(){});
+      }
+    } catch(e) {}
+    return promise;
+  };
+  return true;
+})()
+"""
+
+
+def clear_session_js() -> str:
+    """清掉本机浏览器会话并刷新（回到登录页）。"""
+    return (
+        "(function(){try{"
+        f"localStorage.removeItem({json.dumps(SESSION_STORAGE_KEY)});"
+        f"localStorage.removeItem({json.dumps(LAST_PRINCIPAL_KEY)});"
+        "}catch(e){}"
+        "try{location.reload();}catch(e){}"
+        "return true;})()"
+    )
 
 #: 桌面壳身份标记：前端读 ``navigator.userAgent`` 里的这一段就能确认"我在
 #: 桌面原生窗口里"，不需要窗口尺寸，也不依赖任何查询参数（刷新、深链、
@@ -259,6 +350,12 @@ class NativeWindow:
         self._visible = False
         self._ready = threading.Event()
         self._loaded_url: str | None = None
+        #: 页面加载状态机：``idle``（还没加载控制台）/ ``inject``（等首帧后写入
+        #: 会话再刷新）/ ``done``（正常展示）。自动登录必须先注入会话再刷新，
+        #: 窗口保持隐藏，用户不会看到登录页闪一下。
+        self._load_state = "idle"
+        self._pending_session: dict[str, Any] | None = None
+        self._show_after_load = False
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -282,6 +379,7 @@ class NativeWindow:
         )
         self._window.events.closing += self._on_closing
         self._window.events.shown += self._on_shown
+        self._window.events.loaded += self._on_loaded
         self._visible = not self._hidden
 
     def start(self) -> None:
@@ -314,14 +412,69 @@ class NativeWindow:
         logger.info("原生窗口已关闭到托盘（进程继续运行）")
         return False
 
+    def _on_loaded(self) -> None:
+        """页面加载完成：先注入会话（自动登录），再装登录/退出钩子。"""
+        if self._window is None:
+            return
+        try:
+            if self._load_state == "inject" and self._pending_session:
+                session = self._pending_session
+                self._pending_session = None
+                try:
+                    self._window.evaluate_js(session_bootstrap_js(session))
+                except Exception:  # noqa: BLE001 - 注入失败就退回登录页
+                    logger.warning("evt=native.session_inject_failed")
+                self._load_state = "done"
+                # 刷新后 React 在挂载时直接读到会话，不会先渲染登录页；窗口
+                # 此时仍是隐藏的，等下一次 loaded 再显示。
+                with contextlib.suppress(Exception):
+                    self._window.evaluate_js("window.location.reload()")
+                    return
+                logger.warning("evt=native.session_reload_failed 保持当前页面")
+            self._install_auth_hook()
+            if self._show_after_load:
+                self._show_after_load = False
+                self.show()
+        except Exception:  # noqa: BLE001 - 加载回调不能把 GUI 循环拖垮
+            logger.warning("页面加载回调异常", exc_info=False)
+
+    def _install_auth_hook(self) -> None:
+        """安装登录/退出钩子（幂等；刷新后自动重装）。"""
+        if self._window is None:
+            return
+        with contextlib.suppress(Exception):
+            self._window.evaluate_js(auth_hook_js())
+
     # ------------------------------------------------------------------ #
     # 页面与可见性
     # ------------------------------------------------------------------ #
-    def load_console(self, url: str, *, show: bool = True) -> None:
+    def load_console(
+        self,
+        url: str,
+        *,
+        show: bool = True,
+        session: dict[str, Any] | None = None,
+    ) -> None:
+        """加载控制台；传 ``session`` 时先写会话再刷新（免密直达主界面）。"""
         if self._window is None:
             return
         self._loaded_url = url
         logger.info("原生窗口加载控制台：%s", self._masked_url(url))
+        if session:
+            self._pending_session = dict(session)
+            self._load_state = "inject"
+            self._show_after_load = show
+            if show:
+                # 先藏起来再导航：登录页即使短暂渲染也不会被用户看到，
+                # 等会话写入并刷新完成后再显示。
+                with contextlib.suppress(Exception):
+                    self._window.hide()
+                self._visible = False
+            self._window.load_url(url)
+            return
+        self._pending_session = None
+        self._load_state = "done"
+        self._show_after_load = False
         self._window.load_url(url)
         if show:
             self.show()
@@ -329,6 +482,7 @@ class NativeWindow:
     def retry_splash(self, *, show: bool = True) -> None:
         if self._window is None:
             return
+        self._show_after_load = False
         self._window.load_html(splash_page())
         if show:
             self.show()
@@ -336,6 +490,7 @@ class NativeWindow:
     def show_error(self, title: str, reason: str, *, show: bool = True) -> None:
         if self._window is None:
             return
+        self._show_after_load = False
         self._window.load_html(error_page(title, reason))
         if show:
             self.show()
@@ -343,7 +498,20 @@ class NativeWindow:
     def show_conflict(self, port: int, owner: str, *, show: bool = True) -> None:
         if self._window is None:
             return
+        self._show_after_load = False
         self._window.load_html(conflict_page(port, owner))
+        if show:
+            self.show()
+
+    def clear_session(self, *, show: bool = True) -> None:
+        """清掉窗口里的会话并刷新到登录页（退出登录/清除免密后调用）。"""
+        if self._window is None:
+            return
+        self._pending_session = None
+        self._load_state = "done"
+        self._show_after_load = False
+        with contextlib.suppress(Exception):
+            self._window.evaluate_js(clear_session_js())
         if show:
             self.show()
 
@@ -479,11 +647,15 @@ __all__ = [
     "DESKTOP_UA_TOKEN",
     "DESKTOP_USER_AGENT",
     "MIN_WINDOW_SIZE",
+    "SESSION_STORAGE_KEY",
     "WEBVIEW2_BOOTSTRAPPER_URL",
     "NativeWindow",
     "ask_missing_webview2",
+    "auth_hook_js",
+    "clear_session_js",
     "conflict_page",
     "error_page",
+    "session_bootstrap_js",
     "show_install_help",
     "splash_page",
     "webview2_version",

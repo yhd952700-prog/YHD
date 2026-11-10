@@ -45,8 +45,9 @@ from logging.handlers import RotatingFileHandler
 from tkinter import messagebox
 from typing import Any
 
-from . import CONSOLE_DIST, DATA_DIR, LOG_DIR, dpi
+from . import CONSOLE_DIST, DATA_DIR, LOG_DIR, dpi, tray_state
 from .about import APP_NAME
+from .auto_login import AutoLogin
 from .diagnostics import format_bytes, probe_directory_writable, service_guidance
 from .probe import describe_port_owner, http_json, pick_port, port_is_free
 from .service import (
@@ -57,6 +58,8 @@ from .service import (
 )
 from .startup import STARTUP_TIMEOUT, unavailable_gate, wait_until_ready
 from .tray import (
+    ACTION_CLEAR_AUTO_LOGIN,
+    ACTION_LOGOUT,
     ACTION_OPEN_BROWSER,
     ACTION_OPEN_CONSOLE,
     ACTION_OPEN_LOGS,
@@ -64,17 +67,23 @@ from .tray import (
     ACTION_RESTART_SERVICE,
     ACTION_SHOW_STATUS,
     ACTION_STOP_SERVICE,
+    ACTION_TOGGLE_PAUSE_EMPLOYEES,
     ACTION_TOGGLE_STATUS,
     LABEL_OPEN_CONSOLE,
     LABEL_OPEN_LOGS,
     LABEL_QUIT,
     LABEL_STOP_SERVICE,
+    PAUSE_SCOPE_HINT,
     STATE_ERROR,
-    STATE_RUNNING,
+    STATE_IDLE,
     STATE_STOPPED,
+    STATE_WAITING,
+    STATE_WORKING,
     SystemTray,
+    pause_label,
     request_show,
 )
+from .tray_state import TrayStatePoller
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +328,28 @@ class _NativeBridge:
             value = 0
         self._app.events.put(("native", {"action": "use_port", "port": value}))
 
+    def remember_login(self, principal: Any = "", secret: Any = "", token: Any = "") -> None:
+        """前端登录成功后把凭据交给桌面壳（**不打印任何参数**）。
+
+        真正是否需要保存由桌面壳按"同意状态"决定；这里只做长度边界检查，
+        防止异常页面塞入超大对象。
+        """
+        self._app.events.put(
+            (
+                "auth",
+                {
+                    "action": "login",
+                    "principal": str(principal or "")[:256],
+                    "secret": str(secret or "")[:1024],
+                    "token": str(token or "")[:4096],
+                },
+            )
+        )
+
+    def signed_out(self) -> None:
+        """前端主动退出登录：本机免密凭据必须一起删除。"""
+        self._app.events.put(("auth", {"action": "logout"}))
+
 
 def _raise_foreground(widget_id: int) -> None:
     """把状态窗口真正提到前台（Windows）。
@@ -373,6 +404,18 @@ class DesktopApp:
     _restart_after_stop: bool = False
     #: 最近一次健康轮询结论：True=健康，False=进程在但接口不通，None=未探测。
     _last_health_ok: bool | None = None
+    #: 本机免密凭据（DPAPI）；None 表示尚未初始化（裸对象测试）。
+    _auto_login: Any = None
+    #: 内存里的登录令牌（只用于本机托盘状态/暂停接口，不落盘、不写日志）。
+    _token: str = ""
+    _token_expires: float = 0.0
+    #: "暂停 AI 员工接活"的持久化意图（重启后仍生效）。
+    _paused: bool = False
+    #: 托盘状态轮询器与最近一次快照。
+    _state_poller: Any = None
+    _tray_snapshot: dict[str, Any] | None = None
+    _pause_thread: Any = None
+    _auth_lock: Any = None
 
     def __init__(
         self,
@@ -428,6 +471,14 @@ class DesktopApp:
         self._scroll: dpi.ScrollableFrame | None = None
         self._dpi_watcher: dpi.DpiWatcher | None = None
         self._wrapped_labels: list[tuple[tk.Label, int]] = []
+        self._auto_login = AutoLogin(DATA_DIR)
+        self._token = ""
+        self._token_expires = 0.0
+        self._paused = tray_state.read_paused(DATA_DIR)
+        self._state_poller: TrayStatePoller | None = None
+        self._tray_snapshot: dict[str, Any] | None = None
+        self._pause_thread: threading.Thread | None = None
+        self._auth_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -586,8 +637,13 @@ class DesktopApp:
             tooltip=self._tooltip_text(),
             instance_key=str(DATA_DIR),
             menu_items=menu_items_for(include_browser=self.window_mode == WINDOW_BROWSER),
+            data_dir=DATA_DIR,
         )
         started = self._tray.start()
+        if started:
+            # 菜单文案依赖"是否登录/员工数/是否已保存免密"，先按当前已知信息
+            # 刷一次，随后由状态轮询持续更新。
+            self._sync_tray_menu()
         if not started:
             logger.warning("系统托盘未启动：%s", self._tray.error)
             if update_label and "tray" in self._labels:
@@ -618,7 +674,11 @@ class DesktopApp:
                 kind, payload = self.events.get(timeout=0.3)
             except queue.Empty:
                 continue
-            self._dispatch_event(kind, payload)
+            try:
+                self._dispatch_event(kind, payload)
+            except Exception as exc:  # noqa: BLE001 - 单个事件失败不能杀死分发线程
+                # 只记录事件名与异常类型：事件载荷里可能有登录凭据，绝不落盘。
+                logger.warning("事件处理异常 kind=%s error=%s", kind, type(exc).__name__)
 
     def _boot(self) -> None:
         """后台启动网关并过启动门；结果经 ``events`` 交回 UI 线程。"""
@@ -718,10 +778,24 @@ class DesktopApp:
                     target=self._poll_health, name="liuhao-health", daemon=True
                 )
                 self._health_thread.start()
+            session = None
+            if self.window_mode == WINDOW_NATIVE and self._native is not None:
+                # 免密登录必须在加载控制台**之前**完成：拿到会话后先写进
+                # localStorage 再刷新，窗口全程隐藏，用户看不到登录页。
+                session = self._bootstrap_auto_login()
+                if "console" in self._labels:
+                    self._labels["console"].config(
+                        text="鎏灏窗口：已就绪（已自动登录）"
+                        if session
+                        else "鎏灏窗口：已就绪（首屏为登录页）"
+                    )
+            self._start_state_poller()
             if self.window_mode == WINDOW_NATIVE and self._native is not None:
                 # 健康检查 200 之后才加载控制台：不会出现白屏或"无法连接"页。
                 self._native.load_console(
-                    self._console_url_with_proof(), show=not self.hidden
+                    self._console_url_with_proof(),
+                    show=not self.hidden,
+                    session=session,
                 )
             elif self.open_browser:
                 # 浏览器模式只在显式参数 ``--web`` 下由这里打开；打开前同样做
@@ -978,9 +1052,31 @@ class DesktopApp:
                 # 进程在但健康接口不通：不能显示成"运行中"（图标同时是红色）。
                 suffix = " · 浏览器模式" if self.window_mode == WINDOW_BROWSER else ""
                 return f"{APP_NAME} · 进程在，健康检查不通{suffix}（详见日志/诊断包）"
+            snapshot = self._tray_snapshot or {}
+            if not snapshot.get("authenticated"):
+                # 宁可说"看不到"，也不猜一个"执行中/等你确认"。
+                text = f"{APP_NAME} · 未登录，任务状态不可见"
+            else:
+                state = snapshot.get("state")
+                if state == STATE_WAITING:
+                    text = (
+                        f"{APP_NAME} · 等你确认："
+                        f"{snapshot.get('pending_approvals') or 0} 项"
+                    )
+                elif state == STATE_WORKING:
+                    text = (
+                        f"{APP_NAME} · 执行中："
+                        f"{snapshot.get('running_goals') or 0} 个任务"
+                    )
+                elif state == STATE_ERROR:
+                    text = f"{APP_NAME} · 出错（详见窗口/日志）"
+                else:
+                    text = f"{APP_NAME} · 空闲"
+            if self._paused:
+                text += f" · AI 员工接活已暂停（{PAUSE_SCOPE_HINT}）"
             if self.window_mode == WINDOW_BROWSER:
-                return f"{APP_NAME} · 运行中 · 浏览器模式"
-            return f"{APP_NAME} · 运行中"
+                text += " · 浏览器模式"
+            return text
         if self._stop_result is not None:
             return f"{APP_NAME} · 服务已停止"
         if self.service.last_error:
@@ -1283,6 +1379,11 @@ class DesktopApp:
         self._stop_result = None
         self._last_health_ok = None
         self._data_dir_writable = None
+        # 新的网关进程会有新的令牌与任务状态：旧快照不能继承，否则重启后
+        # 托盘会短暂显示上一个进程的"执行中"。
+        self._stop_state_poller()
+        self._clear_token()
+        self._tray_snapshot = None
         if "service" in self._labels:
             self._labels["service"].config(text=f"网关：{note}…")
         if "startup" in self._labels:
@@ -1608,6 +1709,11 @@ class DesktopApp:
     def _apply_stop_result(self, result: dict[str, Any]) -> None:
         """展示并记录停止结果（优雅 / 超时强杀 / 未确认收尾）。"""
         self._stop_result = result
+        # 网关没了：状态轮询无意义，令牌与服务端会话一并作废；否则托盘会一直
+        # 拿旧令牌轮询，把"服务已停止"覆盖成"未登录"。
+        self._stop_state_poller()
+        self._clear_token()
+        self._tray_snapshot = None
         logger.info("网关停止结果：%s", result)
         if "stop" in self._labels:
             self._labels["stop"].config(text=f"最近停止：{_describe_stop(result)}")
@@ -1646,6 +1752,7 @@ class DesktopApp:
             return
         self._closing = True
         self._stop_event.set()
+        self._stop_state_poller()
         boot = self._boot_thread
         if boot is not None and boot.is_alive():
             # 启动线程若还在 start()/启动门里，给它一点时间退出；它自己会看到
@@ -1734,6 +1841,12 @@ class DesktopApp:
             self._apply_diagnostics_result(payload)
         elif kind == "native":
             self._handle_native_action(payload)
+        elif kind == "auth":
+            self._handle_auth_event(payload)
+        elif kind == "tray_state":
+            self._apply_tray_snapshot(payload)
+        elif kind == "pause":
+            self._apply_pause_result(payload)
         elif kind == "action":
             self._handle_action(str(payload))
 
@@ -1752,6 +1865,10 @@ class DesktopApp:
             self._stop_service_and_show()
         elif action == ACTION_OPEN_LOGS:
             self._open_logs()
+        elif action == ACTION_TOGGLE_PAUSE_EMPLOYEES:
+            self._toggle_employees_pause()
+        elif action in (ACTION_LOGOUT, ACTION_CLEAR_AUTO_LOGIN):
+            self._sign_out()
         elif action == ACTION_QUIT:
             self._quit()
 
@@ -1779,6 +1896,320 @@ class DesktopApp:
                 self._switch_port(new_port, old_port=old_port)
             else:
                 logger.warning("窗口里提交了非法端口：%s", new_port)
+
+    # ------------------------------------------------------------------ #
+    # 本机免密登录 / 令牌 / 托盘状态
+    # ------------------------------------------------------------------ #
+    def _bootstrap_auto_login(self) -> dict[str, Any] | None:
+        """启动时尝试免密登录；失败返回 ``None``（照常显示登录页）。
+
+        只有在"已明确同意 + 凭据存在"时才会真的解密并发登录请求；令牌只放
+        内存，供托盘状态与暂停接口使用。
+        """
+        auto = self._auto_login
+        base = self.service.base_url or ""
+        if auto is None or not base or not auto.supported():
+            return None
+        session = auto.bootstrap(base)
+        if session:
+            self._set_token(
+                str(session.get("token") or ""),
+                float(session.get("expiresAt") or 0.0),
+            )
+            logger.info("evt=autologin.ready")
+        elif auto.has_credential() and auto.consent() == "granted":
+            logger.warning("evt=autologin.fallback 免密登录失败，改为手动登录")
+        return session
+
+    def _get_token(self) -> str:
+        with (self._auth_lock or contextlib.nullcontext()):
+            return self._token
+
+    def _set_token(self, token: str, expires: float = 0.0) -> None:
+        with (self._auth_lock or contextlib.nullcontext()):
+            self._token = str(token or "")
+            self._token_expires = float(expires or 0.0)
+
+    def _clear_token(self) -> None:
+        with (self._auth_lock or contextlib.nullcontext()):
+            had = bool(self._token)
+            self._token = ""
+            self._token_expires = 0.0
+        if had:
+            logger.info("evt=auth.token_cleared")
+
+    def _start_state_poller(self) -> None:
+        if self._state_poller is not None or self._closing:
+            return
+        self._state_poller = TrayStatePoller(
+            base_url=lambda: self.service.base_url or "",
+            token=self._get_token,
+            on_snapshot=lambda snapshot: self.events.put(("tray_state", snapshot)),
+            on_auth_expired=self._on_token_expired,
+            paused=lambda: self._paused,
+        )
+        self._state_poller.start()
+        logger.info("evt=tray.state_poller started")
+
+    def _stop_state_poller(self) -> None:
+        poller, self._state_poller = self._state_poller, None
+        if poller is not None:
+            with contextlib.suppress(Exception):
+                poller.stop()
+
+    def _on_token_expired(self) -> None:
+        self._clear_token()
+        logger.info("evt=auth.expired 令牌已失效，托盘停止显示任务状态")
+
+    def _auto_login_has_credential(self) -> bool:
+        auto = self._auto_login
+        try:
+            return bool(auto is not None and auto.has_credential())
+        except Exception:  # noqa: BLE001 - 只影响菜单置灰
+            return False
+
+    def _apply_tray_snapshot(self, snapshot: Any) -> None:
+        """应用一次真实状态快照：刷新菜单数量、图标与 tooltip。"""
+        if not isinstance(snapshot, dict) or self._closing:
+            return
+        self._tray_snapshot = snapshot
+        newly = snapshot.get("newly_paused") or []
+        if newly and self._tray is not None:
+            names = "、".join(str(item) for item in newly[:3])
+            more = f" 等 {len(newly)} 位" if len(newly) > 3 else ""
+            self._tray.notify(
+                "暂停期间新建的 AI 员工已一并暂停",
+                f"{names}{more} 已暂停接活；{PAUSE_SCOPE_HINT}。",
+            )
+        self._sync_tray_menu()
+        self._sync_tray_state(
+            running=bool(
+                self.service.is_running() and self._last_health_ok is not False
+            )
+        )
+
+    def _sync_tray_menu(self) -> None:
+        """把"是否登录 / 员工数 / 是否已保存免密"写进菜单文案与置灰状态。"""
+        tray = self._tray
+        if tray is None:
+            return
+        snapshot = self._tray_snapshot or {}
+        authenticated = bool(snapshot.get("authenticated"))
+        count: int | None = None
+        if authenticated:
+            try:
+                value = snapshot.get("employees")
+                count = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                count = None
+        setter = getattr(tray, "set_action_label", None)
+        if setter is not None:
+            setter(
+                ACTION_TOGGLE_PAUSE_EMPLOYEES,
+                pause_label(paused=self._paused, count=count),
+            )
+        self._update_tray_disabled()
+
+    def _update_tray_disabled(self) -> None:
+        tray = self._tray
+        if tray is None:
+            return
+        setter = getattr(tray, "set_disabled_actions", None)
+        if setter is None:
+            return
+        snapshot = self._tray_snapshot or {}
+        running = self.service.is_running()
+        disabled: set[str] = set()
+        if self._boot_pending or self._stopping:
+            disabled.add(ACTION_RESTART_SERVICE)
+        if not running and not self._boot_pending:
+            disabled.add(ACTION_STOP_SERVICE)
+        # 未登录时既看不到状态，也不能替用户暂停/恢复员工接活。
+        if not running or not snapshot.get("authenticated"):
+            disabled.add(ACTION_TOGGLE_PAUSE_EMPLOYEES)
+        if not self._auto_login_has_credential():
+            disabled.add(ACTION_CLEAR_AUTO_LOGIN)
+        setter(disabled)
+
+    def _toggle_employees_pause(self) -> None:
+        """托盘「暂停 / 恢复 AI 员工接活」：只逐个暂停自有执行个体。"""
+        if self._closing:
+            return
+        if not self.service.is_running():
+            self._notify_tray("服务未运行", "网关没有在运行，无法暂停 AI 员工接活。", warning=True)
+            return
+        if not self._get_token():
+            self._notify_tray(
+                "未登录，无法暂停 AI 员工接活",
+                "请先在鎏灏窗口登录；未登录时托盘不显示任务状态。",
+                warning=True,
+            )
+            self._show_window()
+            return
+        if self._pause_thread is not None and self._pause_thread.is_alive():
+            return
+        target = not self._paused
+        # 先落意图再发请求：轮询器看到暂停后会立刻补暂停"暂停期间新建的员工"。
+        self._paused = target
+        tray_state.write_paused(DATA_DIR, target)
+        self._sync_tray_menu()
+        self._sync_tray_state(
+            running=bool(
+                self.service.is_running() and self._last_health_ok is not False
+            )
+        )
+        self._pause_thread = threading.Thread(
+            target=self._pause_worker, args=(target,), name="liuhao-pause", daemon=True
+        )
+        self._pause_thread.start()
+
+    def _pause_worker(self, target: bool) -> None:
+        base = self.service.base_url or ""
+        token = self._get_token()
+        result = tray_state.pause_all(base, token) if target else tray_state.resume_all(
+            base, token
+        )
+        self.events.put(("pause", {"target": target, "result": result}))
+
+    def _apply_pause_result(self, payload: dict[str, Any]) -> None:
+        target = bool(payload.get("target"))
+        result = payload.get("result") or {}
+        status = int(result.get("status") or 0)
+        if status != 200:
+            # 完全没打成：回滚意图，绝不显示"已暂停"其实什么都没发生。
+            self._paused = not target
+            tray_state.write_paused(DATA_DIR, self._paused)
+            self._notify_tray(
+                "未能切换 AI 员工接活状态",
+                "接口不可达或登录已失效，状态没有改变。",
+                warning=True,
+            )
+        else:
+            done = int(result.get("paused" if target else "resumed") or 0)
+            failed = int(result.get("failed") or 0)
+            title = (
+                f"已暂停 {done} 位 AI 员工接活"
+                if target
+                else f"已恢复 {done} 位 AI 员工接活"
+            )
+            if failed:
+                title += f"（{failed} 位未成功）"
+            self._notify_tray(
+                title,
+                f"{PAUSE_SCOPE_HINT}。" if target else "员工可以重新接活。",
+                warning=bool(failed),
+            )
+        self._sync_tray_menu()
+        self._sync_tray_state(
+            running=bool(
+                self.service.is_running() and self._last_health_ok is not False
+            )
+        )
+
+    def _handle_auth_event(self, payload: dict[str, Any]) -> None:
+        action = str((payload or {}).get("action") or "")
+        if action == "login":
+            self._remember_login(payload)
+        elif action == "logout":
+            self._on_signed_out()
+
+    def _remember_login(self, payload: dict[str, Any]) -> None:
+        """前端刚登录成功：按"一次明确同意"决定是否保存本机免密。"""
+        principal = str(payload.get("principal") or "")
+        secret = str(payload.get("secret") or "")
+        token = str(payload.get("token") or "")
+        if token:
+            self._set_token(token)
+        auto = self._auto_login
+        if auto is None or not auto.supported() or not principal or not secret:
+            return
+        consent = auto.consent()
+        if consent is None:
+            granted = self._ask_remember_consent()
+            auto.record_consent(granted)
+            consent = "granted" if granted else "denied"
+        if consent == "granted":
+            try:
+                auto.save(principal, secret)
+            except Exception as exc:  # noqa: BLE001 - 失败只影响"下次免密"
+                # 只记异常类型：异常消息/调用栈里不允许出现口令。
+                logger.warning("evt=autologin.save_failed error=%s", type(exc).__name__)
+        else:
+            logger.info("evt=autologin.declined 用户未同意本机免密")
+        self._sync_tray_menu()
+
+    def _ask_remember_consent(self) -> bool:
+        """首次保存前的明确同意；默认按钮是「否」。"""
+        if os.name != "nt":
+            return False
+        text = (
+            "在这台电脑上记住登录，下次打开不用输密码？\n\n"
+            "密码只保存在本机，并由 Windows 账户加密；换电脑或换 Windows 用户后自动失效。\n"
+            "选「否」不会保存，下次仍需输入密码。"
+        )
+        try:
+            import ctypes
+
+            MB_YESNO = 0x00000004
+            MB_ICONQUESTION = 0x00000020
+            MB_DEFBUTTON2 = 0x00000100
+            result = ctypes.windll.user32.MessageBoxW(
+                None, text, "鎏灏：记住登录", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
+            )
+            return int(result) == 6  # IDYES
+        except Exception:  # noqa: BLE001 - 弹窗失败按"不同意"处理
+            logger.warning("evt=autologin.consent_dialog_failed")
+            return False
+
+    def _on_signed_out(self) -> None:
+        """前端主动退出登录：本机免密凭据必须一起删（不出现"退了还自动进"）。"""
+        auto = self._auto_login
+        removed = False
+        if auto is not None:
+            try:
+                removed = auto.forget()
+            except Exception:  # noqa: BLE001
+                removed = False
+        self._clear_token()
+        logger.info("evt=auth.signed_out credential_removed=%s", removed)
+        self._sync_tray_menu()
+
+    def _sign_out(self) -> None:
+        """托盘「退出登录 / 清除本机免密」：删凭据（不解密）+ 回登录页。"""
+        token = self._get_token()
+        self._clear_token()
+        auto = self._auto_login
+        if auto is not None:
+            try:
+                auto.forget()
+            except Exception:  # noqa: BLE001 - 删不掉也要继续清会话
+                logger.warning("evt=autologin.clear_failed")
+        if token and self.service.is_running():
+            base = self.service.base_url or ""
+            threading.Thread(
+                target=tray_state.logout_token,
+                args=(base, token),
+                name="liuhao-logout",
+                daemon=True,
+            ).start()
+        if self._native is not None:
+            # 清掉窗口里的会话并刷新：用户立刻看到登录页。
+            self._native.clear_session(show=True)
+        elif self.window_mode == WINDOW_STATUS:
+            self._show_window()
+        self._notify_tray("已退出登录", "本机免密凭据已清除，下次打开需要输入密码。")
+        self._sync_tray_menu()
+        self._sync_tray_state(
+            running=bool(
+                self.service.is_running() and self._last_health_ok is not False
+            )
+        )
+
+    def _notify_tray(self, title: str, message: str, *, warning: bool = False) -> None:
+        if self._tray is None or self._closing:
+            return
+        with contextlib.suppress(Exception):
+            self._tray.notify(title, message, warning=warning)
 
     def _begin_recheck(self) -> None:
         """网关仍在运行但启动门没过：只重新过启动门，不重启进程。"""
@@ -1815,7 +2246,7 @@ class DesktopApp:
             self._tray.set_tooltip(self._tooltip_text())
 
     def _sync_tray_state(self, *, running: bool) -> None:
-        """托盘图标三态：运行中 / 有错误 / 已停止（用户一眼看得出）。
+        """托盘图标：空闲 / 执行中 / 等你确认 / 出错 / 已停止。
 
         **无条件同步**：即使没有状态窗口（浏览器模式）也必须更新图标，
         否则网关死了图标还是绿的。停止后固定显示"已停止"，不被上一次启动
@@ -1824,7 +2255,15 @@ class DesktopApp:
         if self._tray is None or self._closing:
             return
         if running:
-            state = STATE_RUNNING
+            snapshot = self._tray_snapshot or {}
+            if not snapshot.get("authenticated"):
+                # 未登录只允许 idle / stopped / error 三种视觉；健康时用 idle，
+                # tooltip 明确写"未登录，任务状态不可见"。
+                state = STATE_IDLE
+            else:
+                state = str(snapshot.get("state") or STATE_IDLE)
+                if state not in (STATE_IDLE, STATE_WORKING, STATE_WAITING, STATE_ERROR):
+                    state = STATE_IDLE
         elif self._stopping or self._stop_result is not None:
             state = STATE_STOPPED
         elif self.service.is_running() or self.service.last_error:
@@ -1832,16 +2271,7 @@ class DesktopApp:
         else:
             state = STATE_STOPPED
         self._tray.set_state(state)
-        # 启动/停止中置灰「重新启动服务」，防止连点；服务没运行时「停止服务」
-        # 也没有意义，一并置灰。
-        disabled: set[str] = set()
-        if self._boot_pending or self._stopping:
-            disabled.add(ACTION_RESTART_SERVICE)
-        if not self.service.is_running() and not self._boot_pending:
-            disabled.add(ACTION_STOP_SERVICE)
-        setter = getattr(self._tray, "set_disabled_actions", None)
-        if setter is not None:
-            setter(disabled)
+        self._update_tray_disabled()
         with contextlib.suppress(Exception):
             self._tray.set_tooltip(self._tooltip_text())
 
