@@ -11,7 +11,10 @@ the surface added by ``src/gateway/audit.py`` is real and usable:
  2. ``GET /v1/audit/events`` returns those events over REAL HTTP, and filtering
     by a known correlation_id returns exactly that goal's subset -- i.e. the
     goal -> action linkage is visible to a user, not just to the kernel.
- 3. ``GET /v1/audit/verify`` reports ok=true on an INTACT chain.
+ 3. ``GET /v1/audit/verify?full=true`` (the user-facing "检查记录完整性"
+    call, cf. console ``verifyAuditChain(full=True)``) reports ok=true on an
+    INTACT chain and actually re-derives entries (entries_checked > 0); the
+    default incremental surface must not false-alarm either.
  4. TAMPER TEST: against a THROWAWAY copy of the audit db, one row's content is
     rewritten with raw SQL, and the endpoint MUST return ok=false and name the
     failure. This is the check that separates a real surface from a stub that
@@ -347,17 +350,30 @@ def check_events_and_filters(base_url, token, known_corr):
 
 
 def check_verify_intact(base_url, token):
-    r = get(base_url, "/v1/audit/verify", token)
-    ok = check("GET /v1/audit/verify returns 200 on an intact chain",
+    # ``full=true`` is the user-facing "检查记录完整性" call (console
+    # verifyAuditChain(full=True)). The default GET is the INCREMENTAL verify,
+    # which honestly checks 0 entries once a background checkpoint covers the
+    # tail -- it never claims to re-derive history, so demanding
+    # entries_checked>0 from it would test nothing. The full re-derive is what
+    # a user's verify button actually runs.
+    r = get(base_url, "/v1/audit/verify", token, full="true")
+    ok = check("GET /v1/audit/verify?full=true returns 200 on an intact chain",
                r.status_code == 200, detail=f"status={r.status_code} body={r.text[:200]}")
     if not ok:
         return None
     body = r.json()
-    check("GET /v1/audit/verify reports ok=true on an INTACT chain",
+    check("GET /v1/audit/verify?full=true reports ok=true on an INTACT chain",
           body.get("ok") is True, detail=f"ok={body.get('ok')}")
-    check("verify reports a real entries_checked (>0)",
+    check("full verify re-derives the chain (entries_checked >0)",
           isinstance(body.get("entries_checked"), int) and body.get("entries_checked") > 0,
           detail=f"entries_checked={body.get('entries_checked')}")
+    # The default (incremental) surface must also be honest on an intact chain.
+    r2 = get(base_url, "/v1/audit/verify", token)
+    inc = r2.json() if r2.status_code == 200 else {}
+    check("default (incremental) verify reports ok=true on an INTACT chain",
+          inc.get("ok") is True,
+          detail=f"status={r2.status_code} ok={inc.get('ok')} "
+                 f"entries_checked={inc.get('entries_checked')}")
     return body
 
 
@@ -450,16 +466,16 @@ def tamper_and_verify():
 
     with Server() as srv:
         base = srv.base_url
-        r = get(base, "/v1/audit/verify", TOKEN)
+        r = get(base, "/v1/audit/verify", TOKEN, full="true")
         status_ok = r.status_code in (200, 503)
         body = r.json()
         ok_flag = body.get("ok")
         first = body.get("first_failure")
         failures = (body.get("details") or {}).get("failures") or []
 
-        check("TAMPER: verify endpoint responds (200 or an honest 503)",
+        check("TAMPER: verify endpoint (full=true) responds (200 or an honest 503)",
               status_ok, detail=f"status={r.status_code}")
-        check("TAMPER: verify endpoint reports ok=false on a TAMPERED chain",
+        check("TAMPER: verify endpoint (full=true) reports ok=false on a TAMPERED chain",
               ok_flag is False, detail=f"ok={ok_flag} status={r.status_code}")
         check("TAMPER: the failure is pinpointed (first_failure names a seq)",
               isinstance(first, str) and "seq=" in first,
