@@ -92,7 +92,11 @@ class TestProductionWithoutArmingIsVisible:
         assert ENV_VAR in line
 
     def test_user_message_is_human_readable_and_leaks_no_env_name(self):
-        """前端未鉴权探针只展示 user_message；它必须是人话且不含环境变量名。"""
+        """前端未鉴权探针只展示 user_message；它必须是人话且不含环境变量名。
+
+        真机冒烟反馈：旧兜底文案「请到诊断页查看技术细节」对普通用户是死胡同。
+        这里把三点式钉死——能否正常用 / 是否要动手 / 可执行路径。
+        """
         verdict = evaluate_c2_arming(
             _snapshot(enabled=False, enforced_actions=[]), production=True
         )
@@ -101,6 +105,11 @@ class TestProductionWithoutArmingIsVisible:
         assert message, "告警检查项缺少 user_message，界面只能显示通用占位文案"
         assert ENV_VAR not in message
         assert "只记录、不拦截" in message
+        assert "可以正常使用" in message, "缺「现在能不能正常用」这一句"
+        assert "需要动手" in message, "缺「要不要处理」这一句"
+        assert "查看技术细节" not in message, (
+            "「查看技术细节」对普通用户是死胡同，必须给可执行路径"
+        )
 
     def test_empty_override_is_caught_too(self):
         """Explicitly overriding the var to '' is not the same as deleting it."""
@@ -129,6 +138,10 @@ class TestInvalidSpecIsVisible:
         assert verdict.alerting
         assert verdict.to_check().get("user_message"), (
             "配置损坏也必须给用户一句能看懂的话"
+        )
+        message = verdict.to_check()["user_message"]
+        assert "可以正常使用" in message and "需要动手" in message, (
+            "配置损坏同样要回答「能不能用 / 要不要动手」"
         )
 
     def test_invalid_spec_outranks_the_non_production_exemption(self):
