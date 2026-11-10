@@ -1090,8 +1090,17 @@ class AuditStore:
         # landed", which is exactly the backlog the health metric reports.
         token = _begin_audit_write()
         try:
+            # 来源（本机 / 局域网手机）由网关入口的中间件写进 ContextVar，
+            # 这里在落盘前合并。调用方显式给的字段优先，不被覆盖。
+            merged = details
+            try:
+                from ...common.request_context import origin_details
+
+                merged = {**origin_details(), **(details or {})}
+            except Exception:  # noqa: BLE001 - 审计不能因为来源标注失败而丢事件
+                merged = details
             event = self._log_event_locked(
-                event_type, principal_id, scope, outcome, details, correlation_id
+                event_type, principal_id, scope, outcome, merged, correlation_id
             )
         except BaseException as exc:
             _end_audit_write(token, False, exc)

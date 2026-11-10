@@ -1630,6 +1630,136 @@ main#os-main:focus-visible {
   color: var(--os-text-dim);
 }
 
+/* ---------- 手机访问（设置 → 手机访问） ---------- */
+/* 二维码必须是黑码白底：深色主题下反转过来大多数手机扫不出来。 */
+.os-lan {
+  display: grid;
+  gap: 12px;
+}
+
+.os-lan-risk {
+  margin: 0;
+}
+
+.os-lan-pair {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--os-border);
+  border-radius: 12px;
+  background: var(--os-panel-2);
+}
+
+.os-lan-qr {
+  display: block;
+  width: 168px;
+  height: 168px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.os-lan-qr-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+  color: #555;
+  font-size: 12px;
+  text-align: center;
+}
+
+.os-lan-pair-info {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.os-lan-pair-info p {
+  margin: 0;
+}
+
+.os-lan-address {
+  overflow-wrap: anywhere;
+}
+
+.os-lan-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  letter-spacing: 3px;
+}
+
+.os-lan-devices {
+  display: grid;
+  gap: 8px;
+}
+
+.os-lan-devices-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.os-lan-device-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.os-lan-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--os-border);
+  border-radius: 10px;
+  background: var(--os-panel-2);
+}
+
+.os-lan-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--os-text-faint);
+}
+
+.os-lan-dot[data-online='true'] {
+  background: var(--os-ok);
+}
+
+.os-lan-device-main {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.os-lan-device-main strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .os-lan-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .os-lan-qr {
+    margin: 0 auto;
+  }
+}
+
 .os-login-foot {
   margin-top: 18px;
   padding-top: 16px;
@@ -2812,6 +2942,24 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   width: auto;
   padding: 5px 11px;
   font-size: 12px;
+}
+
+/* 390px 宽的手机：动作名独占一行，剩下的按钮做成 44px 高的整条点击区。 */
+@media (max-width: 430px) {
+  .os-butler-pending-head {
+    gap: 6px;
+  }
+
+  .os-butler-pending-action {
+    flex-basis: 100%;
+  }
+
+  .os-butler-pending-item .os-kb-actions .os-btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: 13px;
+  }
 }
 
 .os-butler-history {

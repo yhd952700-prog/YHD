@@ -232,8 +232,8 @@ class LanRelayTests(unittest.TestCase):
         _FakeBackend.seen_host.clear()
         self._request(
             "POST",
-            "/v1/auth/login",
-            body=json.dumps({"password": "good"}).encode("utf-8"),
+            "/v1/policy/approvals/reject",
+            body=json.dumps({"pending_id": "pending:1", "reason": "test"}).encode("utf-8"),
             cookie=cookie,
             headers={
                 "Content-Type": "application/json",
@@ -249,35 +249,32 @@ class LanRelayTests(unittest.TestCase):
         cookie = self._pair()
         status, _, raw = self._request(
             "POST",
-            "/v1/auth/login",
-            body=json.dumps({"password": "good"}).encode("utf-8"),
+            "/v1/policy/approvals/reject",
+            body=json.dumps({"pending_id": "pending:1", "reason": "test"}).encode("utf-8"),
             cookie=cookie,
             headers={"Content-Type": "application/json", "Origin": "http://evil.example"},
         )
         self.assertEqual(status, 403)
         self.assertIn("跨站写请求", raw.decode("utf-8"))
 
-    def test_login_failures_hit_cooldown(self) -> None:
+    def test_password_login_is_refused_on_lan(self) -> None:
+        """手机端不提供密码登录，只有配对码换来的设备凭证。
+
+        这条替换了原来的「登录失败冷却」：路径不再转发，就没有在手机上爆破
+        管理员密码的通道，冷却也就无从触发。正确密码同样换不到令牌。
+        """
         cookie = self._pair()
-        body = json.dumps({"password": "bad"}).encode("utf-8")
-        for _ in range(5):
-            status, _, _ = self._request(
-                "POST",
-                "/v1/auth/login",
-                body=body,
-                cookie=cookie,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(status, 401)
+        _FakeBackend.seen_origin.clear()
         status, _, raw = self._request(
             "POST",
             "/v1/auth/login",
-            body=body,
+            body=json.dumps({"password": "good"}).encode("utf-8"),
             cookie=cookie,
             headers={"Content-Type": "application/json"},
         )
-        self.assertEqual(status, 429)
-        self.assertIn("过于频繁", raw.decode("utf-8"))
+        self.assertEqual(status, 403)
+        self.assertIn("手机端不支持这项操作", raw.decode("utf-8"))
+        self.assertEqual(_FakeBackend.seen_origin, [])
 
     def test_device_list_and_revoke(self) -> None:
         cookie = self._pair()

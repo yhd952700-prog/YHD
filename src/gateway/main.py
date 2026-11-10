@@ -1866,6 +1866,14 @@ async def lifespan(app: FastAPI):
 
     _startup_report()
 
+    # 手机访问：按上次记录恢复；网段变了就自动关闭并提示（不对陌生 Wi-Fi 开放）。
+    try:
+        from .lan_access import resume_on_startup
+
+        resume_on_startup()
+    except Exception:  # noqa: BLE001 - 恢复失败不能阻断网关启动
+        logger.warning("lan access resume failed", exc_info=True)
+
     # 事件循环停滞看门狗：僵死时把"谁占着事件循环"写进日志（不修复，只取证）。
     _loop_watchdog = LoopStallWatchdog()
     try:
@@ -1891,6 +1899,14 @@ async def lifespan(app: FastAPI):
             await _hosted_scheduler.stop()
     except Exception:  # noqa: BLE001 - shutdown must never raise
         logger.exception("LOCAL SCHEDULER STOP FAILED (shutdown continues)")
+
+    # 关掉手机访问中继：进程退出后不能留下一个还在监听局域网的端口。
+    try:
+        from .lan_access import shutdown_lan_access
+
+        shutdown_lan_access()
+    except Exception:  # noqa: BLE001 - shutdown must never raise
+        logger.warning("lan access shutdown failed", exc_info=True)
 
     # Stop the audit checkpointer (best-effort; never stalls shutdown long).
     try:
@@ -2284,6 +2300,13 @@ def get_app() -> FastAPI:
         "Host allow-list (DNS-rebinding guard): %s",
         ", ".join(runtime["trusted_hosts"]),
     )
+
+    # ==================== 请求来源中间件（本机 / 局域网手机） ====================
+    # 只有「回环 + 中继共享密钥」才被标记为 lan；手机伪造不了 relay.secret。
+    # 单独成函数是为了让测试能装同一个中间件，不必启动整个网关。
+    from .device_sessions import install_origin_middleware
+
+    install_origin_middleware(app)
 
     # ==================== Request logging middleware ====================
 
@@ -2811,6 +2834,14 @@ def get_app() -> FastAPI:
     # 登录端点（凭据 -> JWT）。三端（桌面/网页/手机）共用同一会话。
     from .auth import router as auth_router
     app.include_router(auth_router)
+
+    # 手机设备的会话换发：只对「回环 + 中继共享密钥」签发，手机永远不输密码。
+    from .device_sessions import router as device_auth_router
+    app.include_router(device_auth_router)
+
+    # 同一 Wi-Fi 手机访问开关（默认关闭；只绑一个局域网地址，不是 0.0.0.0）。
+    from .lan_access import router as lan_access_router
+    app.include_router(lan_access_router)
 
     # 单端口化：把驾驶舱构建产物挂到同源根路径，供桌面/网页/手机三端复用。
     # 机制是 **404 异常处理器**（见 console_static.py）：只在没有任何路由匹配时

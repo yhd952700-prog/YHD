@@ -1027,6 +1027,18 @@ export interface PendingApprovalItem {
   pending_id: string
   action: string
   risk_level: string
+  /**
+   * 这条动作是从哪触发的：`local`（电脑本机）/ `lan`（同一 Wi-Fi 的手机）。
+   * 旧版本后端没有这个字段，按本机处理。
+   */
+  source_channel?: 'local' | 'lan'
+  source_device?: string | null
+  /**
+   * 手机端能否直接批准。HIGH/CRITICAL（以及判定不出的档）为 false：
+   * 批准必须回电脑本机，手机只能拒绝。旧版本后端没发这个字段时按 false 处理，
+   * 宁可让用户回电脑，也不在手机上放行高危动作。
+   */
+  remote_approvable?: boolean
   policy_rule: string | null
   correlation_id: string | null
   /** 审计事件时间戳（Unix 秒） */

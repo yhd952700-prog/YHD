@@ -35,7 +35,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from ..common.request_context import current_origin
 from ..kernels._enforcement import describe as describe_enforcement
+from ..kernels._risk_classification import get_kernel_action_risk
 from .rate_limiter import identity_unavailable_exception
 from ..kernels._sovereignty import (
     DEFAULT_GRANT_TTL_SECONDS,
@@ -378,12 +380,61 @@ class ApprovalRequest(BaseModel):
     )
 
 
+#: 手机上不允许"一键批准"的风险档。这两个档正是现有策略会 defer 的档，
+#: 也是"必须当面点头"这条底线的全部内容。
+_REMOTE_BLOCKED_RISKS = frozenset({"HIGH", "CRITICAL"})
+_RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+
+def _approval_risk_tier(req: ApprovalRequest) -> str:
+    """这条批准请求对应的风险档：优先按待确认卡片，否则按动作白名单取最高档。"""
+    if req.pending_id:
+        now = time.time()
+        for item in _pending_items(now):
+            if str(item.get("pending_id")) == str(req.pending_id):
+                return str(item.get("risk_level") or "UNKNOWN").upper()
+        # 找不到卡片：不猜、不放行。
+        return "UNKNOWN"
+    tiers = [str(get_kernel_action_risk(action) or "UNKNOWN").upper() for action in req.actions]
+    if not tiers:
+        return "UNKNOWN"
+    return max(tiers, key=lambda tier: _RISK_ORDER.get(tier, 3))
+
+
+def _refuse_remote_approval(req: ApprovalRequest) -> None:
+    """手机（局域网来源）只能拒绝，不能批准高风险动作。
+
+    拒绝没有副作用、可以远程做；批准意味着"人类当面对这件事点了头"，
+    远程批准等于把这条底线拆掉。UNKNOWN 按最坏情况处理。
+    """
+    if req.confirm_wildcard:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "手机端不能确认「通配目标」授权（target=*）。"
+                "请回到电脑本机完成这次确认。"
+            ),
+        )
+    tier = _approval_risk_tier(req)
+    if tier in _REMOTE_BLOCKED_RISKS or tier == "UNKNOWN":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "这个动作被判为高风险，只能在电脑本机确认。"
+                "手机端可以查看它、也可以拒绝它，但不能批准。"
+            ),
+        )
+
+
 @router.post("/policy/approvals", response_model=Dict[str, Any])
 def create_approval(
     req: ApprovalRequest,
     principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
     """签发一条审批凭据（审计留痕）。主体取自令牌，请求体无法指定。"""
+    # 来自局域网手机的批准：高危动作必须回到电脑本机。
+    if current_origin().is_lan:
+        _refuse_remote_approval(req)
     if req.pending_id:
         # 一次批准只生效一次：同一张待确认卡片重复提交时复用已有凭据，
         # 不叠加第二份授权（界面双击、网络重试都不会放大权限）。
@@ -518,6 +569,11 @@ def _pending_items(now: float) -> List[Dict[str, Any]]:
             "pending_id": pending_id,
             "action": action,
             "risk_level": risk,
+            # 这条动作是谁、从哪触发的：local（本机）/ lan（同一 Wi-Fi 的手机）。
+            "source_channel": details.get("source_channel") or "local",
+            "source_device": details.get("source_device"),
+            # 手机端据此禁用"批准"：HIGH/CRITICAL 只能回电脑确认。
+            "remote_approvable": str(risk).upper() not in _REMOTE_BLOCKED_RISKS,
             "policy_rule": details.get("policy_rule"),
             "correlation_id": event.get("correlation_id"),
             "blocked_at": event.get("timestamp"),

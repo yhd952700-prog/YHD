@@ -185,6 +185,21 @@ function blockedAtText(value: number | string | null | undefined): string {
   return seconds === null ? '拦截时间未记录' : `${relativeTime(seconds)}被拦`
 }
 
+/**
+ * 当前页面是不是「手机从中继打开」的。
+ *
+ * 中继在注入的引导脚本里写死 `window.__LIUHAO_LAN__ = true`（见
+ * scripts/ops/lan_relay.py::_inject_bootstrap）。服务端也会拒，但界面必须在
+ * 点下去之前就说清楚：批准只能回电脑，手机上只有拒绝。
+ */
+function isLanClient(): boolean {
+  try {
+    return Boolean((window as unknown as { __LIUHAO_LAN__?: boolean }).__LIUHAO_LAN__)
+  } catch {
+    return false
+  }
+}
+
 export function Butler({
   query,
   onOpenApproval,
@@ -1374,6 +1389,9 @@ export function Butler({
               const wildcard = isWildcardBody(body)
               const confirmed = Boolean(wildcardConfirmed[item.pending_id])
               const busy = approvingId === item.pending_id
+              // 手机上不提供"批准"：审批中心签发的授权目标是 `*`（整类放行），
+              // 服务端对局域网来源一律拒绝；高危动作更是只能当面点头。
+              const remoteBlocked = isLanClient() && (item.remote_approvable !== true || wildcard)
               return (
                 <article
                   key={item.pending_id}
@@ -1388,6 +1406,11 @@ export function Butler({
                     >
                       风险 {riskLabel(item.risk_level)}
                     </span>
+                    {item.source_channel === 'lan' && (
+                      <span className="os-badge" data-tone="accent" title="这条动作是从同一 Wi-Fi 的手机上发起的">
+                        来自手机
+                      </span>
+                    )}
                     <strong className="os-butler-pending-action">{item.action}</strong>
                     <span className="os-hint">{blockedAtText(item.blocked_at)}</span>
                   </header>
@@ -1406,7 +1429,7 @@ export function Butler({
                     这条动作触发了安全规则，需要你确认。
                     {item.blocked_by ? `（拦截账号：${item.blocked_by}）` : ''}
                   </p>
-                  {wildcard && (
+                  {wildcard && !remoteBlocked && (
                     <label className="os-butler-pending-confirm">
                       <input
                         type="checkbox"
@@ -1421,14 +1444,25 @@ export function Butler({
                       我确认：这次批准对所有对象生效
                     </label>
                   )}
+                  {remoteBlocked && (
+                    <p className="os-note" role="note">
+                      <span>
+                        <strong>需要在本机确认。</strong>
+                        高风险动作不能在手机上批准；回到这台电脑上打开审批中心即可确认。
+                        手机上可以拒绝它。
+                      </span>
+                    </p>
+                  )}
                   <div className="os-kb-actions">
-                    <button
-                      className="os-btn"
-                      onClick={() => void approve(item, body, wildcard)}
-                      disabled={busy || (wildcard && !confirmed)}
-                    >
-                      {busy ? '批准中…' : '确认并允许'}
-                    </button>
+                    {!remoteBlocked && (
+                      <button
+                        className="os-btn"
+                        onClick={() => void approve(item, body, wildcard)}
+                        disabled={busy || (wildcard && !confirmed)}
+                      >
+                        {busy ? '批准中…' : '确认并允许'}
+                      </button>
+                    )}
                     <button
                       className="os-btn os-btn-ghost"
                       onClick={() =>
@@ -1439,9 +1473,11 @@ export function Butler({
                       {rejectingId === item.pending_id ? '拒绝中…' : '拒绝'}
                     </button>
                     <span className="os-hint">
-                      {wildcard
-                        ? '当前只能整类放行，不能只批一个文件或一个项目；需要你再次确认。'
-                        : '按列表里的动作批准，参数不改；拒绝不会放行这个动作。'}
+                      {remoteBlocked
+                        ? '手机上只能拒绝；批准要回电脑本机。'
+                        : wildcard
+                          ? '当前只能整类放行，不能只批一个文件或一个项目；需要你再次确认。'
+                          : '按列表里的动作批准，参数不改；拒绝不会放行这个动作。'}
                     </span>
                   </div>
                   {rejectOpenId === item.pending_id && (

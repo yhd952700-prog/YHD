@@ -23,6 +23,7 @@ import { knowledgeStatusView } from '../lib/knowledge'
 import type { KnowledgeStatus } from '../lib/knowledge'
 import { DiagnosticsExport } from '../components/DiagnosticsExport'
 import { LogRetentionPanel } from '../components/LogRetentionPanel'
+import { MobileAccessCard } from '../components/MobileAccessCard'
 import { UpgradePanel } from '../components/UpgradePanel'
 import { getReducedMotion, setReducedMotion } from '../lib/reducedMotion'
 import {
@@ -458,6 +459,15 @@ export function Settings({
             )}
           </>
         )}
+      </Card>
+
+      <Card
+        id="settings-mobile-access"
+        title="手机访问"
+        sub="同一 Wi-Fi 下用手机浏览器看进度、审批、下达指令。默认关闭；离开这个 Wi-Fi 就打不开。"
+        span={12}
+      >
+        <MobileAccessCard canManage={canManageSettings} />
       </Card>
 
       <Card

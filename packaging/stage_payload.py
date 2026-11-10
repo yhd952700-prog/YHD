@@ -167,8 +167,10 @@ PAYLOAD_SCRIPTS: Tuple[str, ...] = (
     "scripts/gen_local_cert.py",
     # 运行时错误提示里点名要用户去跑的脚本：不随包就等于给用户一条
     # 装完后无路可走的命令（审计哈希迁移 / 审批令牌 / 备份 / 发布清单签名）。
-    # 8090 配对中继**不在 0.1.2 范围**：/__relay/pair 没有失败限速，6 位码
-    # 在 10 分钟有效期内可被穷举，整包一同延后。
+    # 同一 Wi-Fi 手机访问（A 档）由网关进程内加载中继脚本；缺了这一行，
+    # 设置里的开关在安装版上会直接报"找不到中继脚本"。
+    "scripts/ops/lan_relay.py",
+    "scripts/mobile_access.py",
     "scripts/migrate_p08_hash_alg.py",
     "scripts/issue_console_token.py",
     "scripts/ops/backup.py",
