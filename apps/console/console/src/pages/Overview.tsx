@@ -44,6 +44,7 @@ import {
 } from '../lib/overviewModel'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { BrainMap, DonutChart, LineChart, NetworkGraph } from '../components/charts'
+import { StatusBand } from '../components/StatusBand'
 import { Card, Dot, Guard } from '../components/ui'
 
 const REFRESH_LIVE = 15_000
@@ -178,6 +179,12 @@ export function Overview({
 
   return (
     <div className="os-grid">
+      {/* ---------- 工作台状态带 ----------
+          首屏只回答三个问题：现在在跑什么、什么卡在等我、最近跑成了什么。
+          数据只来自 /v1/goals 与 /v1/policy/approvals/pending，30 秒统一刷新；
+          三行各自有空态与失败态，任何一行读不到都不会连累另外两行。 */}
+      <StatusBand onNavigate={onNavigate} />
+
       {/* ---------- 需要我 ----------
           只用可追溯的真实信号：/v1/ready 的异常检查、近 30 条审计里的失败/拒绝、
           /v1/health 的模型真实性。没有"待审批"数据源就不编造它。 */}

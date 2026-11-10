@@ -3404,6 +3404,105 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
 
 
 /* ==========================================================================
+   工作台状态带（首屏三行）
+   ==========================================================================
+   三行共用一张卡片：行间只用一条细分割线，避免在首屏出现三张卡片把
+   下面的真实指标挤下去。空态与失败态都是一行说明 + 一个可点出路。 */
+
+.os-band {
+  display: flex;
+  flex-direction: column;
+}
+
+.os-band-line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--os-border-soft);
+}
+
+.os-band-line:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.os-band-line-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.os-band-line-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--os-text);
+}
+
+.os-band-line-head .os-link {
+  margin-left: auto;
+}
+
+/* 待确认那一行是按钮：去掉按钮默认外观，保留 .os-row 的行内布局。 */
+.os-band-entry {
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.os-band-entry .os-row-title,
+.os-band-entry .os-row-sub {
+  display: block;
+}
+
+.os-band-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--os-text-faint);
+}
+
+.os-band-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--os-danger);
+}
+
+/* 失败原因可能带「追踪 ID」换行，照原样分行显示，不压成一行。 */
+.os-band-error span {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.os-band-fail {
+  color: var(--os-danger);
+  font-weight: 600;
+}
+
+.os-band-more {
+  margin: 2px 0 0;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--os-text-faint);
+}
+
+/* ==========================================================================
    Windows 高对比度（forced-colors）
    ==========================================================================
    系统开启高对比度后，浏览器会清掉渐变、半透明底色、box-shadow 与自绘
