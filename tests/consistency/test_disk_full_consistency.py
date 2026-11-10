@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import ctypes
+import gc
 import os
 import sqlite3
 import subprocess
@@ -85,10 +86,21 @@ def full_volume(tmp_path: Path, declare_scratch_root):
         declare_scratch_root(root)
         yield root
     finally:
+        # 卸载前的夹具卫生：用例里的 SQLite 连接开着 WAL，`-shm` 是内核映射段；
+        # 断言异常的引用环（raised -> traceback -> frame -> store）会把连接拖出
+        # 用例存活。若带着映射 dismount，卷消失后残留段一旦被触碰（GC 收尾时
+        # sqlite3_close 常见）就是 0xC0000006 page error + 卷上 Event 51，污染
+        # 全量跑的「无 page error」绿闸。因此先强制回收，让连接在卷仍在挂载时
+        # 显式关闭，再卸载；卸载失败则再收一轮后 retry-after-close 一次。
+        gc.collect()
         try:
             _diskpart([f'select vdisk file="{vhd}"', "detach vdisk"])
         except Exception:
-            pass
+            gc.collect()
+            try:
+                _diskpart([f'select vdisk file="{vhd}"', "detach vdisk"])
+            except Exception:
+                pass
 
 
 def _fill_disk(root: Path) -> Path:
@@ -195,6 +207,10 @@ def test_sqlite_write_on_full_disk_raises_and_recovers(full_volume: Path) -> Non
     assert _count(db, "memory_entries") == after_failure + 1
     assert _integrity_ok(db)
 
+    # 夹具卫生：显式关闭 WAL 连接，在卷仍挂载时释放句柄与 -shm 映射，
+    # 不留到 dismount 之后（断言失败时由夹具 teardown 的 gc.collect() 兜底）。
+    kernel._store.close()
+
 
 @pytest.mark.timeout(180)
 def test_json_atomic_write_on_full_disk_preserves_previous_version(
@@ -275,3 +291,8 @@ def test_audit_write_on_full_disk_raises_and_recovers(full_volume: Path) -> None
     ok, verified = store.verify_integrity()
     assert ok is True
     assert verified == after_failure + 1
+
+    # 夹具卫生：显式关闭 WAL 连接（AuditStore 无公开 close，_conn 即 WAL 主连接，
+    # SqliteWriterLease 共用同一条），在卷仍挂载时释放句柄与 -shm 映射，
+    # 不留到 dismount 之后（断言失败时由夹具 teardown 的 gc.collect() 兜底）。
+    store._conn.close()
