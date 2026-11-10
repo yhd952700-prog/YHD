@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..common.local_proof_ipc import (
+    HANDOFF_HEADER,  # noqa: F401  re-export: src/gateway/accounts.py 按属性引用
+    RESET_HEADER,  # noqa: F401  re-export: src/gateway/accounts.py 按属性引用
     TRUSTED_LAUNCH_ENV,
     channel_name,
 )
