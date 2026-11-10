@@ -418,6 +418,9 @@ def _ensure_app_env(path: Path) -> None:
         "# 修改后重启应用生效。\n"
         "APP_ENV=production\n"
         "LOG_LEVEL=info\n"
+        "# 安装形态默认启用内核策略闸（生产至少武装 CRITICAL，见 D24）。\n"
+        "# 临时退回记录模式时把值留空后重启：LIUHAO_KERNEL_POLICY_ENFORCE=\n"
+        "LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL\n"
         f"LIUHAO_JWT_SECRET={secrets.token_urlsafe(48)}\n"
         f"SECRET_KEY={secrets.token_urlsafe(32)}\n"
     )
@@ -787,6 +790,10 @@ def prepare_environment() -> tuple[Path, Path]:
         os.environ["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = integrity_key
     os.environ.setdefault("APP_ENV", "production")
     os.environ.setdefault("LOG_LEVEL", "info")
+    # 安装形态就是生产形态：D24 要求生产至少武装 CRITICAL 级内核动作。
+    # 旧版 app.env 没有这一行，因此不能只改模板，必须在启动器兜底；
+    # 外部显式设置为空/其他级别时 setdefault 不覆盖，保留回退开关。
+    os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "CRITICAL")
 
     _configure_paths(data_dir)
     _ensure_identity_registry(data_dir)
