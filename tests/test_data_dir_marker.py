@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 
 def _launcher(monkeypatch):
@@ -29,6 +32,13 @@ def test_marker_utf8_bom_with_chinese_and_space_path(monkeypatch, tmp_path):
     assert launcher._data_dir() == expected.resolve()
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "0.1.0 旧版 marker 的 ANSI 回退读取依赖 Windows 活动代码页（mbcs 编解码器"
+        "仅 Windows 提供）；POSIX 没有 ANSI 代码页机制"
+    ),
+)
 def test_marker_without_bom_falls_back_to_ansi(monkeypatch, tmp_path):
     launcher = _launcher(monkeypatch)
     marker = tmp_path / "data-dir.txt"

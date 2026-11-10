@@ -91,6 +91,14 @@ def test_logging_yaml_quotes_absolute_path_with_hash_and_space(tmp_path, monkeyp
     assert loaded["handlers"]["error_file"]["filename"].endswith("/error.log")
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "_path_name_issue 检查的是 Windows 盘符路径的目录段：保留设备名"
+        "（CON/NUL/com1…）与「以点/空格结尾」是 Win32 层的别名语义，"
+        "POSIX 上这些字符串只是普通相对路径，不存在该机制"
+    ),
+)
 @pytest.mark.parametrize(
     "path, expected",
     [
@@ -112,6 +120,13 @@ def test_path_name_issue(path, expected):
         assert issue is not None and expected in issue
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "prepare_environment 的「任何写入之前拒绝保留设备名」依赖 Win32 语义"
+        "（NUL/CON 设备名写入探针）；POSIX 上 D:\\NUL 只是仓库内的普通相对路径"
+    ),
+)
 def test_prepare_environment_rejects_reserved_name_before_any_write(monkeypatch):
     monkeypatch.setattr(entry, "_data_dir", lambda: Path(r"D:\NUL\data"))
     with pytest.raises(entry.DataDirectoryUnavailable, match="保留设备名"):

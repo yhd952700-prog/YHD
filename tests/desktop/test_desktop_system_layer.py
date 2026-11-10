@@ -1091,6 +1091,15 @@ def test_port_conflict_dialog_is_idempotent_and_deferrable(
     assert "仍被占用" in app._labels["next"].text
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "真实 Tk 窗口的控件/变量回收依赖 Windows tcl86t 运行时：POSIX 的 Tcl 在"
+        " destroy() 后仍有 C 层引用（Tcl after 队列）挂在 Tk 对象上，Python 侧"
+        " <no referrers> 且引用计数不归零，Tk 生命周期护栏按设计 fail-closed 拒绝"
+        "（防 Tcl_AsyncDelete 跨线程 panic 带走整个 pytest 进程）"
+    ),
+)
 def test_port_choice_dialog_has_exactly_two_clickable_actions() -> None:
     """真实窗口里只有两个按钮，且都能点（不出现第三个选项）。"""
     tk = pytest.importorskip("tkinter")

@@ -186,6 +186,14 @@ def test_forged_expired_and_dead_pid_tokens_are_rejected(env, monkeypatch):
         assert refused.status_code == 403, refused.text
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "「同机另一 Windows 账户（不同 SID）不能用令牌」依赖 Windows 专属机制："
+        "current_user_sid_string 取进程 SID 并参与令牌校验；POSIX 无该证明通道，"
+        "恢复码交接按设计降级为 ACL + 短 TTL，SID 断言在这里没有对应物"
+    ),
+)
 def test_token_bound_to_another_windows_user_is_rejected(env, monkeypatch):
     """同机另一个 Windows 账户（不同 SID）即使拿到令牌明文也不能用。"""
     _make_legacy_root()

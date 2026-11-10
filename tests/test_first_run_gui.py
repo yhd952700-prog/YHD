@@ -458,6 +458,15 @@ def test_self_check_log_matches_startup_check_fields(isolated_env, monkeypatch):
     assert "check_result=all_green" in line
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "真实 Tk 向导窗口（_WizardWindow）的控件回收依赖 Windows tcl86t 运行时："
+        "POSIX 的 Tcl 在 destroy() 后仍有 C 层引用挂在 Tk 对象上，引用计数不归零，"
+        "tk_lifecycle_guard 护栏按设计 fail-closed 拒绝（防 Tcl_AsyncDelete 跨线程"
+        " panic 带走整个 pytest 进程）"
+    ),
+)
 def test_check_page_buttons_exist_and_are_clickable(isolated_env, monkeypatch):
     """四项自检失败时，各自的按钮必须真的存在，且点了会触发对应动作。"""
     tkinter = pytest.importorskip("tkinter")
