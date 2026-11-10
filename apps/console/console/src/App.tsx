@@ -130,7 +130,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   'my-employees': { title: '我的员工', sub: '创建、调整、停用，或直接把一件事派给它' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
-  workbench: { title: '工作台', sub: '你自己看任务、看文件、看产出，也可以直接对话' },
+  workbench: { title: '自由对话', sub: '你自己问、自己翻；想让管家拆解，去「鎏灏管家」' },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除系统内部记录）' },
   approval: { title: '审批中心', sub: '动作拦截与人工授权' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },

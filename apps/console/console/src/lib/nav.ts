@@ -76,9 +76,9 @@ export const PRIMARY_NAV: NavItem[] = [
   { key: 'memory', label: '记忆', icon: IconData },
   {
     key: 'workbench',
-    label: '工作台',
+    label: '自由对话',
     icon: IconWorkbench,
-    hint: '你自己看任务、看文件、看产出，也可以直接对话',
+    hint: '你自己问、自己翻，不经过管家拆解',
   },
   { key: 'goals', label: '目标与任务', icon: IconGoals },
   { key: 'projects', label: '项目', icon: IconProjects },

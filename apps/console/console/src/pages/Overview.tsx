@@ -179,7 +179,7 @@ export function Overview({
 
   return (
     <div className="os-grid">
-      {/* ---------- 工作台状态带 ----------
+      {/* ---------- 今天的状态 ----------
           首屏只回答三个问题：现在在跑什么、什么卡在等我、最近跑成了什么。
           数据只来自 /v1/goals 与 /v1/policy/approvals/pending，30 秒统一刷新；
           三行各自有空态与失败态，任何一行读不到都不会连累另外两行。 */}
@@ -248,7 +248,7 @@ export function Overview({
               <span className="os-attention-clear">
                 当前无异常
                 {attention.recent === 0
-                  ? ' · 下一步：到工作台发起一条任务，或到「系统设置 → 模型管理」确认服务连通。'
+                  ? ' · 下一步：到「自由对话」问一句，或到「系统设置 → 模型管理」确认服务连通。'
                   : ' · 下一步：可在事件流查看明细。'}
               </span>
             )
@@ -453,7 +453,7 @@ export function Overview({
           emptyHint={
             need
               ? `没有事件匹配「${query}」`
-              : '这里会显示员工最近做过的事。下一步：到工作台发起一条任务。'
+              : '这里会显示员工最近做过的事。下一步：到「自由对话」问一句。'
           }
           onRetry={activity.reload}
         >

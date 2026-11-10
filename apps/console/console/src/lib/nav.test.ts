@@ -57,13 +57,16 @@ describe('导航去重（截图事故回归）', () => {
   })
 })
 
-describe('管家 / 工作台分工', () => {
+describe('管家 / 自由对话分工', () => {
   test('两个入口各有一句定位，且不互相抄动作', () => {
     const butler = ALL_NAV.find((item) => item.key === 'butler')
     const workbench = ALL_NAV.find((item) => item.key === 'workbench')
+    // 名字只是入口，分工才是契约：管家下目标并拆解，自由对话自己问、自己翻。
+    expect(workbench?.label).toBe('自由对话')
     expect(butler?.hint).toContain('你下目标')
     expect(butler?.hint).toContain('拆解分派')
-    expect(workbench?.hint).toContain('你自己看')
+    expect(workbench?.hint).toContain('你自己问')
+    expect(workbench?.hint).toContain('不经过管家拆解')
     expect(workbench?.hint).not.toContain('拆解分派')
   })
 

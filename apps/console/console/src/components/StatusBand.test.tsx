@@ -100,7 +100,7 @@ function renderBand(onNavigate = vi.fn()) {
   return { onNavigate, ...render(<StatusBand onNavigate={onNavigate} />) }
 }
 
-describe('工作台状态带 · 正在做', () => {
+describe('今天的状态 · 正在做', () => {
   test('失败步骤排前面，显示负责人、进度与失败步数', async () => {
     goalsResponse.body = {
       count: 3,
@@ -168,7 +168,7 @@ describe('工作台状态带 · 正在做', () => {
   })
 })
 
-describe('工作台状态带 · 等你确认', () => {
+describe('今天的状态 · 等你确认', () => {
   test('按风险降序、拦截时间升序，只给查看不给就地批准', async () => {
     approvalsResponse.body = {
       count: 4,
@@ -242,7 +242,7 @@ describe('工作台状态带 · 等你确认', () => {
   })
 })
 
-describe('工作台状态带 · 刚完成', () => {
+describe('今天的状态 · 刚完成', () => {
   test('只取 completed 且有产物的目标，最多 3 条，总数如实', async () => {
     goalsResponse.body = {
       count: 7,
@@ -299,7 +299,7 @@ describe('工作台状态带 · 刚完成', () => {
   })
 })
 
-describe('工作台状态带 · 空态与失败态', () => {
+describe('今天的状态 · 空态与失败态', () => {
   test('三行各自有空态，不显示假数字', async () => {
     approvalsResponse.body = {
       count: 0,

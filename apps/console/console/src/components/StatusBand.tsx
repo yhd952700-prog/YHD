@@ -126,7 +126,7 @@ export function StatusBand({ onNavigate }: { onNavigate: (key: string) => void }
 
   return (
     <Card
-      title="工作台状态带"
+      title="今天的状态"
       sub="正在做、等你确认、刚完成 —— 每 30 秒自动刷新一次"
       span={12}
       action={

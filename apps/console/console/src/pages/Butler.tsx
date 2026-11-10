@@ -745,7 +745,7 @@ export function Butler({
         <div className="os-position" role="note">
           <span>
             <strong>鎏灏管家</strong>：你下目标，它拆解分派，给结论。
-            想自己看任务、看文件、看产出，去「工作台」。
+            想自己问、自己翻，去「自由对话」；任务与产出可在「目标与任务」「工作区文件」里看。
           </span>
         </div>
       </div>
