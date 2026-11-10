@@ -4,7 +4,7 @@
   "serialNumber": "urn:uuid:65278c27-29aa-5531-a55b-237a1a146120",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-08T00:42:37+00:00",
+    "timestamp": "2026-11-10T16:59:03+00:00",
     "tools": [
       {
         "vendor": "LiuHao AI OS",
@@ -14,9 +14,9 @@
     ],
     "component": {
       "type": "application",
-      "bom-ref": "pkg:generic/liuhao-ai-os@0.1.1",
+      "bom-ref": "pkg:generic/liuhao-ai-os@0.1.2.1",
       "name": "鎏灏 LiuHao AI OS",
-      "version": "0.1.1",
+      "version": "0.1.2.1",
       "licenses": [
         {
           "license": {
@@ -35,7 +35,7 @@
         },
         {
           "name": "liuhao:python-distributions",
-          "value": "70"
+          "value": "99"
         },
         {
           "name": "liuhao:embedded-components",
@@ -50,7 +50,7 @@
     "properties": [
       {
         "name": "liuhao:notices-sha256",
-        "value": "32dbe72a7a092be44cc4eb7bfddf7c80372f76f5e70db84ac8a9d46c9a95acc6"
+        "value": "84dad0ac062f9b0b0ca79fae303b67a6801ebe0623c492876f44eaf4535dd3ae"
       },
       {
         "name": "liuhao:notices-exact-match",
@@ -325,10 +325,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/anyio@4.15.1",
+      "bom-ref": "pkg:pypi/anyio@4.15.0",
       "name": "anyio",
-      "version": "4.15.1",
-      "purl": "pkg:pypi/anyio@4.15.1",
+      "version": "4.15.0",
+      "purl": "pkg:pypi/anyio@4.15.0",
       "licenses": [
         {
           "license": {
@@ -353,11 +353,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "anyio-4.15.1.dist-info/licenses/LICENSE"
+          "value": "anyio-4.15.0.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "anyio-4.15.1.dist-info"
+          "value": "anyio-4.15.0.dist-info"
         }
       ]
     },
@@ -439,10 +439,48 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/certifi@2026.7.22",
+      "bom-ref": "pkg:pypi/bottle@0.13.4",
+      "name": "bottle",
+      "version": "0.13.4",
+      "purl": "pkg:pypi/bottle@0.13.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/bottlepy/bottle"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "bottle-0.13.4.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "bottle-0.13.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/certifi@2026.10.23",
       "name": "certifi",
-      "version": "2026.7.22",
-      "purl": "pkg:pypi/certifi@2026.7.22",
+      "version": "2026.10.23",
+      "purl": "pkg:pypi/certifi@2026.10.23",
       "licenses": [
         {
           "license": {
@@ -467,11 +505,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "certifi-2026.7.22.dist-info/licenses/LICENSE"
+          "value": "certifi-2026.10.23.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "certifi-2026.7.22.dist-info"
+          "value": "certifi-2026.10.23.dist-info"
         }
       ]
     },
@@ -553,10 +591,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/click@8.5.0",
+      "bom-ref": "pkg:pypi/click@8.4.2",
       "name": "click",
-      "version": "8.5.0",
-      "purl": "pkg:pypi/click@8.5.0",
+      "version": "8.4.2",
+      "purl": "pkg:pypi/click@8.4.2",
       "licenses": [
         {
           "license": {
@@ -581,11 +619,49 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "click-8.5.0.dist-info/licenses/LICENSE.txt"
+          "value": "click-8.4.2.dist-info/licenses/LICENSE.txt"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "click-8.5.0.dist-info"
+          "value": "click-8.4.2.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/clr-loader@0.3.1",
+      "name": "clr_loader",
+      "version": "0.3.1",
+      "purl": "pkg:pypi/clr-loader@0.3.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pythonnet/clr-loader"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "clr_loader-0.3.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "clr_loader-0.3.1.dist-info"
         }
       ]
     },
@@ -741,6 +817,44 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:pypi/fastmcp-slim@4.0.3",
+      "name": "fastmcp-slim",
+      "version": "4.0.3",
+      "purl": "pkg:pypi/fastmcp-slim@4.0.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gofastmcp.com"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "fastmcp_slim-4.0.3.dist-info/licenses/fastmcp-slim-Apache-2.0.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "fastmcp_slim-4.0.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:pypi/frozenlist@1.8.0",
       "name": "frozenlist",
       "version": "1.8.0",
@@ -779,10 +893,86 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/google-auth@2.57.1",
+      "bom-ref": "pkg:pypi/google-ai-generativelanguage@0.6.15",
+      "name": "google-ai-generativelanguage",
+      "version": "0.6.15",
+      "purl": "pkg:pypi/google-ai-generativelanguage@0.6.15",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/googleapis/google-cloud-python/tree/main/packages/google-ai-generativelanguage"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "google_ai_generativelanguage-0.6.15.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "google_ai_generativelanguage-0.6.15.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/google-api-core@2.33.0",
+      "name": "google-api-core",
+      "version": "2.33.0",
+      "purl": "pkg:pypi/google-api-core@2.33.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/googleapis/google-cloud-python/tree/main/packages/google-api-core"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "google_api_core-2.33.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "google_api_core-2.33.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/google-auth@2.58.0",
       "name": "google-auth",
-      "version": "2.57.1",
-      "purl": "pkg:pypi/google-auth@2.57.1",
+      "version": "2.58.0",
+      "purl": "pkg:pypi/google-auth@2.58.0",
       "licenses": [
         {
           "license": {
@@ -807,20 +997,20 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "google_auth-2.57.1.dist-info/licenses/LICENSE"
+          "value": "google_auth-2.58.0.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "google_auth-2.57.1.dist-info"
+          "value": "google_auth-2.58.0.dist-info"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/google-genai@2.22.0",
+      "bom-ref": "pkg:pypi/google-genai@2.23.0",
       "name": "google-genai",
-      "version": "2.22.0",
-      "purl": "pkg:pypi/google-genai@2.22.0",
+      "version": "2.23.0",
+      "purl": "pkg:pypi/google-genai@2.23.0",
       "licenses": [
         {
           "license": {
@@ -845,20 +1035,58 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "google_genai-2.22.0.dist-info/licenses/LICENSE"
+          "value": "google_genai-2.23.0.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "google_genai-2.22.0.dist-info"
+          "value": "google_genai-2.23.0.dist-info"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/googleapis-common-protos@1.75.3",
+      "bom-ref": "pkg:pypi/google-generativeai@0.8.6",
+      "name": "google-generativeai",
+      "version": "0.8.6",
+      "purl": "pkg:pypi/google-generativeai@0.8.6",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/google/generative-ai-python"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "google_generativeai-0.8.6.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "google_generativeai-0.8.6.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/googleapis-common-protos@1.75.0",
       "name": "googleapis-common-protos",
-      "version": "1.75.3",
-      "purl": "pkg:pypi/googleapis-common-protos@1.75.3",
+      "version": "1.75.0",
+      "purl": "pkg:pypi/googleapis-common-protos@1.75.0",
       "licenses": [
         {
           "license": {
@@ -883,11 +1111,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "googleapis_common_protos-1.75.3.dist-info/licenses/LICENSE"
+          "value": "googleapis_common_protos-1.75.0.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "googleapis_common_protos-1.75.3.dist-info"
+          "value": "googleapis_common_protos-1.75.0.dist-info"
         }
       ]
     },
@@ -1195,44 +1423,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/hvac@2.4.0",
-      "name": "hvac",
-      "version": "2.4.0",
-      "purl": "pkg:pypi/hvac@2.4.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "website",
-          "url": "https://github.com/hvac/hvac"
-        }
-      ],
-      "properties": [
-        {
-          "name": "liuhao:license-class",
-          "value": "permissive"
-        },
-        {
-          "name": "liuhao:license-text-present",
-          "value": "true"
-        },
-        {
-          "name": "liuhao:license-files",
-          "value": "hvac-2.4.0.dist-info/LICENSE.txt"
-        },
-        {
-          "name": "liuhao:dist-info",
-          "value": "hvac-2.4.0.dist-info"
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:pypi/hyperframe@6.1.0",
       "name": "hyperframe",
       "version": "6.1.0",
@@ -1385,6 +1575,82 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:pypi/mcp@2.2.0",
+      "name": "mcp",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/mcp@2.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://modelcontextprotocol.io"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "mcp-2.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "mcp-2.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/mcp-types@2.2.0",
+      "name": "mcp-types",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/mcp-types@2.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://modelcontextprotocol.io"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "mcp_types-2.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "mcp_types-2.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:pypi/multidict@6.9.1",
       "name": "multidict",
       "version": "6.9.1",
@@ -1461,6 +1727,538 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-api@1.44.0",
+      "name": "opentelemetry-api",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-api@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_api-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_api-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+      "name": "opentelemetry-exporter-otlp",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+      "name": "opentelemetry-exporter-otlp-proto-common",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-common"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp_proto_common-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp_proto_common-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+      "name": "opentelemetry-exporter-otlp-proto-grpc",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp_proto_grpc-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp_proto_grpc-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+      "name": "opentelemetry-exporter-otlp-proto-http",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-http"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp_proto_http-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp_proto_http-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation@0.65b0",
+      "name": "opentelemetry-instrumentation",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/opentelemetry-instrumentation"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
+      "name": "opentelemetry-instrumentation-asgi",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-asgi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation_asgi-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation_asgi-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
+      "name": "opentelemetry-instrumentation-fastapi",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-fastapi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation_fastapi-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation_fastapi-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-requests@0.65b0",
+      "name": "opentelemetry-instrumentation-requests",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation-requests@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-requests"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation_requests-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation_requests-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-threading@0.65b0",
+      "name": "opentelemetry-instrumentation-threading",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation-threading@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/instrumentation/opentelemetry-instrumentation-threading"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation_threading-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation_threading-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-proto@1.44.0",
+      "name": "opentelemetry-proto",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-proto@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-proto"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_proto-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_proto-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-sdk@1.44.0",
+      "name": "opentelemetry-sdk",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-sdk@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-sdk"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_sdk-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_sdk-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+      "name": "opentelemetry-semantic-conventions",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-semantic-conventions"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_semantic_conventions-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_semantic_conventions-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-util-http@0.65b0",
+      "name": "opentelemetry-util-http",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-util-http@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/util/opentelemetry-util-http"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_util_http-0.65b0.dist-info/licenses/opentelemetry-util-http-Apache-2.0.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_util_http-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:pypi/orjson@3.12.0",
       "name": "orjson",
       "version": "3.12.0",
@@ -1528,6 +2326,44 @@
         {
           "name": "liuhao:dist-info",
           "value": "packaging-26.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/platformdirs@4.11.8",
+      "name": "platformdirs",
+      "version": "4.11.8",
+      "purl": "pkg:pypi/platformdirs@4.11.8",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/tox-dev/platformdirs"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "platformdirs-4.11.8.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "platformdirs-4.11.8.dist-info"
         }
       ]
     },
@@ -1607,10 +2443,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/protobuf@6.33.6",
+      "bom-ref": "pkg:pypi/protobuf@5.29.6",
       "name": "protobuf",
-      "version": "6.33.6",
-      "purl": "pkg:pypi/protobuf@6.33.6",
+      "version": "5.29.6",
+      "purl": "pkg:pypi/protobuf@5.29.6",
       "licenses": [
         {
           "license": {
@@ -1635,11 +2471,125 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "protobuf-6.33.6.dist-info/LICENSE"
+          "value": "protobuf-5.29.6.dist-info/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "protobuf-6.33.6.dist-info"
+          "value": "protobuf-5.29.6.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/proxy-tools@0.1.0",
+      "name": "proxy_tools",
+      "version": "0.1.0",
+      "purl": "pkg:pypi/proxy-tools@0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://github.com/jtushman/proxy_tools"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "proxy_tools-0.1.0.dist-info/licenses/proxy_tools-BSD.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "proxy_tools-0.1.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/psutil@7.2.2",
+      "name": "psutil",
+      "version": "7.2.2",
+      "purl": "pkg:pypi/psutil@7.2.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/giampaolo/psutil"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "psutil-7.2.2.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "psutil-7.2.2.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pycparser@3.0",
+      "name": "pycparser",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/eliben/pycparser"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pycparser-3.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pycparser-3.0.dist-info"
         }
       ]
     },
@@ -1678,6 +2628,44 @@
         {
           "name": "liuhao:dist-info",
           "value": "pydantic-2.13.5.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pydantic-settings@2.15.0",
+      "name": "pydantic-settings",
+      "version": "2.15.0",
+      "purl": "pkg:pypi/pydantic-settings@2.15.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/pydantic-settings"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pydantic_settings-2.15.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pydantic_settings-2.15.0.dist-info"
         }
       ]
     },
@@ -1759,10 +2747,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/pyjwt@2.13.0",
+      "bom-ref": "pkg:pypi/pyjwt@2.15.1",
       "name": "PyJWT",
-      "version": "2.13.0",
-      "purl": "pkg:pypi/pyjwt@2.13.0",
+      "version": "2.15.1",
+      "purl": "pkg:pypi/pyjwt@2.15.1",
       "licenses": [
         {
           "license": {
@@ -1787,11 +2775,11 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "pyjwt-2.13.0.dist-info/licenses/AUTHORS.rst, pyjwt-2.13.0.dist-info/licenses/LICENSE"
+          "value": "pyjwt-2.15.1.dist-info/licenses/AUTHORS.rst, pyjwt-2.15.1.dist-info/licenses/LICENSE"
         },
         {
           "name": "liuhao:dist-info",
-          "value": "pyjwt-2.13.0.dist-info"
+          "value": "pyjwt-2.15.1.dist-info"
         }
       ]
     },
@@ -1949,6 +2937,82 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:pypi/pythonnet@3.2.1",
+      "name": "pythonnet",
+      "version": "3.2.1",
+      "purl": "pkg:pypi/pythonnet@3.2.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pythonnet.github.io/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pythonnet-3.2.1.dist-info/licenses/AUTHORS.md, pythonnet-3.2.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pythonnet-3.2.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pywebview@6.2.1",
+      "name": "pywebview",
+      "version": "6.2.1",
+      "purl": "pkg:pypi/pywebview@6.2.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD 3-Clause License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/pywebview/6.2.1/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "unknown"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pywebview-6.2.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pywebview-6.2.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:pypi/pywin32@311",
       "name": "pywin32",
       "version": "311",
@@ -1977,7 +3041,7 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "win32/license.txt, win32com/License.txt, pythonwin/license.txt"
+          "value": "win32/license.txt, win32com/License.txt"
         },
         {
           "name": "liuhao:dist-info",
@@ -2208,6 +3272,44 @@
         {
           "name": "liuhao:dist-info",
           "value": "sqlalchemy-2.0.52.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/sse-starlette@3.4.11",
+      "name": "sse-starlette",
+      "version": "3.4.11",
+      "purl": "pkg:pypi/sse-starlette@3.4.11",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/sysid/sse-starlette"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "sse_starlette-3.4.11.dist-info/licenses/AUTHORS, sse_starlette-3.4.11.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "sse_starlette-3.4.11.dist-info"
         }
       ]
     },
@@ -3554,7 +4656,7 @@
         },
         {
           "name": "liuhao:license-files",
-          "value": "licenses/adodbapi-LGPL-2.1.txt, licenses/LGPL-2.1.txt, runtime/Lib/site-packages/adodbapi/license.txt"
+          "value": "licenses/adodbapi-LGPL-2.1.txt, licenses/LGPL-2.1.txt"
         },
         {
           "name": "liuhao:embedded-in",
@@ -3724,7 +4826,7 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:generic/liuhao-ai-os@0.1.1",
+      "ref": "pkg:generic/liuhao-ai-os@0.1.2.1",
       "dependsOn": [
         "pkg:pypi/aiohappyeyeballs@2.7.1",
         "pkg:pypi/aiohttp@3.14.4",
@@ -3733,21 +4835,27 @@
         "pkg:pypi/annotated-doc@0.0.5",
         "pkg:pypi/annotated-types@0.8.0",
         "pkg:pypi/anthropic@1.3.0",
-        "pkg:pypi/anyio@4.15.1",
+        "pkg:pypi/anyio@4.15.0",
         "pkg:pypi/attrs@26.1.0",
         "pkg:pypi/bcrypt@5.0.0",
-        "pkg:pypi/certifi@2026.7.22",
+        "pkg:pypi/bottle@0.13.4",
+        "pkg:pypi/certifi@2026.10.23",
         "pkg:pypi/cffi@2.1.1",
         "pkg:pypi/charset-normalizer@3.5.1",
-        "pkg:pypi/click@8.5.0",
+        "pkg:pypi/click@8.4.2",
+        "pkg:pypi/clr-loader@0.3.1",
         "pkg:pypi/cryptography@50.0.1",
         "pkg:pypi/docstring-parser@0.18.0",
         "pkg:pypi/email-validator@2.3.0",
         "pkg:pypi/fastapi@0.141.1",
+        "pkg:pypi/fastmcp-slim@4.0.3",
         "pkg:pypi/frozenlist@1.8.0",
-        "pkg:pypi/google-auth@2.57.1",
-        "pkg:pypi/google-genai@2.22.0",
-        "pkg:pypi/googleapis-common-protos@1.75.3",
+        "pkg:pypi/google-ai-generativelanguage@0.6.15",
+        "pkg:pypi/google-api-core@2.33.0",
+        "pkg:pypi/google-auth@2.58.0",
+        "pkg:pypi/google-genai@2.23.0",
+        "pkg:pypi/google-generativeai@0.8.6",
+        "pkg:pypi/googleapis-common-protos@1.75.0",
         "pkg:pypi/greenlet@3.5.5",
         "pkg:pypi/h11@0.16.0",
         "pkg:pypi/h2@4.4.1",
@@ -3756,26 +4864,48 @@
         "pkg:pypi/httpcore2@2.12.0",
         "pkg:pypi/httpx@0.28.1",
         "pkg:pypi/httpx2@2.12.0",
-        "pkg:pypi/hvac@2.4.0",
         "pkg:pypi/hyperframe@6.1.0",
         "pkg:pypi/idna@3.19",
         "pkg:pypi/jiter@0.16.0",
         "pkg:pypi/lxml@6.1.3",
+        "pkg:pypi/mcp@2.2.0",
+        "pkg:pypi/mcp-types@2.2.0",
         "pkg:pypi/multidict@6.9.1",
         "pkg:pypi/openai@3.13.0",
+        "pkg:pypi/opentelemetry-api@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+        "pkg:pypi/opentelemetry-instrumentation@0.65b0",
+        "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
+        "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
+        "pkg:pypi/opentelemetry-instrumentation-requests@0.65b0",
+        "pkg:pypi/opentelemetry-instrumentation-threading@0.65b0",
+        "pkg:pypi/opentelemetry-proto@1.44.0",
+        "pkg:pypi/opentelemetry-sdk@1.44.0",
+        "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+        "pkg:pypi/opentelemetry-util-http@0.65b0",
         "pkg:pypi/orjson@3.12.0",
         "pkg:pypi/packaging@26.3",
+        "pkg:pypi/platformdirs@4.11.8",
         "pkg:pypi/prometheus-client@0.26.0",
         "pkg:pypi/propcache@0.5.2",
-        "pkg:pypi/protobuf@6.33.6",
+        "pkg:pypi/protobuf@5.29.6",
+        "pkg:pypi/proxy-tools@0.1.0",
+        "pkg:pypi/psutil@7.2.2",
+        "pkg:pypi/pycparser@3.0",
         "pkg:pypi/pydantic@2.13.5",
+        "pkg:pypi/pydantic-settings@2.15.0",
         "pkg:pypi/pydantic-core@2.46.5",
         "pkg:pypi/pygments@2.21.0",
-        "pkg:pypi/pyjwt@2.13.0",
+        "pkg:pypi/pyjwt@2.15.1",
         "pkg:pypi/pypdf@6.21.4",
         "pkg:pypi/python-docx@1.2.0",
         "pkg:pypi/python-dotenv@1.2.3",
         "pkg:pypi/python-multipart@0.0.32",
+        "pkg:pypi/pythonnet@3.2.1",
+        "pkg:pypi/pywebview@6.2.1",
         "pkg:pypi/pywin32@311",
         "pkg:pypi/pyyaml@6.0.3",
         "pkg:pypi/requests@2.34.2",
@@ -3783,6 +4913,7 @@
         "pkg:pypi/rich@15.0.0",
         "pkg:pypi/sniffio@1.3.1",
         "pkg:pypi/sqlalchemy@2.0.52",
+        "pkg:pypi/sse-starlette@3.4.11",
         "pkg:pypi/starlette@1.6.0",
         "pkg:pypi/taskiq@0.13.0",
         "pkg:pypi/taskiq-dependencies@1.5.7",
