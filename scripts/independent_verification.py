@@ -129,15 +129,30 @@ def _check_hc01_matrix():
 
 
 def _check_readiness():
-    """C10-4: release-readiness battery must report 0 real FAIL."""
+    """C10-4: release-readiness battery must report 0 real FAIL.
+
+    verify_readiness.py 的退出码语义（见其 docstring）：0=无 FAIL；2=真实矛盾；
+    3=无 FAIL/ERROR 但存在 NOT_VERIFIED/BLOCKED。退出码 3 是 CI 环境的诚实缺口
+    （无 Docker/GUI、冻结门 HC-01 BLOCKED），按 harness 设计记为 GAP——
+    与真实 FAIL 区分开；但即便 rc=3 也必须核对输出含 FAIL=0，防止把真实矛盾
+    误记成缺口。
+    """
     script = SCRIPTS / "verify_readiness.py"
     rc, out, err = _run([sys.executable, str(script)], timeout=900)
-    if rc != 0:
-        return FAIL, f"readiness battery rc={rc}: {err[-200:]}"
-    flat = out.replace(" ", "")
-    if "FAIL=0" not in flat:
-        return FAIL, "readiness battery reports a FAIL (contradiction)"
-    return PASS, "readiness battery: 0 FAIL (NOT VERIFIED/BLOCKED recorded honestly)"
+    flat = (out or "").replace(" ", "")
+    if rc == 0:
+        if "FAIL=0" not in flat:
+            return FAIL, "readiness battery reports a FAIL (contradiction)"
+        return PASS, "readiness battery: 0 FAIL (NOT VERIFIED/BLOCKED recorded honestly)"
+    if rc == 3:
+        if "FAIL=0" not in flat:
+            return FAIL, f"readiness battery rc=3 with a FAIL: {err[-200:] or flat[-200:]}"
+        return (
+            GAP,
+            "readiness battery honestly NOT VERIFIED/BLOCKED (rc=3, FAIL=0; "
+            "CI lacks Docker/GUI and HC-01 gate is frozen-BLOCKED)",
+        )
+    return FAIL, f"readiness battery rc={rc}: {err[-200:] or flat[-200:]}"
 
 
 CHECKS = [
