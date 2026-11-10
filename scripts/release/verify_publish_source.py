@@ -17,6 +17,10 @@
   （29,428,128 B / 6443A1AB… 与 36,948,984 B / E92D364F…），后者是没跑 prune 的
   payload 编出来的，签名有效、版本号相同，任何检查都没吭声。
 
+  5) 记录里 release_page.status == "skipped" 时（出包阶段显式跳过了发布页核对），
+     发布态必须同时给出换版校验的 PASS 证据（verify_release_page_values.py 的输出
+     文件，--release-page-evidence）；缺证据即拒发。出包可以跳，发布不行。
+
 可选 --page 时，再调用 scripts/verify_release_page_values.py 核对发布页，
 页面上的版本/哈希/字节/文件名/data-copy 全部必须等于本目录的实测值。
 
@@ -279,6 +283,48 @@ def check_payload_fingerprint(
         report.ok(f"payload 指纹与实际树一致：{real_count} 文件 / {real_bytes} 字节 / {real_digest[:8]}…{real_digest[-4:]}")
 
 
+def check_release_page_compensation(
+    data: dict,
+    evidence_path: Path | None,
+    require_record: bool,
+    report: Report,
+) -> None:
+    """记录声明跳过了发布页核对时，发布态必须拿出换版校验的 PASS 证据。"""
+    page = data.get("release_page") or {}
+    status = str(page.get("status") or "").strip()
+    if status != "skipped":
+        return
+    reason = str(page.get("reason") or "").strip()
+    if not reason:
+        report.fail("FREEZE-RECORD 声明 release_page=skipped 但没有 reason：跳过必须留下理由")
+        return
+    if not require_record:
+        report.warn(f"FREEZE-RECORD 声明发布页核对已跳过（{reason}）；发布态请以 --require-record 复核补偿证据")
+        return
+    if evidence_path is None:
+        report.fail(
+            "FREEZE-RECORD 声明发布页核对已跳过，但未提供换版校验 PASS 证据（--release-page-evidence）："
+            "出包可以跳，发布不行"
+        )
+        return
+    if not evidence_path.is_file():
+        report.fail(f"换版校验证据不存在：{evidence_path}")
+        return
+    text = evidence_path.read_text(encoding="utf-8-sig", errors="replace")
+    if "RESULT: PASS" not in text:
+        report.fail(f"换版校验证据不是 PASS：{evidence_path}")
+        return
+    if "[FAIL]" in text:
+        report.fail(f"换版校验证据里仍有 [FAIL] 行：{evidence_path}")
+        return
+    skipped_at = str(page.get("skipped_at") or "").strip()
+    report.ok(
+        "发布页核对已按后置补偿闭合：出包时跳过（"
+        + (f"{skipped_at}，" if skipped_at else "")
+        + f"理由：{reason}），换版校验证据 PASS"
+    )
+
+
 def check_record(
     installer_dir: Path,
     exe_path: Path,
@@ -317,7 +363,7 @@ def check_record(
     # 发布态强制要求 payload 指纹；给了 --payload-dir 就顺带复核实物树。
     if require_record or payload_dir is not None:
         check_payload_fingerprint(data, payload_dir, report)
-    return version
+    return data
 
 
 def check_page(
@@ -376,6 +422,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-version", help="本次构建版本；给了就要求 exe/记录与它一致")
     parser.add_argument("--require-record", action="store_true", help="缺 FREEZE-RECORD.json 即失败（发布态应开）")
     parser.add_argument(
+        "--release-page-evidence",
+        help="换版校验（verify_release_page_values.py）的 PASS 输出文件；"
+        "记录里 release_page=skipped 时必填，否则拒发",
+    )
+    parser.add_argument(
         "--payload-dir",
         help="构建用的 payload\\app 目录；给了就按 FREEZE-RECORD 的 payload 指纹逐项复核，对不上拒发",
     )
@@ -391,6 +442,11 @@ def main(argv: list[str] | None = None) -> int:
         payload_dir = Path(args.payload_dir)
         if not payload_dir.is_absolute():
             payload_dir = (repo_root / payload_dir).resolve()
+    evidence_path: Path | None = None
+    if args.release_page_evidence:
+        evidence_path = Path(args.release_page_evidence)
+        if not evidence_path.is_absolute():
+            evidence_path = (repo_root / evidence_path).resolve()
     if not installer_dir.is_dir():
         print(f"[ERROR] 来源目录不存在：{installer_dir}")
         return 2
@@ -418,16 +474,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if exe_path is not None and exe_path.is_file():
         check_duplicates(repo_root, exe_name, exe_hash, exe_size, report)
-        version = check_record(
+        require_record = args.require_record and not args.staging
+        record_data = check_record(
             installer_dir,
             exe_path,
             exe_hash,
             exe_size,
             args.expected_version,
-            args.require_record and not args.staging,
+            require_record,
             report,
             payload_dir,
         )
+        if record_data is not None:
+            check_release_page_compensation(record_data, evidence_path, require_record, report)
+        version = ((record_data or {}).get("installer") or {}).get("version")
         if args.page:
             effective_version = args.expected_version or version or _version_from_name(exe_name)
             check_page(

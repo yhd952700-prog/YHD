@@ -35,6 +35,15 @@
   字节/文件名/data-copy；任何一处不一致就 throw，不打印成功横幅。
   页面在独立仓库时先下载一份到本地再传本参数。
 
+.PARAMETER SkipReleasePage
+  显式跳过 §12.2 的发布页数值核对，检查表里记为 SKIP（不是 PASS/FAIL 改名）。
+  仅用于「页面换版在包产出之后执行」的场景：出包可以跳，发布必须拿换版校验
+  的 PASS 输出到 verify_publish_source.py --release-page-evidence 补偿，否则拒发。
+  必须与 -SkipReleasePageReason 同时给出；只给开关不给理由直接 throw。
+
+.PARAMETER SkipReleasePageReason
+  跳过的理由原文，写入控制台日志、检查表 Detail 与 FREEZE-RECORD.release_page.reason。
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\release\package-frozen.ps1 -DryRun
 
@@ -49,6 +58,8 @@ param(
     [string]$PythonExe = "",
     [string]$ReleaseGateDir = "",
     [string]$ReleasePageFile = "",
+    [switch]$SkipReleasePage,
+    [string]$SkipReleasePageReason = "",
     [string]$IsccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     [switch]$DryRun,
     [switch]$AcceptFrontendBaseline
@@ -57,6 +68,12 @@ param(
 $ErrorActionPreference = "Stop"
 $script:DryRun = [bool]$DryRun
 $script:Checks = New-Object System.Collections.Generic.List[object]
+
+# 跳过发布页核对是「有痕迹的例外」，不是静默开关：开关与理由必须成对出现。
+# 只给理由不给开关时按「没传开关」处理，行为与历史完全一致。
+if ($SkipReleasePage -and -not $SkipReleasePageReason.Trim()) {
+    throw "传了 -SkipReleasePage 但没有 -SkipReleasePageReason：跳过必须写明理由（会落进 FREEZE-RECORD.release_page）"
+}
 
 function Add-Check {
     param([string]$Name, [string]$Status, [string]$Detail)
@@ -953,7 +970,7 @@ if (-not (Test-Path $publishGuard)) {
 if (-not (Test-Path $pageChecker)) {
     Add-Check "发布页数值一致性" "FAIL" "缺少 $pageChecker（补丁 0006 未落地）"
 }
-if (-not $ReleasePageFile -or -not (Test-Path $ReleasePageFile)) {
+if (-not $SkipReleasePage -and (-not $ReleasePageFile -or -not (Test-Path $ReleasePageFile))) {
     Add-Check "发布页数值一致性" "FAIL" "未提供有效的 -ReleasePageFile（发布页数值未核对，拒绝打成功标记）"
 }
 
@@ -977,22 +994,49 @@ if ($guardCode -eq 0) {
 }
 
 # 12.2 页面数值：版本/哈希/字节/文件名/data-copy 全部按 dist\installer 实测值核对。
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-try {
-    $pageOut = & $PythonExe $pageChecker --page $ReleasePageFile --version $Version --sha256 $exeHash --size $exeBytes 2>&1 | Out-String
-    $pageCode = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $prevEap
-}
-$pageLines = @($pageOut.Trim() -split "`r?`n" | Where-Object { $_ -ne "" })
-$pageLast = if ($pageLines.Count -gt 0) { $pageLines[-1] } else { "（无输出）" }
-if ($pageCode -eq 0) {
-    $pageWarns = @($pageLines | Where-Object { $_.StartsWith("[WARN]") }).Count
-    Add-Check "发布页数值一致性" "PASS" ("{0}（WARN {1} 条）" -f $pageLast, $pageWarns)
+# 跳过时记独立的 SKIP，并把状态/理由/时间写进 FREEZE-RECORD.release_page：
+# 出包可以跳，发布不行——verify_publish_source.py 在 --require-record 下看到
+# skipped 就必须收到换版校验的 PASS 证据，否则拒发。
+if ($SkipReleasePage) {
+    $skipStatement = "SKIP：页面换版在包产出之后执行，本轮按 RELEASE-PAGE-CONTENT.md §9 后置补偿；理由：" + $SkipReleasePageReason.Trim()
+    Add-Check "发布页数值一致性" "SKIP" $skipStatement
+    $record.release_page = [ordered]@{
+        status = "skipped"
+        reason = $SkipReleasePageReason.Trim()
+        skipped_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    }
+    $record.checks = @($script:Checks | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Name; Status = $_.Status; Detail = $_.Detail }
+    })
+    $record | ConvertTo-Json -Depth 6 | Set-Content -Path $recordPath -Encoding UTF8
+    $recordTargets = @(
+        $recordDeliveryPath,
+        (Join-Path $distInstaller "FREEZE-RECORD.json"),
+        (Join-Path $distInstaller "FREEZE-RECORD-$Version.json")
+    )
+    foreach ($target in $recordTargets) {
+        if ([IO.Path]::GetFullPath($target) -ne [IO.Path]::GetFullPath($recordPath)) {
+            Copy-Item -LiteralPath $recordPath -Destination $target -Force
+        }
+    }
 } else {
-    Write-Host $pageOut.TrimEnd()
-    Add-Check "发布页数值一致性" "FAIL" ("退出码 {0}：{1}" -f $pageCode, $pageLast)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $pageOut = & $PythonExe $pageChecker --page $ReleasePageFile --version $Version --sha256 $exeHash --size $exeBytes 2>&1 | Out-String
+        $pageCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $pageLines = @($pageOut.Trim() -split "`r?`n" | Where-Object { $_ -ne "" })
+    $pageLast = if ($pageLines.Count -gt 0) { $pageLines[-1] } else { "（无输出）" }
+    if ($pageCode -eq 0) {
+        $pageWarns = @($pageLines | Where-Object { $_.StartsWith("[WARN]") }).Count
+        Add-Check "发布页数值一致性" "PASS" ("{0}（WARN {1} 条）" -f $pageLast, $pageWarns)
+    } else {
+        Write-Host $pageOut.TrimEnd()
+        Add-Check "发布页数值一致性" "FAIL" ("退出码 {0}：{1}" -f $pageCode, $pageLast)
+    }
 }
 
 Write-Host ""
