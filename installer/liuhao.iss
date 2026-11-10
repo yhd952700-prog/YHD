@@ -21,11 +21,11 @@
 ;      才会按 marker 记录的实际数据目录删除（不再写死 C 盘那个路径）。
 ;
 ; 构建：packaging\build_windows_installer.ps1（会传 /DAppVersion=...）。
-; 直接编译：iscc /DAppVersion=0.1.2 installer\liuhao.iss
+; 直接编译：iscc /DAppVersion=0.1.2.1 installer\liuhao.iss
 ; ==========================================================================
 
 #ifndef AppVersion
-  #define AppVersion "0.1.2"
+  #define AppVersion "0.1.2.1"
 #endif
 
 #ifndef PayloadDir
@@ -124,8 +124,9 @@ ChangesEnvironment=yes
 [VersionInfo]
 ; 安装包 exe 自身的版本资源。不设时资源管理器里「文件版本/版权/原始文件名」
 ; 全是空白，审计与用户排障都无法确认拿到的是哪一版。
-; VersionInfoVersion 必须是纯数字四段式，故补一个 .0。
-VersionInfoVersion={#AppVersion}.0
+; VersionInfoVersion 接受 1~4 段纯数字，直接取版本号；
+; 不能在末尾无条件补 .0：四段版本（如 0.1.2.1）会变成非法的五段。
+VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} 安装程序
 VersionInfoCopyright=Copyright (C) 2026 {#AppPublisher}

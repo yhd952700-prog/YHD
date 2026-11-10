@@ -40,7 +40,7 @@
 - `liuhao-0.1.1-upgrade.zip`（2026-11-08 04:23 构建）
 - 另有 `SHA256SUMS.txt`、`README-DELIVERY.txt`、`LiuHao-CodeSigning.cer`、`trust-liuhao-signing.ps1`、`信任签名证书.cmd`；`_archive\` 只作追溯，不得分发。
 
-**版本口径**：源码已是 `0.1.2`（`pyproject.toml:3`、`src/version.py` 的 `APP_VERSION`），但 **0.1.2 包尚未产出**——`dist/` 下按文件名搜索 `*0.1.2*` 实测为 0。所以本清单描述的是 **0.1.1 交付物**，不能当作 0.1.2 的凭证。
+**版本口径**：源码已是 `0.1.2.1`（`pyproject.toml:3`、`src/version.py` 的 `APP_VERSION`），但 **0.1.2.1 包尚未产出**——`dist/` 下按文件名搜索 `*0.1.2.1*` 实测为 0。所以本清单描述的是 **0.1.1 交付物**，不能当作 0.1.2 的凭证。
 
 > ~~2026-11-08 时 `dist/installer/` 顶层为 0 个 exe、0 个 zip~~ —— 那是当天的状态；2026-11-08 04:23–04:24 重建后顶层已有上述 0.1.1 产物。原记录「本轮全部修复都还没进包」随之作废。
 > 上游 `origin/p36` 侧曾记录「`dist/installer/` 内有 0.1.0 的四项正式产物（2026-11-07 11:14 构建，
@@ -806,7 +806,7 @@ git diff --name-only <上一冻结hash>..HEAD -- src/ apps/ contracts/ installer
 
 **必须（交付口径：机器 verdict 不变，但决定敢不敢对外发布）**
 
-1. P-1 版本号全链一致：**未满足**——源码 `pyproject.toml:3` / `src/version.py` 为 `0.1.2`，而 `dist/payload/manifest.json`、`dist/installer/SHA256SUMS.txt`、`dist/release/LIUHAO_RELEASE.json` 与线上发布页为 `0.1.1`；`dist/` 下没有 0.1.2 产物。
+1. P-1 版本号全链一致：**未满足**——源码 `pyproject.toml:3` / `src/version.py` 为 `0.1.2.1`，而 `dist/payload/manifest.json`、`dist/installer/SHA256SUMS.txt`、`dist/release/LIUHAO_RELEASE.json` 与线上发布页为 `0.1.1`；`dist/` 下没有 0.1.2.1 产物。
 2. P-2 安装包重打并绑定冻结 hash：**未满足**——现有 `LiuHao-Setup-0.1.1.exe`（2026-11-08 构建）顶层无 `DELIVERY.txt`，源码提交未写入产物；0.1.2 包未产出。
 3. P-3 真 Key 对话验收（含 401 中性文案）。
 4. P-4 任意模型接入（自定义 Base URL + 非预置 model id，运行中生效）。

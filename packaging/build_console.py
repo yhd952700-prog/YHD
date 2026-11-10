@@ -1,8 +1,8 @@
 """按当前前端源码构建控制台，并写入可校验的构建来源记录。
 
 用法（仓库根执行）：
-    .venv\\Scripts\\python.exe packaging\\build_console.py --version 0.1.2
-    .venv\\Scripts\\python.exe packaging\\build_console.py --dest dist\\payload\\app\\console --version 0.1.2
+    .venv\\Scripts\\python.exe packaging\\build_console.py --version 0.1.2.1
+    .venv\\Scripts\\python.exe packaging\\build_console.py --dest dist\\payload\\app\\console --version 0.1.2.1
 
 打包端 ``packaging/make_release.py`` 会读取 ``console/console-build.json``，
 与当前源码指纹、产物文件指纹对照；缺少记录或不一致都会拒绝出包。

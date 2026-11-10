@@ -23,9 +23,9 @@
 
 > **版本口径（2026-11-09 核对，不要手改版本号糊平）**
 >
-> * 源码已是 `0.1.2`（`pyproject.toml:3`、`src/version.py` 的 `APP_VERSION`）；
-> * 已构建交付物与发布页仍是 `0.1.1`（`dist/payload/manifest.json`、`dist/installer/SHA256SUMS.txt`、`dist/release/LIUHAO_RELEASE.json`、线上发布页）；`dist/` 下**没有任何 0.1.2 产物**（按文件名搜索实测为 0）；
-> * 0.1.2 包尚未产出：等主线出包并验收通过后，再同步改发布页与本文版本表述；在此之前文档一律按 0.1.1 写。
+> * 源码已是 `0.1.2.1`（`pyproject.toml:3`、`src/version.py` 的 `APP_VERSION`）；
+> * 已发布交付物与发布页是 `0.1.2`（见 `docs/DELIVERY-0.1.2-SMOKE.md`）；`dist/` 下**没有任何 0.1.2.1 产物**（按文件名搜索实测为 0）；
+> * 0.1.2.1 包尚未产出：等主线出包并验收通过后，再同步改发布页与本文版本表述。
 >
 > **冒烟状态（旧说法"唯一冒烟记录为登录 FAIL"已作废）**：`dist/smoke-report.json`（2026-11-08 04:22）里 `login=PASS`、`chat=PASS`；`chat_detail` 是 `[演示数据] 还没有配置模型…`，因为干净安装默认没有 provider，PASS 表示网关确实返回了回复（mock 内容），**不是失败**。安装级真实链路在 2026-11-08 04:26–04:40 用用户提供的真实 DeepSeek Key 把 S-06/S-07/S-08 从 SKIP 转 PASS，证据 `dist/release-gate/smoke/20261108-real-key/CONCLUSION.md`；`liuhao-0.1.1-upgrade.zip` 的 `signature=true`（ed25519）也已由 `python -m src.upgrade check --manifest` 实测。
 >

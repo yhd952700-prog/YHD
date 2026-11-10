@@ -1,4 +1,4 @@
-"""版本号必须全链一致：0.1.2。
+"""版本号必须全链一致：0.1.2.1。
 
 旧包 0.1.0 与本版内容完全不同却同号，升级判定会失效，两份同名包也无法区分。
 这条测试把「版本号写在哪些地方」变成可执行断言，避免下次升版只改了一处。
@@ -19,8 +19,17 @@ def _read(path: Path) -> str:
 
 
 def test_app_version_is_a_release_number():
-    assert re.fullmatch(r"\d+\.\d+\.\d+", APP_VERSION), APP_VERSION
-    assert APP_VERSION == "0.1.2"
+    # 0.1.2.1 是四段版本；三段（0.1.2）与四段都算合法发布号。
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", APP_VERSION), APP_VERSION
+    assert APP_VERSION == "0.1.2.1"
+
+
+def test_four_segment_version_compares_newer_than_three():
+    """升级器按 packaging.version 比较，0.1.2.1 必须严格大于 0.1.2。"""
+    from src.upgrade.versioning import is_newer
+
+    assert is_newer("0.1.2.1", "0.1.2") is True
+    assert is_newer("0.1.2", "0.1.2.1") is False
 
 
 def test_pyproject_version_matches():
