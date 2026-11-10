@@ -184,11 +184,14 @@ print(f"  distribution: { {t.value: c for t, c in counts.items()} }")
 # tier) rather than silently accepted. Baseline updated 2026-10-06 after confirming
 # the prior {LOW:15, MEDIUM:12} had grown by 2 LOW + 1 MEDIUM from legitimately
 # registered kernel actions (coverage check showed decorated==registry, no
-# unclassified/stale). HIGH/CRITICAL are safety-critical and intentionally pinned.
+# unclassified/stale). Re-confirmed 2026-11-10: HIGH 15 -> 17, from 2 new HIGH
+# kernel actions registered under "authority change / destructive / code lifecycle"
+# (coverage check showed decorated==registry, no unclassified/stale; registry
+# section header self-describes "HIGH (17)"). CRITICAL stays pinned at 2.
 EXPECTED_TIER_DISTRIBUTION = {
     RiskTier.LOW: 17,
     RiskTier.MEDIUM: 13,
-    RiskTier.HIGH: 15,
+    RiskTier.HIGH: 17,
     RiskTier.CRITICAL: 2,
 }
 if counts != EXPECTED_TIER_DISTRIBUTION:
