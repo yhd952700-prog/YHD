@@ -719,6 +719,9 @@ $record = [ordered]@{
     # 发布页只从这里取值（docs/RELEASE-PAGE-CONTENT.md）：字节数与 SHA256 是
     # 硬字段，页面不许手抄旧值。
     installer = [ordered]@{
+        # verify_publish_source.py 只读 installer.version（无顶层兜底）：这里必须写，
+        # 否则门禁报 version=None 拒发；读取方也不许加容差，避免契约各说各话。
+        version = $Version
         filename = (Split-Path -Leaf $setupExe)
         size = $exeBytes
         # PowerShell 的 1MB = 1048576 字节，实际是 MiB；单位必须写对。
