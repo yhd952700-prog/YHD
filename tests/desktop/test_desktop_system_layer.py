@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.brand import BRAND_LOCKUP  # noqa: E402
+from src.desktop import about as about_mod  # noqa: E402
 from src.desktop import app as app_mod  # noqa: E402
 from src.desktop import autostart, diagnostics, tray  # noqa: E402
 from src.desktop import probe as probe_mod  # noqa: E402
@@ -53,6 +54,52 @@ def test_about_reports_real_paths(tmp_path: Path) -> None:
     assert isinstance(about["python_version"], str)
     assert about["python_version"]
     assert about["diagnostics_dir"]
+
+
+def test_about_skips_git_subprocess_outside_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非仓库目录下不许创建子进程（安装树没有 .git，以前每次请求 spawn 两次 git）。"""
+    calls: list[object] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("非 git 仓库不应创建子进程")
+
+    def fake_popen(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("非 git 仓库不应创建子进程")
+
+    monkeypatch.setattr(about_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(about_mod.subprocess, "Popen", fake_popen)
+    about_mod._GIT_CACHE.clear()
+    about = collect_about(tmp_path)
+    assert calls == []
+    assert about["commit"] is None
+    assert about["build_time_source"] != "git_commit"
+
+
+def test_git_fields_cache_hit_and_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """commit 与构建时间共用一次查询：第二次命中缓存，TTL 过期后重新取。"""
+    (tmp_path / ".git").write_text("gitdir: nowhere\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(stdout="abc123\x1f2026-01-01T00:00:00+08:00\n")
+
+    monkeypatch.setattr(about_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(about_mod, "_GIT_CACHE_TTL", 60.0)
+    about_mod._GIT_CACHE.clear()
+    assert about_mod._git_fields(tmp_path) == ("abc123", "2026-01-01T00:00:00+08:00")
+    assert about_mod._git_fields(tmp_path) == ("abc123", "2026-01-01T00:00:00+08:00")
+    assert len(calls) == 1
+    monkeypatch.setattr(about_mod, "_GIT_CACHE_TTL", 0.0)
+    about_mod._git_fields(tmp_path)
+    assert len(calls) == 2
+    about_mod._GIT_CACHE.clear()
 
 
 def test_redaction_removes_keys_and_tokens() -> None:
