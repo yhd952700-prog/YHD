@@ -72,9 +72,19 @@ def default_workflow_path() -> str:
     repo_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+    # 缺省库文件放 <root>/data/：容器镜像里 /app 根目录属 root 不可写（USER app），
+    # /app/data 已预建并赋权（见 Dockerfile）；桌面/开发布局同样存在 data/。
+    # 直接落根上的旧布局（.<文件名>）若已存在则继续沿用，避免已有数据被静默遗弃。
+    # CI 证据：Build Verification 曾因 /app/.liuhao_workflows.db 建不了文件而
+    # sqlite3.OperationalError: unable to open database file（2026-11-12 定位）。
+    modern = os.path.join(repo_root, "data", WORKFLOW_FILENAME)
+    legacy = os.path.join(repo_root, f".{WORKFLOW_FILENAME}")
+    fallback = (
+        legacy if os.path.exists(legacy) and not os.path.exists(modern) else modern
+    )
     return resolve_store_path(
         WORKFLOW_FILENAME,
-        os.path.join(repo_root, f".{WORKFLOW_FILENAME}"),
+        fallback,
         env_var=WORKFLOW_ENV_VAR,
         workspace=True,
     )
