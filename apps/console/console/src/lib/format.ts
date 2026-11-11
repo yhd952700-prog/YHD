@@ -102,6 +102,20 @@ const EVENT_LABELS: Record<string, string> = {
   permission_check: '权限校验',
   conditional_access: '条件放行',
   deferred_access: '延后处理',
+  // 完全授权（G1–G5）：这些是用户最该看懂的"谁放开了什么"。
+  authority_mode_changed: '授权模式变更',
+  authority_irreversible_allowed: '不可逆动作放行',
+  authority_confirm_disabled: '最终确认已关闭',
+  authority_confirm_restored: '最终确认已恢复',
+  host_command_executed: '主机命令执行',
+  // 敏感路径两个事件**不是**同一条：
+  // `touched` 只记录、动作照常放行（0.3.0 起的新行为）；`denied` 是旧版本真正
+  // 拦截下来的历史记录，0.3.0 起不再产生，但旧审计仍需如实翻译。
+  authority_protected_path_touched: '敏感路径触碰',
+  authority_protected_path_denied: '敏感路径已拦截',
+  goal_control: '目标控制',
+  automation_action: '自动化动作',
+  automation_observation: '自动化观察',
   // 执行链事件：通知中心按这几类呈现"谁在替你干活"。
   execution_started: '目标开始执行',
   goal_decomposed: '目标已拆解',

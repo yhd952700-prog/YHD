@@ -142,6 +142,31 @@ describe('事件与结果标签', () => {
     expect(outcomeTone('allow')).toBe('ok')
   })
 
+  test('敏感路径触碰与已拦截是两条事件，不能合并', () => {
+    // touched：只记录、动作照常放行；denied：旧版本真的拦下来了。
+    expect(eventLabel('authority_protected_path_touched')).toBe('敏感路径触碰')
+    expect(eventLabel('authority_protected_path_denied')).toBe('敏感路径已拦截')
+    expect(eventLabel('authority_protected_path_touched')).not.toBe(
+      eventLabel('authority_protected_path_denied'),
+    )
+  })
+
+  test('0.3.0 审计新增事件都有中文标签', () => {
+    for (const type of [
+      'authority_mode_changed',
+      'authority_irreversible_allowed',
+      'authority_confirm_disabled',
+      'authority_confirm_restored',
+      'host_command_executed',
+      'goal_control',
+      'automation_action',
+      'automation_observation',
+    ]) {
+      // 未登记的类型会原样回显英文内部名，等于把工程命名暴露给用户。
+      expect(eventLabel(type)).not.toBe(type)
+    }
+  })
+
   test('未知 outcome 的色调是 muted，而不是崩溃', () => {
     for (const value of HOSTILE) {
       expect(() => outcomeTone(value as string)).not.toThrow()
