@@ -12,7 +12,7 @@
 | payload 组装（含离线 Python 运行时、托盘依赖 pywin32/tkinter/Tcl） | 🟢 已实跑：文件数与体积**以 `dist/payload/manifest.json` 为准**（2026-11-09 核对：`version=0.1.1`、10,855 文件 / 150.9 MB，未压缩）；每次构建都变，不在文档里写死 |
 | payload 冒烟（启动→首页→注册→登录→发消息） | 🟢 本轮实跑通过（payload 内，mock 提供商） |
 | Inno Setup 安装器脚本 | 🟢 已交付 `installer/liuhao.iss` |
-| **`.exe` 安装包** | 🟢 顶层有 `LiuHao-Setup-0.1.1.exe`（2026-11-08 04:24 构建）。路径、字节数、SHA256 **以同目录 `SHA256SUMS.txt` 为准**，本文不写死（2026-11-09 核对：29,567,136 字节 / `49BC50C8…B4DF`）。<br>源码已是 `0.2.0`（`pyproject.toml:3`），但 **0.2.0 包尚未产出**，`dist/` 下没有任何 0.2.0 产物 |
+| **`.exe` 安装包** | 🟢 顶层有 `LiuHao-Setup-0.1.1.exe`（2026-11-08 04:24 构建）。路径、字节数、SHA256 **以同目录 `SHA256SUMS.txt` 为准**，本文不写死（2026-11-09 核对：29,567,136 字节 / `49BC50C8…B4DF`）。<br>源码与当前安装包为 `0.2.1`（`pyproject.toml:3`），单机自用、不对外发布 |
 | 升级发布包 `liuhao-0.1.1-upgrade.zip` | 🟢 顶层有该包（2026-11-08 04:23 构建）。字节数/SHA256 以 `dist/installer/SHA256SUMS.txt` 为准，本文不写死（2026-11-09 核对：32,178,761 字节 / `9EABA197…3224`）；**升级包不能单独运行**，只用于已安装的机器 |
 | 升级发布清单 `LIUHAO_RELEASE.json` | 🟢 已生成，`python -m src.upgrade check --release-dir <目录>` 与 `python -m src.upgrade check --manifest <文件>` 均可读取；`releases[0].signature=true`（ed25519）。2026-11-09 实跑：`current_version=0.1.2`、`latest_version=0.1.1`、`status=up_to_date`——这是「源码版本高于清单版本」的正常结果，不是失败 |
 | 安装后开机自启（托盘） | 🟢 默认**关闭**，需 `python -m src.desktop autostart enable` 开启；开启后的注册表登记已在真实安装目录验证：注册表值指向安装目录内的 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py`，托盘窗口可创建 |
@@ -187,8 +187,8 @@ $env:LIUHAO_UPGRADE_SIGNING_KEY = "D:\keys\liuhao-release-ed25519.pem"   # 未�
 iscc /DAppVersion=<版本> installer\liuhao.iss
 ```
 
-（`<版本>` 必须与 `pyproject.toml` 的 `project.version` 一致：源码当前 `0.2.0`，
-已发布产物 `0.1.2`；写错会导致包内版本与源码不符。`installer\liuhao.iss`
+（`<版本>` 必须与 `pyproject.toml` 的 `project.version` 一致：源码当前 `0.2.1`；
+写错会导致包内版本与源码不符。`installer\liuhao.iss`
 默认从 `..\dist\payload\app` 取内容；如需自定义路径，
 用构建脚本生成的 `dist\installer\build\liuhao.iss` 副本。）
 
