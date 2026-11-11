@@ -45,6 +45,22 @@ acknowledged:
       package, and src/gateway does not reference it). The feedback submission
       endpoint therefore does not exist at runtime.
 
+  # --- 0.3.0 自升级线新增（6159084c），发布前尚未接线 ----------------------
+  - module: src.selfupgrade.rescue
+    classification: library-staged
+    reason: >-
+      Writes the `Rescue-LiuHao.cmd` known-good recovery script (stop instance,
+      silent reinstall, relaunch). Working code with no production caller yet:
+      the upgrade failure path does not invoke it in 0.3.0. Owner: 自升级线
+      (commit 6159084c). Wire it into the failure path or delete it next release.
+  - module: src.selfupgrade.tests.test_selfupgrade
+    classification: tooling
+    reason: >-
+      Test module colocated inside the src/ package by 自升级线 (6159084c).
+      pytest's testpaths is `tests/`, so this file is never collected and comes
+      out as a zero-reference src/ module. It should move to tests/ to actually
+      run; until then it is registered so the audit does not silently pass.
+
   # --- 2026-09-28 / UBX-005：以下两条已被移出本清单 ------------------------
   # UBX-005 把这两个模块从"从未接线的桩"改成了协调层的真实客户端，并且新增了
   # tests/distribution/test_coordination.py 引用它们。按本文件顶部的契约
