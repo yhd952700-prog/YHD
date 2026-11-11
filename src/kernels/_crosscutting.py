@@ -820,6 +820,68 @@ def _evidence_mandatory(effective_risk: Any) -> bool:
 _FENCE_ACTIONS: set = set()
 
 
+# --------------------------------------------------------------------------- #
+# 完全授权模式（G2）—— 独立于审批的「不可逆动作放行」埋点
+# --------------------------------------------------------------------------- #
+# G2 必须由动作本身触发，而不是由审批流程顺带写出：审批被关掉以后，
+# HUMAN_SOVEREIGNTY_OVERRIDE 不再产生，但「这条不可逆动作被放行了」这件事
+# 仍然必须可查。故此处直接读模式快照 + 风险表，写独立的审计事件。
+#: 本次调用是否经过确认（step 3 由确认层写入）：granted / disabled_by_user /
+#: no_confirmation_channel。默认 None = 还没有确认通道，按最保守文案记录。
+_G2_CONFIRM_STATE: ContextVar[str | None] = ContextVar(
+    "authority_confirm_state", default=None
+)
+
+
+def authority_confirm_state():
+    """为调用方提供「声明本次确认状态」的上下文（G2 读取）。
+
+    只影响审计文案，不影响权限判定 —— 判定在策略层，证据在这里。
+    """
+
+    @contextmanager
+    def _ctx(state: str) -> Iterator[None]:
+        token = _G2_CONFIRM_STATE.set(state)
+        try:
+            yield
+        finally:
+            _G2_CONFIRM_STATE.reset(token)
+
+    return _ctx
+
+
+def _authority_mode_is_full() -> bool:
+    """当前进程是否处于完全授权模式（启动期快照，不热切）。"""
+    try:
+        from src.security.authority_mode import is_full
+
+        return bool(is_full())
+    except Exception:  # pragma: no cover - 读取失败按标准模式（更严）
+        return False
+
+
+def _is_irreversible_action(action: str) -> bool:
+    """不可逆动作 = 破坏性 OR 改权限 OR CRITICAL。
+
+    判定取自 KERNEL_ACTION_RISK（单一事实来源），不在装饰器里另立一张表，
+    避免两套名单漂移。
+    """
+    try:
+        from src.kernels._risk_classification import get_action_risk
+
+        risk = get_action_risk(action)
+        if risk is None:
+            return False
+        return bool(
+            risk.destructive
+            or risk.authority_changing
+            or risk.tier is RiskTier.CRITICAL
+        )
+    except Exception:  # pragma: no cover
+        return False
+
+
+
 def _fence_enabled_for(action: str) -> bool:
     env = os.environ.get("LIUHAO_EXECUTOR_FENCE", "").strip().lower()
     if env in ("on", "1", "true", "yes"):
@@ -1190,6 +1252,39 @@ def kernel_action(
                                 ),
                                 denial_reason=denial_reason,
                                 initiator=initiator)
+                # --- G2: 完全授权模式下的不可逆动作放行 ------------------- #
+                # 写在动作结果审计之后：只有动作真的跑完（success /
+                # unauthorized_success）才记「放行」，避免把被拒的动作谎报成
+                # allowed。这条记录**不经过审批流程**：审批关掉后它照样写，
+                # 这正是「放开权限不能把证据链弄断」的落点。
+                if (
+                    audit
+                    and outcome in ("success", "unauthorized_success")
+                    and _authority_mode_is_full()
+                    and _is_irreversible_action(action)
+                ):
+                    try:
+                        from src.security.authority_audit import (
+                            record_irreversible_allowed,
+                        )
+
+                        record_irreversible_allowed(
+                            action=action,
+                            tier=effective_risk,
+                            actor=audit_actor,
+                            correlation_id=corr_id,
+                            confirm_state=(
+                                _G2_CONFIRM_STATE.get()
+                                or "no_confirmation_channel"
+                            ),
+                        )
+                    except Exception:
+                        # 动作已经发生，无法回滚；但绝不允许静默 —— 记错误日志
+                        # 让运维从日志侧补证，且这条失败本身会在下一轮巡检暴露。
+                        logger.error(
+                            "authority G2 audit write failed action=%s "
+                            "correlation_id=%s", action, corr_id, exc_info=True,
+                        )
                 if observable:
                     logger.info(
                         "kernel_action=%s outcome=%s policy=%s risk=%s "

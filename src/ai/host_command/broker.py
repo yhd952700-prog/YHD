@@ -49,6 +49,24 @@ def _default_sink(event: str, details: Dict[str, Any]) -> None:
     (Previously this swallowed every error, so an executed host command could
     leave no audit record at all -- unacceptable for a sovereignty boundary.)
     """
+    # G5：真实执行记录落成独立事件类型，而不是混进 POLICY_EVAL。
+    # 这样「审批被关掉后」仍然能按 host_command_executed 精确检索到完整命令行。
+    if event == "host_command_executed_audit":
+        from src.security.authority_audit import record_host_command
+
+        record_host_command(
+            command=details.get("command", ""),
+            cwd=details.get("cwd"),
+            exit_code=details.get("exit_code"),
+            duration_ms=details.get("duration_ms"),
+            actor=details.get("actor", "host-command-broker"),
+            correlation_id=details.get("correlation_id"),
+            dangerous=bool(details.get("dangerous")),
+            confirm_state=str(details.get("confirm_state") or "not_required"),
+            use_shell=bool(details.get("use_shell")),
+        )
+        return
+
     from src.kernels.audit import AuditEventType, AuditScope, log_event
 
     log_event(
@@ -229,18 +247,59 @@ class HostCommandBroker:
             self.last_audit_write_ms = (time.time() - started) * 1000.0
         try:
             result = self.executor(req)
+            # G5: 主机命令真实执行（完整命令行，脱敏）。这条记录独立于审批：
+            # 审批关掉后仍必须能查到「跑了什么、退出码多少」。
+            exit_code = result.get("exit_code") if isinstance(result, dict) else None
+            self._record_executed(
+                req, exit_code, (time.time() - started) * 1000.0
+            )
             self._emit(
                 "host_command_executed",
                 {**decision.as_dict(), "result": result},
             )
             return decision
         except Exception as exc:  # noqa: BLE001 - surface executor failure as decision
+            self._record_executed(req, None, (time.time() - started) * 1000.0)
             err = HostCommandDecision(
                 DecisionOutcome.ERROR, f"executor error: {exc}", req,
                 sandbox=decision.sandbox, approval_id=decision.approval_id,
             )
             self._emit("host_command_decision", err.as_dict())
             return err
+
+    def _record_executed(
+        self,
+        req: HostCommandRequest,
+        exit_code: int | None,
+        duration_ms: float,
+    ) -> None:
+        """G5：把「命令真的执行了」写进审计（完整命令行，脱敏）。
+
+        与 ``host_command_authorized`` 的分工：那条回答「谁批准了」，这条回答
+        「实际跑的是什么、结果如何」。审批被关掉后只有这条还在，因此它不能依赖
+        审批状态。走 sink 而不是直接写库，是为了保持 broker 可注入、可测试；
+        默认 sink 会把它落成独立的 ``HOST_COMMAND_EXECUTED`` 事件类型。
+        """
+        try:
+            self._sink(
+                "host_command_executed_audit",
+                {
+                    "command": req.command,
+                    "cwd": req.cwd,
+                    "exit_code": exit_code,
+                    "duration_ms": duration_ms,
+                    "actor": req.actor,
+                    "correlation_id": req.correlation_id,
+                    "dangerous": bool(req.metadata.get("dangerous")),
+                    "confirm_state": str(
+                        req.metadata.get("confirm_state") or "not_required"
+                    ),
+                    "use_shell": req.use_shell,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 审计后端故障要计数但不吞掉
+            self.audit_failures += 1
+            self.last_audit_error = str(exc)
 
     def _emit(self, event: str, details: Dict[str, Any]) -> None:
         try:

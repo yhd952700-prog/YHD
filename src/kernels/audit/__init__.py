@@ -460,6 +460,16 @@ class AuditEventType(str, Enum):
     CONDITIONAL_ACCESS = "conditional_access"
     DEFERRED_ACCESS = "deferred_access"
     HUMAN_SOVEREIGNTY_OVERRIDE = "human_sovereignty_override"
+    #: G1：完全授权模式被切换（谁、何时、从哪个通道、前后模式）。
+    AUTHORITY_MODE_CHANGED = "authority_mode_changed"
+    #: G2：完全授权模式下一条不可逆动作被放行（含确认状态）。
+    AUTHORITY_IRREVERSIBLE_ALLOWED = "authority_irreversible_allowed"
+    #: G3：用户把「最后一次确认」也关掉（权限最高点，必须单独留痕）。
+    AUTHORITY_CONFIRM_DISABLED = "authority_confirm_disabled"
+    #: G4：确认被恢复（否则看不出「曾经裸奔多久」）。
+    AUTHORITY_CONFIRM_RESTORED = "authority_confirm_restored"
+    #: G5：主机命令真实执行（完整命令行含参数，脱敏后落盘）。
+    HOST_COMMAND_EXECUTED = "host_command_executed"
     GOAL_CONTROL = "goal_control"
     KERNEL_IMPLEMENTATION = "kernel_implementation"
     KERNEL_STATUS = "kernel_status"
