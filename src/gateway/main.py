@@ -2695,6 +2695,10 @@ def get_app() -> FastAPI:
     )
     app.include_router(knowledge_router, dependencies=[Depends(_require_human)])
     app.include_router(knowledge_legacy_router, dependencies=[Depends(_require_human)])
+
+    # 企业知识库：路由自带走令牌鉴权（require_viewer），这里不再套 _require_human。
+    from .knowledge_enterprise import router as knowledge_enterprise_router
+    app.include_router(knowledge_enterprise_router)
     _startup_mark("路由：knowledge 完成")
 
     # 鎏灏对话端点（真实 LLM 对话闭环）。
@@ -2721,6 +2725,21 @@ def get_app() -> FastAPI:
     # AI Employee / Goal / Workflow 管理端点（真实 AgentRuntime + Employee 状态面）。
     from .ai_management import router as ai_mgmt_router
     app.include_router(ai_mgmt_router, dependencies=[Depends(_require_human)])
+
+    # 工作流编排与人工审批：复用 ai_management 的 _goal_viewer 作为可见范围口径。
+    # 工作流走 /v1/workflow（单数），避免与上面 ai_management 的
+    # /v1/workflows/{goal_id} 抢占同一路径段。
+    from .workflow import build_router as _build_workflow_router
+    from .approvals import build_router as _build_approval_router
+    from .ai_management import _goal_viewer as _workflow_viewer
+    app.include_router(
+        _build_workflow_router(_workflow_viewer),
+        dependencies=[Depends(_require_human)],
+    )
+    app.include_router(
+        _build_approval_router(_workflow_viewer),
+        dependencies=[Depends(_require_human)],
+    )
     _startup_mark("路由：ai_management / dashboard / roster / profile / kernels 完成")
 
     # 审计可解释性查询面（P8）：真实哈希链的**只读**查询/校验入口。
@@ -2755,6 +2774,10 @@ def get_app() -> FastAPI:
     # 与 Projects 面一致挂人类主权闸门；组织数据按账号归属隔离，写入只作用于自己。
     from .org import router as org_router
     app.include_router(org_router, dependencies=[Depends(_require_human)])
+
+    # 组织架构模板：模板只作参考，预览/套用必须由人触发；同样挂人类主权闸门。
+    from .org_templates import router as org_templates_router
+    app.include_router(org_templates_router, dependencies=[Depends(_require_human)])
 
     # Apps 面（Top-3 #2 缺口）：把"插件"真实呈现给人类，并允许激活（真实加载）。
     # 与 Projects 面一致，挂 require_human_principal 人类主权闸门。
