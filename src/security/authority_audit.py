@@ -16,9 +16,6 @@
 
 * 一律使用显式的 :class:`AuditEventType` 成员，不借用 ``POLICY_EVAL`` 之类的
   通用类型，避免把「配置沿革」混进「动作结果」里查不出来。
-  唯一例外：``protected_path_touched`` 暂时承载在 ``POLICY_EVAL`` 上（用
-  ``details.event`` 区分）—— 独立枚举在 ``src/kernels/audit/__init__.py``，
-  不在本次允许改动的文件域内；补上成员后应改回独立类型。
 * 写入失败**不吞掉**：调用方决定是 fail-closed 还是降级。G2/G5 属于「动作已经
   发生」之后必须能证明的事实，调用方（内核装饰器 / host-command broker）会把
   失败当作拒绝执行的理由；敏感路径触碰相反——只记录，失败不改变放行。
@@ -258,11 +255,6 @@ def record_protected_touched(
     2026-11-11 老板拍板：审计库 / 日志 / 凭据 / 程序本体 / 全权配置不再对 AI
     只读，标准模式与全权模式一致。这条记录回答「谁想动、动了哪里、属于哪一类」，
     不构成拒绝；写失败也不改变动作（由调用方决定是否降级）。
-
-    注意：没有新建独立的 ``AuditEventType`` 成员 —— 枚举定义在
-    ``src/kernels/audit/__init__.py``，不在本次允许改动的文件域内。这里用
-    ``POLICY_EVAL`` 承载，并用 ``details.event`` 固定为
-    ``authority.protected_path_touched`` 以便精确检索。
     """
     AuditEventType, AuditScope, log_event = _audit()
     details: dict[str, Any] = {
@@ -278,7 +270,7 @@ def record_protected_touched(
         "task_attribution": _attribution_payload(),
     }
     return log_event(
-        AuditEventType.POLICY_EVAL,
+        AuditEventType.AUTHORITY_PROTECTED_PATH_TOUCHED,
         _principal_of(actor),
         AuditScope[_SCOPE_EXECUTION],
         "allowed",

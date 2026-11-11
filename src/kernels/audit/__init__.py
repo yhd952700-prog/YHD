@@ -470,8 +470,11 @@ class AuditEventType(str, Enum):
     AUTHORITY_CONFIRM_RESTORED = "authority_confirm_restored"
     #: G5：主机命令真实执行（完整命令行含参数，脱敏后落盘）。
     HOST_COMMAND_EXECUTED = "host_command_executed"
-    #: AI 任务试图删除/覆盖受保护路径（审计库、密钥、程序本体、模式配置）被拒。
+    #: AI 任务试图删除/覆盖受保护路径被拒（0.3.0 起不再产生，仅用于读取历史）。
     AUTHORITY_PROTECTED_PATH_DENIED = "authority_protected_path_denied"
+    #: AI 触碰敏感路径（审计库、日志、凭据、程序本体、模式配置）—— **只记录，
+    #: 动作照常放行**；标准模式与全权模式一致（2026-11-11 老板决定）。
+    AUTHORITY_PROTECTED_PATH_TOUCHED = "authority_protected_path_touched"
     GOAL_CONTROL = "goal_control"
     KERNEL_IMPLEMENTATION = "kernel_implementation"
     KERNEL_STATUS = "kernel_status"

@@ -10,10 +10,9 @@
   关闭后执行仍必须写 G2（不可逆动作放行）。
 * **主机命令可用**：全权模式下不是 0 可用，普通命令直接放行。
 
-审计事件用 ``POLICY_EVAL`` 承载，靠 ``details.event ==
-"authority.protected_path_touched"`` 区分（独立枚举在 kernels/audit，本轮文件域
-不含）。边界必须如实：命令层只是字符串包含判断，拼接/编码可绕过。这里不假装它
-是文件系统级边界。
+审计事件用 ``AUTHORITY_PROTECTED_PATH_TOUCHED``（0.3.0 新增），``details.event``
+固定为 ``authority.protected_path_touched``。边界必须如实：命令层只是字符串包含
+判断，拼接/编码可绕过。这里不假装它是文件系统级边界。
 """
 
 from __future__ import annotations
@@ -67,13 +66,8 @@ def _events(event_type: AuditEventType) -> list[dict]:
 
 
 def _touches() -> list[dict]:
-    """敏感路径触碰记录（承载在 POLICY_EVAL 里，用 details.event 区分）。"""
-    return [
-        row
-        for row in _events(AuditEventType.POLICY_EVAL)
-        if (row.get("details") or {}).get("event")
-        == "authority.protected_path_touched"
-    ]
+    """敏感路径触碰记录（0.3.0 起为独立事件类型）。"""
+    return _events(AuditEventType.AUTHORITY_PROTECTED_PATH_TOUCHED)
 
 
 # --------------------------------------------------------------------------- #
