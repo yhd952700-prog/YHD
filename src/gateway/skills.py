@@ -16,8 +16,9 @@
    与 ``src/gateway/plugins.py`` 完全一致。
 3. 风险/权限/占用：由**现有数据**推导，不采信前端与导入清单的自报 ——
    风险与所需权限来自已 ACTIVE 执行器工具的 ``risk`` / ``permission``；
-   "被哪些员工使用"来自员工真实的 ``default_capabilities`` 交集，读不到就
-   返回 ``null``（前端据此显示"未提供"），绝不假装"没人用"。
+   "被哪些员工绑定"来自真实绑定表 ``liuhao_skill_bindings.json``（读不到就
+   返回 ``null``，前端据此显示"未提供"，绝不假装"没人用"）。旧的"能力交集"
+   只保留为 ``related_employees``，并明确标注是推导。
 
 挂载位置（本模块**不**自己改 ``main.py``，那一行留给统一集成）：
 
@@ -35,6 +36,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .policy import require_admin_principal, require_human_principal
+from .skill_bindings import (
+    SkillBindingConflict,
+    SkillBindingError,
+    SkillBindingStore,
+)
+from .skill_import import McpConfigDetected, SkillImportError, parse_upload
 from .skill_store import (
     SkillConflict,
     SkillNotFound,
@@ -118,6 +125,34 @@ def _load_assignments(strict: bool) -> Tuple[Optional[List[Dict[str, Any]]], Opt
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def _binding_store() -> SkillBindingStore:
+    return SkillBindingStore()
+
+
+def _load_bindings() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """读真实绑定表。``None`` 表示读不出来，不能当成"没人绑定"。"""
+    try:
+        return _binding_store().list_all(), None
+    except SkillBindingError as exc:
+        logger.warning("skills: bindings unavailable: %s", exc)
+        return None, str(exc)
+
+
+def _evaluate_current(record: Dict[str, Any]) -> Dict[str, Any]:
+    """按当前能力目录 / 员工默认能力 / 绑定表重新评估一条技能。"""
+    capability_index, capability_error = _load_capability_index()
+    assignments, _ = _load_assignments(strict=False)
+    bindings, bindings_error = _load_bindings()
+    return _evaluate(
+        record,
+        capability_index,
+        capability_error,
+        assignments,
+        bindings=bindings,
+        bindings_error=bindings_error,
+    )
+
+
 # ---------------------------------------------------------------------- #
 # 序列化：风险 / 权限 / 占用一律在读取时现算
 # ---------------------------------------------------------------------- #
@@ -126,6 +161,8 @@ def _evaluate(
     capability_index: Dict[str, Dict[str, Any]],
     capability_error: Optional[str],
     assignments: Optional[List[Dict[str, Any]]],
+    bindings: Optional[List[Dict[str, Any]]] = None,
+    bindings_error: Optional[str] = None,
 ) -> Dict[str, Any]:
     capabilities = [str(c) for c in (record.get("capabilities") or [])]
     missing: List[str] = []
@@ -151,11 +188,26 @@ def _evaluate(
         set(derived_permissions) | set(record.get("declared_permissions") or ())
     )
 
-    if assignments is None:
+    skill_id = str(record.get("id") or "")
+    if bindings is None:
         used_by: Optional[List[str]] = None
     else:
-        caps = set(capabilities)
         used_by = sorted(
+            {
+                str(row.get("employee") or "").strip()
+                for row in bindings
+                if str(row.get("skill_id") or "") == skill_id
+                and str(row.get("employee") or "").strip()
+            }
+        )
+
+    # 能力交集只是"可能相关"，不是绑定关系。曾经它被当成 used_by 使用，
+    # 会把"员工有 file_write 能力"误读成"他在用这个技能"。
+    if assignments is None:
+        related: Optional[List[str]] = None
+    else:
+        caps = set(capabilities)
+        related = sorted(
             {
                 str(row.get("name"))
                 for row in assignments
@@ -179,8 +231,25 @@ def _evaluate(
         "capabilities": capabilities,
         "missing_capabilities": missing,
         "enabled": bool(record.get("enabled")),
+        # 真实绑定（员工 ↔ 技能表）；null 表示绑定表读不出来。
         "used_by": used_by,
+        "bindings_error": bindings_error,
+        # 推导结果：仅表示"能力上有交集，可能相关"，不是绑定。
+        "related_employees": related,
+        "related_employees_derived": True,
+        "related_employees_note": "由员工默认能力与技能声明能力求交集推导，仅表示可能相关；实际绑定见 used_by。",
         "origin": record.get("origin"),
+        "format": record.get("format") or "manual",
+        "license": record.get("license") or "",
+        "allowed_tools": list(record.get("allowed_tools") or ()),
+        "metadata": dict(record.get("metadata") or {}),
+        "files": list(record.get("files") or ()),
+        "name_source": record.get("name_source") or "",
+        "has_scripts": bool(record.get("has_scripts")),
+        "script_refs": list(record.get("script_refs") or ()),
+        # 拍板：本版不执行脚本，恒为 false；前端据此标「含脚本，本机未启用」。
+        "execution_allowed": False,
+        "import_report": list(record.get("import_report") or ()),
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
     }
@@ -228,6 +297,11 @@ class SkillEnableRequest(BaseModel):
     acknowledge_risk: Optional[str] = None
 
 
+class SkillBindRequest(BaseModel):
+    #: 绑定目标员工（真实员工名，必须存在于员工库）。
+    employee: str
+
+
 # ---------------------------------------------------------------------- #
 # 路由
 # ---------------------------------------------------------------------- #
@@ -239,8 +313,16 @@ def list_skills(
     records = _read_or_503("list")
     capability_index, capability_error = _load_capability_index()
     assignments, assignment_error = _load_assignments(strict=False)
+    bindings, bindings_error = _load_bindings()
     items = [
-        _evaluate(record, capability_index, capability_error, assignments)
+        _evaluate(
+            record,
+            capability_index,
+            capability_error,
+            assignments,
+            bindings=bindings,
+            bindings_error=bindings_error,
+        )
         for record in records
     ]
     return {
@@ -249,6 +331,7 @@ def list_skills(
         "skills": items,
         "capability_catalog_error": capability_error,
         "assignments_error": assignment_error,
+        "bindings_error": bindings_error,
     }
 
 
@@ -276,10 +359,8 @@ def create_skill(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    capability_index, capability_error = _load_capability_index()
-    assignments, _ = _load_assignments(strict=False)
     logger.info("skills: created %s by %s", record.get("id"), principal)
-    return _evaluate(record, capability_index, capability_error, assignments)
+    return _evaluate_current(record)
 
 
 @router.post("/import", status_code=201)
@@ -289,8 +370,16 @@ async def import_skill(
 ) -> Dict[str, Any]:
     """从技能文件导入（``.md`` / ``.json``）。
 
-    压缩包一律拒绝：解包任意 zip 会引入 zip-slip 与"导入即执行"风险，而本版
-    并没有沙箱化的技能运行时。拒绝比假装支持诚实。
+    解析规则见 ``skill_import``：Agent Skills 的 ``SKILL.md`` 按 YAML
+    frontmatter 读 ``name``/``description``/``license``/``allowed-tools``/
+    ``metadata``，映射不了的字段存原文并写进 ``import_report``。
+
+    **行为变更**：导入的技能一律落为「未启用」，由用户显式启用；旧版本会在
+    低风险时自动启用。旧数据不做迁移 —— 已存在的记录保留原有 ``enabled``，
+    新导入才走新规则。
+
+    压缩包与 MCP 配置都拒绝：前者会引入 zip-slip 与"导入即执行"，后者是
+    工具源而不是技能。
     """
     filename = (file.filename or "").strip()
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -298,7 +387,7 @@ async def import_skill(
         raise HTTPException(
             status_code=415,
             detail=(
-                "本版只支持 .md 与 .json 技能文件"
+                "本版只支持 .md（Agent Skills）与 .json（本机技能清单）"
                 f"（收到「{filename or '未命名文件'}」）。压缩包导入尚未提供，"
                 "请解出单个技能文件后再导入。"
             ),
@@ -319,42 +408,54 @@ async def import_skill(
     if not text.strip():
         raise HTTPException(status_code=400, detail="技能文件是空的。")
 
-    if suffix == "json":
-        spec = _parse_json_manifest(text)
-        content = None
-    else:
-        spec = _parse_markdown_skill(text, filename)
-        content = text
+    try:
+        spec = parse_upload(filename, text)
+    except McpConfigDetected as exc:
+        # MCP 是工具源，不是技能：明确 415，并告诉用户正确的入口。
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except SkillImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        capabilities = normalize_capabilities(spec["capabilities"])
+        capabilities = normalize_capabilities(spec.capabilities)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     capability_index, _ = _load_capability_index()
     missing = [cap for cap in capabilities if cap not in capability_index]
     if missing:
-        # 允许导入但风险记为未知且不默认启用：先让人看见"它要的能力本机没有"。
+        # 允许导入但风险记为未知：先让人看见"它要的能力本机没有"。
         risk = "unknown"
     else:
         risk = "low"
         for capability in capabilities:
             risk = _max_risk(risk, str(capability_index[capability]["risk"]))
 
-    enabled = risk == "low"
     store = _store()
     try:
         with bind_request_principal(principal, kind="human", source="http-request"):
             record = store.create(
-                name=spec["name"],
-                description=spec["description"],
+                name=spec.name,
+                description=spec.description,
                 source="imported",
-                version=spec["version"],
+                version=spec.version,
                 capabilities=capabilities,
-                declared_permissions=spec["permissions"],
-                declared_risk=spec["declared_risk"],
-                content=content,
+                declared_permissions=spec.permissions,
+                declared_risk=spec.declared_risk,
+                content=spec.content,
                 origin=filename,
-                enabled=enabled,
+                # 行为变更：导入不再自动启用（无论风险高低）。
+                enabled=False,
+                fmt=spec.format,
+                license=spec.license,
+                allowed_tools=spec.allowed_tools,
+                metadata=spec.metadata,
+                raw_frontmatter=spec.raw_frontmatter,
+                has_scripts=spec.has_scripts,
+                script_refs=spec.script_refs,
+                files=spec.files,
+                name_source=spec.name_source,
+                import_report=spec.import_report,
+                execution_allowed=False,
             )
     except SkillConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -363,14 +464,29 @@ async def import_skill(
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     assignments, _ = _load_assignments(strict=False)
+    bindings, bindings_error = _load_bindings()
     logger.info(
-        "skills: imported %s from %s by %s (enabled=%s)",
+        "skills: imported %s from %s by %s (format=%s, risk=%s, enabled=False)",
         record.get("id"),
         filename,
         principal,
-        enabled,
+        spec.format,
+        risk,
     )
-    return _evaluate(record, capability_index, None, assignments)
+    payload = _evaluate(
+        record,
+        capability_index,
+        None,
+        assignments,
+        bindings=bindings,
+        bindings_error=bindings_error,
+    )
+    payload["import_note"] = (
+        "导入已成功，但不会自动启用（行为变更）：请检查导入报告后手动启用。"
+        if not record.get("has_scripts")
+        else "导入已成功；该技能含脚本引用，本机未启用脚本执行，正文可作为提示词使用。"
+    )
+    return payload
 
 
 @router.patch("/{skill_id}")
@@ -396,9 +512,7 @@ def update_skill(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    capability_index, capability_error = _load_capability_index()
-    assignments, _ = _load_assignments(strict=False)
-    return _evaluate(record, capability_index, capability_error, assignments)
+    return _evaluate_current(record)
 
 
 @router.delete("/{skill_id}")
@@ -406,36 +520,35 @@ def delete_skill(
     skill_id: str,
     principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
-    """删除技能。**有员工在用时返回 409 并点名**，不静默级联删除。"""
+    """删除技能。**有员工真实绑定时返回 409 并点名**，不静默级联删除。"""
     record = _get_or_404(skill_id)
-    capabilities = set(record.get("capabilities") or ())
-    if capabilities:
-        assignments, error = _load_assignments(strict=True)
-        if assignments is None:
-            # 读不出占用关系时宁可不删：静默删除可能把员工正在用的技能抽走。
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "读取员工占用情况失败，为避免误删正在被员工使用的技能，"
-                    f"本次删除没有执行（{error}）。"
-                ),
-            )
-        in_use = sorted(
-            {
-                str(row.get("name"))
-                for row in assignments
-                if capabilities & set(row.get("default_capabilities") or ())
-            }
+    bindings, bindings_error = _load_bindings()
+    if bindings is None:
+        # 读不出绑定关系时宁可不删：静默删除可能把员工正在用的技能抽走。
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "读取员工绑定情况失败，为避免误删正在被员工使用的技能，"
+                f"本次删除没有执行（{bindings_error}）。"
+            ),
         )
-        if in_use:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"技能「{record.get('name')}」仍被 {len(in_use)} 位员工使用："
-                    f"{'、'.join(in_use)}。请先在员工设置里移除对应能力，"
-                    "或先停用该技能，再删除。"
-                ),
-            )
+    in_use = sorted(
+        {
+            str(row.get("employee") or "").strip()
+            for row in bindings
+            if str(row.get("skill_id") or "") == skill_id
+            and str(row.get("employee") or "").strip()
+        }
+    )
+    if in_use:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"技能「{record.get('name')}」仍绑定 {len(in_use)} 位员工："
+                f"{'、'.join(in_use)}。请先在技能中心解除绑定，"
+                "或先停用该技能，再删除。"
+            ),
+        )
     store = _store()
     try:
         with bind_request_principal(principal, kind="human", source="http-request"):
@@ -444,8 +557,120 @@ def delete_skill(
         raise HTTPException(status_code=404, detail=f"没有找到技能「{skill_id}」。")
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        _binding_store().remove_skill(skill_id)
+    except SkillBindingError as exc:
+        # 技能已删、绑定残留：必须如实说，否则下次列表会指向不存在的技能。
+        logger.error("skills: binding cleanup failed for %s: %s", skill_id, exc)
     logger.info("skills: deleted %s by %s", skill_id, principal)
     return {"deleted": True, "skill_id": removed.get("id"), "name": removed.get("name")}
+
+
+@router.get("/bindings")
+def list_bindings(
+    employee: Optional[str] = None,
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    """全部绑定（可按员工过滤）。读不出来时 503，不返回空表假装没绑定。"""
+    bindings, error = _load_bindings()
+    if bindings is None:
+        raise HTTPException(status_code=503, detail=error or "技能绑定表读取失败。")
+    target = str(employee or "").strip().casefold()
+    rows = bindings
+    if target:
+        rows = [
+            row
+            for row in bindings
+            if str(row.get("employee") or "").strip().casefold() == target
+        ]
+    return {"total": len(rows), "bindings": rows}
+
+
+@router.get("/{skill_id}/bindings")
+def list_skill_bindings(
+    skill_id: str,
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    _get_or_404(skill_id)
+    bindings, error = _load_bindings()
+    if bindings is None:
+        raise HTTPException(status_code=503, detail=error or "技能绑定表读取失败。")
+    rows = [
+        row for row in bindings if str(row.get("skill_id") or "") == skill_id
+    ]
+    return {"skill_id": skill_id, "total": len(rows), "bindings": rows}
+
+
+@router.post("/{skill_id}/bind", status_code=201)
+def bind_skill(
+    skill_id: str,
+    payload: SkillBindRequest,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """把技能绑定给一位真实员工（幂等）。"""
+    record = _get_or_404(skill_id)
+    employee = str(payload.employee or "").strip()
+    if not employee:
+        raise HTTPException(status_code=400, detail="employee 不能为空。")
+    try:
+        from src.ai.employee_store import EmployeeStore
+
+        known = set(EmployeeStore().list_employees())
+    except Exception as exc:  # noqa: BLE001 - 读不到员工库时不能假装员工存在
+        raise HTTPException(
+            status_code=503,
+            detail=f"员工库暂时不可用，无法核对绑定对象（{type(exc).__name__}: {exc}）。",
+        ) from exc
+    if employee not in known:
+        raise HTTPException(
+            status_code=404,
+            detail=f"本机没有名为「{employee}」的员工，未建立绑定。",
+        )
+    try:
+        binding = _binding_store().bind(
+            skill_id=skill_id, employee=employee, actor=principal
+        )
+    except SkillBindingConflict as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SkillBindingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    logger.info(
+        "skills: bound %s -> %s by %s", skill_id, employee, principal
+    )
+    capability_index, capability_error = _load_capability_index()
+    assignments, _ = _load_assignments(strict=False)
+    bindings, bindings_error = _load_bindings()
+    return {
+        "binding": binding,
+        "skill": _evaluate(
+            record,
+            capability_index,
+            capability_error,
+            assignments,
+            bindings=bindings,
+            bindings_error=bindings_error,
+        ),
+    }
+
+
+@router.delete("/{skill_id}/bind/{employee}")
+def unbind_skill(
+    skill_id: str,
+    employee: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    _get_or_404(skill_id)
+    try:
+        removed = _binding_store().unbind(skill_id=skill_id, employee=employee)
+    except SkillBindingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if removed is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"技能「{skill_id}」没有绑定员工「{employee}」。",
+        )
+    logger.info("skills: unbound %s -/-> %s by %s", skill_id, employee, principal)
+    return {"unbound": True, "binding": removed}
 
 
 @router.post("/{skill_id}/test")
@@ -517,9 +742,7 @@ def enable_skill(
     不允许一键把所有技能打开。
     """
     record = _get_or_404(skill_id)
-    capability_index, capability_error = _load_capability_index()
-    assignments, _ = _load_assignments(strict=False)
-    evaluated = _evaluate(record, capability_index, capability_error, assignments)
+    evaluated = _evaluate_current(record)
     risk = str(evaluated["risk"])
     request = payload or SkillEnableRequest()
     if risk in _CONFIRM_REQUIRED:
@@ -544,7 +767,7 @@ def enable_skill(
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("skills: enabled %s (risk=%s) by %s", skill_id, risk, principal)
-    return _evaluate(updated, capability_index, capability_error, assignments)
+    return _evaluate_current(updated)
 
 
 @router.post("/{skill_id}/disable")
@@ -562,81 +785,6 @@ def disable_skill(
         raise HTTPException(status_code=404, detail=f"没有找到技能「{skill_id}」。")
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    capability_index, capability_error = _load_capability_index()
-    assignments, _ = _load_assignments(strict=False)
     logger.info("skills: disabled %s by %s", skill_id, principal)
-    return _evaluate(updated, capability_index, capability_error, assignments)
+    return _evaluate_current(updated)
 
-
-# ---------------------------------------------------------------------- #
-# 技能文件解析
-# ---------------------------------------------------------------------- #
-def _parse_json_manifest(text: str) -> Dict[str, Any]:
-    try:
-        document = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"技能 JSON 解析失败：{exc.msg}（第 {exc.lineno} 行）。"
-        ) from exc
-    if not isinstance(document, dict):
-        raise HTTPException(status_code=400, detail="技能 JSON 顶层必须是对象。")
-    name = document.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise HTTPException(status_code=400, detail="技能 JSON 缺少 name 字段。")
-    description = document.get("description") or ""
-    if not isinstance(description, str):
-        raise HTTPException(status_code=400, detail="技能 JSON 的 description 必须是字符串。")
-    version = document.get("version") or ""
-    if not isinstance(version, (str, int, float)):
-        raise HTTPException(status_code=400, detail="技能 JSON 的 version 必须是字符串。")
-    capabilities = document.get("capabilities") or []
-    permissions = document.get("permissions") or []
-    declared_risk = document.get("risk") or ""
-    if not isinstance(declared_risk, str):
-        raise HTTPException(status_code=400, detail="技能 JSON 的 risk 必须是字符串。")
-    return {
-        "name": name,
-        "description": description,
-        "version": str(version),
-        "capabilities": capabilities,
-        "permissions": permissions,
-        "declared_risk": declared_risk,
-    }
-
-
-def _parse_markdown_skill(text: str, filename: str) -> Dict[str, Any]:
-    """从 Markdown 里取名称与说明：首个 ``# 标题`` 作名称，首段正文作说明。"""
-    lines = text.splitlines()
-    name = ""
-    body: List[str] = []
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if not name and stripped.startswith("#"):
-            candidate = stripped.lstrip("#").strip()
-            if candidate:
-                name = candidate
-                body = lines[index + 1:]
-                break
-    if not name:
-        stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] if filename else ""
-        name = stem or "未命名技能"
-        body = lines
-    paragraph: List[str] = []
-    for line in body:
-        stripped = line.strip()
-        if not stripped:
-            if paragraph:
-                break
-            continue
-        if stripped.startswith("#"):
-            continue
-        paragraph.append(stripped)
-    description = " ".join(paragraph).strip()
-    return {
-        "name": name,
-        "description": description,
-        "version": "",
-        "capabilities": [],
-        "permissions": [],
-        "declared_risk": "",
-    }

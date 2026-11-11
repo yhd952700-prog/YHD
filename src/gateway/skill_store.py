@@ -44,6 +44,9 @@ _DESCRIPTION_LIMIT = 2000
 #: 一条记录最多声明多少能力（够用即可，超出多半是误用）。
 _CAPABILITY_LIMIT = 50
 
+#: 导入报告最多保留多少条（防止一份超大 frontmatter 把记录撑爆）。
+_IMPORT_REPORT_LIMIT = 50
+
 _ALLOWED_SOURCES = ("user", "imported")
 
 _WS_RE = re.compile(r"\s+")
@@ -240,6 +243,17 @@ class SkillStore:
         content: Optional[str] = None,
         origin: Optional[str] = None,
         enabled: bool = True,
+        fmt: str = "manual",
+        license: Any = "",
+        allowed_tools: Any = None,
+        metadata: Any = None,
+        raw_frontmatter: Any = None,
+        has_scripts: bool = False,
+        script_refs: Any = None,
+        files: Any = None,
+        name_source: str = "",
+        import_report: Any = None,
+        execution_allowed: bool = False,
     ) -> Dict[str, Any]:
         if source not in _ALLOWED_SOURCES:
             raise ValueError(f"未知来源：{source}")
@@ -258,6 +272,7 @@ class SkillStore:
                         )
                 stamp = _now()
                 skill_id = f"skill_{uuid.uuid4().hex[:12]}"
+                report_rows = import_report if isinstance(import_report, list) else []
                 record = {
                     "id": skill_id,
                     "name": clean_name,
@@ -272,6 +287,24 @@ class SkillStore:
                     "enabled": bool(enabled),
                     "created_at": stamp,
                     "updated_at": stamp,
+                    # ---- 兼容层元数据（旧记录没有这些键，读取时按默认值兜底）----
+                    "format": str(fmt or "manual"),
+                    "license": str(license or "").strip(),
+                    "allowed_tools": _normalize_str_list(allowed_tools),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                    "raw_frontmatter": (
+                        raw_frontmatter if isinstance(raw_frontmatter, dict) else {}
+                    ),
+                    "has_scripts": bool(has_scripts),
+                    "script_refs": _normalize_str_list(script_refs),
+                    "files": _normalize_str_list(files),
+                    "name_source": str(name_source or ""),
+                    "import_report": [
+                        row for row in report_rows[:_IMPORT_REPORT_LIMIT]
+                        if isinstance(row, dict)
+                    ],
+                    # 拍板结论：本版任何技能都不执行脚本，这个字段恒为 False。
+                    "execution_allowed": False,
                 }
                 document["skills"][skill_id] = record
                 self._write_document(document)
