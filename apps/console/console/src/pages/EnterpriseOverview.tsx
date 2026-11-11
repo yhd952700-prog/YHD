@@ -176,7 +176,7 @@ function DeptNode({ row, tasksKnown }: { row: DepartmentRow; tasksKnown: boolean
   )
 }
 
-export function EnterpriseOverview({ principal }: EnterpriseOverviewProps) {
+export function EnterpriseOverview({ principal, onNavigate }: EnterpriseOverviewProps) {
   // 显式传入优先；没传时用当前会话，避免页面必须依赖 App 改造才能读用量。
   const currentPrincipal = useMemo(
     () => principal ?? getSession()?.principal ?? null,
@@ -363,6 +363,24 @@ export function EnterpriseOverview({ principal }: EnterpriseOverviewProps) {
               tone={employeeSummary && employeeSummary.runningAgents > 0 ? 'ok' : undefined}
             />
           </div>
+          {onNavigate && (
+            <div className="eov-next-actions">
+              <button
+                type="button"
+                className="os-btn os-btn-ghost"
+                onClick={() => onNavigate('office')}
+              >
+                进入办公室
+              </button>
+              <button
+                type="button"
+                className="os-btn os-btn-primary"
+                onClick={() => onNavigate('butler')}
+              >
+                问贾维斯
+              </button>
+            </div>
+          )}
         </Card>
 
         <Card

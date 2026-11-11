@@ -168,12 +168,9 @@ export function Office({
   return (
     <div className="os-office">
       <div className="os-office-head">
-        <div>
-          <h1>办公室</h1>
-          <p className="os-office-sub">
-            每个 AI 员工一张工位。点开可以直接派活；停用与建档去「我的员工」。
-          </p>
-        </div>
+        <p className="os-office-sub">
+          每个 AI 员工一张工位。点开可以直接派活；停用与建档去「我的员工」。
+        </p>
         <div className="os-office-actions">
           {onOpenEmployees && (
             <button className="os-btn os-btn-ghost" onClick={onOpenEmployees}>
@@ -294,7 +291,7 @@ export function Office({
                     ) : status.label === '执行中' ? (
                       <span className="os-office-missing">暂未提供（任务未给出归属）</span>
                     ) : (
-                      <span className="os-office-muted">—</span>
+                      <span className="os-office-missing">暂未提供</span>
                     )}
                   </dd>
                 </div>

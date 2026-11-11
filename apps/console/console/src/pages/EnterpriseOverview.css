@@ -19,6 +19,27 @@
   flex: 0 0 auto;
 }
 
+/* 手机端没有侧栏，首页要给出办公室与贾维斯这两个真实入口。 */
+.eov-next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.eov-next-actions .os-btn {
+  width: auto;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 9px;
+}
+
+@media (max-width: 900px) {
+  .eov-next-actions .os-btn {
+    flex: 1 1 0;
+  }
+}
+
 .eov-metric-loading {
   color: var(--os-text-dim);
   font-size: 15px;

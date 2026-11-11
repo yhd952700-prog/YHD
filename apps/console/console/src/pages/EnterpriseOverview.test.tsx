@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { EnterpriseOverview } from './EnterpriseOverview'
 
 function jsonResponse(body: unknown, status = 200): Promise<Response> {
@@ -295,5 +295,16 @@ describe('EnterpriseOverview', () => {
 
     expect(await screen.findByText('暂未接入')).toBeTruthy()
     expect(screen.getByText(/没有挂载用量接口/)).toBeTruthy()
+  })
+
+  test('概况卡给出「进入办公室」「问贾维斯」两个入口（手机端没有侧栏）', () => {
+    stubApi({})
+    const onNavigate = vi.fn()
+    render(<EnterpriseOverview principal="owner" onNavigate={onNavigate} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '问贾维斯' }))
+    expect(onNavigate).toHaveBeenCalledWith('butler')
+    fireEvent.click(screen.getByRole('button', { name: '进入办公室' }))
+    expect(onNavigate).toHaveBeenCalledWith('office')
   })
 })
