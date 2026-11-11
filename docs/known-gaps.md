@@ -16,6 +16,7 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 | 4 | Windows 上 rename 的掉电持久性只有 best-effort | 队列迁移在整机掉电后可能回到 rename 前状态；不损坏数据，最坏多迁一次 | Open（平台限制，见 §5） |
 | 5 | 取证沙箱 `rmtree` 删除不是安全擦除 | 删除后磁盘/日志/卷影副本仍可能恢复旧证据 | **保持结论**（数据残留；凭证 ACL 已在保留期内收紧，见「取证沙箱删除不是安全擦除」一节） |
 | 6 | 全权模式的「不可逆动作确认」只覆盖删除与命令两类；邮件/消息外发、付款通道当前不存在 | 不存在外发/付款通道，所以没有可确认的对象；一旦接入，必须先在通道上线前接好确认 | **等真有通道时先接确认再上线**（见 §6） |
+| 7 | 孤儿扫描器把 5 条旧登记项报成 stale，其中 3 条是短名碰撞造成的误报 | 若照 stale 警告删条目，`src.gateway.validation`、`src.pipelines.parser`、`src.performance.benchmarks` 会重新变成「未登记的零引用模块」并被门禁拦下 | **已知，仅登记**（见 §7；不删登记、不改扫描器） |
 
 ---
 
@@ -1215,4 +1216,37 @@ payload 的 `app/runtime/Lib/site-packages` 采样，口径是"随包发出的�
 **为什么这样。** 目录和侧栏同源，保证两边入口一致；手机没有侧栏，只能把它放在页面顶部。条目沿用全局的 44px 触控高度，所以比桌面显得更长。
 
 **怎么办。** 目录只是入口，不承载状态；需要哪一项直接点，不必从头看到尾。若后续觉得碍事，可以改成可折叠或只保留三组标题。
+
+---
+
+## 7. 孤儿登记清单里 5 条 stale 项：3 条是短名碰撞的误报（2026-11-12，**状态：已知，仅登记**）
+
+**看到什么。** 每次跑 `scripts/verify_no_undocumented_orphans.py`，stderr 都会报 5 条
+`acknowledged but no longer an orphan -- remove these entries`。逐条查证的结果并不一样：
+
+| 登记项 | 扫描器认定的引用点 | 实际是什么 |
+|--------|-------------------|-----------|
+| `src.observability.alerts` | `src/gateway/main.py:1524`、`:1577` | **真引用**：`from ..observability.alerts import install_production_rules` / `get_alert_manager` |
+| `src.plugins.marketplace` | `scripts/verify_p08_hash_chain_sig_alg.py:47,59`、`tests/kernels/test_hash_chain_p08c_migration.py:20` | **真使用**（按子模块）：`from src.plugins.marketplace.store import ...` |
+| `src.gateway.validation` | `src/pipelines/__init__.py:76`、`src/pipelines/builder.py:68` 的 `from .validation import (...)` | 误报：命中的是 `src.pipelines.validation`，与 gateway 的那份同名无关 |
+| `src.pipelines.parser` | `src/ai/planner/*.py` 的 `from .parser import ...` | 误报：命中的是 `src.ai.planner.parser` |
+| `src.performance.benchmarks` | `src/cli/__init__.py:18`、`tests/benchmarks/test_sizing.py:11` 的 `from src.benchmarks.sizing import ...` | 误报：命中的是**另一个包** `src.benchmarks`，只是名字里都带 benchmarks |
+
+**为什么会这样。** 扫描器是文本启发式，脚本 docstring 里已自陈
+「can be fooled by generic short names」。`classify()` 的短名正则
+`(?:from|import)\s+[\w\.]*\b<名字>\b` 不看这条导入属于哪个包，于是别处的
+`from .validation import`、`from .parser import`、`from src.benchmarks.sizing import`
+都会算到同名的旧模块头上。
+
+**为什么现在只登记、不动。** 本文件顶部（以及 `orphan-registry.yaml` 顶部）的契约是
+「模块重新被引用就必须从清单移除，否则清单会腐烂」。但上面 5 条里有 3 条并没有真的被
+引用，只是被同名导入糊住了；照 stale 警告删条目，等于把三个真孤儿放出门禁。这属于历史
+债务，与 0.3.0 出包无关，所以本轮只在本文登记：**不删登记条目、不改扫描器**。
+
+**影响。** 无运行时影响。扫描器的 `unacknowledged` 判定不依赖 stale 列表（当前未登记 0，
+退出码 0），代价只是每轮多 5 行 stderr 警告。
+
+**怎么关。** 给短名命中加上「必须能在该文件所在包内解析到这个名字」的约束（也就是让短名
+分支复用相对导入解析的结果，而不是全仓文本匹配），然后再撤掉确属真引用的 2 条；
+另外 3 条应保持登记。做完重跑扫描确认 stale 归零，并补一条守门回归测试。
 
