@@ -63,9 +63,9 @@ describe('技能中心', () => {
     )
     render(<SkillCenter />)
 
-    expect(await screen.findByText('周报整理')).toBeTruthy()
+    expect((await screen.findAllByText('周报整理')).length).toBeGreaterThan(0)
     expect(screen.getByText('外部导入')).toBeTruthy()
-    expect(screen.getByText('1.2.0')).toBeTruthy()
+    expect(screen.getByText('版本：1.2.0')).toBeTruthy()
     expect(screen.getByText('files.read')).toBeTruthy()
     expect(screen.getByText('运营助理、内容编辑')).toBeTruthy()
     expect(screen.getByText('已启用')).toBeTruthy()
@@ -77,7 +77,7 @@ describe('技能中心', () => {
     expect(within(table).getByText('高风险')).toBeTruthy()
   })
 
-  test('后端漏发 used_by 时显示「未提供」，不写成没有员工使用', async () => {
+  test('后端漏发 used_by 时显示「未提供」，不写成没有员工绑定', async () => {
     stubSkills(() =>
       json({
         skills: [
@@ -94,14 +94,15 @@ describe('技能中心', () => {
     )
     render(<SkillCenter />)
 
-    expect(await screen.findByText('笔记归档')).toBeTruthy()
+    expect((await screen.findAllByText('笔记归档')).length).toBeGreaterThan(0)
     const usage = screen.getByTestId('skills-usage-note')
-    expect(usage.textContent).toContain('没有提供技能与员工的关联数据')
+    expect(usage.textContent).toContain('绑定员工')
+    expect(usage.textContent).toContain('不等于「没有员工绑定」')
 
     const table = screen.getByRole('table')
-    // 版本与使用情况都缺字段，因此「未提供」会出现多次；重点是不能出现"暂无员工使用"。
+    // 版本与绑定情况都缺字段，因此「未提供」会出现多次；重点是不能出现"暂无员工绑定"。
     expect(within(table).getAllByText('未提供').length).toBeGreaterThanOrEqual(1)
-    expect(within(table).queryByText('暂无员工使用')).toBeNull()
+    expect(within(table).queryByText('暂无员工绑定')).toBeNull()
   })
 
   test('接口可用时「测试」按钮走真实请求并显示后端结论', async () => {
@@ -140,7 +141,7 @@ describe('技能中心', () => {
     stubSkills(() => json({ skills: [] }))
     render(<SkillCenter />)
 
-    const input = (await screen.findByLabelText('技能包文件')) as HTMLInputElement
+    const input = (await screen.findByLabelText('技能文件')) as HTMLInputElement
     expect(input.accept).toBe('.md,.json')
 
     fireEvent.change(input, {

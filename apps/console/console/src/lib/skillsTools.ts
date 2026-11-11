@@ -8,10 +8,10 @@
  * * ``/v1/plugins``                 真实存在：插件注册表（status / active / builtin /
  *   activatable / capabilities）。
  * * ``/v1/models``                  真实存在：模型服务配置（密钥状态 / 启用 / 验证）。
- * * ``/v1/skills``                   **不存在**（后端没有技能注册表路由）。
- * * ``/v1/mcp/servers``              **不存在**（MCP 只有进程内适配器，无 HTTP 面）。
+ * * ``/v1/skills``                  真实存在：技能注册表（导入 / 启停 / 绑定）。
+ * * ``/v1/mcp/servers``             不存在；MCP 配置在导入时会返回 415，指向工具中心。
  *
- * 后两个路径不做任何客户端假造：`probeState` 把 404/405/501 统一判成
+ * 缺口不做任何客户端假造：`probeState` 把 404/405/501 统一判成
  * 「本地服务还没提供」，页面据此渲染空态并禁用写入动作。字段级缺失同样如实
  * 标注（`null` 表示后端没返回，和「空列表」严格区分）。
  */
@@ -103,6 +103,16 @@ export function sourceLabel(raw: unknown): string {
   return /[\u4e00-\u9fa5]/.test(text) ? text : '来源未标明'
 }
 
+/** 技能来源格式的人话；未知值不假装知道。 */
+export function formatLabel(raw: string): string {
+  const known: Record<string, string> = {
+    manual: '手工创建',
+    'agent-skill': 'Agent Skills（SKILL.md）',
+    'liuhao-json': '本机 JSON 清单',
+  }
+  return known[raw] ?? (raw ? raw : FIELD_NOT_PROVIDED)
+}
+
 /** 字符串数组字段：null 表示后端没给，[] 表示后端明确给了空列表。 */
 function stringListOrNull(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null
@@ -112,6 +122,14 @@ function stringListOrNull(value: unknown): string[] | null {
 // ---------------------------------------------------------------------------
 // 技能
 // ---------------------------------------------------------------------------
+
+export interface SkillImportReportRow {
+  field: string
+  value: unknown
+  /** mapped / stored_raw / unsupported / defaulted / absent / empty */
+  status: string
+  note: string
+}
 
 export interface SkillRecord {
   id: string
@@ -124,8 +142,25 @@ export interface SkillRecord {
   permissions: string[] | null
   /** null = 后端没有返回启用状态。 */
   enabled: boolean | null
-  /** null = 后端没有返回"被哪些员工使用"。 */
+  /** 真实绑定（员工 ↔ 技能表）；null = 后端没返回。 */
   usedBy: string[] | null
+  /** 由能力交集推导的「可能相关」，不是绑定。 */
+  relatedEmployees: string[] | null
+  bindingsError: string | null
+  /** 来源格式：manual / agent-skill / liuhao-json。 */
+  format: string
+  license: string
+  allowedTools: string[]
+  nameSource: string
+  /** 正文引用了脚本（只能证明"提到了"，不代表已校验）。 */
+  hasScripts: boolean
+  scriptRefs: string[]
+  /** 本版恒为 false：不执行任何脚本。 */
+  executionAllowed: boolean
+  /** 技能声明了但本机能力目录里没有的能力。 */
+  missingCapabilities: string[]
+  importReport: SkillImportReportRow[]
+  createdAt: string
 }
 
 function firstString(record: Record<string, unknown>, keys: string[]): string {
@@ -174,6 +209,9 @@ export function readSkills(payload: unknown): SkillRecord[] {
         stringListOrNull(item.used_by) ??
         stringListOrNull(item.used_by_employees) ??
         stringListOrNull(item.employees)
+      const relatedEmployees =
+        stringListOrNull(item.related_employees) ??
+        stringListOrNull(item.possibly_related_employees)
       return {
         id,
         name: name || id || '未命名技能',
@@ -184,6 +222,25 @@ export function readSkills(payload: unknown): SkillRecord[] {
         permissions,
         enabled: firstBoolean(item, ['enabled', 'active', 'installed']),
         usedBy,
+        relatedEmployees,
+        bindingsError:
+          typeof item.bindings_error === 'string' && item.bindings_error.trim()
+            ? item.bindings_error.trim()
+            : null,
+        format: firstString(item, ['format']),
+        license: firstString(item, ['license']),
+        allowedTools: stringListOrNull(item.allowed_tools) ?? [],
+        nameSource: firstString(item, ['name_source']),
+        hasScripts: item.has_scripts === true,
+        scriptRefs: stringListOrNull(item.script_refs) ?? [],
+        executionAllowed: item.execution_allowed === true,
+        missingCapabilities: stringListOrNull(item.missing_capabilities) ?? [],
+        importReport: Array.isArray(item.import_report)
+          ? (item.import_report as SkillImportReportRow[]).filter(
+              (row) => Boolean(row) && typeof row === 'object',
+            )
+          : [],
+        createdAt: firstString(item, ['created_at']),
       }
     })
 }

@@ -1,14 +1,16 @@
 /**
- * 技能中心 —— 列表 / 创建 / 导入 / 编辑 / 删除 / 测试，以及"谁在用、来源是谁"。
+ * 技能中心 —— 列表 / 创建 / 导入 / 编辑 / 启停 / 绑定 / 删除 / 测试。
  *
  * 事实边界
  * --------
- * 当前主仓本地服务**没有**技能注册表 HTTP 接口（`/v1/skills` 不存在）。因此本页
- * 不用任何示例技能填充列表：GET 返回 404 时整块显示「本地服务还没提供」，写入
- * 动作一并禁用，避免让人点了才发现服务端没有这个能力。
- *
- * 字段级同样诚实：`used_by` / `permissions` / `enabled` 没返回时显示「未提供」，
- * 不把"没返回"说成"没有员工使用"或"无需权限"。
+ * * 技能来自本地服务 ``/v1/skills``；接口不可用时整块显示「本地服务还没提供」，
+ *   写入动作一并禁用，避免让人点了才发现服务端没有这个能力。
+ * * 「被哪些员工使用」读的是真实绑定表；后端没返回时显示「未提供」，不会从员工
+ *   能力清单里猜。能力交集只以「可能相关（推导）」出现。
+ * * 导入不自动启用：导入成功后显示 ``import_report``（哪些字段映射了、哪些只存了
+ *   原文、哪些不支持），由用户显式启用。
+ * * 带脚本的技能会标「含脚本，本机未启用」：本版不执行任何脚本。
+ * * MCP 配置不是技能：导入会被后端以 415 拒绝，页面提示去工具中心配置。
  *
  * 接线（本轮按要求不改公共文件）
  * -----------------------------
@@ -27,10 +29,12 @@ import {
   NOT_PROVIDED,
   NOT_PROVIDED_DETAIL,
   RISK_LABELS,
+  formatLabel,
   probeState,
   readSkills,
   riskTone,
   sourceLabel,
+  type SkillImportReportRow,
   type SkillRecord,
 } from '../lib/skillsTools'
 
@@ -45,6 +49,23 @@ export const SKILLS_CENTER_PAGE = {
 interface Feedback {
   tone: 'ok' | 'danger'
   text: string
+}
+
+interface BindingRow {
+  skill_id: string
+  employee: string
+  created_at?: string
+  created_by?: string
+}
+
+/** 导入报告里的处理方式；未知状态原样显示，不硬翻译。 */
+const IMPORT_STATUS_LABELS: Record<string, string> = {
+  mapped: '已映射到内部字段',
+  stored_raw: '只保存原文（本机未支持）',
+  unsupported: '不支持，仅存原文',
+  defaulted: '缺失，已兜底',
+  absent: '未提供',
+  empty: '为空',
 }
 
 function isMissingEndpoint(status: number): boolean {
@@ -74,12 +95,24 @@ export function SkillCenter({ query = '' }: { query?: string }) {
   const skills = useApi<unknown>('/v1/skills', 0)
   const state = probeState(skills)
   const records = useMemo(() => readSkills(skills.data), [skills.data])
+  const bindingsApi = useApi<unknown>('/v1/skills/bindings', 0)
+  const bindings = useMemo<BindingRow[]>(() => {
+    const payload = bindingsApi.data as { bindings?: unknown } | null
+    const list = Array.isArray(payload?.bindings) ? (payload?.bindings as BindingRow[]) : []
+    return list.filter((row) => Boolean(row) && typeof row === 'object')
+  }, [bindingsApi.data])
 
   const [busy, setBusy] = useState<string | null>(null)
   const [feedback, setFeedback] = useState<Feedback | null>(null)
   const [draft, setDraft] = useState({ name: '', description: '' })
-  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importFile, setImportFile] = useState<{ file: File; name: string } | null>(null)
   const [importNotice, setImportNotice] = useState<string | null>(null)
+  const [importResult, setImportResult] = useState<{
+    name: string
+    note: string
+    report: SkillImportReportRow[]
+  } | null>(null)
+  const [bindForm, setBindForm] = useState({ skillId: '', employee: '' })
   const [editing, setEditing] = useState<{ id: string; name: string; description: string } | null>(
     null,
   )
@@ -122,6 +155,105 @@ export function SkillCenter({ query = '' }: { query?: string }) {
     [skills],
   )
 
+  /** 启用/停用：高风险或风险未知时必须显式确认，后端也会再校验一次。 */
+  const toggleEnabled = useCallback(
+    (record: SkillRecord) => {
+      const next = !record.enabled
+      if (next && (record.risk === 'high' || record.risk === 'unknown')) {
+        const ok = window.confirm(
+          `「${record.name}」的风险为「${RISK_LABELS[record.risk]}」，确认启用？`,
+        )
+        if (!ok) return
+      }
+      void run(next ? '启用技能' : '停用技能', () =>
+        apiFetch<unknown>(
+          `/v1/skills/${encodeURIComponent(record.id)}/${next ? 'enable' : 'disable'}`,
+          {
+            method: 'POST',
+            body: next
+              ? JSON.stringify({
+                  confirm: true,
+                  acknowledge_risk: record.risk,
+                })
+              : undefined,
+          },
+        ),
+      )
+    },
+    [run],
+  )
+
+  const bindEmployee = useCallback(() => {
+    const skillId = bindForm.skillId.trim()
+    const employee = bindForm.employee.trim()
+    if (!skillId || !employee) return
+    void (async () => {
+      const ok = await run('绑定技能', () =>
+        apiFetch<unknown>(`/v1/skills/${encodeURIComponent(skillId)}/bind`, {
+          method: 'POST',
+          body: JSON.stringify({ employee }),
+        }),
+      )
+      if (ok) void bindingsApi.reload()
+    })()
+  }, [bindForm, bindingsApi, run])
+
+  const unbindEmployee = useCallback(
+    (skillId: string, employee: string) => {
+      void (async () => {
+        const ok = await run('解除绑定', () =>
+          apiFetch<unknown>(
+            `/v1/skills/${encodeURIComponent(skillId)}/bind/${encodeURIComponent(employee)}`,
+            { method: 'DELETE' },
+          ),
+        )
+        if (ok) void bindingsApi.reload()
+      })()
+    },
+    [bindingsApi, run],
+  )
+
+  const doImport = useCallback(async () => {
+    if (!importFile) return
+    setBusy('导入技能')
+    setFeedback(null)
+    setImportResult(null)
+    setImportNotice(null)
+    try {
+      const body = new FormData()
+      // 目录导入时保留相对路径，后端才能按目录名兜底技能名。
+      body.append('file', importFile.file, importFile.name)
+      const result = (await apiFetch<Record<string, unknown>>('/v1/skills/import', {
+        method: 'POST',
+        body,
+      })) as Record<string, unknown>
+      setImportResult({
+        name: String(result.name ?? ''),
+        note: String(result.import_note ?? ''),
+        report: Array.isArray(result.import_report)
+          ? (result.import_report as SkillImportReportRow[])
+          : [],
+      })
+      setFeedback({
+        tone: 'ok',
+        text: `导入技能已完成：${String(result.name ?? '')}（默认未启用，请检查导入报告后手动启用）。`,
+      })
+      void skills.reload()
+    } catch (err) {
+      const status = err instanceof ApiError ? err.status : 0
+      const message = err instanceof Error ? err.message : '导入没有完成，请稍后重试。'
+      setImportNotice(
+        isMissingEndpoint(status)
+          ? `${NOT_PROVIDED}（导入技能）`
+          : status === 415
+            ? `该文件不是技能：${message}`
+            : `导入没有完成：${message}`,
+      )
+    } finally {
+      setBusy(null)
+    }
+  }, [importFile, skills])
+
   const need = query.trim().toLowerCase()
   const shown = useMemo(() => {
     if (!need) return records
@@ -143,7 +275,8 @@ export function SkillCenter({ query = '' }: { query?: string }) {
           <li>技能清单来自本地服务的技能接口；没有接口就显示「{NOT_PROVIDED}」，不会用示例条目占位。</li>
           <li>每一条都要能回答三件事：来源是谁、需要哪些权限、风险等级是多少。缺哪项就标注哪项。</li>
           <li>高风险技能在列表与启用前检查里都会单独提示；风险未知时不允许当作安全。</li>
-          <li>「被哪些员工使用」由本地服务关联数据提供；本地服务没返回时显示「未提供」，不会从员工能力清单里猜。</li>
+          <li>「绑定员工」读真实绑定表；读不出来显示「未提供」，不会把能力交集说成绑定。能力交集只以「可能相关（推导）」出现。</li>
+          <li>导入的技能默认未启用，由你显式启用；含脚本的技能可以登记，但本机不执行脚本。</li>
           <li>写入动作（创建 / 导入 / 编辑 / 删除 / 测试）在接口不可用时保持禁用并说明原因。</li>
         </ul>
       </Card>
@@ -186,11 +319,10 @@ export function SkillCenter({ query = '' }: { query?: string }) {
                 <thead>
                   <tr>
                     <th>技能</th>
-                    <th>来源</th>
-                    <th>版本</th>
+                    <th>来源 / 格式</th>
                     <th>风险</th>
                     <th>需要权限</th>
-                    <th>被哪些员工使用</th>
+                    <th>绑定员工</th>
                     <th>状态</th>
                     <th>操作</th>
                   </tr>
@@ -205,15 +337,29 @@ export function SkillCenter({ query = '' }: { query?: string }) {
                         )}
                         <div className="st-sub">{record.id}</div>
                       </td>
-                      <td>{sourceLabel(record.source)}</td>
-                      <td>{record.version || FIELD_NOT_PROVIDED}</td>
+                      <td>
+                        <div>{sourceLabel(record.source)}</div>
+                        <div className="st-sub">{formatLabel(record.format)}</div>
+                        {record.version && <div className="st-sub">版本：{record.version}</div>}
+                        {record.license && <div className="st-sub">许可：{record.license}</div>}
+                        {record.allowedTools.length > 0 && (
+                          <div className="st-sub" title="已登记；本版不执行脚本，不产生权限">
+                            声明工具：{record.allowedTools.join('、')}（未启用）
+                          </div>
+                        )}
+                      </td>
                       <td>
                         <span
                           className={`st-chip st-tone-${riskTone(record.risk)}`}
-                          title={record.risk === 'unknown' ? '本地服务没有返回风险等级' : undefined}
+                          title={record.risk === 'unknown' ? '风险无法核对（能力目录缺失或声明了不存在的能力）' : undefined}
                         >
                           {RISK_LABELS[record.risk]}
                         </span>
+                        {record.missingCapabilities.length > 0 && (
+                          <div className="st-sub">
+                            本机缺少能力：{record.missingCapabilities.join('、')}
+                          </div>
+                        )}
                       </td>
                       <td>
                         {record.permissions === null
@@ -226,18 +372,39 @@ export function SkillCenter({ query = '' }: { query?: string }) {
                         {record.usedBy === null
                           ? FIELD_NOT_PROVIDED
                           : record.usedBy.length === 0
-                            ? '暂无员工使用'
+                            ? '暂无员工绑定'
                             : record.usedBy.join('、')}
+                        {record.relatedEmployees && record.relatedEmployees.length > 0 && (
+                          <div className="st-sub" title="由员工默认能力与技能声明能力求交集推导，仅表示可能相关，不是绑定">
+                            可能相关（推导）：{record.relatedEmployees.join('、')}
+                          </div>
+                        )}
                       </td>
                       <td>
-                        {record.enabled === null
-                          ? FIELD_NOT_PROVIDED
-                          : record.enabled
-                            ? '已启用'
-                            : '未启用'}
+                        <div>
+                          {record.enabled === null
+                            ? FIELD_NOT_PROVIDED
+                            : record.enabled
+                              ? '已启用'
+                              : '未启用'}
+                        </div>
+                        {record.hasScripts && (
+                          <div className="st-sub" title={record.scriptRefs.join('、')}>
+                            含脚本，本机未启用
+                          </div>
+                        )}
                       </td>
                       <td>
                         <div className="st-actions">
+                          <button
+                            className="os-btn"
+                            type="button"
+                            disabled={!writable || busy !== null}
+                            title={missingHint}
+                            onClick={() => toggleEnabled(record)}
+                          >
+                            {record.enabled ? '停用' : '启用'}
+                          </button>
                           <button
                             className="os-btn"
                             type="button"
@@ -296,8 +463,8 @@ export function SkillCenter({ query = '' }: { query?: string }) {
             </div>
             {usageMissing && (
               <p className="os-hint" data-testid="skills-usage-note">
-                「被哪些员工使用」有字段未返回：本地服务没有提供技能与员工的关联数据，
-                本页不会用员工能力清单推测。
+                有技能的「绑定员工」没读出来：本地服务返回了 null（绑定表可能被占用或损坏），
+                这不等于「没有员工绑定」，本页也不会用能力清单推测成绑定关系。
               </p>
             )}
             {need && (
@@ -360,10 +527,10 @@ export function SkillCenter({ query = '' }: { query?: string }) {
         </form>
       </Card>
 
-      <Card title="导入技能" sub="只接受本地技能包；导入后会显示真实来源" span={6}>
+      <Card title="导入技能" sub="Agent Skills（SKILL.md）或本机 JSON 清单；导入后默认未启用" span={6}>
         <div className="st-form">
           <label className="st-field">
-            <span>技能包文件</span>
+            <span>技能文件</span>
             <input
               className="st-input"
               type="file"
@@ -378,13 +545,40 @@ export function SkillCenter({ query = '' }: { query?: string }) {
                   setImportNotice(
                     /\.zip$/i.test(file.name)
                       ? '当前版本不支持导入压缩包（.zip）：本地服务出于安全考虑不做解包，避免路径穿越（zip-slip）和「导入即执行」风险。请改用 .md 或 .json 单文件技能包。'
-                      : '只支持 .md 或 .json 单文件技能包，请重新选择文件。',
+                      : '只支持 .md 或 .json 技能文件，请重新选择。',
                   )
                   input.value = ''
                   return
                 }
                 setImportNotice(null)
-                setImportFile(file)
+                setImportResult(null)
+                setImportFile(file ? { file, name: file.name } : null)
+              }}
+            />
+          </label>
+          <label className="st-field">
+            <span>或选择整个技能目录（用于按目录名兜底技能名）</span>
+            <input
+              className="st-input"
+              type="file"
+              accept=".md,.json"
+              disabled={!writable}
+              // React 没有 webkitdirectory 的类型；用展开属性表达"目录选择"。
+              {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+              onChange={(event) => {
+                const input = event.target
+                const file = input.files?.[0] ?? null
+                if (!file || !/\.(md|json)$/i.test(file.name)) {
+                  setImportFile(null)
+                  setImportNotice('目录里没有可导入的 .md 或 .json 技能文件。')
+                  input.value = ''
+                  return
+                }
+                const relative =
+                  (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+                setImportNotice(null)
+                setImportResult(null)
+                setImportFile({ file, name: relative })
               }}
             />
           </label>
@@ -393,14 +587,7 @@ export function SkillCenter({ query = '' }: { query?: string }) {
             type="button"
             disabled={!writable || busy !== null || importFile === null}
             title={missingHint}
-            onClick={() => {
-              if (!importFile) return
-              const body = new FormData()
-              body.append('file', importFile)
-              void run('导入技能', () =>
-                apiFetch<unknown>('/v1/skills/import', { method: 'POST', body }),
-              )
-            }}
+            onClick={() => void doImport()}
           >
             {busy === '导入技能' ? '导入中…' : '导入技能'}
           </button>
@@ -410,9 +597,134 @@ export function SkillCenter({ query = '' }: { query?: string }) {
             </p>
           )}
           <p className="os-hint">
-            只支持 .md 或 .json 单文件技能包。当前版本不支持压缩包（.zip）导入：本地服务出于安全考虑不做解包，
-            避免路径穿越与「导入即执行」风险。导入前请确认文件来源，风险等级由服务端判定。
+            只支持 Agent Skills 的 SKILL.md（读 YAML frontmatter 的 name / description /
+            license / allowed-tools / metadata）与本机 JSON 清单。压缩包不导入：本地服务不做解包，
+            避免路径穿越与「导入即执行」风险。MCP server 配置请到工具中心配置，技能中心会以 415 拒绝。
           </p>
+          {!writable && <p className="os-hint">{missingHint}</p>}
+        </div>
+      </Card>
+
+      {importResult && (
+        <Card title={`导入报告：${importResult.name || '未命名技能'}`} span={6}>
+          {importResult.note && <p className="os-hint">{importResult.note}</p>}
+          {importResult.report.length === 0 ? (
+            <p className="os-hint">服务没有返回字段级导入报告。</p>
+          ) : (
+            <div className="os-table-wrap">
+              <table className="os-table">
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>处理方式</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importResult.report.map((row, index) => (
+                    <tr key={`${row.field}-${index}`}>
+                      <td>{row.field}</td>
+                      <td>{IMPORT_STATUS_LABELS[row.status] ?? row.status}</td>
+                      <td>{row.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card title="员工绑定" sub="真实绑定表：员工 ↔ 技能，多对多" span={6}>
+        <div className="st-form">
+          <label className="st-field">
+            <span>选择技能</span>
+            <select
+              className="st-input"
+              value={bindForm.skillId}
+              disabled={!writable}
+              onChange={(event) =>
+                setBindForm((prev) => ({ ...prev, skillId: event.target.value }))
+              }
+            >
+              <option value="">请选择</option>
+              {records.map((record) => (
+                <option key={record.id} value={record.id}>
+                  {record.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="st-field">
+            <span>员工名</span>
+            <input
+              className="st-input"
+              value={bindForm.employee}
+              disabled={!writable}
+              placeholder="必须与员工库里的名字一致"
+              onChange={(event) =>
+                setBindForm((prev) => ({ ...prev, employee: event.target.value }))
+              }
+            />
+          </label>
+          <button
+            className="os-btn os-btn-primary"
+            type="button"
+            disabled={!writable || busy !== null || !bindForm.skillId || !bindForm.employee.trim()}
+            title={missingHint}
+            onClick={bindEmployee}
+          >
+            绑定
+          </button>
+          <p className="os-hint">
+            绑定关系会记录创建时间与操作者。列表里每行的「绑定员工」即来自这张表；
+            删除技能前必须先解除全部绑定。
+          </p>
+          {probeState(bindingsApi) === 'failed' && (
+            <p className="os-error" role="alert">
+              绑定表读取失败：{bindingsApi.error ?? '未知错误'}。本页不会把它当成「没有绑定」。
+            </p>
+          )}
+          {bindings.length === 0 ? (
+            <p className="os-hint">还没有任何员工绑定技能。</p>
+          ) : (
+            <div className="os-table-wrap">
+              <table className="os-table">
+                <thead>
+                  <tr>
+                    <th>员工</th>
+                    <th>技能</th>
+                    <th>绑定时间</th>
+                    <th>操作者</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bindings.map((row) => (
+                    <tr key={`${row.skill_id}-${row.employee}`}>
+                      <td>{row.employee}</td>
+                      <td>
+                        {records.find((record) => record.id === row.skill_id)?.name ?? row.skill_id}
+                      </td>
+                      <td>{row.created_at ?? FIELD_NOT_PROVIDED}</td>
+                      <td>{row.created_by ?? FIELD_NOT_PROVIDED}</td>
+                      <td>
+                        <button
+                          className="os-btn os-btn-ghost"
+                          type="button"
+                          disabled={!writable || busy !== null}
+                          title={missingHint}
+                          onClick={() => unbindEmployee(row.skill_id, row.employee)}
+                        >
+                          解除绑定
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {!writable && <p className="os-hint">{missingHint}</p>}
         </div>
       </Card>
