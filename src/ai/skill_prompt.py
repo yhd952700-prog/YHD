@@ -134,7 +134,7 @@ def render_skill_prompt(
         try:
             from src.gateway.skill_store import SkillStore
 
-            records = SkillStore().list()
+            records = SkillStore().list_records()
         except Exception as exc:  # noqa: BLE001 - 读不到技能库不能把派活卡死
             logger.warning("skill_prompt: skill store unavailable: %s", exc)
             return SkillPrompt(omitted=[("（技能库）", f"读取失败：{exc}")])

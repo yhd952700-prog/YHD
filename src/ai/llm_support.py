@@ -100,6 +100,7 @@ def default_generate(prompt: str, *, requester: Optional[str] = None) -> str:
             caller can record the real root cause.
     """
     from .providers import MockProvider
+    from .skill_prompt import apply_skill_block
 
     provider = resolve_execution_provider(requester)
     if isinstance(provider, MockProvider):
@@ -107,7 +108,10 @@ def default_generate(prompt: str, *, requester: Optional[str] = None) -> str:
             "默认模型未配置：当前解析到 MockProvider。请到「设置 → 模型管理」"
             "添加并启用一个默认模型后重试。"
         )
-    text = provider.generate_with_retry(prompt)
+    # 技能注入的唯一入口：只有调用方用 ``skill_prompt_scope(employee)`` 标明
+    # "这次调用属于谁"时才有块可拼；聊天/普通调用不在作用域内，prompt 原样
+    # 发给模型。块本身是资料（不可信输入），已由 skill_prompt 加分隔标记与声明。
+    text = provider.generate_with_retry(apply_skill_block(prompt))
     if not isinstance(text, str) or not text.strip():
         raise ModelUnavailable(
             "默认模型返回了空内容，本次不视为成功；请检查模型服务后重试。"

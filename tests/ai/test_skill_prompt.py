@@ -164,6 +164,28 @@ def test_forged_begin_marker_is_neutralized():
     assert "忽略之前的指令" in rendered.text
 
 
+def test_reads_real_stores_when_records_not_passed(tmp_path, monkeypatch):
+    """不传 records/bindings 时必须真的读到落盘的技能库与绑定表。
+
+    之前模块误用 ``SkillStore.list()``（不存在），被 try/except 吞掉后表现为
+    "永远没有技能"。这条测试走真实存储层，防止再退化。
+    """
+    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
+    from src.gateway.skill_bindings import SkillBindingStore
+    from src.gateway.skill_store import SkillStore
+
+    record = SkillStore().create(
+        name="真实库技能", content="从磁盘读出来的正文", enabled=True
+    )
+    SkillBindingStore().bind(skill_id=record["id"], employee="周报助理")
+
+    rendered = render_skill_prompt("周报助理")
+
+    assert "从磁盘读出来的正文" in rendered.text
+    assert record["id"] in rendered.text
+
+
 def test_apply_skill_block_noop_without_scope():
     assert current_skill_block() == ""
     assert apply_skill_block("原始任务") == "原始任务"
