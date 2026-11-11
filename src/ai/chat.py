@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--system-prompt",
         default=None,
-        help="自定义系统提示词（可选，覆盖默认鎏灏身份）",
+        help="自定义系统提示词（可选，覆盖默认贾维斯身份）",
     )
     return parser
 
@@ -88,7 +88,7 @@ def repl(assistant: LiuHaoAssistant) -> int:
             continue
 
         result = assistant.chat(line)
-        tag = "鎏灏" if result["status"] == "completed" else "鎏灏[错误]"
+        tag = "贾维斯" if result["status"] == "completed" else "贾维斯[错误]"
         print(f"{tag}> {result['reply']}")
 
     print("\n再见。")
