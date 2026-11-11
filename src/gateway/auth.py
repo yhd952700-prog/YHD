@@ -562,6 +562,23 @@ def _ttl_seconds() -> int:
     return max(MIN_TTL_SECONDS, min(MAX_TTL_SECONDS, value))
 
 
+_HUMAN_ID_PREFIX = "human:"
+
+
+def _normalize_principal(principal: str) -> str:
+    """把令牌 ``sub`` 归一成账号树 / 身份库使用的裸主体名。
+
+    同一个主体有两种写法：``POST /v1/auth/login`` 签裸名（``liuhao``），
+    ``scripts/issue_console_token.py`` 签身份 id（``human:liuhao``，即
+    ``IdentityManager`` 的 ``identity_id`` 生成规则）。兼容逻辑只此一份，
+    身份查询与账号树查询都调用它，避免两处各写一遍再漂移。
+    """
+    pid = str(principal or "").strip()
+    if pid.startswith(_HUMAN_ID_PREFIX) and len(pid) > len(_HUMAN_ID_PREFIX):
+        return pid[len(_HUMAN_ID_PREFIX) :]
+    return pid
+
+
 def _human_identity(principal: str):
     """Ask the Identity Kernel whether this principal is a login-eligible human.
 
@@ -581,7 +598,7 @@ def _human_identity(principal: str):
 
     manager = get_identity_manager()
     identity = manager.get_identity(principal) or manager.get_identity_by_principal(
-        principal
+        _normalize_principal(principal)
     )
     if identity is None or not is_human_identity(identity):
         return None
@@ -777,7 +794,9 @@ def _account_is_root(principal: str) -> Dict[str, Any]:
         from ..kernels.identity import get_identity_manager
 
         manager = get_identity_manager()
-        node = manager.get_account(principal)
+        # 账号树 key 是裸主体名；令牌 sub 可能是 human:<name>（脚本签发），
+        # 归一化后再查，否则根账号会被误报成树外主体。
+        node = manager.get_account(_normalize_principal(principal))
         tree_exists = bool(manager.account_nodes())
     except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述，且须 fail-closed
         return {"is_root": False, "can_rotate_recovery": False}

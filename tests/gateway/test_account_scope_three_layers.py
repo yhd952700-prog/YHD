@@ -1155,3 +1155,35 @@ def test_token_outside_account_tree_is_not_root(client):
     me = client.get("/v1/auth/me", headers=_bearer(token))
     assert me.status_code == 200, me.text
     assert me.json()["is_root"] is False, me.text
+
+
+def test_auth_me_is_root_normalizes_namespaced_subject(tree):
+    """脚本签发的令牌 sub 是身份 id（``human:<principal>``），``is_root`` 也必须认。
+
+    回归：``_account_is_root`` 曾拿 sub 直接去账号树精确匹配，而账号树 key 是
+    裸名；``human:root1`` 查不到就落到「树外主体」兜底，把真正的根报成
+    ``is_root=false``。``_human_identity`` 早已兼容两种写法，这里同样归一化。
+
+    三种输入都要对：裸名（登录接口签发）、带前缀（脚本签发）、
+    以及带前缀但不存在的名字——归一化不得把不存在的名字查到别人头上。
+    """
+    from src.security import get_jwt_handler
+
+    def is_root_for(subject: str) -> bool:
+        token, _payload = get_jwt_handler().create_token(
+            subject=subject, metadata={"kind": "human", "scope": "L7"}
+        )
+        response = tree.client.get("/v1/auth/me", headers=_bearer(token))
+        assert response.status_code == 200, response.text
+        return response.json()["is_root"]
+
+    # 1) 裸名：POST /v1/auth/login 签发
+    me = tree.client.get("/v1/auth/me", headers=_login(tree.client, "root1"))
+    assert me.status_code == 200, me.text
+    assert me.json()["is_root"] is True, me.text
+
+    # 2) 带前缀：scripts/issue_console_token.py 签发
+    assert is_root_for("human:root1") is True
+
+    # 3) 带前缀但不存在：必须是 False，不能被归一化"查到别人"
+    assert is_root_for("human:nobody") is False
