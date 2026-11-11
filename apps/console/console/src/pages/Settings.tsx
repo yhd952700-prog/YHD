@@ -590,7 +590,7 @@ export function Settings({
       <Card
         id="settings-authority"
         title="授权模式"
-        sub="决定「高风险操作还要不要你逐次批准」。默认是标准模式；收回立即生效，开启需重启。"
+        sub="决定「高风险操作还要不要你逐次批准」，以及 AI 能不能直接写审计库、日志、凭据和程序本体（只记录，不拦截）。默认是标准模式；收回立即生效，开启需重启。"
         span={12}
       >
         {authorityMode.loading && (
@@ -623,8 +623,8 @@ export function Settings({
                 <strong>{authorityMode.data.mode_label}（{authorityMode.data.mode}）</strong>
                 。
                 {authorityFull
-                  ? '你手动派出的任务、AI 员工、定时任务和自主接活都不再逐次等批准，但仍会留下完整审计（含哪个员工、哪个任务）。'
-                  : '高风险操作按审批流程执行，审批结果会留在审计里。'}
+                  ? '你手动派出的任务、AI 员工、定时任务和自主接活都不再逐次等批准。审计库、日志、凭据、程序本体和模式配置也不再对 AI 只读：AI 可以直接写入或删除，每次触碰只记一条审计（含哪个员工、哪个任务），不拦截。'
+                  : '高风险操作按审批流程执行，审批结果会留在审计里。敏感路径（审计库/日志/凭据/程序本体/模式配置）同样只记录、不拦截。'}
               </span>
             </p>
             <p className="os-note">

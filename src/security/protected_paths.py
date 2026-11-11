@@ -1,31 +1,40 @@
-"""全权模式下也不许 AI 动的东西（路径级硬规则）。
+"""敏感路径观察名单（**只记录，不拦截**）。
 
-老板 2026-11-11 定的四类路径，对 AI 任务（含 SYSTEM_PRINCIPAL、员工、定时任务）
-**只读**：删除/覆盖一律拒绝并写审计。用户本人的手动操作不受影响 —— 这条只约束
-AI。
+老板 2026-11-11 拍板：撤掉「审计库 / 日志 / 凭据 / 程序本体 / 全权配置对 AI
+只读」这条限制。2026-11-11 第二轮进一步确认：**标准模式与全权模式一致放开**，
+不再有「命中即拒绝」的分支。
+
+现在的行为：
+
+* AI 通过本程序的写路径（``FilesystemAdapter.execute(action="write")``）碰到
+  这些路径 → 先写一条审计，然后**照常落盘**。
+* ``host_command`` 的命令字符串点名这些路径 → 先写一条审计，然后**照常走**
+  策略/确认/执行管线。
+* 用户本人（``actor="human"``）不写这类记录。
 
 **老实说清能力边界**（对外报告必须照这个口径写，不许含糊）：
 
-* 走本程序自己的写路径（``FilesystemAdapter.execute(action="write")``、
-  ``file_write`` 工具、所有经 ``resolve_in_workspace`` 的写入）是**真的**拦住：
-  落盘前检查真实路径（realpath，``..`` 与符号链接已展开），绕不过去。
-* 走 ``host_command`` 的任意子进程（``python -c``、``curl | powershell``、
-  自己拉起来的 exe）**只在命令字符串层拦**：命令里出现受保护路径就拒绝，但路径
-  若是拼出来的（``"aud" + "it_store.db"``）或由子进程自己算出，我们看不到。
-* 真正的文件系统级拦截需要 OS 过滤驱动（minifilter），或让 AI 跑在另一个受限
+* 本模块只负责「认出这是敏感路径」并交给审计，**不再构成任何权限边界**。
+* ``host_command`` 的识别只是命令字符串包含判断：路径被拼接/编码，或由子进程
+  自己算出（``"aud" + "it_store.db"``、``python -c`` 里再构造），我们看不到。
+* 真正的文件系统级保护需要 OS 过滤驱动（minifilter），或让 AI 跑在另一个受限
   账户下 —— 两者当前架构都没有。不要对外声称"文件系统层已拦死"。
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: 数据目录下这些**文件名**一律只读（含 -wal/-shm/-journal 兄弟文件）。
+#: 数据目录下这些**文件名**属于敏感路径（含 -wal/-shm/-journal 兄弟文件）。
+#: 命中只写审计，不再拦截。
 _PROTECTED_NAMES = frozenset(
     {
         "audit_store.db",
@@ -40,21 +49,12 @@ _PROTECTED_NAMES = frozenset(
     }
 )
 
-#: 数据目录下这些**子目录**整棵只读（审计日志）。
+#: 数据目录下这些**子目录**整棵属于敏感路径（审计日志）。
 _PROTECTED_DIR_NAMES = frozenset({"logs", "audit_logs"})
 
-#: 安装目录下这些子目录与扩展名只读（程序本体）。
+#: 安装目录下这些子目录与扩展名属于敏感路径（程序本体）。
 _PROTECTED_INSTALL_DIRS = frozenset({"runtime", "src"})
 _PROTECTED_INSTALL_EXTS = frozenset({".exe", ".dll"})
-
-
-class ProtectedPathError(PermissionError):
-    """AI 试图写入/删除受保护路径。"""
-
-    def __init__(self, path: str, reason: str) -> None:
-        super().__init__(f"protected path: {reason} ({path})")
-        self.path = path
-        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ def protected_reason(path: str | os.PathLike[str] | None) -> str | None:
     real = _norm(path)
     roots = _roots()
 
-    # 1) 审计日志目录（整棵只读）
+    # 1) 审计日志目录（整棵属于敏感路径）
     for name in _PROTECTED_DIR_NAMES:
         if _under(real, os.path.join(roots.data, name)):
             return "audit-or-key-material"
@@ -131,35 +131,48 @@ def protected_reason(path: str | os.PathLike[str] | None) -> str | None:
     return None
 
 
-def guard_write(
+def note_write(
     path: str | os.PathLike[str] | None,
     *,
     actor: str = "ai",
     correlation_id: str | None = None,
-) -> None:
-    """AI 写/删前调用。受保护则写审计并抛 :class:`ProtectedPathError`。
+    operation: str = "write",
+) -> str | None:
+    """AI 写/删前调用：命中敏感路径就写一条审计，然后**照常放行**。
 
-    用户本人的手动操作不走这里（路由层已区分主体），因此不受限制。
+    返回命中的原因码（未命中返回 ``None``），供调用方记录/测试断言；
+    **绝不抛异常，也不改变调用方的执行决定**。审计写失败只记日志。
+    用户本人的手动操作不经过这里（路由层已区分主体）。
     """
     reason = protected_reason(path)
     if reason is None:
-        return
-    from .authority_audit import record_protected_denied
+        return None
+    from .authority_audit import record_protected_touched
 
-    record_protected_denied(
-        path=str(path),
-        reason=reason,
-        actor=actor,
-        correlation_id=correlation_id,
-        channel="filesystem",
-    )
-    raise ProtectedPathError(str(path), reason)
+    try:
+        record_protected_touched(
+            path=str(path),
+            reason=reason,
+            actor=actor,
+            correlation_id=correlation_id,
+            channel="filesystem",
+            operation=operation,
+        )
+    except Exception as exc:  # noqa: BLE001 - 只记录，审计故障不改变放行
+        logger.warning(
+            "sensitive-path audit write failed path=%s reason=%s: %s",
+            path,
+            reason,
+            exc,
+        )
+    return reason
 
 
-def command_mentions_protected(command: str) -> str | None:
-    """命令字符串里是否点名了受保护路径（**解析层**，绕过成本不为零但不难）。
+def scan_command(command: str) -> str | None:
+    """命令字符串里是否点名了敏感路径（**识别层，命中也只记录**）。
 
-    命中即拒绝：这些路径没有"命令式操作"的正当场景，宁可多拦。
+    这是包含判断，不是文件系统钩子：路径被拼接/编码或由子进程自己算出时
+    识别不到。命中后由调用方写审计，命令继续执行。
     """
     if not command:
         return None
@@ -193,8 +206,9 @@ def describe() -> dict:
         "protected_dirs": sorted(_PROTECTED_DIR_NAMES | _PROTECTED_INSTALL_DIRS),
         "protected_extensions": sorted(_PROTECTED_INSTALL_EXTS),
         "enforcement": {
-            "file_api": "blocking (FilesystemAdapter.write / file_write)",
-            "host_command": "command-string scan only; computed paths can bypass",
+            "file_api": "record-only (FilesystemAdapter.write)",
+            "host_command": "command-string scan, record-only; computed paths are invisible",
             "os_level": "none (no minifilter, no restricted account)",
+            "blocks_anything": False,
         },
     }

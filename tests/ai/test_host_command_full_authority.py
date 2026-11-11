@@ -3,14 +3,17 @@
 2026-11-11 老板定的边界，后续不许被改松：
 
 * **提权一律拒绝**：全权也不提权（不碰 UAC / 服务 / 计划任务 / HKLM）。
-* **受保护路径**：审计库、密钥、程序本体、模式配置对 AI 任务只读；命令里点名即
-  拒绝，拒绝要进审计并带员工/任务归属。用户本人（actor="human"）不受此限制。
+* **敏感路径只记不拦**（2026-11-11 第二轮）：审计库、日志、密钥、程序本体、模式
+  配置不再对 AI 只读；标准模式与全权模式一致，命中先写审计再照常执行，命令层与
+  文件层都不再拒绝。用户本人（actor="human"）不写这条记录。
 * **危险命令一次确认**：默认开；设置里可关，关闭进审计（G3），恢复也留痕（G4）；
   关闭后执行仍必须写 G2（不可逆动作放行）。
 * **主机命令可用**：全权模式下不是 0 可用，普通命令直接放行。
 
-边界必须如实：路径保护在「本程序写路径」上是真拦截；在 host_command 上只是命令
-字符串层扫描，拼接/编码可绕过。这里不假装它是文件系统级边界。
+审计事件用 ``POLICY_EVAL`` 承载，靠 ``details.event ==
+"authority.protected_path_touched"`` 区分（独立枚举在 kernels/audit，本轮文件域
+不含）。边界必须如实：命令层只是字符串包含判断，拼接/编码可绕过。这里不假装它
+是文件系统级边界。
 """
 
 from __future__ import annotations
@@ -63,6 +66,16 @@ def _events(event_type: AuditEventType) -> list[dict]:
     return list(get_audit_store().query_events(event_type=event_type))
 
 
+def _touches() -> list[dict]:
+    """敏感路径触碰记录（承载在 POLICY_EVAL 里，用 details.event 区分）。"""
+    return [
+        row
+        for row in _events(AuditEventType.POLICY_EVAL)
+        if (row.get("details") or {}).get("event")
+        == "authority.protected_path_touched"
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # 主机命令可用（不是 0 可用）
 # --------------------------------------------------------------------------- #
@@ -102,9 +115,9 @@ def test_escalation_is_denied_even_in_full_mode(command):
 
 
 # --------------------------------------------------------------------------- #
-# 边界 2：受保护路径（命令层）+ 拒绝进审计，带归属
+# 边界 2：敏感路径（命令层）—— 只记录，不拒绝，带归属
 # --------------------------------------------------------------------------- #
-def test_protected_path_command_is_denied_and_audited(tmp_path):
+def test_sensitive_path_command_is_allowed_and_audited(tmp_path):
     broker, executor = _broker()
     data_root = tmp_path / "data"
     data_root.mkdir(parents=True, exist_ok=True)
@@ -115,15 +128,17 @@ def test_protected_path_command_is_denied_and_audited(tmp_path):
             HostCommandRequest(command=f'del "{target}"', actor="autonomous")
         )
 
-    assert decision.outcome is DecisionOutcome.DENY
-    assert "protected path" in decision.reason
-    assert executor.calls == []
+    assert decision.outcome is DecisionOutcome.ALLOW
+    assert [c.command for c in executor.calls] == [f'del "{target}"']
 
-    rows = _events(AuditEventType.AUTHORITY_PROTECTED_PATH_DENIED)
-    assert rows, "受保护路径拒绝没有进审计"
+    rows = _touches()
+    assert rows, "敏感路径触碰没有进审计"
     details = rows[-1]["details"]
     assert details["reason"] == "audit-or-key-material"
     assert details["channel"] == "host_command"
+    assert details["operation"] == "command"
+    assert details["mode"] == "full"
+    assert details["would_have_blocked"] is True
     assert "audit_store.db" in details["command"]
     attribution = details["task_attribution"]
     assert attribution["principal_class"] == "SYSTEM_PRINCIPAL"
@@ -131,11 +146,12 @@ def test_protected_path_command_is_denied_and_audited(tmp_path):
     assert attribution["task_id"] == "t-9"
 
 
-def test_protected_path_command_is_allowed_for_human_actor(tmp_path):
-    """用户本人手动操作不受这条限制（主体由调用方标注为 human）。"""
+def test_sensitive_path_command_writes_no_record_for_human_actor(tmp_path):
+    """用户本人的手动操作不写「AI 触碰」记录，命令照常执行。"""
     broker, executor = _broker()
     data_root = tmp_path / "data"
     data_root.mkdir(parents=True, exist_ok=True)
+    before = len(_touches())
 
     decision = broker.submit(
         HostCommandRequest(
@@ -145,36 +161,77 @@ def test_protected_path_command_is_allowed_for_human_actor(tmp_path):
 
     assert decision.outcome is DecisionOutcome.ALLOW
     assert len(executor.calls) == 1
+    assert len(_touches()) == before
 
 
 # --------------------------------------------------------------------------- #
-# 边界 2（本程序写路径）：真拦截
+# 边界 2（本程序写路径）：只记录，不抛异常
 # --------------------------------------------------------------------------- #
-def test_guard_write_blocks_audit_db_and_records(tmp_path):
+def test_sensitive_write_is_allowed_and_audited(tmp_path):
     data_root = tmp_path / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     target = data_root / "audit_store.db"
 
-    with pytest.raises(protected_paths.ProtectedPathError):
-        protected_paths.guard_write(str(target), actor="emp-9", correlation_id="c-1")
+    reason = protected_paths.note_write(
+        str(target), actor="emp-9", correlation_id="c-1"
+    )
 
-    rows = _events(AuditEventType.AUTHORITY_PROTECTED_PATH_DENIED)
-    assert rows
-    assert rows[-1]["details"]["channel"] == "filesystem"
-    assert rows[-1]["correlation_id"] == "c-1"
+    assert reason == "audit-or-key-material"
+    assert not target.exists(), "note_write 只记录，不替调用方落盘"
+
+    touches = _touches()
+    assert touches
+    assert touches[-1]["details"]["channel"] == "filesystem"
+    assert touches[-1]["details"]["operation"] == "write"
+    assert touches[-1]["correlation_id"] == "c-1"
 
 
-def test_guard_write_blocks_overwriting_install_exe():
+def test_sensitive_write_overwriting_install_exe_is_allowed():
     target = _REPO_ROOT / "dist" / "freeze-0.2.2" / "LiuHao.exe"
-    with pytest.raises(protected_paths.ProtectedPathError):
-        protected_paths.guard_write(str(target))
+    assert protected_paths.note_write(str(target)) == "application-body"
 
 
-def test_guard_write_allows_user_documents(tmp_path):
-    """不是一刀切：普通用户文档的写入/删除不受这条规则影响。"""
+def test_sensitive_write_in_standard_mode_is_also_record_only(tmp_path, monkeypatch):
+    """标准模式与全权一致：只记录，不拒绝。"""
+    monkeypatch.setenv(authority_mode.ENV_VAR, "standard")
+    authority_mode.reload()
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    reason = protected_paths.note_write(
+        str(data_root / "auth_secrets.json"), actor="emp-9"
+    )
+
+    assert reason == "audit-or-key-material"
+    details = _touches()[-1]["details"]
+    assert details["mode"] == "standard"
+    assert details["would_have_blocked"] is True
+
+
+def test_sensitive_write_never_raises_when_audit_fails(tmp_path, monkeypatch):
+    """审计写失败也不能把「放行」翻成「拒绝」。"""
+    from src.security import authority_audit
+
+    def _boom(**_kwargs):
+        raise RuntimeError("audit store down")
+
+    monkeypatch.setattr(authority_audit, "record_protected_touched", _boom)
+    target = tmp_path / "data" / "audit_store.db"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    assert (
+        protected_paths.note_write(str(target), actor="emp-9")
+        == "audit-or-key-material"
+    )
+
+
+def test_sensitive_write_allows_user_documents(tmp_path):
+    """不是一刀切：普通用户文档不产生敏感记录。"""
     target = tmp_path / "Documents" / "notes.txt"
-    protected_paths.guard_write(str(target))  # 不抛异常即为允许
+    before = len(_touches())
+    assert protected_paths.note_write(str(target)) is None
 
+    assert len(_touches()) == before
     assert protected_paths.protected_reason(str(target)) is None
 
 

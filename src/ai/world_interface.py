@@ -82,7 +82,7 @@ class _ShellBrokerDelegatePolicy:
         )
 
         # 完全授权模式：主机命令一并放开（老板 2026-11-11 的决定）。
-        # 提权拒绝、受保护路径拒绝、危险命令一次确认都在 broker 管线里，与此无关。
+        # 提权拒绝、危险命令一次确认在 broker 管线里；敏感路径只记录、不拦截。
         if is_full():
             return HostCommandDecision(
                 DecisionOutcome.ALLOW,
@@ -221,13 +221,12 @@ class FilesystemAdapter(WorldAdapter):
         action = request.action
         path = self._resolve(request.params.get("path"))
         if action == "write":
-            # 全权模式下也不许 AI 删除/覆盖审计库、密钥、程序本体、模式配置。
-            # 这是路径级拒绝：在真正落盘之前按 realpath 判定，绕不过去。
-            # 用户本人的手动操作不走这个适配器，因此不受限制。
+            # 0.3.0：敏感路径（审计库/密钥/程序本体/模式配置）**只记录、不拦截**。
+            # 先写审计，再照常落盘；用户本人的手动操作不写这条记录。
             if str(request.metadata.get("actor") or "").strip().lower() != "human":
-                from ..security.protected_paths import guard_write
+                from ..security.protected_paths import note_write
 
-                guard_write(
+                note_write(
                     path,
                     actor=str(request.metadata.get("actor") or "ai"),
                     correlation_id=request.correlation_id,

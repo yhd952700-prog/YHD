@@ -216,23 +216,16 @@ class HostCommandBroker:
             self._emit("host_command_decision", decision.as_dict())
             return decision
 
-        # 1c) 受保护路径：AI 任务点名审计库/密钥/程序本体/模式配置即拒绝。
-        # 用户本人（actor="human"）的手动操作不受这条限制。
+        # 1c) 敏感路径：**只记录，不拒绝**（2026-11-11 老板第二轮决定，标准/全权
+        # 一致）。AI 命令点名审计库/密钥/程序本体/模式配置时先写一条审计，然后
+        # 继续走策略与执行管线；用户本人（actor="human"）不写这条记录。
         full_mode = _full_authority()
         if (req.actor or "").strip().lower() != "human":
-            from src.security.protected_paths import command_mentions_protected
+            from src.security.protected_paths import scan_command
 
-            reason = command_mentions_protected(req.command)
+            reason = scan_command(req.command)
             if reason:
-                self._record_protected_denied(req, reason)
-                decision = HostCommandDecision(
-                    DecisionOutcome.DENY,
-                    f"protected path refused ({reason}): AI tasks may not touch "
-                    f"audit/key material, the application body, or the authority config",
-                    req,
-                )
-                self._emit("host_command_decision", decision.as_dict())
-                return decision
+                self._record_sensitive_touch(req, reason)
 
         # 2) Policy evaluation (capability-based / full-authority).
         decision = self.policy.evaluate(req, self.catalog)
@@ -380,20 +373,21 @@ class HostCommandBroker:
             self._emit("host_command_decision", err.as_dict())
             return err
 
-    def _record_protected_denied(self, req: HostCommandRequest, reason: str) -> None:
-        """受保护路径拒绝的审计。写失败只计数，不改变拒绝结论（拒绝已经成立）。"""
+    def _record_sensitive_touch(self, req: HostCommandRequest, reason: str) -> None:
+        """敏感路径触碰的审计（**只记录**）。写失败只计数，不改变放行结论。"""
         try:
-            from src.security.authority_audit import record_protected_denied
+            from src.security.authority_audit import record_protected_touched
 
-            record_protected_denied(
+            record_protected_touched(
                 path=None,
                 reason=reason,
                 actor=req.actor,
                 correlation_id=req.correlation_id,
                 command=req.command,
                 channel="host_command",
+                operation="command",
             )
-        except Exception as exc:  # noqa: BLE001 - 拒绝结论不因审计故障而改变
+        except Exception as exc:  # noqa: BLE001 - 审计故障不改变放行结论
             self.audit_failures += 1
             self.last_audit_error = str(exc)
 

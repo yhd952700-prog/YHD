@@ -9,15 +9,20 @@
 * G3 ``authority.confirm_disabled``  —— 用户把最后一次确认也关掉
 * G4 ``authority.confirm_restored``  —— 确认被恢复
 * G5 ``host_command.executed``       —— 主机命令真实执行（完整命令行，脱敏）
+* ``authority.protected_path_touched`` —— AI 触碰敏感路径（审计库/日志/凭据/
+  程序本体/模式配置）。**只记录，动作照常放行**；标准/全权一致。
 
 约定：
 
 * 一律使用显式的 :class:`AuditEventType` 成员，不借用 ``POLICY_EVAL`` 之类的
   通用类型，避免把「配置沿革」混进「动作结果」里查不出来。
+  唯一例外：``protected_path_touched`` 暂时承载在 ``POLICY_EVAL`` 上（用
+  ``details.event`` 区分）—— 独立枚举在 ``src/kernels/audit/__init__.py``，
+  不在本次允许改动的文件域内；补上成员后应改回独立类型。
 * 写入失败**不吞掉**：调用方决定是 fail-closed 还是降级。G2/G5 属于「动作已经
   发生」之后必须能证明的事实，调用方（内核装饰器 / host-command broker）会把
-  失败当作拒绝执行的理由。
-* 本模块不读取模式，也不做权限判断 —— 它只负责把已经发生的事实写进审计。
+  失败当作拒绝执行的理由；敏感路径触碰相反——只记录，失败不改变放行。
+* 本模块**不依据模式做权限判断**（只把当前模式写进记录）。
 """
 
 from __future__ import annotations
@@ -228,7 +233,17 @@ def _attribution_payload() -> dict[str, Any] | None:
         return None
 
 
-def record_protected_denied(
+def _current_mode() -> str:
+    """当前进程模式，供审计如实标注；读不到按更严的 standard 记。"""
+    try:
+        from src.security.authority_mode import current_mode
+
+        return current_mode()
+    except Exception:  # pragma: no cover - 模式模块不可用时按标准模式记
+        return "standard"
+
+
+def record_protected_touched(
     *,
     path: str | None,
     reason: str,
@@ -236,27 +251,37 @@ def record_protected_denied(
     correlation_id: str | None = None,
     command: str | None = None,
     channel: str = "filesystem",
+    operation: str = "write",
 ):
-    """AI 任务删除/覆盖受保护路径被拒。
+    """AI 触碰敏感路径（**只记录，动作照常放行**）。
 
-    与 G2/G5 同域（执行层），但结果固定是拒绝：这条记录回答「谁想动、动了
-    哪里、为什么被拦住」。带上任务归属，SYSTEM_PRINCIPAL 来源也能追到具体员工。
+    2026-11-11 老板拍板：审计库 / 日志 / 凭据 / 程序本体 / 全权配置不再对 AI
+    只读，标准模式与全权模式一致。这条记录回答「谁想动、动了哪里、属于哪一类」，
+    不构成拒绝；写失败也不改变动作（由调用方决定是否降级）。
+
+    注意：没有新建独立的 ``AuditEventType`` 成员 —— 枚举定义在
+    ``src/kernels/audit/__init__.py``，不在本次允许改动的文件域内。这里用
+    ``POLICY_EVAL`` 承载，并用 ``details.event`` 固定为
+    ``authority.protected_path_touched`` 以便精确检索。
     """
     AuditEventType, AuditScope, log_event = _audit()
     details: dict[str, Any] = {
-        "event": "authority.protected_path_denied",
+        "event": "authority.protected_path_touched",
+        "authority_event": "protected_path_touched",
         "path": path,
         "reason": reason,
         "channel": channel,
+        "operation": operation,
         "command": redact_command(command) if command else None,
-        "mode": "full",
+        "mode": _current_mode(),
+        "would_have_blocked": True,
         "task_attribution": _attribution_payload(),
     }
     return log_event(
-        AuditEventType.AUTHORITY_PROTECTED_PATH_DENIED,
+        AuditEventType.POLICY_EVAL,
         _principal_of(actor),
         AuditScope[_SCOPE_EXECUTION],
-        "denied",
+        "allowed",
         details,
         correlation_id,
     )

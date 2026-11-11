@@ -57,7 +57,7 @@ def is_enabled() -> bool:
 
     两个来源任一成立即为真：显式环境变量 ``LIUHAO_HOST_COMMAND_ENABLED``，或
     处于完全授权模式。后者**不改变**能力/审批管线的其余闸门 —— 全权模式下仍有
-    提权拒绝、受保护路径拒绝、危险命令一次确认。
+    提权拒绝、危险命令一次确认；敏感路径只记录、不拦截。
     """
     global _cache
     spec = os.environ.get(ENV_VAR, "")
