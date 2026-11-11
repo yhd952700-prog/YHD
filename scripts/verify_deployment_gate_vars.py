@@ -150,7 +150,10 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "means the gate NEVER executes even though boot logs the fence as "
             "installed, so every fenced action runs un-gated"
         ),
-        "refs": ("src/kernels/_crosscutting.py:824", "src/kernels/execution/fence.py:1279"),
+        "refs": (
+            "src/kernels/_crosscutting.py::_fence_enabled_for",
+            "src/kernels/execution/fence.py:1279",
+        ),
     },
     {
         "var": "LIUHAO_REQUIRE_EXECUTOR_FENCE",
@@ -1095,6 +1098,33 @@ class Finding(object):
         }
 
 
+def _symbol_line_span(path: Path, symbol: str) -> Optional[Tuple[int, int]]:
+    """Resolve a top-level function/class/assignment name to its 1-based lines.
+
+    ``file::symbol`` refs exist so a citation survives unrelated edits above it:
+    the gate resolves the symbol at run time instead of trusting a line number
+    that rots the next time someone inserts code. Only module-level symbols are
+    resolved -- a SEED citation points at a module-level read site, not at a
+    nested helper whose name can collide.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        else:
+            continue
+        if symbol in names:
+            return (node.lineno, getattr(node, "end_lineno", None) or node.lineno)
+    return None
+
+
 def drifted_refs(var: str, refs: Sequence[str],
                  aliases: Sequence[str],
                  const_names: Sequence[str] = ()) -> List[str]:
@@ -1118,11 +1148,33 @@ def drifted_refs(var: str, refs: Sequence[str],
     var nor a declared alias: ``posture.py:123`` reads ``source.get(STRICT_ENV)``
     where ``STRICT_ENV`` is defined at :68. Without it that citation would be
     reported as drifted, and a checker that cries wolf is one people stop running.
+
+    An entry may also be ``path::symbol``: the module-level symbol is resolved to
+    its current lines at run time and the needles must appear somewhere inside
+    that span. Use it for refs whose exact line keeps moving (function bodies);
+    a bare line number is still fine for a stable single-line read.
     """
     out: List[str] = []
     needles = [var] + [str(a) for a in aliases] + [str(c) for c in const_names]
     for raw in refs:
         ref = str(raw)
+        if "::" in ref:
+            path, _, symbol = ref.partition("::")
+            p = REPO_ROOT / path
+            if not p.is_file():
+                out.append("%s (file missing)" % ref)
+                continue
+            span = _symbol_line_span(p, symbol)
+            if span is None:
+                out.append("%s (symbol not found)" % ref)
+                continue
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            start, end = span
+            if not any(needle in text
+                       for text in lines[start - 1:end]
+                       for needle in needles):
+                out.append("%s (symbol mentions none of the needles)" % ref)
+            continue
         path, sep, line = ref.rpartition(":")
         if not sep or not line.isdigit():
             out.append("%s (no file:line)" % ref)

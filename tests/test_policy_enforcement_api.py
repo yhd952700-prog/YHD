@@ -106,6 +106,20 @@ _ARMING_CONFIG_SUFFIXES = frozenset({
 })
 
 
+def _is_frozen_build_dir(rel_root: str, name: str) -> bool:
+    """True for the unpacked frozen-build subtrees under ``dist/``.
+
+    ``dist/**/payload`` and ``dist/**/installer-extract`` 是已冻结的历史构建
+    产物，不是源码：里面的 ``scripts/launch_installed.py`` 只是当初发货副本的
+    归档，不是工作树里新增的 arming 面。不排除就会把同一个已发货文件报六次，
+    真正的 arming 点反而被噪声埋掉。``dist/`` 本身和里面的安装包仍然保留。
+    """
+    if name not in ("payload", "installer-extract"):
+        return False
+    parts = [part for part in rel_root.split("/") if part and part != "."]
+    return bool(parts) and parts[0] == "dist"
+
+
 def _armed_specs_c4() -> dict:
     """Map every arming site in the WORKING TREE to the spec it arms.
 
@@ -129,7 +143,12 @@ def _armed_specs_c4() -> dict:
     """
     armed: dict = {}
     for root, dirs, files in os.walk(REPO_ROOT, topdown=True):
-        dirs[:] = [d for d in dirs if d not in _ARMING_SCAN_PRUNE]
+        rel_root = pathlib.Path(root).relative_to(REPO_ROOT).as_posix()
+        dirs[:] = [
+            d for d in dirs
+            if d not in _ARMING_SCAN_PRUNE
+            and not _is_frozen_build_dir(rel_root, d)
+        ]
         for name in files:
             suffix = pathlib.Path(name).suffix.lower()
             is_config = (
