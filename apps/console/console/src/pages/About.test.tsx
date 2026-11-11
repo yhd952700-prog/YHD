@@ -11,7 +11,7 @@ import { About } from './About'
 
 const ABOUT = {
   app: 'LiuHao',
-  version: '0.2.2',
+  version: '0.3.0',
   commit: null,
   build_time: null,
   app_dir: 'D:\\LiuHao\\app',
@@ -37,7 +37,7 @@ const ABOUT = {
     spec_version: '1.5',
     component_count: 3,
     generated_at: null,
-    product_version: '0.2.2',
+    product_version: '0.3.0',
     parse_error: null,
   },
 }
@@ -80,7 +80,7 @@ test('手机端不展示本机绝对路径，只保留可读说明', async () =>
   stub()
   try {
     render(<About />)
-    expect(await screen.findByText('0.2.2')).toBeTruthy()
+    expect(await screen.findByText('0.3.0')).toBeTruthy()
 
     const text = document.body.textContent ?? ''
     expect(text).not.toContain('D:\\')
