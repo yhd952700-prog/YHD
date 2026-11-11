@@ -71,8 +71,10 @@ import type {
   PendingApprovalsResponse,
   ProjectsResponse,
 } from '../lib/operator'
+import { ChatPanel } from '../components/ChatPanel'
 import { BudgetDenialActions, Card, Empty, Failure, Guard, Loading } from '../components/ui'
 import { GoalStatus } from '../components/GoalStatus'
+import type { ActiveProviderStatus } from '../lib/providerStatus'
 import {
   BUDGET_DENIAL_MESSAGE,
   BUDGET_DENIAL_NEXT_STEP,
@@ -96,6 +98,9 @@ type ArtifactPreview = {
 }
 
 type GoalMode = 'butler' | 'assigned'
+
+/** 页内两种工作方式：派活给管家 / 直接问（原「自由对话」并进来）。 */
+type JarvisMode = 'assign' | 'ask'
 
 const PENDING_POLL_MS = 30_000
 
@@ -204,16 +209,20 @@ export function Butler({
   query,
   onOpenApproval,
   canApproveQueue,
+  provider,
   onOpenUsage,
   onConfigureModel,
 }: {
   query: string
   onOpenApproval: () => void
   canApproveQueue: boolean
+  /** 模型状态唯一来源；「直接问」与「派活」共用同一份，不各自推导。 */
+  provider: ActiveProviderStatus
   /** 402 预算拒绝的可点出口：用量页 / 模型管理。 */
   onOpenUsage?: () => void
   onConfigureModel?: () => void
 }) {
+  const [mode, setMode] = useState<JarvisMode>('assign')
   const ime = useImeComposition<HTMLInputElement>()
   // ── 一句话输入 ───────────────────────────────────────────────
   const [prompt, setPrompt] = useState('')
@@ -757,10 +766,79 @@ export function Butler({
   return (
     <div className="os-grid">
       <div className="os-span-12">
+        <div className="os-butler-modes" role="tablist" aria-label="贾维斯的工作方式">
+          <button
+            type="button"
+            role="tab"
+            className="os-butler-mode"
+            aria-selected={mode === 'assign'}
+            data-active={mode === 'assign' || undefined}
+            onClick={() => setMode('assign')}
+          >
+            派活给管家
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="os-butler-mode"
+            aria-selected={mode === 'ask'}
+            data-active={mode === 'ask' || undefined}
+            onClick={() => setMode('ask')}
+          >
+            直接问
+          </button>
+          <span className="os-hint">
+            {mode === 'assign'
+              ? '你下目标，管家拆解分派、给结论；只派一个人时用右边那张卡。'
+              : '不拆解、不派活：你自己问、自己翻，回答直接来自对话模型。'}
+          </span>
+        </div>
+      </div>
+
+      {mode === 'ask' && (
+        <>
+          <div className="os-span-12">
+            <div className="os-position" role="note">
+              <span>
+                <strong>直接问</strong>：不经过管家拆解，也不派给员工；需要拆解分派时切回「派活给管家」。
+              </span>
+              <span className="os-position-links">
+                <button
+                  className="os-btn os-btn-primary"
+                  style={{ width: 'auto' }}
+                  onClick={() => {
+                    const wrap = document.querySelector('.jarvis-input-wrap')
+                    wrap?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    wrap?.querySelector('textarea')?.focus()
+                  }}
+                >
+                  开始对话
+                </button>
+              </span>
+            </div>
+          </div>
+          <Card
+            title="直接问"
+            sub="在下面输入框里提问，回车发送；工具调用原样展示，不做摘要或美化"
+            span={12}
+            className="sc-panel-active sc-hud"
+          >
+            <ChatPanel
+              provider={provider}
+              onConfigureModel={onConfigureModel ?? (() => {})}
+              onOpenUsage={onOpenUsage}
+            />
+          </Card>
+        </>
+      )}
+
+      {mode === 'assign' && (
+        <>
+      <div className="os-span-12">
         <div className="os-position" role="note">
           <span>
             <strong>贾维斯</strong>：你下目标，它拆解分派，给结论。
-            想自己问、自己翻，去「自由对话」；任务与产出可在「目标与任务」「工作区文件」里看。
+            想自己问、自己翻，切到「直接问」；任务与产出可在「目标与任务」「工作区文件」里看。
           </span>
         </div>
       </div>
@@ -1701,6 +1779,8 @@ export function Butler({
           </div>
         </details>
       </Card>
+        </>
+      )}
     </div>
   )
 }

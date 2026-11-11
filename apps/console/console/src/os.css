@@ -2912,7 +2912,56 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   font-weight: 560;
 }
 
-/* ── 鎏灏管家 ─────────────────────────────────────────────────── */
+/* ── 贾维斯 ───────────────────────────────────────────────────── */
+
+/* 页内切换：派活给管家 / 直接问。两者共用同一份模型状态与出口。 */
+.os-butler-modes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--os-border);
+  border-radius: 12px;
+  background: var(--os-panel-2);
+}
+
+.os-butler-mode {
+  width: auto;
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--os-text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.os-butler-mode[data-active] {
+  background: var(--os-accent-soft);
+  border-color: color-mix(in srgb, var(--os-accent) 45%, transparent);
+  color: var(--os-accent-ink);
+  font-weight: 600;
+}
+
+.os-butler-mode:focus-visible {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+}
+
+.os-butler-modes .os-hint {
+  margin-left: auto;
+  padding-right: 6px;
+}
+
+@media (max-width: 900px) {
+  .os-butler-modes .os-hint {
+    margin-left: 0;
+    width: 100%;
+    padding: 0 6px 4px;
+  }
+}
 
 .os-butler-command {
   display: flex;

@@ -15,6 +15,14 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { Butler } from './Butler'
 import { findBannedTerms } from '../lib/accountCaps'
 import type { GoalDetail, GoalTask } from '../lib/operator'
+import { UNKNOWN_PROVIDER } from '../lib/providerStatus'
+
+// 「直接问」挂的是真实的对话面板；这里只验证页内切换，面板本身另有用例。
+vi.mock('../components/ChatPanel', () => ({
+  ChatPanel: () => <div data-testid="chat-panel" />,
+}))
+
+const PROVIDER = UNKNOWN_PROVIDER
 
 const EMPLOYEES = {
   agents: [],
@@ -322,7 +330,14 @@ afterEach(() => {
 })
 
 function renderPage(onOpenApproval = vi.fn()) {
-  return render(<Butler query="" onOpenApproval={onOpenApproval} canApproveQueue />)
+  return render(
+    <Butler
+      query=""
+      onOpenApproval={onOpenApproval}
+      canApproveQueue
+      provider={PROVIDER}
+    />,
+  )
 }
 
 async function submitCommand(text: string) {
@@ -332,6 +347,28 @@ async function submitCommand(text: string) {
     expect(fetchMock.mock.calls.some(([url]) => String(url) === '/v1/goals')).toBe(true),
   )
 }
+
+describe('贾维斯 · 页内切换', () => {
+  test('默认派活给管家；切到直接问才挂载对话面板，切回来不残留', () => {
+    renderPage()
+
+    const assign = screen.getByRole('tab', { name: '派活给管家' })
+    const ask = screen.getByRole('tab', { name: '直接问' })
+    expect(assign.getAttribute('aria-selected')).toBe('true')
+    expect(ask.getAttribute('aria-selected')).toBe('false')
+    expect(screen.queryByTestId('chat-panel')).toBeNull()
+
+    fireEvent.click(ask)
+    expect(ask.getAttribute('aria-selected')).toBe('true')
+    expect(assign.getAttribute('aria-selected')).toBe('false')
+    expect(screen.getByTestId('chat-panel')).toBeTruthy()
+    expect(screen.queryByLabelText('要让管家做什么')).toBeNull()
+
+    fireEvent.click(assign)
+    expect(screen.queryByTestId('chat-panel')).toBeNull()
+    expect(screen.getByLabelText('要让管家做什么')).toBeTruthy()
+  })
+})
 
 describe('鎏灏管家 · 一句话与运行中快照', () => {
   test('一句话输入走后台目标，运行中显示可推进的计时与拆解状态', async () => {
@@ -799,7 +836,14 @@ describe('鎏灏管家 · 待我确认', () => {
   })
 
   test('没有签发范围的账号：整块不渲染，也不请求待审批端点', async () => {
-    render(<Butler query="" onOpenApproval={vi.fn()} canApproveQueue={false} />)
+    render(
+      <Butler
+        query=""
+        onOpenApproval={vi.fn()}
+        canApproveQueue={false}
+        provider={PROVIDER}
+      />,
+    )
 
     expect(screen.queryByText('待我确认')).toBeNull()
     expect(screen.queryByText(/批准权限/)).toBeNull()

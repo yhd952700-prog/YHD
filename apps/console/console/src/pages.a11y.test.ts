@@ -126,14 +126,13 @@ describe('账号 / 运维 / 首屏后续七页', () => {
     expect(source).toContain("role={notice.tone === 'ok' ? 'status' : 'alert'}")
   })
 
-  test('七页没有纯图标无名称按钮', () => {
+  test('六页没有纯图标无名称按钮', () => {
     for (const page of [
       './pages/Identity.tsx',
       './pages/Members.tsx',
       './pages/Backup.tsx',
       './pages/Recovery.tsx',
       './pages/About.tsx',
-      './pages/Workbench.tsx',
       './pages/Operations.tsx',
     ]) {
       expect(read(page)).not.toContain('os-icon-btn')
@@ -147,10 +146,10 @@ describe('账号 / 运维 / 首屏后续七页', () => {
     expect(source).toContain('notices_text')
   })
 
-  test('数据中心与工作台的错误仍走 role="alert" / 状态区', () => {
+  test('数据中心与贾维斯的错误仍走 role="alert" / 状态区', () => {
     const operations = read('./pages/Operations.tsx')
     expect(operations).toContain('role="alert"')
-    const workbench = read('./pages/Workbench.tsx')
-    expect(workbench).not.toContain('os-icon-btn')
+    const butler = read('./pages/Butler.tsx')
+    expect(butler).not.toContain('os-icon-btn')
   })
 })

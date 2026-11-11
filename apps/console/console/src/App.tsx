@@ -75,7 +75,6 @@ import { DataCenter, SystemStatus } from './pages/Operations'
 import { Preflight } from './pages/Preflight'
 import { Settings } from './pages/Settings'
 import { About } from './pages/About'
-import { Workbench } from './pages/Workbench'
 import { EnterpriseOverview, ENTERPRISE_OVERVIEW_PAGE } from './pages/EnterpriseOverview'
 import { Org, ORG_PAGE } from './pages/Org'
 import { TaskCenter, TASK_CENTER_PAGE } from './pages/TaskCenter'
@@ -145,7 +144,6 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   office: { title: '办公室', sub: 'AI 员工的工位墙：谁在干活、干到哪、卡在哪' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
-  workbench: { title: '自由对话', sub: '你自己问、自己翻；想让管家拆解，去「贾维斯」' },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除系统内部记录）' },
   approval: { title: '审批中心', sub: '动作拦截与人工授权' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },
@@ -1039,6 +1037,7 @@ function App() {
           query={query}
           onOpenApproval={() => navigate('approval')}
           canApproveQueue={caps.canApproveQueue}
+          provider={provider}
           onOpenUsage={() => navigate('my-keys')}
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
@@ -1063,13 +1062,6 @@ function App() {
           query={query}
           onOpenSettings={() => navigate('settings')}
           onOpenUsage={() => navigate('my-keys')}
-        />
-      )}
-      {shown === 'workbench' && (
-        <Workbench
-          provider={provider}
-          onNavigate={(key) => navigate(key)}
-          onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
       {shown === 'data' && <DataCenter query={query} isRoot={caps.isRoot} />}

@@ -27,7 +27,7 @@ vi.mock('../components/DiagnosticsExport', () => ({
 }))
 
 import { Settings } from './Settings'
-import { Workbench } from './Workbench'
+import { Butler } from './Butler'
 
 const session: Session = {
   token: 'token',
@@ -83,11 +83,34 @@ describe('第一公里提示', () => {
     }
   }
 
-  test('工作台有显眼的「开始对话」入口，点击不会抛错', () => {
-    render(<Workbench provider={provider} onConfigureModel={() => {}} onNavigate={() => {}} />)
-    const button = screen.getByRole('button', { name: '开始对话' })
-    expect(button.className).toContain('os-btn-primary')
-    fireEvent.click(button)
+  test('贾维斯「直接问」有显眼的「开始对话」入口，点击不会抛错', () => {
+    // 页面会拉员工 / 目标等真实端点；这里只关心入口，其余请求一律 404。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ detail: 'not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    try {
+      render(
+        <Butler
+          query=""
+          onOpenApproval={() => {}}
+          canApproveQueue={false}
+          provider={provider}
+          onConfigureModel={() => {}}
+        />,
+      )
+      fireEvent.click(screen.getByRole('tab', { name: '直接问' }))
+      const button = screen.getByRole('button', { name: '开始对话' })
+      expect(button.className).toContain('os-btn-primary')
+      fireEvent.click(button)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   test('桌面壳设置页说明关窗会退到托盘、可从托盘重开', () => {
