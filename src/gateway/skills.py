@@ -30,9 +30,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel
 
 from .policy import require_admin_principal, require_human_principal
@@ -41,7 +50,26 @@ from .skill_bindings import (
     SkillBindingError,
     SkillBindingStore,
 )
-from .skill_import import McpConfigDetected, SkillImportError, parse_upload
+from .skill_import import McpConfigDetected, SkillImportError, ImportedSkill, parse_upload
+from .skill_install import (
+    MAX_TOTAL_BYTES,
+    SkillInstallError,
+    export_zip,
+    installed_dir,
+    stage_path,
+    stage_upload,
+    uninstall,
+)
+from .skill_runtime import (
+    SkillApprovalStore,
+    SkillRunRefused,
+    SkillRuntime,
+    SkillRuntimeError,
+    read_audit,
+    read_run,
+    resolve_interpreter,
+    sha256_file,
+)
 from .skill_store import (
     SkillConflict,
     SkillNotFound,
@@ -156,6 +184,55 @@ def _evaluate_current(record: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------- #
 # 序列化：风险 / 权限 / 占用一律在读取时现算
 # ---------------------------------------------------------------------- #
+def _runtime_view(record: Dict[str, Any]) -> Dict[str, Any]:
+    """运行时真实状态：有没有包、声明了哪些入口、哪些已授权。
+
+    读不出来时 ``state="unavailable"`` 且 ``allowed=False``，不假装可运行。
+    """
+    try:
+        runtime = SkillRuntime()
+        status = runtime.execution_status(record)
+        package = runtime.package(str(record.get("id") or "")) or {}
+    except Exception as exc:  # noqa: BLE001 - 运行时坏了要如实告知
+        logger.warning("skills: runtime unavailable for %s: %s", record.get("id"), exc)
+        return {
+            "declared": False,
+            "installed": False,
+            "state": "unavailable",
+            "allowed": False,
+            "approved_entrypoints": [],
+            "entrypoints": [],
+            "limits": {},
+            "package_hash": "",
+            "detail": f"技能运行时不可用：{type(exc).__name__}: {exc}",
+        }
+    declared = (package.get("runtime") or {}).get("entrypoints") or []
+    approved = set(status.get("approved_entrypoints") or [])
+    entrypoints = [
+        {
+            "id": entry.get("id"),
+            "label": entry.get("label") or entry.get("id"),
+            "interpreter": entry.get("interpreter"),
+            "script": entry.get("script"),
+            "network": bool(entry.get("network")),
+            "approved": str(entry.get("id") or "") in approved,
+        }
+        for entry in declared
+    ]
+    return {
+        "declared": bool(entrypoints),
+        "installed": bool(installed_dir(str(record.get("id") or ""))),
+        "state": status.get("state"),
+        "allowed": bool(status.get("allowed")),
+        "approved_entrypoints": sorted(approved),
+        "entrypoints": entrypoints,
+        "limits": dict((package.get("runtime") or {}).get("limits") or {}),
+        "package_hash": package.get("package_hash") or "",
+        "installed_at": package.get("installed_at") or "",
+        "detail": status.get("detail") or "",
+    }
+
+
 def _evaluate(
     record: Dict[str, Any],
     capability_index: Dict[str, Dict[str, Any]],
@@ -215,6 +292,8 @@ def _evaluate(
             }
         )
 
+    runtime_view = _runtime_view(record)
+
     return {
         "id": record.get("id"),
         "name": record.get("name"),
@@ -247,8 +326,9 @@ def _evaluate(
         "name_source": record.get("name_source") or "",
         "has_scripts": bool(record.get("has_scripts")),
         "script_refs": list(record.get("script_refs") or ()),
-        # 拍板：本版不执行脚本，恒为 false；前端据此标「含脚本，本机未启用」。
-        "execution_allowed": False,
+        # 只有"已安装 + 已启用 + 该入口已被 Boss 授权"才为 true。
+        "execution_allowed": runtime_view["allowed"],
+        "runtime": runtime_view,
         "import_report": list(record.get("import_report") or ()),
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
@@ -300,6 +380,30 @@ class SkillEnableRequest(BaseModel):
 class SkillBindRequest(BaseModel):
     #: 绑定目标员工（真实员工名，必须存在于员工库）。
     employee: str
+
+
+class SkillLocalInstallRequest(BaseModel):
+    """从本机路径安装技能包（目录 / .zip / .md / .json）。"""
+
+    path: str
+
+
+class SkillRunRequest(BaseModel):
+    """运行一个已声明的脚本入口。
+
+    ``params`` 会以 JSON 写入运行目录的 ``input.json`` 并通过 stdin 交给脚本；
+    只接受 JSON 值，不接受命令行拼接。
+    """
+
+    entrypoint: str
+    params: Dict[str, Any] = {}
+    employee: Optional[str] = None
+
+
+class SkillApprovalRequest(BaseModel):
+    """处理首次运行申请：``once`` 只放行本次，``always`` 记住（默认 90 天）。"""
+
+    mode: str = "once"
 
 
 # ---------------------------------------------------------------------- #
@@ -368,69 +472,85 @@ async def import_skill(
     file: UploadFile = File(...),
     principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
-    """从技能文件导入（``.md`` / ``.json``）。
+    """从技能包安装：``.zip`` / ``.md`` / ``.json``。
 
-    解析规则见 ``skill_import``：Agent Skills 的 ``SKILL.md`` 按 YAML
-    frontmatter 读 ``name``/``description``/``license``/``allowed-tools``/
-    ``metadata``，映射不了的字段存原文并写进 ``import_report``。
+    zip 走 ``skill_install`` 的安全解包：路径穿越、符号链接、盘符、``..``、
+    可执行文件、条目数/单文件/总量超限一律**拒绝整包**；先解到临时目录校验，
+    通过后才整体移入 ``<data>/skills/<skill_id>``，失败回滚到安装前状态。
 
-    **行为变更**：导入的技能一律落为「未启用」，由用户显式启用；旧版本会在
-    低风险时自动启用。旧数据不做迁移 —— 已存在的记录保留原有 ``enabled``，
-    新导入才走新规则。
-
-    压缩包与 MCP 配置都拒绝：前者会引入 zip-slip 与"导入即执行"，后者是
-    工具源而不是技能。
+    导入的技能一律落为「未启用」，且脚本**不会**因为安装了就能跑：第一次运行
+    还需要 Boss 单独授权。
     """
     filename = (file.filename or "").strip()
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if suffix not in ("md", "json"):
+    if suffix not in ("zip", "md", "json"):
         raise HTTPException(
             status_code=415,
             detail=(
-                "本版只支持 .md（Agent Skills）与 .json（本机技能清单）"
-                f"（收到「{filename or '未命名文件'}」）。压缩包导入尚未提供，"
-                "请解出单个技能文件后再导入。"
+                "技能安装接受 .zip（技能包）、.md（Agent Skills）或 .json（技能清单）"
+                f"（收到「{filename or '未命名文件'}」）。"
             ),
         )
 
-    raw = await file.read(_IMPORT_LIMIT_BYTES + 1)
-    if len(raw) > _IMPORT_LIMIT_BYTES:
+    limit = MAX_TOTAL_BYTES + 4 * 1024 * 1024 if suffix == "zip" else _IMPORT_LIMIT_BYTES
+    raw = await file.read(limit + 1)
+    if len(raw) > limit:
         raise HTTPException(
             status_code=413,
-            detail=f"技能文件超过 {_IMPORT_LIMIT_BYTES // 1024} KiB 上限，已拒绝导入。",
+            detail=(
+                f"「{filename}」超过 {limit // (1024 * 1024) if limit > _IMPORT_LIMIT_BYTES else limit // 1024}"
+                f" {'MB' if limit > _IMPORT_LIMIT_BYTES else 'KiB'} 上限，已拒绝安装。"
+            ),
         )
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail="技能文件不是 UTF-8 文本，无法解析。"
-        ) from exc
-    if not text.strip():
+    if not raw:
         raise HTTPException(status_code=400, detail="技能文件是空的。")
 
     try:
-        spec = parse_upload(filename, text)
-    except McpConfigDetected as exc:
-        # MCP 是工具源，不是技能：明确 415，并告诉用户正确的入口。
-        raise HTTPException(status_code=415, detail=str(exc)) from exc
-    except SkillImportError as exc:
+        with stage_upload(filename, raw) as staged:
+            text = staged.read_text()
+            if suffix != "zip" and not text.strip():
+                raise HTTPException(status_code=400, detail="技能文件是空的。")
+            try:
+                spec = parse_upload(staged.manifest_name, text)
+            except McpConfigDetected as exc:
+                raise HTTPException(status_code=415, detail=str(exc)) from exc
+            except SkillImportError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            materialize = suffix == "zip" or bool((spec.runtime or {}).get("entrypoints"))
+            return _install_parsed(
+                spec,
+                staged if materialize else None,
+                principal=principal,
+                origin=filename,
+                overwrite=False,
+            )
+    except SkillInstallError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+def _install_parsed(
+    spec: ImportedSkill,
+    staged: Any,
+    *,
+    principal: str,
+    origin: str,
+    overwrite: bool,
+) -> Dict[str, Any]:
+    """把解析结果落成技能记录（必要时连技能包一起落盘）。"""
     try:
         capabilities = normalize_capabilities(spec.capabilities)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     capability_index, _ = _load_capability_index()
     missing = [cap for cap in capabilities if cap not in capability_index]
-    if missing:
-        # 允许导入但风险记为未知：先让人看见"它要的能力本机没有"。
-        risk = "unknown"
-    else:
-        risk = "low"
+    risk = "low" if not missing else "unknown"
+    if not missing:
         for capability in capabilities:
             risk = _max_risk(risk, str(capability_index[capability]["risk"]))
 
+    files = list(staged.files) if staged is not None else list(spec.files)
     store = _store()
+    record: Optional[Dict[str, Any]] = None
     try:
         with bind_request_principal(principal, kind="human", source="http-request"):
             record = store.create(
@@ -442,8 +562,7 @@ async def import_skill(
                 declared_permissions=spec.permissions,
                 declared_risk=spec.declared_risk,
                 content=spec.content,
-                origin=filename,
-                # 行为变更：导入不再自动启用（无论风险高低）。
+                origin=origin,
                 enabled=False,
                 fmt=spec.format,
                 license=spec.license,
@@ -452,26 +571,56 @@ async def import_skill(
                 raw_frontmatter=spec.raw_frontmatter,
                 has_scripts=spec.has_scripts,
                 script_refs=spec.script_refs,
-                files=spec.files,
+                files=files,
                 name_source=spec.name_source,
                 import_report=spec.import_report,
-                execution_allowed=False,
+                execution_allowed=spec.execution_allowed,
+            )
+        skill_id = str(record.get("id") or "")
+        if staged is not None:
+            entrypoints = list((spec.runtime or {}).get("entrypoints") or [])
+            staged.finalize(entrypoints)
+            install_dir = staged.commit(skill_id, overwrite=overwrite)
+            runtime = {
+                "limits": dict((spec.runtime or {}).get("limits") or {}),
+                "entrypoints": entrypoints,
+            }
+            SkillRuntime().save_package(
+                skill_id,
+                {
+                    "skill_id": skill_id,
+                    "install_dir": install_dir,
+                    "origin": origin,
+                    "format": spec.format,
+                    "package_hash": staged.package_hash,
+                    "files": staged.hashes,
+                    "runtime": runtime,
+                    "installed_at": record.get("updated_at") or record.get("created_at"),
+                },
             )
     except SkillConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SkillInstallError as exc:
+        if record is not None:
+            _rollback_record(store, str(record.get("id") or ""))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
+        if record is not None:
+            _rollback_record(store, str(record.get("id") or ""))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     assignments, _ = _load_assignments(strict=False)
     bindings, bindings_error = _load_bindings()
     logger.info(
-        "skills: imported %s from %s by %s (format=%s, risk=%s, enabled=False)",
+        "skills: installed %s from %s by %s (format=%s, risk=%s, runtime=%s)",
         record.get("id"),
-        filename,
+        origin,
         principal,
         spec.format,
         risk,
+        bool((spec.runtime or {}).get("entrypoints")),
     )
     payload = _evaluate(
         record,
@@ -481,12 +630,63 @@ async def import_skill(
         bindings=bindings,
         bindings_error=bindings_error,
     )
-    payload["import_note"] = (
-        "导入已成功，但不会自动启用（行为变更）：请检查导入报告后手动启用。"
-        if not record.get("has_scripts")
-        else "导入已成功；该技能含脚本引用，本机未启用脚本执行，正文可作为提示词使用。"
-    )
+    if staged is not None and payload["runtime"]["declared"]:
+        payload["import_note"] = (
+            "安装完成，技能仍为「未启用」。启用后第一次运行脚本时，"
+            "还需要你单独点一次确认；确认后可按需记住该入口。"
+        )
+    elif spec.has_scripts:
+        payload["import_note"] = (
+            "安装完成，但清单里没有 runtime.entrypoints，脚本不会被运行；"
+            "正文仍会作为资料注入已绑定的员工。"
+        )
+    else:
+        payload["import_note"] = "安装完成，技能仍为「未启用」：请检查导入报告后手动启用。"
     return payload
+
+
+def _rollback_record(store: SkillStore, skill_id: str) -> None:
+    """安装包失败时把刚建的技能记录删掉，避免留下半装好的技能。"""
+    if not skill_id:
+        return
+    try:
+        store.delete(skill_id)
+    except Exception:  # noqa: BLE001 - 回滚尽力而为，但要留日志
+        logger.exception("skills: rollback record %s failed", skill_id)
+    try:
+        SkillRuntime().remove_package(skill_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("skills: rollback package %s failed", skill_id)
+
+
+@router.post("/install/local", status_code=201)
+def install_local(
+    payload: "SkillLocalInstallRequest",
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """从本机路径安装（目录 / .zip / .md / .json）。
+
+    Windows 没法用浏览器上传一个目录，所以目录安装走这个接口；路径必须由
+    Boss 自己在界面上填，服务端不做任何路径猜测。
+    """
+    try:
+        with stage_path(payload.path) as staged:
+            text = staged.read_text()
+            try:
+                spec = parse_upload(os.path.basename(staged.main_file), text)
+            except McpConfigDetected as exc:
+                raise HTTPException(status_code=415, detail=str(exc)) from exc
+            except SkillImportError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return _install_parsed(
+                spec,
+                staged,
+                principal=principal,
+                origin=payload.path,
+                overwrite=False,
+            )
+    except SkillInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/{skill_id}")
@@ -562,6 +762,14 @@ def delete_skill(
     except SkillBindingError as exc:
         # 技能已删、绑定残留：必须如实说，否则下次列表会指向不存在的技能。
         logger.error("skills: binding cleanup failed for %s: %s", skill_id, exc)
+    # 清掉已安装的技能包与登记；删失败只记日志，不让用户以为记录还在。
+    if not uninstall(skill_id):
+        logger.warning("skills: package dir for %s not removed (absent or locked)", skill_id)
+    try:
+        SkillRuntime().remove_package(skill_id)
+        SkillApprovalStore().revoke_all(skill_id=skill_id, revoked_by=principal)
+    except Exception:  # noqa: BLE001 - 清理尽力而为
+        logger.exception("skills: runtime cleanup failed for %s", skill_id)
     logger.info("skills: deleted %s by %s", skill_id, principal)
     return {"deleted": True, "skill_id": removed.get("id"), "name": removed.get("name")}
 
@@ -684,6 +892,9 @@ def test_skill(
     技能返回 ``passed=null`` 并说明"没有可验证的执行面"，绝不返回"通过"。
     """
     record = _get_or_404(skill_id)
+    view = _runtime_view(record)
+    if view["declared"]:
+        return _test_runtime(skill_id, view)
     capabilities = [str(c) for c in (record.get("capabilities") or [])]
     capability_index, capability_error = _load_capability_index()
     if capability_error:
@@ -787,4 +998,370 @@ def disable_skill(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("skills: disabled %s by %s", skill_id, principal)
     return _evaluate_current(updated)
+
+
+# ---------------------------------------------------------------------- #
+# 脚本运行时：检查 / 运行 / 授权 / 审计 / 导出
+# ---------------------------------------------------------------------- #
+def _test_runtime(skill_id: str, view: Dict[str, Any]) -> Dict[str, Any]:
+    """核对已安装脚本：解释器在不在、文件在不在、哈希和安装时是否一致。
+
+    只做静态核对，**不执行脚本**；真正的执行必须走 ``/{id}/run`` 并由 Boss 授权。
+    """
+    root = installed_dir(skill_id)
+    package = SkillRuntime().package(skill_id) or {}
+    files = dict(package.get("files") or {})
+    if not root:
+        return {
+            "skill_id": skill_id,
+            "passed": False,
+            "detail": "技能声明了脚本入口，但本机没有已安装的包目录，请重新安装。",
+            "entrypoints": [],
+        }
+    checks: List[Dict[str, Any]] = []
+    passed = True
+    for entry in view["entrypoints"]:
+        interpreter = str(entry.get("interpreter") or "")
+        rel = str(entry.get("script") or "")
+        exe = resolve_interpreter(interpreter)
+        path = os.path.join(root, *rel.split("/"))
+        exists = os.path.isfile(path)
+        digest = sha256_file(path) if exists else ""
+        intact = bool(digest) and digest == str(files.get(rel) or "")
+        ok = bool(exe) and exists and intact
+        passed = passed and ok
+        if not exe:
+            reason = f"本机没有可用的 {interpreter} 解释器"
+        elif not exists:
+            reason = "脚本文件不存在"
+        elif not intact:
+            reason = "脚本与安装时记录的哈希不一致（可能被改动）"
+        else:
+            reason = "可以运行；首次运行仍需授权"
+        checks.append(
+            {
+                "id": entry.get("id"),
+                "interpreter": interpreter,
+                "interpreter_path": exe or "",
+                "script": rel,
+                "exists": exists,
+                "script_sha256": digest,
+                "hash_matches": intact,
+                "passed": ok,
+                "detail": reason,
+            }
+        )
+    return {
+        "skill_id": skill_id,
+        "passed": passed,
+        "detail": (
+            "脚本入口静态核对通过；这是「受限执行」，不是沙箱（读和网络拦不住）。"
+            if passed
+            else "有脚本入口未通过静态核对，见 entrypoints。"
+        ),
+        "entrypoints": checks,
+    }
+
+
+@router.get("/{skill_id}/files")
+def list_skill_files(
+    skill_id: str,
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    """已安装包的文件清单与哈希。没安装包时返回空清单并说明。"""
+    _get_or_404(skill_id)
+    package = SkillRuntime().package(skill_id) or {}
+    files = package.get("files") or {}
+    return {
+        "skill_id": skill_id,
+        "installed": bool(installed_dir(skill_id)),
+        "package_hash": package.get("package_hash") or "",
+        "installed_at": package.get("installed_at") or "",
+        "origin": package.get("origin") or "",
+        "files": [
+            {"path": rel, "sha256": digest}
+            for rel, digest in sorted(files.items())
+        ],
+    }
+
+
+@router.get("/{skill_id}/export")
+def export_skill(
+    skill_id: str,
+    principal: str = Depends(require_human_principal),
+) -> Response:
+    """把已安装的技能包导出成 zip。"""
+    _get_or_404(skill_id)
+    try:
+        blob, name = export_zip(skill_id)
+    except SkillInstallError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=blob,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{skill_id}.zip"'},
+    )
+
+
+@router.post("/{skill_id}/upgrade", status_code=200)
+async def upgrade_skill(
+    skill_id: str,
+    file: UploadFile = File(...),
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """用新包覆盖同一个技能（保留技能 id 与员工绑定）。
+
+    失败时回滚到升级前的包目录 —— 不会留下"半新半旧"的技能。升级后包的哈希
+    会变，之前"记住的授权"自动失效，第一次运行需要重新确认。
+    """
+    record = _get_or_404(skill_id)
+    filename = (file.filename or "").strip()
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if suffix not in ("zip", "md", "json"):
+        raise HTTPException(
+            status_code=415,
+            detail=f"升级只接受 .zip / .md / .json（收到「{filename or '未命名文件'}」）。",
+        )
+    limit = MAX_TOTAL_BYTES + 4 * 1024 * 1024 if suffix == "zip" else _IMPORT_LIMIT_BYTES
+    raw = await file.read(limit + 1)
+    if len(raw) > limit:
+        raise HTTPException(status_code=413, detail=f"「{filename}」超过安装上限，已拒绝。")
+    try:
+        with stage_upload(filename, raw) as staged:
+            try:
+                spec = parse_upload(filename, staged.read_text())
+            except McpConfigDetected as exc:
+                raise HTTPException(status_code=415, detail=str(exc)) from exc
+            except SkillImportError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            entrypoints = list((spec.runtime or {}).get("entrypoints") or [])
+            staged.finalize(entrypoints)
+            install_dir = staged.commit(skill_id, overwrite=True)
+            SkillRuntime().save_package(
+                skill_id,
+                {
+                    "skill_id": skill_id,
+                    "install_dir": install_dir,
+                    "origin": filename,
+                    "format": spec.format,
+                    "package_hash": staged.package_hash,
+                    "files": staged.hashes,
+                    "runtime": {
+                        "limits": dict((spec.runtime or {}).get("limits") or {}),
+                        "entrypoints": entrypoints,
+                    },
+                    "installed_at": record.get("updated_at") or record.get("created_at"),
+                },
+            )
+    except SkillInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("skills: upgraded %s from %s by %s", skill_id, filename, principal)
+    payload = _evaluate_current(_get_or_404(skill_id))
+    payload["upgrade_note"] = (
+        "升级完成，包哈希已变化：之前记住的运行授权自动失效，下次运行需要重新确认。"
+    )
+    return payload
+
+
+@router.post("/{skill_id}/run")
+def run_skill(
+    skill_id: str,
+    payload: SkillRunRequest,
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    """运行一个脚本入口。
+
+    没授权时返回 ``202 + state=pending_approval``，由 Boss 调
+    ``/v1/skills/approvals/{approval_id}/approve`` 后才真正执行。
+    输出会同时写进运行记录，并由 ``skill_prompt`` 注入已绑定员工的上下文。
+    """
+    record = _get_or_404(skill_id)
+    entrypoint = str(payload.entrypoint or "").strip()
+    if not entrypoint:
+        raise HTTPException(status_code=400, detail="entrypoint 不能为空。")
+    try:
+        state, body = SkillRuntime().run(
+            record=record,
+            entrypoint_id=entrypoint,
+            params=dict(payload.params or {}),
+            requester=principal,
+            employee=payload.employee,
+        )
+    except SkillRunRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SkillRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    logger.info("skills: run %s/%s -> %s by %s", skill_id, entrypoint, state, principal)
+    if state == "pending_approval":
+        return {
+            "state": state,
+            "skill_id": skill_id,
+            "approval": {
+                "approval_id": body.get("approval_id"),
+                "skill_name": body.get("skill_name"),
+                "entrypoint": body.get("entrypoint"),
+                "interpreter": body.get("interpreter"),
+                "script": body.get("script"),
+                "network": bool(body.get("network")),
+                "limits": body.get("limits") or {},
+                "requested_at": body.get("requested_at"),
+            },
+            "notice": (
+                "首次运行需要你确认。确认前不会启动任何进程。"
+                "注意：这是受限执行，不是沙箱，读文件与联网拦不住。"
+            ),
+        }
+    return {"state": state, "skill_id": skill_id, "run": _public_run(body)}
+
+
+def _public_run(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "run_id": result.get("run_id"),
+        "skill_id": result.get("skill_id"),
+        "entrypoint_id": result.get("entrypoint_id"),
+        "status": result.get("status"),
+        "exit_code": result.get("exit_code"),
+        "timed_out": result.get("timed_out"),
+        "duration_ms": result.get("duration_ms"),
+        "peak_memory_bytes": result.get("peak_memory_bytes"),
+        "cpu_ms": result.get("cpu_ms"),
+        "isolation": result.get("isolation"),
+        "limits": result.get("limits") or {},
+        "summary": result.get("summary") or "",
+        "result": result.get("result"),
+        "stdout": result.get("stdout") or "",
+        "stderr": result.get("stderr") or "",
+        "truncated_bytes": result.get("truncated_bytes") or 0,
+        "finished_at": result.get("finished_at"),
+    }
+
+
+@router.get("/runs/{run_id}")
+def get_run(
+    run_id: str,
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    result = read_run(run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"没有找到运行记录「{run_id}」。")
+    return _public_run(result)
+
+
+@router.get("/{skill_id}/approvals")
+def list_approvals(
+    skill_id: str,
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    """列出待确认的申请与已记住的授权（可在这里逐条清除）。"""
+    _get_or_404(skill_id)
+    store = SkillApprovalStore()
+    remembered = [
+        {
+            "approval_id": row.get("approval_id"),
+            "entrypoint": row.get("entrypoint"),
+            "script": row.get("script"),
+            "mode": row.get("mode"),
+            "approved_by": row.get("approved_by"),
+            "approved_at": row.get("approved_at"),
+            "expires_at": row.get("expires_at"),
+        }
+        for row in store.remembered(skill_id)
+    ]
+    pending = [
+        {
+            "approval_id": row.get("approval_id"),
+            "entrypoint": row.get("entrypoint"),
+            "script": row.get("script"),
+            "requested_by": row.get("requested_by"),
+            "requested_at": row.get("requested_at"),
+        }
+        for row in store.pending(skill_id)
+    ]
+    return {"skill_id": skill_id, "remembered": remembered, "pending": pending}
+
+
+@router.post("/approvals/{approval_id}/approve")
+def approve_run(
+    approval_id: str,
+    payload: Optional[SkillApprovalRequest] = None,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """批准一次运行申请。``mode=once`` 只放行这次；``always`` 记住（90 天）。"""
+    request = payload or SkillApprovalRequest()
+    try:
+        row = SkillApprovalStore().approve(
+            approval_id, mode=request.mode, approved_by=principal
+        )
+    except SkillRunRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    logger.info(
+        "skills: approval %s for %s mode=%s by %s",
+        approval_id,
+        row.get("skill_id"),
+        row.get("mode"),
+        principal,
+    )
+    return {
+        "approved": True,
+        "approval": {
+            "approval_id": row.get("approval_id"),
+            "skill_id": row.get("skill_id"),
+            "entrypoint": row.get("entrypoint"),
+            "mode": row.get("mode"),
+            "expires_at": row.get("expires_at"),
+        },
+        "next": "请再点一次运行；这次会真的执行脚本。",
+    }
+
+
+@router.post("/approvals/{approval_id}/reject")
+def reject_run(
+    approval_id: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    try:
+        row = SkillApprovalStore().reject(approval_id, rejected_by=principal)
+    except SkillRunRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"rejected": True, "approval_id": row.get("approval_id")}
+
+
+@router.delete("/approvals/{approval_id}")
+def revoke_approval(
+    approval_id: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """清除一条"记住的授权"：之后该入口再次运行需要重新确认。"""
+    try:
+        row = SkillApprovalStore().revoke(approval_id, revoked_by=principal)
+    except SkillRunRefused as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("skills: revoked approval %s by %s", approval_id, principal)
+    return {"revoked": True, "approval_id": row.get("approval_id")}
+
+
+@router.delete("/{skill_id}/approvals")
+def revoke_skill_approvals(
+    skill_id: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """一次清掉某个技能所有"记住的授权"。"""
+    cleared = SkillApprovalStore().revoke_all(skill_id=skill_id, revoked_by=principal)
+    logger.info("skills: revoked %d approvals for %s by %s", cleared, skill_id, principal)
+    return {"revoked": cleared, "skill_id": skill_id}
+
+
+@router.get("/{skill_id}/audit")
+def get_audit(
+    skill_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    try:
+        rows = read_audit(skill_id, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - 审计读不出来要如实说
+        raise HTTPException(
+            status_code=503, detail=f"读取审计记录失败：{type(exc).__name__}: {exc}"
+        ) from exc
+    return {"skill_id": skill_id, "total": len(rows), "events": rows}
 

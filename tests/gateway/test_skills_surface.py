@@ -261,13 +261,96 @@ def test_mcp_config_is_rejected_with_tool_center_hint(client):
     assert "工具中心" in detail
 
 
-def test_import_rejects_archive_and_oversize(client):
-    rejected = _import(client, "bundle.zip", b"PK\x03\x04")
-    assert rejected.status_code == 415, rejected.text
-    assert "压缩包" in rejected.json()["detail"]
+def test_import_rejects_broken_archive_and_oversize(client):
+    """坏 zip 不再按"不支持压缩包"拒绝，而是按"不是有效 zip"拒绝。"""
+    broken = _import(client, "bundle.zip", b"PK\x03\x04")
+    assert broken.status_code == 400, broken.text
+    assert "zip" in broken.json()["detail"].lower()
 
     too_big = _import(client, "big.md", b"# x\n" + b"a" * (256 * 1024))
     assert too_big.status_code == 413, too_big.text
+
+
+def _zip(entries: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+def test_import_zip_installs_skill_with_runtime(client):
+    """zip 安装后：包目录落盘、entrypoint 带脚本哈希、仍未启用。"""
+    skill_md = (
+        "---\n"
+        "name: zip-demo\n"
+        "description: 从 zip 安装的技能\n"
+        "runtime:\n"
+        "  entrypoints:\n"
+        "    - id: main\n"
+        "      interpreter: python\n"
+        "      script: scripts/run.py\n"
+        "---\n\n正文。\n"
+    )
+    payload = _zip(
+        {
+            "zip-demo/SKILL.md": skill_md.encode("utf-8"),
+            "zip-demo/scripts/run.py": b"print('hello')\n",
+        }
+    )
+    response = _import(client, "zip-demo.zip", payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["name"] == "zip-demo"
+    assert body["enabled"] is False
+    assert body["runtime"]["installed"] is True
+    assert body["runtime"]["declared"] is True
+    assert body["execution_allowed"] is False
+    assert body["runtime"]["entrypoints"][0]["id"] == "main"
+
+    files = client.get(f"/v1/skills/{body['id']}/files", headers=_headers())
+    assert files.status_code == 200, files.text
+    listing = {row["path"] for row in files.json()["files"]}
+    assert listing == {"SKILL.md", "scripts/run.py"}
+
+    exported = client.get(f"/v1/skills/{body['id']}/export", headers=_headers())
+    assert exported.status_code == 200
+    assert exported.content[:2] == b"PK"
+
+
+def test_zip_path_traversal_is_rejected_and_names_the_entry(client):
+    payload = _zip(
+        {
+            "SKILL.md": b"---\nname: evil\n---\n",
+            "../escape.py": b"print('pwn')\n",
+        }
+    )
+    response = _import(client, "evil.zip", payload)
+    assert response.status_code == 400, response.text
+    assert "escape.py" in response.json()["detail"]
+
+
+def test_zip_rejects_symlink_and_executable_entries(client):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("SKILL.md", "---\nname: link\n---\n")
+        info = zipfile.ZipInfo("scripts/run.py")
+        info.external_attr = (0o120777 << 16)
+        archive.writestr(info, "/etc/passwd")
+    response = _import(client, "link.zip", buffer.getvalue())
+    assert response.status_code == 400, response.text
+    assert "符号链接" in response.json()["detail"]
+
+    exe = _zip({"SKILL.md": b"---\nname: exe\n---\n", "evil.exe": b"MZ"})
+    rejected = _import(client, "exe.zip", exe)
+    assert rejected.status_code == 400, rejected.text
+    assert "evil.exe" in rejected.json()["detail"]
 
 
 # ---------------------------------------------------------------------- #

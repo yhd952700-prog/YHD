@@ -39,7 +39,7 @@ describe('技能中心', () => {
     expect(empty.textContent).toContain('不会用占位数字或示例数据代替')
 
     expect(screen.getByRole('button', { name: '创建技能' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('button', { name: '导入技能' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '安装技能' })).toHaveProperty('disabled', true)
     expect(screen.getByLabelText('技能名称')).toHaveProperty('disabled', true)
   })
 
@@ -137,23 +137,29 @@ describe('技能中心', () => {
     expect(calls).toContain('POST /v1/skills/weekly-report/test')
   })
 
-  test('导入只收 .md / .json；选 zip 时明确提示不支持及安全原因', async () => {
+  test('安装支持 .zip / .md / .json，并在安装页显眼说明执行边界', async () => {
     stubSkills(() => json({ skills: [] }))
     render(<SkillCenter />)
 
-    const input = (await screen.findByLabelText('技能文件')) as HTMLInputElement
-    expect(input.accept).toBe('.md,.json')
+    const input = (await screen.findByLabelText(
+      '技能包文件（.zip / .md / .json）',
+    )) as HTMLInputElement
+    expect(input.accept).toBe('.zip,.md,.json')
+
+    const boundary = screen.getByTestId('skills-execution-boundary')
+    expect(boundary.textContent).toContain('受限执行，不是沙箱')
+    expect(boundary.textContent).toContain('拦不住')
 
     fireEvent.change(input, {
       target: { files: [new File(['zip'], 'skill.zip', { type: 'application/zip' })] },
     })
+    expect(screen.getByRole('button', { name: '安装技能' })).not.toHaveProperty('disabled', true)
 
+    // 范围之外的扩展名仍然明确拒绝，不静默忽略。
+    fireEvent.change(input, {
+      target: { files: [new File(['x'], 'skill.exe', { type: 'application/octet-stream' })] },
+    })
     const notice = await screen.findByTestId('skills-import-notice')
-    expect(notice.textContent).toContain('不支持导入压缩包')
-    expect(notice.textContent).toContain('解包')
-    expect(notice.textContent).toContain('安全')
-    expect(notice.textContent).toContain('.md 或 .json')
-    // 没有被接受的文件不能触发导入。
-    expect(screen.getByRole('button', { name: '导入技能' })).toHaveProperty('disabled', true)
+    expect(notice.textContent).toContain('只支持 .zip / .md / .json')
   })
 })
