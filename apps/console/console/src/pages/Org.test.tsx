@@ -16,6 +16,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Org } from './Org'
 import type { OrgAssignment, OrgImpact, OrgTreeNode } from '../lib/org'
 
+// 11 条用例本身要 3.2s（≈290ms/条），全量时 74 个 jsdom 文件抢 CPU，
+// 默认 1s 的 findBy/waitFor 偶发不够用。给本文件放宽单测超时，
+// 不改并发、不加 retry——页面本身没有串行慢请求，这里买的是调度余量。
+vi.setConfig({ testTimeout: 10_000 })
+
 // ── 测试数据 ────────────────────────────────────────────────────
 
 function json(status: number, body: unknown): Response {
