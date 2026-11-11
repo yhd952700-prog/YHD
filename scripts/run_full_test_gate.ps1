@@ -14,6 +14,7 @@
 #   3. 无论如何 exit $rc，让调用方（CI / 出包脚本）拿到真实结论，而不是"日志一看没事"。
 param(
     [int]$Parallel = 0,               # >0 时用 xdist：-n N；0 表示串行
+    [string]$Dist = "",               # 例如 loadgroup；空则用 xdist 默认
     [string]$Path = "tests",          # 目标路径；自检/定向时传具体文件
     [string]$LogPath = "D:\cache\temp\pytest-full-gate.log",
     [string]$Python = ".\.venv\Scripts\python.exe"
@@ -22,6 +23,7 @@ param(
 $ErrorActionPreference = "Continue"
 $pytestArgs = @($Path, "-q")
 if ($Parallel -gt 0) { $pytestArgs += @("-n", "$Parallel") }
+if ($Dist) { $pytestArgs += @("--dist", $Dist) }
 
 $headBefore = (git rev-parse --short HEAD).Trim()
 $started = Get-Date
