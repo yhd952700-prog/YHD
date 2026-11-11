@@ -207,6 +207,8 @@ signing/private/
 # docs/audit/evidence/    —— 审计现场截图（maintenance-root-visible.png 等）。
 /artifacts/client-split/
 /docs/audit/evidence/
+# shots/ —— 本地验收截图，不入库（截图留原地，历史报告里的链接不能断）。
+/shots/
 
 # 内部协作清单（不随包、不入库）
 /src/selfmod/T1-REMAINING-CHECKLIST.md
