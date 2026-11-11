@@ -37,7 +37,7 @@ from src.kernels.context import ContextKernel, ContextInput, ContextInputType, c
 from src.kernels.capability import get_capability_registry, CapabilityScope, check_capability_scope
 from src.kernels.event import get_event_bus, publish_event, EventScope, EventPriority
 from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
-from src.kernels._crosscutting import kernel_action, kernel_action_correlation_id
+from src.kernels._crosscutting import kernel_action, kernel_action_correlation_id, task_attribution
 from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
 
 logger = logging.getLogger("liuhao.kernel.execution")
@@ -2306,7 +2306,7 @@ class ExecutionEngine:
                     # （串行路径看不出问题）。逐次复制调用方上下文再 run。
                     executor.submit(
                         contextvars.copy_context().run,
-                        self._execute_task,
+                        self._execute_task_attributed,
                         ctx,
                         task,
                         verification_criteria,
@@ -2675,6 +2675,30 @@ class ExecutionEngine:
         if upstream:
             inputs["upstream"] = upstream
         return inputs
+
+    def _execute_task_attributed(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Task]], None]] = None,
+    ) -> None:
+        """给任务内的动作打上「哪个员工、哪个任务、哪条 goal」再执行。
+
+        全权模式下员工/定时任务自己触发的动作不再被拦，事后能不能说清
+        「谁干的」全靠这层归属。``assigned_agent`` 是拆解器/点名指派留下的
+        员工标识；没有就记 None，绝不拿用户身份顶替（principal_class 固定
+        ``SYSTEM_PRINCIPAL``）。
+        """
+        with task_attribution(
+            employee=task.assigned_agent,
+            task_id=task.id,
+            goal_id=task.goal_id,
+        ):
+            self._execute_task(
+                ctx, task, verification_criteria, stop_event, on_task_progress
+            )
 
     def _execute_task(
         self,

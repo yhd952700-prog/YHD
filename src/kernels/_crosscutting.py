@@ -87,12 +87,13 @@ package (which has no ``__init__.py``).
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
 import logging
 import os
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Callable, Dict, Iterator, Optional
 
@@ -464,6 +465,9 @@ def _resolve_audit_actor(
         }
         if policy_actor.get("sovereignty_claim"):
             out["sovereignty_claim"] = policy_actor["sovereignty_claim"]
+        if policy_actor.get("authority_mode"):
+            # 完全授权模式下的按任务继承：不是主权窗口，也没有 grant。
+            out["authority_mode"] = policy_actor["authority_mode"]
         return out
     actor_type = policy_actor.get("type", "service")
     claim = policy_actor.get("sovereignty_claim")
@@ -484,7 +488,14 @@ def _resolve_audit_actor(
         "kind": actor_type,
         "principal": policy_actor["principal"],
         "source": (
-            "sovereignty-window" if actor_type == "human" else "service-default"
+            "authority-mode-full"
+            if actor_type == "service" and policy_actor.get("authority_mode")
+            else ("sovereignty-window" if actor_type == "human" else "service-default")
+        ),
+        **(
+            {"authority_mode": policy_actor["authority_mode"]}
+            if policy_actor.get("authority_mode")
+            else {}
         ),
     }
 
@@ -508,7 +519,7 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
     except Exception:  # pragma: no cover - fence import must never break audit
         _fctx = None
     try:
-        from src.kernels.audit import log_event, AuditEventType, AuditScope
+        from src.kernels.audit import AuditEventType, AuditScope, log_event
 
         # A2: resolve the actor through the Identity Kernel so the audit record
         # and the authorization decision name the same identity, in the same key
@@ -572,6 +583,13 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 # under a revoked grant is indistinguishable from one that never
                 # claimed human authority at all.
                 "sovereignty_claim": actor.get("sovereignty_claim"),
+                # 完全授权模式的放行依据。与 sovereignty_grant 分开记：这条
+                # 通道没有审批凭据，只有「当前进程处于 full 模式」。
+                "authority_mode": actor.get("authority_mode"),
+                # 全量审计（老板 2026-11-11 要求）：全权模式下员工/定时任务
+                # 自己触发的动作，必须能追到「哪个员工、哪个任务、哪条 goal」。
+                # 没绑定任务上下文时整块为 None，绝不猜。
+                "task_attribution": _task_attribution_payload(),
                 # A1/U-1: why a call that *returned* is nonetheless a refusal.
                 # Without it, a refused impersonation reads as a successful
                 # creation in the authoritative chain.
@@ -674,7 +692,9 @@ def _sovereignty_claim_state(sov: Any, action: str) -> Optional[str]:
     return None
 
 
-def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[str], Dict[str, str]]:
+def _adjudicate(
+    action: str, risk_level: str
+) -> tuple[Optional[str], Optional[str], Dict[str, str]]:
     """Return ``(decision, rule_id, actor)`` recorded for ``action``.
 
     The actor is the built-in **internal service principal** rather than an
@@ -691,10 +711,10 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
     additive and must never break or delay the wrapped call on that account.
     """
     try:
-        from src.kernels.identity import INTERNAL_SERVICE_PRINCIPAL
-        from src.kernels.policy import evaluate_policy_simple
         from src.kernels._risk_classification import ENFORCED_TIERS, RiskTier
         from src.kernels._sovereignty import get_active_sovereignty
+        from src.kernels.identity import INTERNAL_SERVICE_PRINCIPAL
+        from src.kernels.policy import evaluate_policy_simple
 
         # Policy C-3: if a verified human has delegated authority for THIS
         # action (least-privilege -- only the enumerated actions, and only
@@ -782,6 +802,25 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
             if len(parts) == 3 and parts[0] == "RULE":
                 rule_id = parts[1]
                 break
+
+        # --- 完全授权模式：所有执行主体一律放行（2026-11-11 老板拍板） ------- #
+        # 覆盖用户手动派活、AI 员工、定时触发、自主接活、多级委派 —— 不再区分
+        # 调用来源，也不要求 correlation_id。审计不降级：``policy_rule`` 写明
+        # 放行依据，归属（哪个员工/哪个任务）由 ``task_attribution`` 一并落库。
+        # 收回是全权模式唯一的例外：设置页总闸走 ``revoke_now``，立即生效。
+        if verdict != "allow":
+            try:
+                from src.security.authority_mode import is_full
+
+                if is_full():
+                    verdict = "allow"
+                    rule_id = "authority_mode_full"
+                    actor = {**actor, "authority_mode": "full"}
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "authority-mode check failed for %r: %s", action, exc
+                )
+
         return verdict, rule_id, actor
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("kernel_action policy adjudication failed for %r: %s", action, exc)
@@ -848,6 +887,61 @@ def authority_confirm_state():
             _G2_CONFIRM_STATE.reset(token)
 
     return _ctx
+
+
+@dataclass(frozen=True)
+class _TaskAttribution:
+    """「这条动作是谁在哪个任务里做的」。缺失即 ``None``，绝不猜。"""
+
+    employee: str | None
+    task_id: str | None
+    goal_id: str | None
+
+
+_TASK_ATTR: ContextVar[_TaskAttribution | None] = ContextVar(
+    "kernel_action_task_attribution", default=None
+)
+
+
+@contextmanager
+def task_attribution(
+    *,
+    employee: str | None = None,
+    task_id: str | None = None,
+    goal_id: str | None = None,
+) -> Iterator[None]:
+    """给任务内产生的动作打上归属（全权模式下的全量审计需要）。
+
+    由执行内核在每条任务开始时绑定；``@kernel_action`` 把它写进审计的
+    ``details.task_attribution``，于是「员工自己触发」的动作也能回答：
+    哪个员工、哪个任务、哪条 goal。
+
+    ``principal_class`` 固定为 ``SYSTEM_PRINCIPAL``：员工/后台是以系统主体
+    身份执行，不是用户的身份。这样事后看记录不会把员工的越权误记成用户本人。
+    """
+    token = _TASK_ATTR.set(
+        _TaskAttribution(
+            employee=str(employee) if employee else None,
+            task_id=str(task_id) if task_id else None,
+            goal_id=str(goal_id) if goal_id else None,
+        )
+    )
+    try:
+        yield
+    finally:
+        _TASK_ATTR.reset(token)
+
+
+def _task_attribution_payload() -> Dict[str, str | None] | None:
+    attr = _TASK_ATTR.get()
+    if attr is None:
+        return None
+    return {
+        "principal_class": "SYSTEM_PRINCIPAL",
+        "employee": attr.employee,
+        "task_id": attr.task_id,
+        "goal_id": attr.goal_id,
+    }
 
 
 def _authority_mode_is_full() -> bool:
