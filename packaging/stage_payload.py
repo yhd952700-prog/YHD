@@ -33,7 +33,6 @@ import json
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
@@ -46,7 +45,7 @@ from typing import Any, Dict, Iterable, List, Set, Tuple
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "dist" / "payload"
 CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
-ICON_PNG = REPO_ROOT / "apps" / "console" / "console" / "public" / "icon-192.png"
+APP_ICON_ICO = REPO_ROOT / "packaging" / "assets" / "liuhao-app.ico"
 LICENSES_DIR = REPO_ROOT / "packaging" / "licenses"
 
 #: 上游 wheel **未随包**许可证文本的发行包：构建时把上游 LICENSE 原文补进
@@ -1459,19 +1458,17 @@ def _validate_runtime(app_dir: Path) -> None:
     print(f"      运行时自检通过（Python {proc.stdout.strip()}，含 tkinter 与 pywin32）")
 
 
-def _write_ico(png: Path, out: Path) -> bool:
-    """把 PNG 直接封装成单图 ICO（Windows Vista+ 支持 PNG 压缩图标）。"""
-    if not png.is_file():
+def _write_ico(source: Path, out: Path) -> bool:
+    """把成品多帧 ICO 原样写入安装树。
+
+    品牌线交付的 ``liuhao-app.ico`` 自带 16/20/24/32/48/64/256 七档，
+    Windows 会按 DPI 自选最合适的一帧；不再拿单张 192 PNG 缩放封单帧，
+    否则高 DPI 下任务栏/开始菜单图标会发糊。
+    """
+    if not source.is_file():
         return False
-    size = 192
-    data = png.read_bytes()
-    header = struct.pack("<HHH", 0, 1, 1)
-    entry = struct.pack(
-        "<BBBBHHII",
-        size % 256, size % 256, 0, 0, 1, 32, len(data), 6 + 16,
-    )
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(header + entry + data)
+    out.write_bytes(source.read_bytes())
     return True
 
 
@@ -1570,7 +1567,7 @@ def build(out_dir: Path, version: str, prune: bool = True) -> int:
     notices_count = _copy_notices(app_dir)
     sbom_bytes = _write_installed_sbom(app_dir)
     license_count = _copy_product_license(app_dir)
-    icon_ok = _write_ico(ICON_PNG, app_dir / "assets" / "liuhao.ico")
+    icon_ok = _write_ico(APP_ICON_ICO, app_dir / "assets" / "liuhao.ico")
     print(f"      入口     -> LiuHao.bat / START-HERE.txt"
           f"{' / assets/liuhao.ico' if icon_ok else ''}")
     print(f"      合规材料 -> THIRD-PARTY-NOTICES.txt / licenses（{notices_count} 个文件）"

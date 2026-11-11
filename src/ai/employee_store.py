@@ -229,7 +229,13 @@ class EmployeeStore:
                 field: ad.get(field, 0) for field in _AGENT_COUNTER_FIELDS
             }
         totals = {field: data.get(field, 0) for field in _TOTAL_COUNTER_FIELDS}
-        return {"agents": agents, "totals": totals}
+        return {
+            "agents": agents,
+            "totals": totals,
+            # 归属不是计数器，但同样要记基线：只有本实例主动改过归属才允许
+            # 覆盖磁盘值（见 ``_merge_serialized_employee``）。
+            "owner_account_id": str(data.get("owner_account_id") or ""),
+        }
 
     def _remember_baseline(self, employee: Employee, data: Dict[str, Any]) -> None:
         with self._lock:
@@ -271,12 +277,26 @@ class EmployeeStore:
         """
         if not isinstance(disk, dict):
             return memory
+        # 归属是管理面的事实，不是执行期的派生物：长驻进程在启动时把员工读进
+        # 内存，之后任何一次 save 都会把内存里的旧 owner 写回去，把刚完成的
+        # 归属迁移静默回滚（实测：迁到 liuhao 后派一次活，owner 又变回原账号）。
+        # 规则：只有**本实例加载后主动改过**（内存 != 基线）才采信内存，
+        # 其余情况（含没有基线的跨实例 save）一律以磁盘为准。
+        disk_owner = str(disk.get("owner_account_id") or "")
+        memory_owner = str(memory.get("owner_account_id") or "")
         baseline = self._baselines.get(employee)
         if baseline is None:
-            # 不是本实例加载的对象，没有增量依据：内存版本就是这个员工的事实。
+            # 不是本实例加载的对象，没有增量依据：内存版本就是这个员工的事实；
+            # 唯一例外是归属——无法判定是否"主动修改"，一律保留磁盘值。
+            if disk_owner and disk_owner != memory_owner:
+                merged = dict(memory)
+                merged["owner_account_id"] = disk_owner
+                return merged
             return memory
 
         merged = dict(memory)
+        if memory_owner == str(baseline.get("owner_account_id") or "") and disk_owner:
+            merged["owner_account_id"] = disk_owner
         for field in _TOTAL_COUNTER_FIELDS:
             merged[field] = self._apply_counter_delta(
                 memory.get(field, 0),

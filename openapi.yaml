@@ -1864,7 +1864,7 @@ info:
     \ most `/v1/*` paths require a human token.\n  A path's presence here does NOT mean it is safe to\
     \ call unauthenticated."
   title: LiuHao AI OS · 鎏灏智能中枢 Gateway API
-  version: 0.2.0
+  version: 0.2.1
 openapi: 3.1.0
 paths:
   /knowledge/documents:

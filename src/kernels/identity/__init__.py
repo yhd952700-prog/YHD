@@ -1380,6 +1380,21 @@ class IdentityManager:
 
             self._accounts = nodes
             self._accounts_booted = True
+            # 账号状态是**落盘事实**，身份状态只是内存投影：启动时必须按账号行
+            # 恢复，否则软删/停用在重启后会被 ``_seed_human_identities`` 按
+            # ACTIVE 重建的身份"复活"——表现为登录页多出已删账号、
+            # ``registered_humans``/``login_eligible_humans`` 回弹。
+            for principal, node in nodes.items():
+                identity = self.get_identity_by_principal(principal)
+                if identity is None:
+                    continue
+                wanted = (
+                    IdentityStatus.ACTIVE
+                    if node.status == _accounts.ACCOUNT_STATUS_ACTIVE
+                    else IdentityStatus.SUSPENDED
+                )
+                if identity.status != wanted:
+                    identity.status = wanted
             return len(nodes)
 
     def _identity_permissions(self, principal: str) -> Set[str]:

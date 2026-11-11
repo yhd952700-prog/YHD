@@ -21,11 +21,11 @@
 ;      才会按 marker 记录的实际数据目录删除（不再写死 C 盘那个路径）。
 ;
 ; 构建：packaging\build_windows_installer.ps1（会传 /DAppVersion=...）。
-; 直接编译：iscc /DAppVersion=0.2.0 installer\liuhao.iss
+; 直接编译：iscc /DAppVersion=0.2.1 installer\liuhao.iss
 ; ==========================================================================
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 
 #ifndef PayloadDir
