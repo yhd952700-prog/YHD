@@ -43,6 +43,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from ..ai.usage_meter import PLANNING_LABEL, meter_scope, snapshot
+from ..ai.skill_prompt import skill_prompt_scope
 from .account_usage import record_usage
 from .display import UserReadableHTTPException
 
@@ -954,6 +955,17 @@ class AIStateManager:
         """本次目标实际归属/驱动的员工：有指名就用被点名的，否则默认管家。"""
         target = self._employee_for_agent(pinned_agent)
         return target if target is not None else self._ensure_employee()
+
+    def _skill_scope_for(self, pinned_agent: Optional[str]):
+        """本次目标所属员工的技能注入作用域。
+
+        只按员工名读该员工**已绑定且已启用**的技能；未指名时按默认管家。
+        读不到技能库/绑定表时 ``skill_prompt`` 返回空块，不影响目标执行。
+        """
+        employee = self._employee_for_agent(pinned_agent)
+        return skill_prompt_scope(
+            employee.name if employee is not None else self._SEED_DEFAULT_NAME
+        )
 
     def _claim_employee_goal(
         self, employee_key: str, goal_id: str, *, exclusive: bool
@@ -2144,22 +2156,26 @@ class AIStateManager:
                 # 退出后按任务 label 拆分入账（总额 = 各分项之和）。
                 with meter_scope() as active_meter:
                     meter = active_meter
-                    result = runtime.run_goal(
-                        goal_text=natural_language,
-                        goal_id=goal_id,
-                        scope=scope,
-                        plan_mode=plan_mode,
-                        verification_criteria=verification_criteria,
-                        persist=persist,
-                        on_task_progress=(
-                            on_progress
-                            if on_progress is not None
-                            else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
-                        ),
-                        pinned_agent=pinned_agent,
-                        only_task_name=only_task_name,
-                        on_notice=self._goal_notice_recorder(goal_id),
-                    )
+                    # 技能注入只对"本次调用所属员工"生效：作用域内的拆解、任务
+                    # 执行、汇总等模型调用才能拿到该员工绑定的、已启用的技能；
+                    # 跨线程已由各处 copy_context 传播。未绑定的员工拿不到正文。
+                    with self._skill_scope_for(pinned_agent):
+                        result = runtime.run_goal(
+                            goal_text=natural_language,
+                            goal_id=goal_id,
+                            scope=scope,
+                            plan_mode=plan_mode,
+                            verification_criteria=verification_criteria,
+                            persist=persist,
+                            on_task_progress=(
+                                on_progress
+                                if on_progress is not None
+                                else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
+                            ),
+                            pinned_agent=pinned_agent,
+                            only_task_name=only_task_name,
+                            on_notice=self._goal_notice_recorder(goal_id),
+                        )
             except Exception as exc:
                 logger.error("_run_bound_goal failed: %s", exc, exc_info=True)
                 result = None
@@ -2881,17 +2897,18 @@ class AIStateManager:
         error: Optional[str] = None
         try:
             runtime = self._ensure_runtime()
-            result = runtime.run_goal(
-                goal_text=natural_language,
-                goal_id=goal_id,
-                scope=scope,
-                persist=True,
-                pinned_agent=original_agent,
-                only_task_name=task_name,
-                only_task_names=retry_names,
-                pinned_tasks=pinned_tasks,
-                on_task_progress=_progress,
-            )
+            with self._skill_scope_for(original_agent):
+                result = runtime.run_goal(
+                    goal_text=natural_language,
+                    goal_id=goal_id,
+                    scope=scope,
+                    persist=True,
+                    pinned_agent=original_agent,
+                    only_task_name=task_name,
+                    only_task_names=retry_names,
+                    pinned_tasks=pinned_tasks,
+                    on_task_progress=_progress,
+                )
         except Exception as exc:  # noqa: BLE001 - 真实原因要回给调用方
             error = "重试没有完成，请稍后重试。"
             logger.error("retry_task failed (%s/%s): %s", goal_id, task_id, exc)
