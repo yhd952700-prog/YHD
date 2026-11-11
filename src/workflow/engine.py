@@ -122,7 +122,10 @@ class GatewayExecutionBridge(ExecutionBridge):
     """复用 ``AIStateManager`` 的默认实现（延迟导入，避免拖慢网关启动）。"""
 
     def _manager(self):
-        from src.ai.state_manager import AIStateManager
+        # ``AIStateManager`` 定义在 ``src/gateway/ai_management.py``（``src/ai/`` 下
+        # 没有 ``state_manager`` 模块）。放在函数里延迟导入：网关启动时不必为此
+        # 先拉起 ai_management 的整棵依赖，也避免 gateway ↔ workflow 的导入环。
+        from src.gateway.ai_management import AIStateManager
 
         return AIStateManager()
 

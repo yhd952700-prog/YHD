@@ -397,3 +397,37 @@ def test_definition_rejects_duplicate_start(store):
     with pytest.raises(DefinitionError) as excinfo:
         normalise_definition(payload)
     assert "start" in excinfo.value.message
+
+
+def test_default_bridge_resolves_real_execution_layer(store):
+    """默认 bridge 必须真的接到 ``AIStateManager``，而不是只有假 bridge 能跑。
+
+    这条用例刻意不注入 ``FakeBridge``。此前 ``_manager`` 里写的是
+    ``src.ai.state_manager``——仓库里不存在这个模块，假 bridge 测试完全不经过
+    导入路径，缺陷只在仓库级 import 门禁里暴露。这里同时钉住模块位置、可构造性
+    与调用签名：模块名或方法签名任何一处漂移都会让这条用例变红。
+    """
+    import inspect
+
+    from src.gateway.ai_management import AIStateManager
+    from src.workflow.engine import GatewayExecutionBridge
+
+    bridge = GatewayExecutionBridge()
+    manager = bridge._manager()
+    assert isinstance(manager, AIStateManager)
+
+    # bridge 传给执行层的每个关键字，真实方法都必须接受（否则运行期 TypeError）。
+    inspect.signature(AIStateManager.create_and_execute_goal).bind(
+        manager,
+        natural_language="检查默认实现",
+        scope="L1",
+        background=True,
+        project_id=None,
+        pinned_agent=None,
+        owner_account_id="",
+    )
+    inspect.signature(AIStateManager.get_goal).bind(manager, "goal-id")
+
+    # 不注入 bridge 时，运行时默认就该用这个能真跑的实现。
+    runtime = WorkflowRuntime(store=store)
+    assert isinstance(runtime.bridge, GatewayExecutionBridge)
