@@ -499,12 +499,26 @@ class TestThePolicySurfaceIsFixedAndHasNoExecutionRoute:
             # 设计条款要求的决定，而不是绕过它。
             ("GET", "/v1/policy/approvals/pending"),
             ("GET", "/v1/policy/approvals/{grant_id}"),
+            # 0.3.0 新增，Boss 已批准：读当前运行模式（standard / full）与
+            # 「启动值 / 重启后生效值」两个字段，供设置页显示。只读快照，
+            # 不收任何动作参数、不执行内核动作，不构成 §10.8.3-1 的执行路由。
+            ("GET", "/v1/policy/authority-mode"),
             ("GET", "/v1/policy/enforcement"),
+            # 0.3.0 新增，Boss 已批准：读危险命令「一次确认」开关状态。只读，
+            # 不执行命令、不改变权限，不构成 §10.8.3-1 的执行路由。
+            ("GET", "/v1/policy/host-command-confirmation"),
             ("POST", "/v1/policy/approvals"),
             # 拒绝待处理动作（2026-11-11）：审批不能只有「同意」。它只写一条
             # 拒绝审计并让卡片退出等待队列，不签发凭据、不执行、不重放任何
             # 内核动作，因此同样不构成 §10.8.3-1 的"远程执行路由"。
             ("POST", "/v1/policy/approvals/reject"),
+            # 0.3.0 新增，Boss 已批准：写入运行模式（管理员）。收紧立即生效、
+            # 放宽需重启；只改一份模式配置并记审计，不接收、不执行任何内核
+            # 动作名，因此不是 §10.8.3-1 意义上的执行路由。
+            ("PUT", "/v1/policy/authority-mode"),
+            # 0.3.0 新增，Boss 已批准：开关危险命令的一次确认（管理员）。
+            # 只管「执行前要不要问」，不代替人执行命令，也不是执行路由。
+            ("PUT", "/v1/policy/host-command-confirmation"),
         ], (
             "the policy surface changed. If this is a new *execution* route, it "
             "is a reversal of §10.8.3-1 and needs its own decision, not a test edit"
