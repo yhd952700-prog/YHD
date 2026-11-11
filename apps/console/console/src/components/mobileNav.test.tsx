@@ -66,7 +66,7 @@ describe('手机端底部导航渲染', () => {
     expect(buttons[0].textContent).toContain('企业总览')
 
     // 办公室、任务也要有真实入口，避免"回执能看到、结果打不开"。
-    const office = nav!.querySelector<HTMLButtonElement>('[data-key="my-employees"]')
+    const office = nav!.querySelector<HTMLButtonElement>('[data-key="office"]')
     const task = nav!.querySelector<HTMLButtonElement>('[data-key="task-center"]')
     expect(office).toBeTruthy()
     expect(task).toBeTruthy()

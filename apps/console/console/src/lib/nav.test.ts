@@ -46,7 +46,7 @@ describe('手机端底部导航', () => {
   })
 
   test('六项覆盖办公室、任务、知识、能力、设置', () => {
-    expect(MOBILE_NAV_KEYS).toContain('my-employees')
+    expect(MOBILE_NAV_KEYS).toContain('office')
     expect(MOBILE_NAV_KEYS).toContain('task-center')
     expect(MOBILE_NAV_KEYS).toContain('knowledge')
     expect(MOBILE_NAV_KEYS).toContain('skills-center')

@@ -97,6 +97,12 @@ const HOME_NAV: NavItem[] = [
 /** ② 办公室：看 AI 员工在干什么；组织与员工管理是这里的两种看法。 */
 const OFFICE_NAV: NavItem[] = [
   {
+    key: 'office',
+    label: '办公室',
+    icon: IconBusiness,
+    hint: 'AI 员工的工位墙：谁在干活、干到哪、卡在哪；点工位直接派活',
+  },
+  {
     key: 'my-employees',
     label: '我的员工',
     icon: IconEmployees,
@@ -233,7 +239,7 @@ export const SETTINGS_SECTIONS: { label: string; startsAt: string }[] = [
 
 export const NAV_GROUPS: NavGroup[] = [
   { key: 'home', label: '首页', icon: IconDashboard, defaultKey: HOME_KEY, items: HOME_NAV },
-  { key: 'office', label: '办公室', icon: IconEmployees, defaultKey: 'my-employees', items: OFFICE_NAV },
+  { key: 'office', label: '办公室', icon: IconEmployees, defaultKey: 'office', items: OFFICE_NAV },
   { key: 'tasks', label: '任务', icon: IconGoals, defaultKey: TASK_CENTER_PAGE.key, items: TASKS_NAV },
   { key: 'knowledge', label: '知识', icon: IconKnowledge, defaultKey: 'knowledge', items: KNOWLEDGE_NAV },
   {
@@ -315,7 +321,7 @@ export function visibleNavKeys(caps: AccountCaps): Set<string> {
  */
 export const MOBILE_NAV_KEYS = [
   ENTERPRISE_OVERVIEW_PAGE.key,
-  'my-employees',
+  'office',
   TASK_CENTER_PAGE.key,
   'knowledge',
   SKILLS_CENTER_PAGE.key,
@@ -325,7 +331,6 @@ export const MOBILE_NAV_KEYS = [
 export function mobileNavKeysFor(caps: AccountCaps): string[] {
   const visible = visibleNavKeys(caps)
   const last = visible.has('settings') ? 'settings' : 'me'
-  // 办公室在步骤 2 才有独立页；此前落到「我的员工」，不留空 key。
   const office = visible.has('office') ? 'office' : 'my-employees'
   const keys = [ENTERPRISE_OVERVIEW_PAGE.key, office, TASK_CENTER_PAGE.key, 'knowledge', SKILLS_CENTER_PAGE.key, last]
   // 权限裁剪后可能少项：按可见性补齐到六项，仍保证首项是企业总览。

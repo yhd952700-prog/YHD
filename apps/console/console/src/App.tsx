@@ -88,6 +88,7 @@ import { Memory } from './pages/Memory'
 import { MyData } from './pages/MyData'
 import { Me } from './pages/Me'
 import { MyEmployees } from './pages/MyEmployees'
+import { Office } from './pages/Office'
 import { MyKeys } from './pages/MyKeys'
 import { PermissionMatrix } from './pages/PermissionMatrix'
 import { Recovery } from './pages/Recovery'
@@ -141,6 +142,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   butler: { title: '贾维斯', sub: '你下目标，它拆解分派，给结论' },
   employees: { title: '能力注册表', sub: '14 个能力模块与 14 个执行层；只读' },
   'my-employees': { title: '我的员工', sub: '创建、调整、停用，或直接把一件事派给它' },
+  office: { title: '办公室', sub: 'AI 员工的工位墙：谁在干活、干到哪、卡在哪' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
   workbench: { title: '自由对话', sub: '你自己问、自己翻；想让管家拆解，去「贾维斯」' },
@@ -1039,6 +1041,12 @@ function App() {
           canApproveQueue={caps.canApproveQueue}
           onOpenUsage={() => navigate('my-keys')}
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
+        />
+      )}
+      {shown === 'office' && (
+        <Office
+          canApproveQueue={caps.canApproveQueue}
+          onOpenEmployees={() => navigate('my-employees')}
         />
       )}
       {shown === 'employees' && <Roster query={query} />}
