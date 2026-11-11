@@ -2074,7 +2074,10 @@ class AIStateManager:
                 target=self._run_bound_goal,
                 args=(goal_id, natural_language, scope, plan_mode,
                       verification_criteria, True, project_id, pinned_agent, owner),
-                kwargs={"raise_on_persist": False, "notify_outcome": True},
+                kwargs={
+                    "raise_on_persist": False,
+                    "notify_outcome": True,
+                },
                 name=f"goal-{goal_id}",
                 # 非 daemon：解释器退出时会等这条线程收尾落盘。daemon 线程在
                 # 进程退出瞬间被切断，会把「已跑完」的目标留在 goals.json 的
