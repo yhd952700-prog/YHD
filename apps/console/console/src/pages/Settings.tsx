@@ -150,6 +150,17 @@ interface ResearchState {
   max_phrase_chars: number
 }
 
+interface AuthorityModeState {
+  /** 本进程启动时快照到的生效模式。 */
+  mode: 'standard' | 'full'
+  mode_label: string
+  /** 重启后会生效的值；与 mode 不同即说明改了还没重启。 */
+  next_mode: 'standard' | 'full'
+  restart_required: boolean
+  env_var: string
+  env_value: string
+}
+
 export function Settings({
   device,
   session,
@@ -248,6 +259,32 @@ export function Settings({
     },
     // research.reload 是稳定引用（useApi 内部 useCallback）；依赖只列它即可。
     [research.reload],
+  )
+
+  // 授权模式：展示"当前生效的是什么模式"与"怎么切回标准模式"。
+  // 切换只写盘，**重启后生效**（不做热切，避免任务中途出现半套权限窗口）。
+  const authorityMode = useApi<AuthorityModeState>('/v1/policy/authority-mode', 0)
+  const [modeBusy, setModeBusy] = useState(false)
+  const [modeError, setModeError] = useState<string | null>(null)
+  const authorityFull = authorityMode.data?.mode === 'full'
+
+  const changeAuthorityMode = useCallback(
+    async (mode: 'standard' | 'full') => {
+      setModeBusy(true)
+      setModeError(null)
+      try {
+        await apiFetch<AuthorityModeState>('/v1/policy/authority-mode', {
+          method: 'PUT',
+          body: JSON.stringify({ mode, reason: '设置页切换授权模式' }),
+        })
+        authorityMode.reload()
+      } catch (err) {
+        setModeError(err instanceof Error ? err.message : '保存失败')
+      } finally {
+        setModeBusy(false)
+      }
+    },
+    [authorityMode.reload],
   )
 
   // 剩余时长必须来自"状态化的时间"：在渲染里直接调 `Date.now()` 是不纯的
@@ -456,6 +493,115 @@ export function Settings({
                   界面上的修改不会改变实际行为。要由界面控制，请先移除该环境变量。
                 </span>
               </p>
+            )}
+          </>
+        )}
+      </Card>
+
+      <Card
+        id="settings-authority"
+        title="授权模式"
+        sub="决定「高风险操作还要不要你逐次批准」。默认是标准模式；收回立即生效，开启需重启。"
+        span={12}
+      >
+        {authorityMode.loading && (
+          <p className="os-note" role="status">
+            <span>正在读取当前授权模式…</span>
+          </p>
+        )}
+
+        {authorityMode.error && (
+          <p className="os-alert" role="alert">
+            <span>
+              授权模式没读到：{authorityMode.error}。先按标准模式理解：高风险操作仍需批准。
+            </span>
+            <button
+              className="os-link"
+              type="button"
+              style={{ flex: 'none' }}
+              onClick={authorityMode.reload}
+            >
+              重试
+            </button>
+          </p>
+        )}
+
+        {authorityMode.data && (
+          <>
+            <p className="os-note" role="status">
+              <span>
+                当前模式：
+                <strong>{authorityMode.data.mode_label}（{authorityMode.data.mode}）</strong>
+                。
+                {authorityFull
+                  ? '你手动派出的任务、AI 员工、定时任务和自主接活都不再逐次等批准，但仍会留下完整审计（含哪个员工、哪个任务）。'
+                  : '高风险操作按审批流程执行，审批结果会留在审计里。'}
+              </span>
+            </p>
+            <p className="os-note">
+              <span>
+                <strong>怎么切回标准模式：</strong>
+                选下面的「标准」并保存，<strong>立即生效，不用重启</strong>，同时会作废全权期间
+                发出的临时授权。反过来开启「完全授权」需要<strong>重启程序</strong>才生效
+                （放宽权限不做热切，避免一次任务中途出现半套权限）。两种切换都会记入审计
+                （谁、何时、从什么切到什么）。
+              </span>
+            </p>
+
+            {!canManageSettings && (
+              <div className="os-note" role="note">
+                <span>授权模式只有根账号可以切换，当前账号只读。</span>
+              </div>
+            )}
+
+            <div className="os-choice">
+              {(
+                [
+                  ['standard', '标准'],
+                  ['full', '完全授权'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className="os-choice-option"
+                  data-selected={authorityMode.data?.next_mode === value ? 'true' : 'false'}
+                  disabled={!canManageSettings || modeBusy || authorityMode.data?.next_mode === value}
+                  onClick={() => {
+                    if (!canManageSettings) return
+                    void changeAuthorityMode(value)
+                  }}
+                >
+                  <span className="os-choice-title">
+                    {authorityMode.data?.next_mode === value && <IconCheck size={15} />}
+                    {label}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {authorityMode.data.restart_required && (
+              <p className="os-note" role="alert">
+                <span>
+                  已保存为「{authorityMode.data.next_mode === 'full' ? '完全授权' : '标准'}」，
+                  <strong>重启后生效</strong>；当前进程仍是「{authorityMode.data.mode_label}」。
+                </span>
+              </p>
+            )}
+
+            {authorityMode.data.env_value && (
+              <p className="os-note" role="alert">
+                <span>
+                  环境变量 <code>{authorityMode.data.env_var}</code> 正在强制指定模式
+                  （当前值 <code>{authorityMode.data.env_value}</code>），界面选择不会改变实际行为。
+                  要由界面控制，请先移除该环境变量。
+                </span>
+              </p>
+            )}
+
+            {modeError && (
+              <div className="os-alert" role="alert">
+                <span>{modeError}</span>
+              </div>
             )}
           </>
         )}

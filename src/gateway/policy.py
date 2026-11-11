@@ -783,3 +783,90 @@ def revoke_approval(
 def get_enforcement(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
     """内核层拦截配置快照（只读）。默认 ``enabled: false`` = 记录型（L1）。"""
     return describe_enforcement()
+
+
+class AuthorityModeRequest(BaseModel):
+    """切换运行模式的请求。**没有** principal 字段：主体只来自身份令牌。"""
+
+    mode: str = Field(..., description="standard / full")
+    reason: str = Field("", max_length=500, description="切换理由（记入审计）")
+
+
+@router.get("/policy/authority-mode", response_model=dict[str, Any])
+def get_authority_mode(_: str = Depends(require_human_principal)) -> dict[str, Any]:
+    """当前运行模式（只读）。
+
+    ``mode`` 是本进程**启动时**快照到的生效值；``next_mode`` 是重启后会生效的
+    值。两者不同只可能出现在"开启全权还没重启"这一种情况 —— 放宽不做热切，
+    避免一次任务中途出现"半套权限"；收回则由总闸立即生效。
+    """
+    from ..security import authority_mode
+
+    return authority_mode.describe()
+
+
+@router.put("/policy/authority-mode", response_model=dict[str, Any])
+def set_authority_mode(
+    req: AuthorityModeRequest,
+    principal: str = Depends(require_admin_principal),
+) -> dict[str, Any]:
+    """保存运行模式（管理员）。收**立即**生效；开**重启后**生效。
+
+    收紧（→ standard）走总闸语义：``revoke_now`` 当场把本进程压回标准模式，
+    再把盘上的值写回 standard，所以重启也不会"复活"全权。放宽（→ full）只写盘，
+    必须重启 —— 避免一次任务中途出现"半套权限"的窗口。
+
+    切换记录本身进审计（``AUTHORITY_MODE_CHANGED``）：谁、何时、从什么切到
+    什么、为什么。收回时顺带撤销该主体名下所有仍有效的审批凭据 —— 全权期间
+    签出去的授权不应在收紧之后继续活着。
+    """
+    from ..kernels._sovereignty import revoke_grants_for_principal
+    from ..security import authority_mode
+    from ..security.authority_audit import record_mode_changed
+
+    wanted = authority_mode.parse_mode(req.mode)
+    if wanted != (req.mode or "").strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail="模式只能是 standard 或 full，本次没有修改任何配置。",
+        )
+
+    before = authority_mode.describe()
+    authority_mode.set_stored_mode(wanted, updated_by=principal)
+    revoked = 0
+    if wanted == authority_mode.MODE_STANDARD:
+        # 总闸：收回全权**立即生效**，不等重启。同时把盘上的值写回 standard，
+        # 否则下次启动又会读回 full。全权期间签出去的凭据一并作废 —— 收紧之后
+        # 不该还有一张能用的旧通行证。
+        authority_mode.revoke_now(reason=f"revoked by {principal}")
+        try:
+            revoked = revoke_grants_for_principal(
+                principal, reason="authority mode switched back to standard"
+            )
+        except Exception:  # 撤销失败不能让配置回滚：审计里会留下这条失败
+            logger.error("revoke grants on mode switch failed", exc_info=True)
+
+    try:
+        record_mode_changed(
+            previous=str(before.get("next_mode") or before.get("mode") or ""),
+            current=wanted,
+            actor=principal,
+            source="settings",
+            reason=req.reason,
+        )
+    except Exception as exc:  # 配置已写盘，审计失败必须可见
+        logger.error("authority mode change audit failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="模式已保存，但这次切换没有记进审计。请稍后重试。",
+        ) from exc
+
+    # 收回：立即生效（总闸）；开启：重启生效（不做热切）。
+    immediate = wanted == authority_mode.MODE_STANDARD
+    return {
+        **authority_mode.describe(),
+        "changed": before.get("mode") != wanted or before.get("next_mode") != wanted,
+        "revoked_grants": revoked,
+        "effective": "now" if immediate else "restart",
+        "restart_required": not immediate,
+    }

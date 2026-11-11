@@ -96,6 +96,14 @@ class C2ArmingVerdict:
     config_error: Optional[str]
     error: Optional[str]
     note: Optional[str]
+    #: 运行模式（``standard`` / ``full``）。只用于展示与说明，**不改变**武装
+    #: 判定：全权模式是另一根轴（对所有执行主体放行），武装本身仍需保持，
+    #: 否则"闸到底有没有在工作"就再也说不清了。
+    authority_mode: str | None = None
+
+    @property
+    def full_authority(self) -> bool:
+        return self.authority_mode == "full"
 
     @property
     def alerting(self) -> bool:
@@ -147,6 +155,9 @@ class C2ArmingVerdict:
             "enforced_action_count": self.enforced_action_count,
             "enforced_actions": list(self.enforced_actions),
         }
+        if self.authority_mode:
+            check["authority_mode"] = self.authority_mode
+            check["full_authority"] = self.full_authority
         if self.config_error:
             check["config_error"] = self.config_error
         if self.error:
@@ -174,12 +185,16 @@ def _actions_of(snapshot: Mapping[str, Any]) -> Tuple[str, ...]:
 
 
 def evaluate_c2_arming(
-    snapshot: Mapping[str, Any], *, production: bool
+    snapshot: Mapping[str, Any], *, production: bool, authority_mode: str | None = None
 ) -> C2ArmingVerdict:
     """Pure: turn an enforcement snapshot into an arming verdict.
 
     :param snapshot: the mapping returned by ``_enforcement.describe()``.
     :param production: whether this deployment is production (``posture.is_production()``).
+    :param authority_mode: the recognised runtime mode (``standard`` / ``full``).
+        Reported for visibility only; it never turns an unarmed production gate
+        into a healthy one (unarmed is still a real fail-open for the system and
+        scheduled principals, which full authority deliberately does not cover).
     :returns: a :class:`C2ArmingVerdict`. Never raises for a malformed snapshot.
     """
     if not isinstance(snapshot, Mapping):  # total: degrade loudly, do not explode
@@ -199,6 +214,13 @@ def evaluate_c2_arming(
     enabled = bool(actions)
     raw_error = snapshot.get("config_error")
     config_error = str(raw_error) if raw_error else None
+    full_mode = authority_mode == "full"
+    #: 全权模式下必须说清"闸本身还武装着"，否则运维会误以为闸被清空了。
+    full_note = (
+        "完全授权模式（LIUHAO_AUTHORITY_MODE=full）：闸仍然武装，但对所有执行"
+        "主体（用户手动派活、AI 员工、定时任务、自主接活、多级委派）一律放行，"
+        "改为完整审计留痕。收回全权立即生效，无需重启。"
+    )
 
     # 1. A malformed spec is the most dangerous shape: it looks configured while
     #    arming nothing. It outranks posture -- it degrades everywhere.
@@ -213,7 +235,8 @@ def evaluate_c2_arming(
                 f"({config_error}) -- it resolved to ZERO armed actions, so HIGH/CRITICAL "
                 "kernel actions are RECORD-ONLY, not blocked"
             ),
-            note=None,
+            note=full_note if full_mode else None,
+            authority_mode=authority_mode,
         )
 
     # 2. Production expects CRITICAL armed (D24); anything less is fail-open.
@@ -229,7 +252,8 @@ def evaluate_c2_arming(
                 "blocked. This deployment declares production, which is expected to arm "
                 "at least CRITICAL (D24)"
             ),
-            note=None,
+            note=full_note if full_mode else None,
+            authority_mode=authority_mode,
         )
 
     # 3. Genuinely armed.
@@ -240,7 +264,8 @@ def evaluate_c2_arming(
             enforced_actions=actions,
             config_error=None,
             error=None,
-            note=None,
+            note=full_note if full_mode else None,
+            authority_mode=authority_mode,
         )
 
     # 4. Unarmed outside production: a configuration choice, not a fault. It must
@@ -255,7 +280,9 @@ def evaluate_c2_arming(
             f"{snapshot.get('env_var', 'LIUHAO_KERNEL_POLICY_ENFORCE')} is unset/empty and "
             "this deployment does not declare production: kernel actions are record-only "
             "by configuration choice. Set it (e.g. CRITICAL) to arm the blocking gate"
+            + (f" {full_note}" if full_mode else "")
         ),
+        authority_mode=authority_mode,
     )
 
 
@@ -264,4 +291,12 @@ def c2_arming_verdict_from_env() -> C2ArmingVerdict:
     from ..kernels._enforcement import describe  # local import: avoids an import cycle
     from .posture import is_production  # local import: keeps this module pure
 
-    return evaluate_c2_arming(describe(), production=is_production())
+    try:
+        from .authority_mode import current_mode
+
+        mode = current_mode()
+    except Exception:  # pragma: no cover - mode read must never break a health probe
+        mode = None
+    return evaluate_c2_arming(
+        describe(), production=is_production(), authority_mode=mode
+    )

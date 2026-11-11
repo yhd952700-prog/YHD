@@ -1268,6 +1268,38 @@ def _readiness_payload_sync(
         }
         errors.append("安全策略自检暂时无法运行（内部自检异常）。")
 
+    # 运行模式（standard / full）：**配置状态**，两种模式都算健康。
+    #
+    # 全权模式不是"闸失效"：它只让「用户手动派出 + 带 correlation_id 的任务」
+    # 不再等审批，系统主体/员工/定时任务仍然受闸管辖。所以它绝不能把
+    # /v1/ready 拉成 503 —— 否则用户一开授权，托盘就一直报错，等于把软件
+    # 弄坏。提示里同时写清"当前是什么模式"和"怎么切回标准模式"。
+    try:
+        from ..security.authority_mode import describe as describe_authority_mode
+
+        mode_info = describe_authority_mode()
+        full = mode_info.get("mode") == "full"
+        checks["authority_mode"] = {
+            "status": "healthy",
+            "mode": mode_info.get("mode"),
+            "mode_label": mode_info.get("mode_label"),
+            "next_mode": mode_info.get("next_mode"),
+            "restart_required": bool(mode_info.get("restart_required")),
+            "user_message": (
+                "当前是完全授权模式：你手动派出的任务、AI 员工、定时任务和自主接活"
+                "都不再逐次等审批，但仍会留下完整审计。"
+                "切回标准模式：设置页「授权模式」选「标准」，立即生效，无需重启。"
+                if full
+                else "当前是标准模式：高风险动作仍按审批流程执行。"
+            ),
+        }
+        if mode_info.get("restart_required"):
+            checks["authority_mode"]["note"] = (
+                "运行模式已修改，重启后生效（不做热切，避免任务中途出现半套权限）。"
+            )
+    except Exception as e:  # pragma: no cover - 模式读取失败按标准模式兜底，不阻断就绪
+        checks["authority_mode"] = {"status": "healthy", "error": str(e)}
+
     # 排程器（提醒/定时任务）托管状态。历史上它起不来时这里完全看不见：
     # 旧库缺列导致整条排程器不启动，用户只会发现"提醒莫名不响了"而系统全程
     # 报健康。数据只读 main.py 已写入 app.state 的 HostedLocalScheduler。
