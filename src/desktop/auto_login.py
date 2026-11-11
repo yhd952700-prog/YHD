@@ -220,10 +220,11 @@ class AutoLogin:
     # ------------------------------------------------------------------ #
     def save(self, principal: str, secret: str) -> bool:
         """加密保存凭据；未获同意时拒绝写盘并抛 ``PermissionError``。"""
-        if not self.supported():
-            raise OSError("本机免密仅支持 Windows")
+        # 同意门先于平台判断：未获同意时任何平台都不得写盘，且错误类型一致。
         if self.consent() != "granted":
             raise PermissionError("未获得本机免密同意，拒绝保存凭据")
+        if not self.supported():
+            raise OSError("本机免密仅支持 Windows")
         if not principal or not secret:
             raise ValueError("账号或密码为空")
         payload = {

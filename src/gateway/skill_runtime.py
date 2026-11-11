@@ -1050,6 +1050,10 @@ if os.name == "nt":  # pragma: no branch - Windows 是目标平台
             pass
 
 else:  # pragma: no cover - 非 Windows 的兜底，仅用于开发机
+    def _apply_low_label(path: str) -> bool:
+        """非 Windows 没有完整性标签；返回 ``False`` 表示未打标签。"""
+        return False
+
     def _low_integrity_token() -> Any:
         return None
 
