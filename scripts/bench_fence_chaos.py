@@ -210,7 +210,7 @@ while True:
     dl = time.time() + 30
     while time.time() < dl:
         try:
-            data = json.loads(open(prog).read())
+            data = json.loads(open(prog, encoding="utf-8").read())
             if data.get("consumed") == "action-1":
                 tok = data["token"]
                 break

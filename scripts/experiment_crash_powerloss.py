@@ -160,7 +160,7 @@ def _read_progress(progress: str) -> int:
     if not os.path.exists(progress):
         return 0
     try:
-        return int(open(progress).read().strip() or "0")
+        return int(open(progress, encoding="utf-8").read().strip() or "0")
     except ValueError:
         return 0
 

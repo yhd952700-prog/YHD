@@ -250,7 +250,7 @@ print("=" * 72)
 yaml_targets = [ACTION] + WORKFLOWS
 for path in yaml_targets:
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             yaml.safe_load(fh)
         print(f"  OK  {_display(path)}")
     except Exception as exc:  # noqa: BLE001
@@ -270,7 +270,7 @@ covered = 0
 
 for wf in WORKFLOWS:
     try:
-        with open(wf) as fh:
+        with open(wf, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {}
     except Exception as exc:  # noqa: BLE001
         failures.append(f"WIRING: cannot read {wf.name}: {exc}")
@@ -366,7 +366,7 @@ gated_jobs = 0
 
 for wf in WORKFLOWS:
     try:
-        with open(wf) as fh:
+        with open(wf, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {}
     except Exception:  # noqa: BLE001  (unparseable -> already failed in step 1)
         continue
@@ -478,7 +478,7 @@ print("=" * 72)
 print("[4] watchdog decision logic (real shell, injected upstream results)")
 print("=" * 72)
 
-action = yaml.safe_load(open(ACTION))
+action = yaml.safe_load(open(ACTION, encoding="utf-8"))
 watchdog_run = None
 for step in action.get("runs", {}).get("steps", []):
     if step.get("shell") == "bash" and "run" in step:
@@ -627,7 +627,7 @@ hold_degraded_jobs = 0
 
 for wf in WORKFLOWS:
     try:
-        with open(wf) as fh:
+        with open(wf, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {}
     except Exception:  # noqa: BLE001  (already reported as a failure in step 1)
         continue

@@ -114,7 +114,7 @@ def probe_json(key, tamper):
     st = JsonFileStore(f)
     st.upsert(dict(ENTRY))
     if tamper:
-        doc = json.load(open(f))
+        doc = json.load(open(f, encoding="utf-8"))
         doc["humans"][0]["display_name"] = "MALLORY"
         json.dump(doc, open(f, "w"))
     st2 = JsonFileStore(f)

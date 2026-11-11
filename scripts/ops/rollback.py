@@ -83,7 +83,7 @@ class RollbackManager:
         deployment_file = Path("deployment_info.json")
         if deployment_file.exists():
             try:
-                with open(deployment_file, 'r') as f:
+                with open(deployment_file, 'r', encoding='utf-8') as f:
                     config_data["deployment"] = json.load(f)
             except Exception:
                 pass
@@ -95,7 +95,7 @@ class RollbackManager:
         checkpoints = []
         for cp_file in self.history_dir.glob("*.json"):
             try:
-                with open(cp_file, 'r') as f:
+                with open(cp_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 checkpoints.append({
                     "file": cp_file.name,

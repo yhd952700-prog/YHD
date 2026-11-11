@@ -65,7 +65,7 @@ c1 = r1.context
 real_file = os.path.join(WS1, "report.txt")
 real_ok = (
     os.path.exists(real_file)
-    and open(real_file).read() == "Hello World from LIUHAO real execution"
+    and open(real_file, encoding="utf-8").read() == "Hello World from LIUHAO real execution"
     and any((r.output or {}).get("status") == "executed" for r in (c1.task_results or {}).values())
     and (r1.state.value if hasattr(r1.state, "value") else r1.state) == "completed"
 )

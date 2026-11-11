@@ -188,7 +188,13 @@ def test_scheduler_start_failure_is_visible_in_startup_errors(monkeypatch):
         body: dict = {}
         while time.time() < deadline:
             body = test_client.get("/v1/startup").json()
-            if body["background"]["errors"]:
+            # ``startup_profile._BACKGROUND`` 是进程级全局状态，同一进程里前一个
+            # TestClient 留下的 errors 会让"errors 非空"立刻为真；而本轮 app 的
+            # 后台线程刚调过 ``background_started()``（main.py:1720），status 还是
+            # running。此时按 errors 跳出就会在 status 还没翻之前断言。
+            # status 与 errors 是 startup_profile.py:150-165 在同一把锁里一起写的，
+            # 所以等 ``status == "failed"`` 才是等对信号（仍是 10s 上界，不是放宽）。
+            if body["background"]["status"] == "failed":
                 break
             time.sleep(0.05)
 
