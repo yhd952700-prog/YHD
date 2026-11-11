@@ -1120,6 +1120,8 @@ function App() {
         <Settings
           device={device}
           session={session}
+          caps={caps}
+          onNavigate={(key) => navigate(key)}
           notifications={notifications}
           onLogout={() => void doLogout()}
           focusModelId={focusModel}

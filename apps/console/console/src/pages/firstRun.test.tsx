@@ -13,6 +13,7 @@
 import { describe, expect, test, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { Session } from '../lib/auth'
+import { buildProfile, deriveCaps } from '../lib/accountCaps'
 import type { DeviceModeState } from '../lib/mode'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
 
@@ -39,6 +40,8 @@ const session: Session = {
   client: 'desktop',
   isRoot: true,
 }
+
+const caps = deriveCaps(buildProfile(session, null, 'api', null))
 
 const device: DeviceModeState = {
   mode: 'desktop',
@@ -120,6 +123,8 @@ describe('第一公里提示', () => {
         <Settings
           device={device}
           session={session}
+          caps={caps}
+          onNavigate={() => {}}
           notifications={[]}
           onLogout={() => {}}
         />,
@@ -137,6 +142,8 @@ describe('第一公里提示', () => {
       <Settings
         device={device}
         session={session}
+        caps={caps}
+        onNavigate={() => {}}
         notifications={[]}
         onLogout={() => {}}
       />,
@@ -151,6 +158,8 @@ describe('第一公里提示', () => {
       <Settings
         device={device}
         session={session}
+        caps={caps}
+        onNavigate={() => {}}
         notifications={[]}
         onLogout={() => {}}
       />,
@@ -170,6 +179,8 @@ describe('第一公里提示', () => {
         <Settings
           device={device}
           session={session}
+          caps={caps}
+          onNavigate={() => {}}
           notifications={[]}
           onLogout={() => {}}
         />,

@@ -9,7 +9,7 @@
  * 必须落在服务端，不在这里。
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { DeviceMode, DeviceModeState, Theme } from '../lib/mode'
 import { CLIENT_LABELS, LAYOUT_LABELS, MODE_HINTS, isDesktopShell, layoutChoicesFor } from '../lib/mode'
@@ -26,6 +26,9 @@ import { LogRetentionPanel } from '../components/LogRetentionPanel'
 import { MobileAccessCard } from '../components/MobileAccessCard'
 import { UpgradePanel } from '../components/UpgradePanel'
 import { getReducedMotion, setReducedMotion } from '../lib/reducedMotion'
+import type { AccountCaps } from '../lib/accountCaps'
+import { navFor, SETTINGS_SECTIONS } from '../lib/nav'
+import type { NavItem } from '../lib/nav'
 import {
   IconCheck,
   IconDesktop,
@@ -38,6 +41,9 @@ import {
 export interface SettingsProps {
   device: DeviceModeState
   session: Session
+  /** 与侧栏同一份裁剪规则：没权限的入口不在这里出现。 */
+  caps: AccountCaps
+  onNavigate: (key: string) => void
   notifications: OsNotification[]
   onLogout: () => void
   /** 深链 `?p=settings&model=<目标>` 带来的模型；见 ModelManager 的同名参数。 */
@@ -174,6 +180,8 @@ interface HostCommandConfirmState {
 export function Settings({
   device,
   session,
+  caps,
+  onNavigate,
   notifications,
   onLogout,
   focusModelId,
@@ -250,6 +258,21 @@ export function Settings({
   const researchOn = research.data?.enabled ?? false
   // 写策略只归根账号：成员保留只读视角，避免点一下就是 403。
   const canManageSettings = session.isRoot
+
+  // 设置组目录：直接复用侧栏那份（同一套权限裁剪与改名），不在这里另维护一份。
+  // 手机上没有侧栏，账号 / 安全 / 诊断只能从这张目录卡往下走。
+  const settingsSections = useMemo(() => {
+    const items = navFor(caps).groups.find((group) => group.key === 'settings')?.items ?? []
+    const buckets = SETTINGS_SECTIONS.map((section) => ({ ...section, items: [] as NavItem[] }))
+    let current = 0
+    for (const item of items) {
+      const marked = SETTINGS_SECTIONS.findIndex((section) => section.startsAt === item.key)
+      if (marked >= 0) current = marked
+      // 本页自身不进目录：点了没有变化，只会让人怀疑按钮坏了。
+      if (item.key !== 'settings') buckets[current]?.items.push(item)
+    }
+    return buckets.filter((section) => section.items.length > 0)
+  }, [caps])
 
   const setResearch = useCallback(
     async (next: boolean) => {
@@ -377,6 +400,32 @@ export function Settings({
           )}
         </div>
       </div>
+
+      <Card
+        title="设置分组"
+        sub="账号、安全与诊断都收在这一组；手机上没有侧栏，从这张目录往下走"
+        span={12}
+      >
+        <div className="os-settings-map">
+          {settingsSections.map((section) => (
+            <div className="os-settings-map-col" key={section.label}>
+              <h3 className="os-settings-map-title">{section.label}</h3>
+              <div className="os-settings-map-links">
+                {section.items.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className="os-link"
+                    onClick={() => onNavigate(item.key)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       <Card
         title="布局与主题预览"

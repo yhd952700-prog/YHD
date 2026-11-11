@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Settings } from './Settings'
-import { findBannedTerms } from '../lib/accountCaps'
+import { findBannedTerms, buildProfile, deriveCaps } from '../lib/accountCaps'
 import type { Session } from '../lib/auth'
 import type { DeviceModeState } from '../lib/mode'
 
@@ -111,10 +111,13 @@ afterEach(() => {
 
 function renderSettings(options?: { focusModelId?: string | null; isRoot?: boolean }) {
   const session: Session = { ...SESSION, isRoot: options?.isRoot ?? true }
+  const caps = deriveCaps(buildProfile(session, null, 'api', null))
   return render(
     <Settings
       device={DEVICE}
       session={session}
+      caps={caps}
+      onNavigate={() => {}}
       notifications={[]}
       onLogout={() => {}}
       focusModelId={options?.focusModelId}
@@ -257,8 +260,9 @@ describe('系统设置 · 知识库向量化卡', () => {
     )
 
     renderSettings()
-    expect(await screen.findByText(/联网检索设置没读到/)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /重试/ }))
+    const note = await screen.findByText(/联网检索设置没读到/)
+    // 只点这张卡的「重试」：授权模式 / 危险命令确认卡也在同一页各自报错。
+    fireEvent.click(within(note.closest('p') as HTMLElement).getByRole('button', { name: '重试' }))
     await waitFor(() => expect(screen.queryByText(/联网检索设置没读到/)).toBeNull())
   })
 })
