@@ -145,7 +145,11 @@ def port_is_free(port: int, host: str = "127.0.0.1") -> bool:
             if _bind_status(address, family, v6only) in ("free", "unavailable"):
                 continue
             return False
-        return True
+        # 绑定探测管不住开了 SO_REUSEADDR 的监听者（``http.server`` 默认就开）：
+        # Windows 允许第二个 socket 绑到别人**正在监听**的地址，"绑得上"因此不等于
+        # "没人监听"。再用 netstat 的 LISTENING 列表兜一次；TIME_WAIT 不在 LISTENING
+        # 里，不会把端口复用误判成占用。
+        return not listener_pids(port)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
