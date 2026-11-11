@@ -956,6 +956,30 @@ class AIStateManager:
         target = self._employee_for_agent(pinned_agent)
         return target if target is not None else self._ensure_employee()
 
+    def _employee_budget_gate(self, employee: Optional["Employee"]) -> None:
+        """派活前的员工预算硬闸：超限直接 402，不进入任何模型调用。
+
+        预算表读不出来时同样拦下（无法确认额度就不能放行）；未配置预算的员工
+        直接通过。这里只做判定，不写盘——用量在目标结束后由 ``record_goal_usage``
+        结算，避免"先扣费再干活"。
+        """
+        if employee is None:
+            return
+        from ..ai.budget import BudgetExceeded, BudgetStoreError, require_employee_budget
+
+        try:
+            require_employee_budget(employee.name)
+        except BudgetExceeded as exc:
+            logger.warning(
+                "evt=employee_budget_blocked employee=%s violations=%s",
+                employee.name,
+                [item.get("kind") for item in exc.violations],
+            )
+            raise GoalWorkError(402, "employee_budget_exceeded", str(exc)) from exc
+        except BudgetStoreError as exc:
+            logger.error("evt=employee_budget_store_error employee=%s error=%s", employee.name, exc)
+            raise GoalWorkError(402, "employee_budget_exceeded", str(exc)) from exc
+
     def _skill_scope_for(self, pinned_agent: Optional[str]):
         """本次目标所属员工的技能注入作用域。
 
@@ -1997,6 +2021,8 @@ class AIStateManager:
         # 指名派活时驱动的是**被点名的那位员工**，不是默认管家 —— 否则它的
         # 状态永远显示空闲、KPI 永远为 0（重启后更无迹可查）。
         employee = self._goal_employee(pinned_agent)
+        # 员工预算硬闸：超限在这里就 402，绝不"先跑完再提示"。
+        self._employee_budget_gate(employee)
         # 同一员工的点名派活是独占的：第二个并发请求直接 409，不排队、不丢。
         self._claim_employee_goal(
             employee.stable_id(), goal_id, exclusive=bool(pinned_agent)
@@ -2259,6 +2285,18 @@ class AIStateManager:
                 key_owner=str(getattr(employee, "owner_account_id", "") or owner_account_id),
                 goal_id=goal_id,
             )
+            # 员工预算结算：只对已配置预算的员工累计；结算失败不改目标结果。
+            if employee is not None and usage:
+                try:
+                    from ..ai.budget import record_goal_usage
+
+                    record_goal_usage(employee.name, usage)
+                except Exception as exc:  # noqa: BLE001 - 结算异常不能吞掉目标结果
+                    logger.error(
+                        "evt=employee_budget_settle_failed employee=%s error=%s",
+                        getattr(employee, "name", ""),
+                        exc,
+                    )
             # 终态时间：只在本次真的进入终态时打点（重试会清除并重新计时）。
             self._stamp_goal_completed_at(entry)
             with self._goal_lock:
@@ -2822,6 +2860,8 @@ class AIStateManager:
 
         task_name = str(target.get("name") or "")
         original_agent = target.get("assigned_agent")
+        # 单任务重试同样会调用模型：预算硬闸必须覆盖，否则失败任务可绕过上限。
+        self._employee_budget_gate(self._goal_employee(original_agent))
         natural_language = str(entry.get("natural_language") or "")
         scope = str(entry.get("scope") or "L1")
         # 重启后拆解器可能给出与原来不同的任务名；用落盘的原计划快照重建
@@ -5194,3 +5234,9 @@ def get_workflow(
 from .tasks_api import build_router as _build_task_ledger_router  # noqa: E402
 
 router.include_router(_build_task_ledger_router(_goal_viewer))
+
+# ── 员工补齐能力（复制 / 导入导出 / 质量 / 预算）──────────────
+# 同样编进既有 /v1 路由，不新增 main.py 挂载点，复用同一套可见范围。
+from .employees_ext import build_router as _build_employees_ext_router  # noqa: E402
+
+router.include_router(_build_employees_ext_router(_goal_viewer))

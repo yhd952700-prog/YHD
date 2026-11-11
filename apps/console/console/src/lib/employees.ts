@@ -499,3 +499,227 @@ export async function fetchEmployeeMemories(
     count: Number(payload?.count ?? memories.length),
   }
 }
+
+// ─── 复制 ──────────────────────────────────────────────────────
+
+export interface EmployeeCopyResult {
+  created: boolean
+  source: string
+  name: string
+  employment_status: string
+  copied: { skills: string[]; capabilities: string[]; prompts: string[] }
+  warnings: string[]
+  notes: string[]
+}
+
+/**
+ * 复制员工配置：提示词、agent 类型/数量、默认能力、技能绑定一起带走。
+ *
+ * 副本由后端强制停用（不会一复制就开跑），任务/记忆/运行历史不复制。
+ */
+export async function copyEmployee(
+  name: string,
+  options?: { name?: string; copySkills?: boolean; copyCapabilities?: boolean; copyPrompts?: boolean },
+): Promise<EmployeeCopyResult> {
+  const body: Record<string, unknown> = {}
+  if (options?.name) body.name = options.name
+  if (options?.copySkills !== undefined) body.copy_skills = options.copySkills
+  if (options?.copyCapabilities !== undefined) body.copy_capabilities = options.copyCapabilities
+  if (options?.copyPrompts !== undefined) body.copy_prompts = options.copyPrompts
+  return apiFetch<EmployeeCopyResult>(`/v1/employees/${encodeURIComponent(name)}/copy`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+// ─── 导入 / 导出 ───────────────────────────────────────────────
+
+export interface EmployeeConfigDocument {
+  format: string
+  format_version: number
+  exported_at: string
+  source?: { employee_name?: string; owner_account_id?: string }
+  employee: Record<string, unknown>
+  notes: string[]
+}
+
+/** 导出为可读 JSON；后端只给配置白名单字段，不含任何密钥。 */
+export async function exportEmployeeConfig(name: string): Promise<EmployeeConfigDocument> {
+  return apiFetch<EmployeeConfigDocument>(`/v1/employees/${encodeURIComponent(name)}/export`)
+}
+
+export type ImportConflictMode = 'skip' | 'rename'
+
+export interface ImportPlanRow {
+  index: number
+  requested_name: string
+  final_name: string
+  action: 'create' | 'rename' | 'skip' | 'error'
+  reason: string
+  errors: string[]
+  warnings: string[]
+  will_be_disabled: boolean
+}
+
+export interface ImportPlan {
+  dry_run: boolean
+  on_conflict: string
+  plan: ImportPlanRow[]
+  summary: { create: number; rename: number; skip: number; error: number }
+  notes: string[]
+}
+
+export interface ImportApplyResult {
+  dry_run: boolean
+  results: Array<{ name: string; status: string; message: string; skills?: string[] }>
+  created_count: number
+  skipped_count: number
+  failed_count: number
+  notes: string[]
+}
+
+function importBody(input: {
+  config: unknown
+  onConflict?: ImportConflictMode
+  asName?: string
+  confirm?: boolean
+}): string {
+  return JSON.stringify({
+    config: input.config,
+    on_conflict: input.onConflict ?? 'skip',
+    as_name: input.asName,
+    confirm: input.confirm ?? false,
+  })
+}
+
+/** dry-run：校验 + 冲突处理，返回"将会做什么"，不落盘。 */
+export async function previewEmployeeImport(input: {
+  config: unknown
+  onConflict?: ImportConflictMode
+  asName?: string
+}): Promise<ImportPlan> {
+  return apiFetch<ImportPlan>('/v1/employees/import/preview', {
+    method: 'POST',
+    body: importBody(input),
+  })
+}
+
+/** 确认导入：服务端会重新校验；未带 confirm 一律 400。 */
+export async function applyEmployeeImport(input: {
+  config: unknown
+  onConflict?: ImportConflictMode
+  asName?: string
+}): Promise<ImportApplyResult> {
+  return apiFetch<ImportApplyResult>('/v1/employees/import', {
+    method: 'POST',
+    body: importBody({ ...input, confirm: true }),
+  })
+}
+
+// ─── 工作质量评估 ──────────────────────────────────────────────
+
+/** 全部来自台账真实行；算不出的字段是 null，不是 0。 */
+export interface EmployeeQuality {
+  employee: string
+  available: boolean
+  source: string
+  generated_at: string
+  definitions: Record<string, string>
+  sample: number
+  status_counts: Record<string, number>
+  completed: number
+  failed: number
+  cancelled: number
+  in_progress: number
+  terminal: number
+  completion_rate: number | null
+  failure_rate: number | null
+  avg_duration_seconds: number | null
+  duration_sample: number
+  duration_missing: number
+  manual_rework_count: number | null
+  manual_retry_count: number | null
+  takeover_count: number | null
+  handed_off_count: number | null
+  auto_retry_attempts: number | null
+  last_task_at: string | null
+  notes: string[]
+}
+
+export async function fetchEmployeeQuality(name: string): Promise<EmployeeQuality> {
+  return apiFetch<EmployeeQuality>(`/v1/employees/${encodeURIComponent(name)}/quality`)
+}
+
+// ─── 预算 ──────────────────────────────────────────────────────
+
+export type BudgetPeriod = 'day' | 'week' | 'month'
+
+export interface EmployeeBudgetPolicy {
+  enabled: boolean
+  calls_limit: number | null
+  tokens_limit: number | null
+  cost_limit: number | null
+  period: BudgetPeriod
+}
+
+export interface EmployeeBudgetView {
+  employee: string
+  configured?: boolean
+  policy: EmployeeBudgetPolicy
+  period_label: string
+  window: string
+  period_start: string
+  next_reset_at: string
+  usage: {
+    calls: number
+    tokens: number
+    cost: number
+    cost_complete: boolean
+    cost_unknown_calls: number
+    last_source: string
+    updated_at: string
+  }
+  remaining: { calls: number | null; tokens: number | null; cost: number | null }
+  exceeded: boolean
+  enforced: boolean
+  violations: Array<{ kind: string; limit?: number | null; used?: number | null; message: string }>
+  notes: string[]
+  store_error?: string
+}
+
+export interface EmployeeBudgetPatch {
+  enabled?: boolean
+  /** 传 null 表示取消该项上限。 */
+  calls_limit?: number | null
+  tokens_limit?: number | null
+  cost_limit?: number | null
+  period?: BudgetPeriod
+  reset_usage?: boolean
+}
+
+export async function fetchEmployeeBudget(name: string): Promise<EmployeeBudgetView> {
+  return apiFetch<EmployeeBudgetView>(`/v1/employees/${encodeURIComponent(name)}/budget`)
+}
+
+export async function saveEmployeeBudget(
+  name: string,
+  patch: EmployeeBudgetPatch,
+): Promise<EmployeeBudgetView> {
+  return apiFetch<EmployeeBudgetView>(`/v1/employees/${encodeURIComponent(name)}/budget`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
+}
+
+export async function clearEmployeeBudget(name: string): Promise<void> {
+  await apiFetch<unknown>(`/v1/employees/${encodeURIComponent(name)}/budget`, {
+    method: 'DELETE',
+  })
+}
+
+/** 百分比文案：上限未设置时返回 null（不显示"0%"假装有额度）。 */
+export function budgetPercent(used: number, limit: number | null): number | null {
+  if (limit === null || limit <= 0) return null
+  return Math.min(100, Math.round((used / limit) * 100))
+}
+

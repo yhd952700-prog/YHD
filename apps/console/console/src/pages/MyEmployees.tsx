@@ -21,13 +21,17 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { FormEvent } from 'react'
 import { useApi } from '../lib/api'
 import type { EmployeeCapabilitiesPayload, EmployeesPayload } from '../lib/contracts'
-import { capabilityLabel } from '../lib/format'
+import { capabilityLabel, numberText } from '../lib/format'
 import {
   agentStatusLabel,
+  applyEmployeeImport,
   assignEmployeeTask,
   BATCH_HIRE_LIMIT,
+  budgetPercent,
   capabilityRisk,
   catalogHasNoHighRisk,
+  clearEmployeeBudget,
+  copyEmployee,
   createEmployee,
   createEmployeesBatch,
   deleteEmployee,
@@ -40,12 +44,27 @@ import {
   employeeStatsText,
   employeeStatus,
   employeesOf,
+  exportEmployeeConfig,
+  fetchEmployeeBudget,
+  fetchEmployeeQuality,
   isSeedEmployee,
   parseEmployeeBatch,
+  previewEmployeeImport,
   readableError,
+  saveEmployeeBudget,
   updateEmployee,
 } from '../lib/employees'
-import type { BatchHireResult, MyEmployee } from '../lib/employees'
+import type {
+  BatchHireResult,
+  BudgetPeriod,
+  EmployeeBudgetPatch,
+  EmployeeBudgetView,
+  EmployeeQuality,
+  ImportApplyResult,
+  ImportConflictMode,
+  ImportPlan,
+  MyEmployee,
+} from '../lib/employees'
 import { BudgetDenialActions, Card, Empty, Failure, Guard } from '../components/ui'
 import { isBudgetDenialMessage } from '../lib/errorMessage'
 
@@ -67,6 +86,67 @@ function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
     // 风险级别原样带下来，由展示层翻成人话；不在这里猜。
     risk: item.risk,
   }))
+}
+
+const PERIOD_OPTIONS: Array<{ value: BudgetPeriod; label: string }> = [
+  { value: 'day', label: '每天重置' },
+  { value: 'week', label: '每周重置' },
+  { value: 'month', label: '每月重置' },
+]
+
+/** 比率/耗时算不出来时如实显示，不用 0 或 100% 冒充。 */
+function percentText(value: number | null): string {
+  return value === null ? '算不出来' : `${numberText(value * 100, 1)}%`
+}
+
+function durationText(seconds: number | null): string {
+  if (seconds === null) return '算不出来'
+  if (seconds < 60) return `${numberText(seconds, 1)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds - minutes * 60)
+  if (minutes < 60) return `${minutes} 分 ${rest} 秒`
+  const hours = Math.floor(minutes / 60)
+  return `${hours} 小时 ${minutes - hours * 60} 分`
+}
+
+const IMPORT_ACTION_LABELS: Record<string, string> = {
+  create: '新建',
+  rename: '改名新建',
+  skip: '跳过',
+  error: '无法导入',
+}
+
+function importActionLabel(action: string): string {
+  return IMPORT_ACTION_LABELS[action] ?? action
+}
+
+/**
+ * 预算表单 → 请求体：留空 = 该项不限制（传 null），非法输入返回 null 由调用方提示。
+ * 不用 0 代替空，否则"没填"会被存成"一次都不许调"。
+ */
+function parseBudgetDraft(draft: {
+  calls: string
+  tokens: string
+  cost: string
+  period: BudgetPeriod
+}): EmployeeBudgetPatch | null {
+  const number = (text: string): number | null | undefined => {
+    const trimmed = text.trim()
+    if (!trimmed) return null
+    const value = Number(trimmed)
+    if (!Number.isFinite(value) || value < 0) return undefined
+    return value
+  }
+  const calls = number(draft.calls)
+  const tokens = number(draft.tokens)
+  const cost = number(draft.cost)
+  if (calls === undefined || tokens === undefined || cost === undefined) return null
+  return {
+    calls_limit: calls === null ? null : Math.trunc(calls),
+    tokens_limit: tokens === null ? null : Math.trunc(tokens),
+    cost_limit: cost,
+    period: draft.period,
+  }
 }
 
 export function MyEmployees({
@@ -103,6 +183,26 @@ export function MyEmployees({
   const [batchResult, setBatchResult] = useState<BatchHireResult | null>(null)
   const [batchError, setBatchError] = useState<string | null>(null)
   const [batchBusy, setBatchBusy] = useState(false)
+
+  // ── 员工补齐能力：复制 / 导出导入 / 质量 / 预算 ──
+  // detail 只允许同时展开一行的一个面板，避免一屏全是表单。
+  const [detail, setDetail] = useState<{ name: string; kind: 'quality' | 'budget' } | null>(null)
+  const [detailBusy, setDetailBusy] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [quality, setQuality] = useState<EmployeeQuality | null>(null)
+  const [budget, setBudget] = useState<EmployeeBudgetView | null>(null)
+  const [budgetDraft, setBudgetDraft] = useState({
+    calls: '',
+    tokens: '',
+    cost: '',
+    period: 'day' as BudgetPeriod,
+  })
+  const [importText, setImportText] = useState('')
+  const [importConflict, setImportConflict] = useState<ImportConflictMode>('skip')
+  const [importPlan, setImportPlan] = useState<ImportPlan | null>(null)
+  const [importResult, setImportResult] = useState<ImportApplyResult | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
 
   // 派活时焦点接力：展开后进输入框，提交/取消后回"单独指派一个任务"。
   // 不用 autoFocus，是因为同一个员工行会被重渲染，只有当前名字的引用有效。
@@ -231,6 +331,369 @@ export function MyEmployees({
       })
       .catch((err) => setBatchError(readableError(err)))
       .finally(() => setBatchBusy(false))
+  }
+
+  const copyAgent = useCallback(
+    async (employee: MyEmployee) => {
+      if (busy) return
+      setBusy(`copy:${employee.name}`)
+      setError(null)
+      setNotice(null)
+      try {
+        const result = await copyEmployee(employee.name)
+        const warning = result.warnings.length > 0 ? `；注意：${result.warnings.join('；')}` : ''
+        setNotice(
+          `已复制「${employee.name}」为「${result.name}」，副本默认停用，确认配置后再点启用${warning}`,
+        )
+        list.reload()
+      } catch (err) {
+        setError(readableError(err))
+      } finally {
+        setBusy(null)
+      }
+    },
+    [busy, list],
+  )
+
+  const exportAgent = useCallback(
+    async (employee: MyEmployee) => {
+      if (busy) return
+      setBusy(`export:${employee.name}`)
+      setError(null)
+      setNotice(null)
+      try {
+        const doc = await exportEmployeeConfig(employee.name)
+        // 导出的是配置白名单（提示词/能力/技能），后端已剔除疑似凭据，这里原样下载。
+        const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `${employee.name}-employee.json`
+        link.click()
+        URL.revokeObjectURL(url)
+        setNotice(`已导出「${employee.name}」的配置（不含任何密钥）`)
+      } catch (err) {
+        setError(readableError(err))
+      } finally {
+        setBusy(null)
+      }
+    },
+    [busy],
+  )
+
+  const openDetail = useCallback(
+    async (employee: MyEmployee, kind: 'quality' | 'budget') => {
+      if (detail?.name === employee.name && detail.kind === kind) {
+        setDetail(null)
+        return
+      }
+      setDetail({ name: employee.name, kind })
+      setDetailError(null)
+      setQuality(null)
+      setBudget(null)
+      setDetailBusy(true)
+      try {
+        if (kind === 'quality') {
+          setQuality(await fetchEmployeeQuality(employee.name))
+        } else {
+          const view = await fetchEmployeeBudget(employee.name)
+          setBudget(view)
+          setBudgetDraft({
+            calls: view.policy.calls_limit === null ? '' : String(view.policy.calls_limit),
+            tokens: view.policy.tokens_limit === null ? '' : String(view.policy.tokens_limit),
+            cost: view.policy.cost_limit === null ? '' : String(view.policy.cost_limit),
+            period: view.policy.period,
+          })
+        }
+      } catch (err) {
+        setDetailError(readableError(err))
+      } finally {
+        setDetailBusy(false)
+      }
+    },
+    [detail],
+  )
+
+  const saveBudget = useCallback(
+    async (name: string, resetUsage = false) => {
+      const parsed = parseBudgetDraft(budgetDraft)
+      if (!parsed) {
+        setDetailError('上限只能填非负数字；留空表示该项不限制。')
+        return
+      }
+      setDetailBusy(true)
+      setDetailError(null)
+      try {
+        const view = await saveEmployeeBudget(name, { ...parsed, reset_usage: resetUsage })
+        setBudget(view)
+        if (view.exceeded) {
+          setNotice(`已保存「${name}」的预算，当前已超限：下一次派活会被 402 拦下。`)
+        } else {
+          setNotice(resetUsage ? `已保存「${name}」的预算并清零本期用量` : `已保存「${name}」的预算`)
+        }
+      } catch (err) {
+        setDetailError(readableError(err))
+      } finally {
+        setDetailBusy(false)
+      }
+    },
+    [budgetDraft],
+  )
+
+  const removeBudget = useCallback(async (name: string) => {
+    setDetailBusy(true)
+    setDetailError(null)
+    try {
+      await clearEmployeeBudget(name)
+      setBudget(await fetchEmployeeBudget(name))
+      setBudgetDraft({ calls: '', tokens: '', cost: '', period: 'day' })
+      setNotice(`已移除「${name}」的预算（回到不限制）`)
+    } catch (err) {
+      setDetailError(readableError(err))
+    } finally {
+      setDetailBusy(false)
+    }
+  }, [])
+
+  async function previewImport() {
+    setImportError(null)
+    setImportResult(null)
+    if (!importText.trim()) {
+      setImportError('请先粘贴导出的员工配置（JSON）。')
+      return
+    }
+    setImportBusy(true)
+    try {
+      setImportPlan(await previewEmployeeImport({ config: importText, onConflict: importConflict }))
+    } catch (err) {
+      setImportPlan(null)
+      setImportError(readableError(err))
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  async function confirmImport() {
+    if (!importPlan) return
+    setImportBusy(true)
+    setImportError(null)
+    try {
+      const result = await applyEmployeeImport({
+        config: importText,
+        onConflict: importConflict,
+      })
+      setImportResult(result)
+      setImportPlan(null)
+      setImportText('')
+      list.reload()
+    } catch (err) {
+      setImportError(readableError(err))
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  const renderDetail = (employee: MyEmployee) => {
+    if (!detail || detail.name !== employee.name) return null
+    if (detailBusy) return <div className="os-emp-meta">正在读取…</div>
+    if (detailError) {
+      return (
+        <div className="os-alert" role="alert">
+          {detailError}
+        </div>
+      )
+    }
+
+    if (detail.kind === 'quality') {
+      if (!quality) return null
+      return (
+        <div className="os-note" role="status">
+          <div>
+            基于历史任务记录：样本 {quality.sample} 个 · 终态{' '}
+            {quality.terminal} 个 · 执行中 {quality.in_progress} 个
+          </div>
+          <dl className="os-kv">
+            <dt>完成率</dt>
+            <dd>{percentText(quality.completion_rate)}</dd>
+            <dt>失败率</dt>
+            <dd>{percentText(quality.failure_rate)}</dd>
+            <dt>平均耗时</dt>
+            <dd>
+              {durationText(quality.avg_duration_seconds)}
+              {quality.duration_sample > 0 ? `（${quality.duration_sample} 个任务有完整起止时间）` : ''}
+            </dd>
+            <dt>人工返工</dt>
+            <dd>
+              {quality.manual_rework_count === null ? '算不出来' : `${quality.manual_rework_count} 次`}
+              {quality.manual_retry_count !== null && quality.takeover_count !== null
+                ? `（人工重试 ${quality.manual_retry_count} 次 · 人工接管 ${quality.takeover_count} 次）`
+                : ''}
+            </dd>
+            <dt>完成 / 失败 / 取消</dt>
+            <dd>
+              {quality.completed} / {quality.failed} / {quality.cancelled}
+            </dd>
+            <dt>最近一次任务</dt>
+            <dd>
+              {quality.last_task_at
+                ? new Date(quality.last_task_at).toLocaleString('zh-CN', { hour12: false })
+                : '没有记录'}
+            </dd>
+          </dl>
+          {quality.notes.map((note, index) => (
+            <div key={`quality-note-${index}`} className="os-hint">
+              {note}
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    if (!budget) return null
+    return (
+      <div className="os-note" role="status">
+        {budget.exceeded && (
+          <div className="os-alert" role="alert" style={{ marginBottom: 8 }}>
+            {budget.violations.map((item) => item.message).join('；')}
+          </div>
+        )}
+        <div>
+          周期：{budget.period_label}（{budget.window}）· 下次重置：
+          {budget.next_reset_at
+            ? new Date(budget.next_reset_at).toLocaleString('zh-CN', { hour12: false })
+            : '未知'}
+          {budget.enforced ? ' · 超限会直接拦下派活（402）' : ' · 当前没有生效的上限'}
+        </div>
+        <dl className="os-kv">
+          <dt>本期调用</dt>
+          <dd>
+            {budget.usage.calls}
+            {budget.policy.calls_limit === null ? ' 次（不限）' : ` / ${budget.policy.calls_limit} 次`}
+            {budgetPercent(budget.usage.calls, budget.policy.calls_limit) !== null
+              ? `（已用 ${budgetPercent(budget.usage.calls, budget.policy.calls_limit)}%）`
+              : ''}
+          </dd>
+          <dt>本期模型用量</dt>
+          <dd>
+            {budget.usage.tokens}
+            {budget.policy.tokens_limit === null
+              ? '（不限）'
+              : ` / ${budget.policy.tokens_limit}`}
+          </dd>
+          <dt>本期费用</dt>
+          <dd>
+            {numberText(budget.usage.cost, 4)}
+            {budget.policy.cost_limit === null ? '（不限）' : ` / ${budget.policy.cost_limit}`}
+            {budget.usage.cost_complete ? '' : '（部分模型无价格，费用未完全核算）'}
+          </dd>
+          <dt>剩余额度</dt>
+          <dd>
+            调用 {budget.remaining.calls === null ? '不限' : `${budget.remaining.calls} 次`} · 模型用量{' '}
+            {budget.remaining.tokens === null ? '不限' : budget.remaining.tokens} · 费用{' '}
+            {budget.remaining.cost === null ? '不限' : numberText(budget.remaining.cost, 4)}
+          </dd>
+        </dl>
+        <div className="os-emp-create" style={{ marginTop: 6 }}>
+          <div className="os-field">
+            <label htmlFor={`budget-calls-${employee.name}`}>调用次数上限</label>
+            <div className="os-input">
+              <input
+                id={`budget-calls-${employee.name}`}
+                inputMode="numeric"
+                placeholder="留空 = 不限制"
+                value={budgetDraft.calls}
+                onChange={(event) => setBudgetDraft({ ...budgetDraft, calls: event.target.value })}
+              />
+            </div>
+          </div>
+          <div className="os-field">
+            <label htmlFor={`budget-tokens-${employee.name}`}>模型用量上限</label>
+            <div className="os-input">
+              <input
+                id={`budget-tokens-${employee.name}`}
+                inputMode="numeric"
+                placeholder="留空 = 不限制"
+                value={budgetDraft.tokens}
+                onChange={(event) => setBudgetDraft({ ...budgetDraft, tokens: event.target.value })}
+              />
+            </div>
+          </div>
+          <div className="os-field">
+            <label htmlFor={`budget-cost-${employee.name}`}>金额上限</label>
+            <div className="os-input">
+              <input
+                id={`budget-cost-${employee.name}`}
+                inputMode="decimal"
+                placeholder="留空 = 不限制"
+                value={budgetDraft.cost}
+                onChange={(event) => setBudgetDraft({ ...budgetDraft, cost: event.target.value })}
+              />
+            </div>
+          </div>
+          <div className="os-field">
+            <label htmlFor={`budget-period-${employee.name}`}>重置周期</label>
+            <div className="os-input">
+              <select
+                id={`budget-period-${employee.name}`}
+                value={budgetDraft.period}
+                onChange={(event) =>
+                  setBudgetDraft({ ...budgetDraft, period: event.target.value as BudgetPeriod })
+                }
+              >
+                {PERIOD_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="os-emp-actions">
+          <button
+            className="os-btn"
+            style={{ width: 'auto' }}
+            disabled={detailBusy || employee.read_only}
+            onClick={() => void saveBudget(employee.name)}
+          >
+            {detailBusy ? '保存中…' : '保存预算'}
+          </button>
+          <button
+            className="os-btn os-btn-ghost"
+            style={{ width: 'auto' }}
+            disabled={detailBusy || employee.read_only}
+            onClick={() => void saveBudget(employee.name, true)}
+          >
+            保存并清零本期用量
+          </button>
+          {budget.configured !== false && (
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto' }}
+              disabled={detailBusy || employee.read_only}
+              onClick={() => void removeBudget(employee.name)}
+            >
+              移除预算
+            </button>
+          )}
+          <button
+            className="os-btn os-btn-ghost"
+            style={{ width: 'auto' }}
+            onClick={() => void openDetail(employee, 'budget')}
+          >
+            收起
+          </button>
+        </div>
+        {employee.read_only && (
+          <div className="os-hint">只读员工只能查看预算，不能修改。</div>
+        )}
+        {budget.notes.map((note, index) => (
+          <div key={`budget-note-${index}`} className="os-hint">
+            {note}
+          </div>
+        ))}
+      </div>
+    )
   }
 
   const renderEmployee = (employee: MyEmployee) => {
@@ -490,6 +953,44 @@ export function MyEmployees({
               )}
             </>
           )}
+
+          {/* 四项补齐能力：复制、导出、质量评估对可见员工都开放；
+              预算写入在只读员工上由面板内的按钮禁用拦住。 */}
+          <div className="os-emp-actions">
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto' }}
+              disabled={busy !== null}
+              onClick={() => void copyAgent(employee)}
+            >
+              {busy === `copy:${employee.name}` ? '复制中…' : '复制'}
+            </button>
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto' }}
+              disabled={busy !== null}
+              onClick={() => void exportAgent(employee)}
+            >
+              {busy === `export:${employee.name}` ? '导出中…' : '导出配置'}
+            </button>
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto' }}
+              aria-expanded={detail?.name === employee.name && detail.kind === 'quality'}
+              onClick={() => void openDetail(employee, 'quality')}
+            >
+              质量评估
+            </button>
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto' }}
+              aria-expanded={detail?.name === employee.name && detail.kind === 'budget'}
+              onClick={() => void openDetail(employee, 'budget')}
+            >
+              预算
+            </button>
+          </div>
+          {renderDetail(employee)}
         </div>
       </div>
     )
@@ -647,6 +1148,139 @@ export function MyEmployees({
                   <li key={`${item.name ?? 'item'}-${index}`}>
                     {item.name ? `${item.name}：` : ''}
                     {item.message || '没有创建成功，原因未返回'}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="导入员工配置"
+        sub="粘贴导出的配置文件内容：先预览、确认后才保存；导入的员工一律默认停用"
+        span={12}
+      >
+        <div className="os-field">
+          <label htmlFor="emp-import">员工配置 JSON</label>
+          <div className="os-input">
+            <textarea
+              id="emp-import"
+              rows={6}
+              maxLength={200000}
+              placeholder="把导出的配置文件内容整段粘贴到这里"
+              value={importText}
+              onChange={(event) => {
+                setImportText(event.target.value)
+                setImportPlan(null)
+                setImportResult(null)
+              }}
+            />
+          </div>
+          <span className="os-hint">
+            只导入配置（提示词、执行个体、默认能力、技能绑定）；不含任务、记忆，也不含任何密钥。
+          </span>
+        </div>
+        <div className="os-field">
+          <label htmlFor="emp-import-conflict">同名冲突处理</label>
+          <div className="os-input">
+            <select
+              id="emp-import-conflict"
+              value={importConflict}
+              onChange={(event) => {
+                setImportConflict(event.target.value as ImportConflictMode)
+                setImportPlan(null)
+              }}
+            >
+              <option value="skip">跳过，不改动现有员工</option>
+              <option value="rename">自动改名，加 -import 后缀</option>
+            </select>
+          </div>
+        </div>
+        <div className="os-model-form-foot">
+          <button
+            className="os-btn"
+            type="button"
+            disabled={importBusy}
+            onClick={() => void previewImport()}
+          >
+            {importBusy ? '处理中…' : '预览（不会保存）'}
+          </button>
+          {importPlan && (
+            <button
+              className="os-btn"
+              type="button"
+              disabled={importBusy}
+              onClick={() => void confirmImport()}
+            >
+              确认导入
+            </button>
+          )}
+          {importPlan && (
+            <button
+              className="os-btn os-btn-ghost"
+              type="button"
+              onClick={() => setImportPlan(null)}
+            >
+              取消
+            </button>
+          )}
+        </div>
+        {importError && (
+          <div className="os-alert" role="alert">
+            {importError}
+          </div>
+        )}
+        {importPlan && (
+          <div className="os-note" role="status">
+            <div>
+              预览（尚未落盘）：新建 {importPlan.summary.create} 位 · 改名{' '}
+              {importPlan.summary.rename} 位 · 跳过 {importPlan.summary.skip} 位 · 错误{' '}
+              {importPlan.summary.error} 条
+            </div>
+            <div className="os-table-wrap">
+              <table className="os-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>原名</th>
+                    <th>最终名字</th>
+                    <th>动作</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importPlan.plan.map((row) => (
+                    <tr key={`import-row-${row.index}`}>
+                      <td>{row.index}</td>
+                      <td>{row.requested_name}</td>
+                      <td>{row.final_name}</td>
+                      <td>{importActionLabel(row.action)}</td>
+                      <td>
+                        {[row.reason, ...row.errors, ...row.warnings].filter(Boolean).join('；') ||
+                          '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="os-hint">
+              确认时服务端会重新校验一遍；导入出来的员工默认停用，需要手动启用才会接活。
+            </div>
+          </div>
+        )}
+        {importResult && (
+          <div className="os-note" role="status" aria-live="polite">
+            <div>
+              导入完成：新建 {importResult.created_count} 位 · 跳过{' '}
+              {importResult.skipped_count} 位 · 失败 {importResult.failed_count} 位
+            </div>
+            {importResult.results.length > 0 && (
+              <ul style={{ margin: '6px 0 0 18px' }}>
+                {importResult.results.map((row, index) => (
+                  <li key={`import-result-${row.name}-${index}`}>
+                    {row.name || '（未命名）'}：{row.message}
                   </li>
                 ))}
               </ul>
