@@ -189,7 +189,19 @@ def check_console_pages(
     return "not_verified", output
 
 
+def _assert_safe_install_dir(install_dir: Path) -> Path:
+    """卸载/停服这类破坏性操作也只许落测试目录。
+
+    ``uninstall``/``stop_installed`` 只拿得到安装目录，没有数据目录可校验，
+    这里用默认测试数据目录占位，复用 ``assert_safe_test_target`` 同一套
+    线上黑名单 + 测试白名单检查。
+    """
+    safe_install, _ = paths.assert_safe_test_target(install_dir, paths.DEFAULT_TEST_DATA)
+    return safe_install
+
+
 def stop_installed(install_dir: Path, timeout: int = 60) -> None:
+    install_dir = _assert_safe_install_dir(install_dir)
     runtime = installed_runtime(install_dir)
     if not runtime:
         return
@@ -203,6 +215,7 @@ def stop_installed(install_dir: Path, timeout: int = 60) -> None:
 
 
 def uninstall(install_dir: Path) -> None:
+    install_dir = _assert_safe_install_dir(install_dir)
     unins = Path(install_dir) / "unins000.exe"
     if not unins.is_file():
         return

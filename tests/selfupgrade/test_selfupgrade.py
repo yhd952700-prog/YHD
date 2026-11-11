@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from src.selfupgrade import paths
+from src.selfupgrade import install, paths
 from src.selfupgrade.manifest import (
     canonical_json,
     normalize_content,
@@ -194,3 +194,17 @@ def test_policy_requires_refusal_list_and_test_targets(tmp_path: Path):
     (lock / "policy.json").write_text(json.dumps(policy), encoding="utf-8")
     with pytest.raises(paths.UnsafeTargetError):
         load_policy(lock)
+
+
+def test_uninstall_and_stop_installed_reject_live_targets():
+    """卸载/停服同样只许落测试目录：碰到线上目录必须在动手之前就拒绝。"""
+    for live in (r"D:\LiuHao", r"D:\LiuHaoData", r"D:\LiuHao\logs", r"D:\LiuHaoSmoke\..\LiuHao"):
+        with pytest.raises(paths.UnsafeTargetError):
+            install.uninstall(Path(live))
+        with pytest.raises(paths.UnsafeTargetError):
+            install.stop_installed(Path(live))
+
+    # 测试目录放行：该目录没装过，两个函数都只做一次存在性检查后直接返回。
+    probe = Path(r"D:\LiuHaoSmoke\guard-probe-not-installed")
+    assert install.uninstall(probe) is None
+    assert install.stop_installed(probe) is None
