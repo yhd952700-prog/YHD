@@ -870,3 +870,72 @@ def set_authority_mode(
         "effective": "now" if immediate else "restart",
         "restart_required": not immediate,
     }
+
+
+class HostCommandConfirmRequest(BaseModel):
+    """危险命令「一次确认」的开关请求。**没有** principal 字段。"""
+
+    enabled: bool = Field(..., description="true=执行前确认；false=不再询问")
+    reason: str = Field("", max_length=500, description="关闭/恢复的理由（记入审计）")
+
+
+@router.get("/policy/host-command-confirmation", response_model=dict[str, Any])
+def get_host_command_confirmation(
+    _: str = Depends(require_human_principal),
+) -> dict[str, Any]:
+    """危险命令确认开关（只读）。默认开启。"""
+    from ..ai.host_command import confirm
+
+    return confirm.describe()
+
+
+@router.put("/policy/host-command-confirmation", response_model=dict[str, Any])
+def set_host_command_confirmation(
+    req: HostCommandConfirmRequest,
+    principal: str = Depends(require_admin_principal),
+) -> dict[str, Any]:
+    """开关危险命令的一次确认（管理员）。
+
+    **关闭前先写审计**（G3）：如果审计写不进去，就不关闭 —— 不允许出现「关掉了
+    但查不到是谁关的」。恢复同样留痕（G4）。
+    """
+    from ..ai.host_command import confirm
+    from ..security.authority_audit import (
+        record_confirm_disabled,
+        record_confirm_restored,
+    )
+
+    before = confirm.is_confirmation_enabled()
+    changed = before != bool(req.enabled)
+    if changed and not req.enabled:
+        try:
+            record_confirm_disabled(
+                categories=confirm.describe()["categories"],
+                actor=principal,
+                source="settings",
+                reason=req.reason,
+            )
+        except Exception as exc:
+            logger.error("host-command confirmation disable audit failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="审计不可用，这次没有关闭「一次确认」。请稍后重试。",
+            ) from exc
+
+    result = confirm.set_confirmation_enabled(req.enabled, updated_by=principal)
+
+    if changed and req.enabled:
+        try:
+            record_confirm_restored(
+                categories=result["categories"],
+                actor=principal,
+                source="settings",
+            )
+        except Exception as exc:  # 已恢复；审计失败必须可见
+            logger.error("host-command confirmation restore audit failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="确认已恢复，但这次操作没有记进审计。请重试并检查审计库。",
+            ) from exc
+
+    return {**result, "changed": changed}

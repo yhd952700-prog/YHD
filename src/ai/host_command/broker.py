@@ -25,13 +25,20 @@ from typing import Any, Callable, Dict, Optional
 
 from .approval import ApprovalInterface
 from .capability import CapabilityCatalog
+from .confirm import is_confirmation_enabled
+from .danger import classify
 from .enablement import ENV_VAR, is_enabled
 from .models import (
     DecisionOutcome,
     HostCommandDecision,
     HostCommandRequest,
 )
-from .policy import CapabilityBasedPolicy, DenyAllPolicy, HostCommandPolicy
+from .policy import (
+    CapabilityBasedPolicy,
+    DenyAllPolicy,
+    FullAuthorityPolicy,
+    HostCommandPolicy,
+)
 
 #: Executor: takes a request, returns an execution result dict.
 CommandExecutor = Callable[["HostCommandRequest"], Dict[str, Any]]
@@ -78,6 +85,16 @@ def _default_sink(event: str, details: Dict[str, Any]) -> None:
     )
 
 
+def _full_authority() -> bool:
+    """当前进程是否处于完全授权模式（读不到时按更严的 standard 处理）。"""
+    try:
+        from src.security.authority_mode import is_full
+
+        return is_full()
+    except Exception:  # pragma: no cover - 权限模块不可用时保持默认 DENY
+        return False
+
+
 class HostCommandBroker:
     """Authorizes and (conditionally) executes agent host commands."""
 
@@ -109,8 +126,13 @@ class HostCommandBroker:
         # any injected policy, so the gate is the authoritative default-DENY.
         if not is_enabled():
             self.policy: HostCommandPolicy = DenyAllPolicy()
+        elif policy is not None:
+            self.policy = policy
+        elif _full_authority():
+            # 全权模式：策略层放行（提权/受保护路径/危险确认仍在管线里生效）。
+            self.policy = FullAuthorityPolicy()
         else:
-            self.policy = policy or CapabilityBasedPolicy()
+            self.policy = CapabilityBasedPolicy()
         self.approvals = approvals or ApprovalInterface()
         self.executor = executor
         self.simulate = simulate
@@ -180,8 +202,56 @@ class HostCommandBroker:
             self._emit("host_command_decision", decision.as_dict())
             return decision
 
-        # 2) Policy evaluation (capability-based).
+        # 1b) 提权一律拒绝：全权模式也不提权（老板 2026-11-11 的边界 1）。
+        # 始终以当前 Windows 用户权限运行，不碰 UAC / 服务 / 计划任务 / HKLM。
+        report = classify(req.command)
+        req.metadata["dangerous"] = report.is_dangerous
+        if report.is_escalation:
+            decision = HostCommandDecision(
+                DecisionOutcome.DENY,
+                f"escalation refused ({report.escalation}): full authority never "
+                f"raises privileges; running as the current user is the hard boundary",
+                req,
+            )
+            self._emit("host_command_decision", decision.as_dict())
+            return decision
+
+        # 1c) 受保护路径：AI 任务点名审计库/密钥/程序本体/模式配置即拒绝。
+        # 用户本人（actor="human"）的手动操作不受这条限制。
+        full_mode = _full_authority()
+        if (req.actor or "").strip().lower() != "human":
+            from src.security.protected_paths import command_mentions_protected
+
+            reason = command_mentions_protected(req.command)
+            if reason:
+                self._record_protected_denied(req, reason)
+                decision = HostCommandDecision(
+                    DecisionOutcome.DENY,
+                    f"protected path refused ({reason}): AI tasks may not touch "
+                    f"audit/key material, the application body, or the authority config",
+                    req,
+                )
+                self._emit("host_command_decision", decision.as_dict())
+                return decision
+
+        # 2) Policy evaluation (capability-based / full-authority).
         decision = self.policy.evaluate(req, self.catalog)
+
+        # 2b) 危险命令的一次确认（仅全权模式；标准模式本来就要审批或拒绝）。
+        # 设置里可以关掉这一层，但关闭本身进审计（G3），且执行前仍会写 G2。
+        if full_mode and report.is_dangerous:
+            if is_confirmation_enabled():
+                req.metadata["confirm_state"] = "required"
+                if decision.outcome is DecisionOutcome.ALLOW:
+                    decision = HostCommandDecision(
+                        DecisionOutcome.DEFER,
+                        f"dangerous command requires one-time confirmation "
+                        f"({report.dangerous})",
+                        req,
+                        sandbox=decision.sandbox,
+                    )
+            else:
+                req.metadata["confirm_state"] = "disabled_by_setting"
 
         # 3) Human-sovereign approval escalation.
         if decision.outcome is DecisionOutcome.DEFER:
@@ -204,6 +274,49 @@ class HostCommandBroker:
                     {**decision.as_dict(), "approval_id": ar.approval_id},
                 )
                 return decision
+
+        # 3b) G2：全权模式下放行一条不可逆（危险）命令前写审计。
+        # 独立于审批：审批被关掉时这条仍然必须存在。
+        if (
+            full_mode
+            and report.is_dangerous
+            and decision.outcome is DecisionOutcome.ALLOW
+        ):
+            try:
+                from src.security.authority_audit import (
+                    record_irreversible_allowed,
+                    redact_command,
+                )
+
+                record_irreversible_allowed(
+                    action="host_command",
+                    tier="CRITICAL",
+                    actor=req.actor,
+                    correlation_id=req.correlation_id,
+                    target=req.command,
+                    confirm_state=str(
+                        req.metadata.get("confirm_state") or "not_required"
+                    ),
+                    extra={
+                        "command": redact_command(req.command),
+                        "cwd": req.cwd,
+                        "dangerous": report.dangerous,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - audit failure is a decision input
+                self.audit_failures += 1
+                self.last_audit_error = str(exc)
+                if self.fail_closed_audit:
+                    err = HostCommandDecision(
+                        DecisionOutcome.ERROR,
+                        f"irreversible-action audit unavailable; refusing to "
+                        f"execute (fail-closed): {exc}",
+                        req,
+                        sandbox=decision.sandbox,
+                        approval_id=decision.approval_id,
+                    )
+                    self._emit("host_command_audit_failure", {**err.as_dict(), "error": str(exc)})
+                    return err
 
         # 4) Execute (unless simulation, or not ALLOW).
         if decision.outcome is not DecisionOutcome.ALLOW:
@@ -266,6 +379,23 @@ class HostCommandBroker:
             )
             self._emit("host_command_decision", err.as_dict())
             return err
+
+    def _record_protected_denied(self, req: HostCommandRequest, reason: str) -> None:
+        """受保护路径拒绝的审计。写失败只计数，不改变拒绝结论（拒绝已经成立）。"""
+        try:
+            from src.security.authority_audit import record_protected_denied
+
+            record_protected_denied(
+                path=None,
+                reason=reason,
+                actor=req.actor,
+                correlation_id=req.correlation_id,
+                command=req.command,
+                channel="host_command",
+            )
+        except Exception as exc:  # noqa: BLE001 - 拒绝结论不因审计故障而改变
+            self.audit_failures += 1
+            self.last_audit_error = str(exc)
 
     def _record_executed(
         self,

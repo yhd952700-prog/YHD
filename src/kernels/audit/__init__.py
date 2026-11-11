@@ -470,6 +470,8 @@ class AuditEventType(str, Enum):
     AUTHORITY_CONFIRM_RESTORED = "authority_confirm_restored"
     #: G5：主机命令真实执行（完整命令行含参数，脱敏后落盘）。
     HOST_COMMAND_EXECUTED = "host_command_executed"
+    #: AI 任务试图删除/覆盖受保护路径（审计库、密钥、程序本体、模式配置）被拒。
+    AUTHORITY_PROTECTED_PATH_DENIED = "authority_protected_path_denied"
     GOAL_CONTROL = "goal_control"
     KERNEL_IMPLEMENTATION = "kernel_implementation"
     KERNEL_STATUS = "kernel_status"

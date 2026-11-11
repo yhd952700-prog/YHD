@@ -161,6 +161,16 @@ interface AuthorityModeState {
   env_value: string
 }
 
+/** `GET/PUT /v1/policy/host-command-confirmation`：危险命令的一次确认。 */
+interface HostCommandConfirmState {
+  confirmation_enabled: boolean
+  stored_enabled: boolean
+  env_override: boolean
+  env_var: string
+  env_value: string
+  note: string
+}
+
 export function Settings({
   device,
   session,
@@ -285,6 +295,36 @@ export function Settings({
       }
     },
     [authorityMode.reload],
+  )
+
+  // 危险命令「一次确认」：默认开启；关闭立即生效，但关闭动作会记入审计。
+  const hostConfirm = useApi<HostCommandConfirmState>(
+    '/v1/policy/host-command-confirmation',
+    0,
+  )
+  const [confirmBusy, setConfirmBusy] = useState(false)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+
+  const setHostConfirm = useCallback(
+    async (enabled: boolean) => {
+      setConfirmBusy(true)
+      setConfirmError(null)
+      try {
+        await apiFetch<HostCommandConfirmState>('/v1/policy/host-command-confirmation', {
+          method: 'PUT',
+          body: JSON.stringify({
+            enabled,
+            reason: enabled ? '设置页恢复危险命令确认' : '设置页关闭危险命令确认',
+          }),
+        })
+        hostConfirm.reload()
+      } catch (err) {
+        setConfirmError(err instanceof Error ? err.message : '保存失败')
+      } finally {
+        setConfirmBusy(false)
+      }
+    },
+    [hostConfirm.reload],
   )
 
   // 剩余时长必须来自"状态化的时间"：在渲染里直接调 `Date.now()` 是不纯的
@@ -604,6 +644,91 @@ export function Settings({
               </div>
             )}
           </>
+        )}
+      </Card>
+
+      <Card
+        id="settings-host-command-confirm"
+        title="危险命令确认"
+        sub="全权模式下，格式化、分区、关机重启、递归强删执行前问一次。默认开启；关闭立即生效，但会记入审计。"
+        span={12}
+      >
+        {!canManageSettings && (
+          <div className="os-note" role="note" style={{ marginBottom: 12 }}>
+            <span>该设置由系统统一管理，当前账号只读。</span>
+          </div>
+        )}
+
+        <label className="os-check" htmlFor="settings-host-command-confirm-toggle">
+          <input
+            id="settings-host-command-confirm-toggle"
+            type="checkbox"
+            checked={hostConfirm.data?.confirmation_enabled ?? true}
+            disabled={
+              !canManageSettings || confirmBusy || hostConfirm.loading || !hostConfirm.data
+            }
+            onChange={(event) => {
+              if (!canManageSettings) return
+              void setHostConfirm(event.target.checked)
+            }}
+          />
+          危险命令执行前先问我一次（关闭后不再询问）
+        </label>
+
+        {hostConfirm.loading && (
+          <p className="os-note" role="status">
+            <span>正在读取危险命令确认设置…开关暂时是灰的，读完就能改。</span>
+          </p>
+        )}
+
+        {hostConfirm.error && (
+          <p className="os-alert" role="alert">
+            <span>危险命令确认设置没读到：{hostConfirm.error}。先按「开启」理解。</span>
+            <button
+              className="os-link"
+              type="button"
+              style={{ flex: 'none' }}
+              onClick={hostConfirm.reload}
+            >
+              重试
+            </button>
+          </p>
+        )}
+
+        {hostConfirm.data && (
+          <>
+            <p className="os-note" role="status">
+              <span>
+                当前：
+                <strong>
+                  {hostConfirm.data.confirmation_enabled ? '开启（执行前询问）' : '已关闭（不再询问）'}
+                </strong>
+                。{hostConfirm.data.note}
+              </span>
+            </p>
+            <p className="os-note">
+              <span>
+                这不是安全边界：它只是危险命令这一层的减速带。格式化、分区、关机重启属于
+                硬件/系统级操作，本程序没有文件系统级拦截能力；命令被拆开拼接、或由子进程
+                自己生成时，这一层可能看不到。真正的硬边界是「不提权」——始终以当前 Windows
+                用户身份运行。
+              </span>
+            </p>
+            {hostConfirm.data.env_override && (
+              <p className="os-note" role="alert">
+                <span>
+                  环境变量 <code>{hostConfirm.data.env_var}</code> 正在强制覆盖这个开关
+                  （当前值 <code>{hostConfirm.data.env_value}</code>），界面上的修改不会改变实际行为。
+                </span>
+              </p>
+            )}
+          </>
+        )}
+
+        {confirmError && (
+          <div className="os-alert" role="alert">
+            <span>{confirmError}</span>
+          </div>
         )}
       </Card>
 

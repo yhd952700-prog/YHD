@@ -216,3 +216,47 @@ def record_host_command(
         },
         correlation_id,
     )
+
+
+def _attribution_payload() -> dict[str, Any] | None:
+    """当前任务归属（员工/task/goal）。取不到就返回 ``None``，不凭空编造。"""
+    try:
+        from src.kernels._crosscutting import _task_attribution_payload
+
+        return _task_attribution_payload()
+    except Exception:  # pragma: no cover - 归属信息缺失不应阻断审计
+        return None
+
+
+def record_protected_denied(
+    *,
+    path: str | None,
+    reason: str,
+    actor: Any = "ai",
+    correlation_id: str | None = None,
+    command: str | None = None,
+    channel: str = "filesystem",
+):
+    """AI 任务删除/覆盖受保护路径被拒。
+
+    与 G2/G5 同域（执行层），但结果固定是拒绝：这条记录回答「谁想动、动了
+    哪里、为什么被拦住」。带上任务归属，SYSTEM_PRINCIPAL 来源也能追到具体员工。
+    """
+    AuditEventType, AuditScope, log_event = _audit()
+    details: dict[str, Any] = {
+        "event": "authority.protected_path_denied",
+        "path": path,
+        "reason": reason,
+        "channel": channel,
+        "command": redact_command(command) if command else None,
+        "mode": "full",
+        "task_attribution": _attribution_payload(),
+    }
+    return log_event(
+        AuditEventType.AUTHORITY_PROTECTED_PATH_DENIED,
+        _principal_of(actor),
+        AuditScope[_SCOPE_EXECUTION],
+        "denied",
+        details,
+        correlation_id,
+    )
