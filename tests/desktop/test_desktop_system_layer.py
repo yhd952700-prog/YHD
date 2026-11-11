@@ -1466,6 +1466,37 @@ def test_autostart_command_refuses_when_entry_missing(tmp_path: Path) -> None:
         autostart.build_command(app)
 
 
+#: 随包交付的成品 ICO：应用图标 + 托盘五态。换图只替换文件，帧结构由本测试锁住。
+SHIPPED_ICON_ASSETS = (
+    REPO_ROOT / "packaging" / "assets" / "liuhao-app.ico",
+    *sorted((REPO_ROOT / "src" / "desktop" / "assets" / "tray").glob("*.ico")),
+)
+#: Windows 按 DPI 从 ICO 里挑一帧：缺 16/24/32 会糊，缺 256 大图标发虚。
+REQUIRED_FRAME_SIZES = (16, 20, 24, 32, 48, 64, 256)
+
+
+def test_shipped_icon_assets_are_seven_frame_ico() -> None:
+    """资产线交付的多帧 ICO 必须保持 7 档（16/20/24/32/48/64/256）。
+
+    守卫的是成品文件本身，不是 :func:`tray.write_state_icon` 的占位圆点：
+    占位图只在资产缺失时兜底，用户日常看到的是这里的多帧成品。
+    """
+    assert len(SHIPPED_ICON_ASSETS) == 6, [p.name for p in SHIPPED_ICON_ASSETS]
+    for path in SHIPPED_ICON_ASSETS:
+        data = path.read_bytes()
+        reserved, kind, count = struct.unpack("<HHH", data[:6])
+        assert (reserved, kind) == (0, 1), path.name
+        assert count == len(REQUIRED_FRAME_SIZES), (path.name, count)
+        sizes = []
+        for index in range(count):
+            base = 6 + 16 * index
+            width = data[base] or 256
+            height = data[base + 1] or 256
+            assert width == height, (path.name, width, height)
+            sizes.append(width)
+        assert tuple(sizes) == REQUIRED_FRAME_SIZES, (path.name, sizes)
+
+
 def test_state_icon_files_are_valid_ico(tmp_path: Path) -> None:
     for state, rgb in tray.STATE_COLORS.items():
         path = tray.write_state_icon(tmp_path / f"{state}.ico", rgb)
