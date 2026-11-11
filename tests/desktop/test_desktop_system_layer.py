@@ -1037,12 +1037,18 @@ def test_tray_restart_service_stops_then_starts_without_double_boot(
     """托盘「重新启动服务」：网关活着时先停后起，不会并发起两份启动。"""
     app = _bare_desktop_app(18099)
     app.service.is_running = lambda: True
-    stopped: list[bool] = []
-    monkeypatch.setattr(app, "_stop_service", lambda: stopped.append(True))
+    calls: list[dict[str, str]] = []
+
+    def fake_stop_service(**kwargs: str) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(app, "_stop_service", fake_stop_service)
 
     app._restart_service()
 
-    assert stopped == [True]
+    # 停止只发起一次；且归因来源必须是 restart，托盘「重新启动」与「停止服务」
+    # 在日志里要能区分（_stop_service 的 source 是必传关键字，测试桩不能吞掉）。
+    assert calls == [{"source": "restart"}]
     assert app._restart_after_stop is True
 
 

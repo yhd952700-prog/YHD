@@ -57,10 +57,18 @@ def test_state_window_buttons_reuse_tray_labels() -> None:
 def test_stop_service_action_is_shared_by_tray_and_window() -> None:
     instance = object.__new__(DesktopApp)
     calls: list[str] = []
-    instance._stop_service = lambda: calls.append("stop")  # type: ignore[method-assign]
+    sources: list[str] = []
+
+    def fake_stop_service(*, source: str = "button") -> None:
+        sources.append(source)
+        calls.append("stop")
+
+    instance._stop_service = fake_stop_service  # type: ignore[method-assign]
     instance._show_window = lambda: calls.append("show")  # type: ignore[method-assign]
     DesktopApp._handle_action(instance, tray.ACTION_STOP_SERVICE)
     assert calls == ["stop", "show"]
+    # 停止归因必须区分来源：托盘是 tray，窗口按钮是 window；桩扔掉 source 就归因不出来。
+    assert sources == ["tray"]
 
 
 # --------------------------------------------------------------------------- #
