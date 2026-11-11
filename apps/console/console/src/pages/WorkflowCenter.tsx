@@ -261,6 +261,38 @@ export function WorkflowCenter({ query }: { query: string }) {
     setFeedback(null)
   }
 
+  /**
+   * 用内置模板新建「提交 → 审批 → 执行 → 归档」。
+   * 模板本身也是普通定义：创建后可以继续编辑、导出、复制。
+   * 已存在同名流程时不再造第二份，直接打开编辑器让人改名，避免点两下多一条流程。
+   */
+  const createFromTemplate = async () => {
+    setFeedback(null)
+    try {
+      const result = await apiFetch<{ templates: WorkflowDefinition[] }>('/v1/workflow/templates')
+      const template = result.templates?.[0]
+      if (!template) {
+        setFeedback({ tone: 'danger', text: '当前版本没有内置模板，请用「新建流程」从空白流程开始。' })
+        return
+      }
+      const exists = (definitions.data?.definitions ?? []).some((item) => item.name === template.name)
+      if (exists) {
+        setEditor({ mode: 'create', draft: { ...template, name: `${template.name}（副本）` } })
+        setSaveError(null)
+        setFeedback({ tone: 'danger', text: `已有同名流程「${template.name}」，已把模板放进编辑器，改个名字再保存。` })
+        return
+      }
+      const created = await apiFetch<{ definition: WorkflowDefinitionRecord }>('/v1/workflow/definitions', {
+        method: 'POST',
+        body: JSON.stringify(template),
+      })
+      setFeedback({ tone: 'ok', text: `已按模板创建「${created.definition.name}」，可以直接点「运行」。` })
+      reloadAll()
+    } catch (error) {
+      setFeedback({ tone: 'danger', text: `模板创建失败：${actionErrorText(error)}` })
+    }
+  }
+
   const openEdit = (record: WorkflowDefinitionRecord) => {
     setEditor({ mode: 'edit', defId: record.def_id, draft: definitionFromRecord(record) })
     setSaveError(null)
@@ -454,6 +486,9 @@ export function WorkflowCenter({ query }: { query: string }) {
             <button className="os-btn" type="button" onClick={openCreate}>
               新建流程
             </button>
+            <button className="os-btn os-btn-ghost" type="button" onClick={() => void createFromTemplate()}>
+              用模板新建
+            </button>
             <button className="os-btn os-btn-ghost" type="button" onClick={() => fileRef.current?.click()}>
               导入 JSON
             </button>
@@ -596,7 +631,7 @@ export function WorkflowCenter({ query }: { query: string }) {
             hint={
               need
                 ? '换个关键词，或清空搜索框。'
-                : '点右上角「新建流程」，或从下方模板一键创建「提交 → 审批 → 执行 → 归档」。'
+                : '点右上角「新建流程」从空白开始，或用「用模板新建」一键创建「提交 → 审批 → 执行 → 归档」。'
             }
           />
         ) : (
