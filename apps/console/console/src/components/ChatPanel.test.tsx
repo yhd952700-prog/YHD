@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { ChatPanel } from './ChatPanel'
+import { ChatPanel, greetingForHour } from './ChatPanel'
 import { UNKNOWN_PROVIDER } from '../lib/providerStatus'
 
 /** 测试环境没有 localStorage（Node 提示 --localstorage-file 未提供），补一个内存实现。 */
@@ -49,6 +49,27 @@ function sse(frames: string[]): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+describe('ChatPanel 首屏问候', () => {
+  test('四个时段都称呼用户为 Boss', () => {
+    for (const hour of [2, 8, 14, 20]) {
+      expect(greetingForHour(hour)).toContain('Boss')
+    }
+  })
+
+  test('首屏问候语渲染出来就带 Boss 称呼', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    expect(await screen.findByText(/Boss/)).toBeTruthy()
+  })
 })
 
 describe('ChatPanel 结束帧', () => {

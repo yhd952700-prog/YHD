@@ -188,7 +188,7 @@ def _live_research_answer(query: str, report: "web_research.ResearchReport") -> 
     """
     source_block = web_research.format_sources(report.sources, report.fetched_at)
     prompt = (
-        "你是「鎏灏管家」里的调研执行体。下面是一次真实联网检索的结果。"
+        "你是「贾维斯」里的调研执行体。下面是一次真实联网检索的结果。"
         "请只用这些来源回答问题：先给结论，再给 3-5 条依据（总长不超过 300 字）。"
         "严格要求：不得编造任何链接、日期、项目名或版本号；"
         "提到具体项目时必须保留其来源编号；如果来源不足以回答，直接说“未查到”。\n\n"
@@ -313,7 +313,7 @@ def llm_research(**inputs: Any) -> Dict[str, Any]:
             "但你的问题照常回答——下面是基于已有知识的回答，不是今天的实时结果。）"
         )
     prompt = (
-        "你是「鎏灏管家」里的调研执行体。请围绕下面的问题，给出尽可能具体、"
+        "你是「贾维斯」里的调研执行体。请围绕下面的问题，给出尽可能具体、"
         "可核实的回答：先给结论，再给 3-5 条依据或候选（总长不超过 300 字）；"
         "如果涉及“今天/最新”而你无法确认实时信息，必须明确说明这一点并给出核实建议。\n\n"
         f"问题：{query.strip()}"
@@ -424,7 +424,7 @@ def llm_synthesis(**inputs: Any) -> Dict[str, Any]:
         return f"{text}\n\n{block}" if text.strip() else block
 
     prompt = (
-        "你是「鎏灏管家」的结果整理执行体。请完成下面这个任务，直接产出"
+        "你是「贾维斯」的结果整理执行体。请完成下面这个任务，直接产出"
         "用户可用的最终内容（中文，结构清晰，有明确结论，总长不超过 500 字，"
         "不要只复述过程）。\n\n"
         f"用户目标：{goal.strip() or '（未提供）'}\n"

@@ -174,7 +174,7 @@ describe('我的员工', () => {
       {
         name: 'liuhao-default',
         agent_count: 3,
-        role_description: '本机默认管家员工：拆解目标并调度本地能力',
+        role_description: '本机 AI 管家：拆解目标并调度本地能力',
         default_capabilities: [],
         employment_status: 'active',
         read_only: false,
@@ -197,12 +197,12 @@ describe('我的员工', () => {
       },
     ])
     render(<MyEmployees query="" />)
-    await waitFor(() => expect(screen.getByText('默认管家')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('贾维斯')).toBeTruthy())
     expect(screen.getByText('系统默认')).toBeTruthy()
     const text = document.body.textContent ?? ''
     expect(text).not.toContain('liuhao-default')
     // 内部标识不再作为 title 排查线索暴露在界面上。
-    expect(screen.getByText('默认管家').getAttribute('title')).toBeNull()
+    expect(screen.getByText('贾维斯').getAttribute('title')).toBeNull()
     expect(document.querySelector('[title*="liuhao-default"]')).toBeNull()
   })
 

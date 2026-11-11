@@ -72,7 +72,7 @@ describe('总览第一次用引导', () => {
     fireEvent.click(screen.getByRole('button', { name: '配置模型' }))
     fireEvent.click(screen.getByRole('button', { name: '创建第一位员工' }))
     fireEvent.click(screen.getByRole('button', { name: '导入第一份知识' }))
-    fireEvent.click(screen.getByRole('button', { name: '「鎏灏管家」' }))
+    fireEvent.click(screen.getByRole('button', { name: '「贾维斯」' }))
 
     expect(onNavigate.mock.calls.map((call) => call[0])).toEqual([
       'settings',

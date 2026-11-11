@@ -219,13 +219,13 @@ export function Shell({
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          // 底栏用短标签："我的"替代设置入口，"管家"就是鎏灏管家（butler），
+          // 底栏用短标签："我的"替代设置入口，"贾维斯"就是管家（butler），
           // "目标"是「目标与任务」——六项在 360px 下只有约 58px 一列。
           const label =
             item.key === 'settings' || item.key === 'my-keys'
               ? '我的'
               : item.key === 'butler'
-                ? '管家'
+                ? '贾维斯'
                 : item.key === 'goals'
                   ? '目标'
                   : item.label.replace('我AI', '')

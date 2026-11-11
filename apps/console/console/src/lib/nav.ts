@@ -81,7 +81,7 @@ export const PRIMARY_NAV: NavItem[] = [
   },
   {
     key: 'butler',
-    label: '鎏灏管家',
+    label: '贾维斯',
     icon: IconButler,
     hint: '你下目标，它拆解分派，给结论',
   },

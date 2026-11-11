@@ -300,7 +300,7 @@ export function Overview({
               <span className="os-attention-item">
                 也可以直接去
                 <button type="button" className="os-link" onClick={() => onNavigate('butler')}>
-                  「鎏灏管家」
+                  「贾维斯」
                 </button>
                 说一句话派活
               </span>

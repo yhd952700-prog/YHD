@@ -199,6 +199,14 @@ interface ChatPanelProps {
   onOpenUsage?: () => void
 }
 
+/** 首屏问候：按本地时间打招呼，对用户的称呼固定为 Boss。 */
+export function greetingForHour(hour: number): string {
+  if (hour >= 5 && hour < 12) return '早上好，Boss'
+  if (hour >= 12 && hour < 18) return '下午好，Boss'
+  if (hour >= 18 && hour < 23) return '晚上好，Boss'
+  return '夜深了，Boss'
+}
+
 export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -1009,14 +1017,14 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           </div>
 
           <div className="jarvis-intro">
-            <div className="jarvis-name">鎏灏管家</div>
-            <div className="jarvis-sub">你的 AI 业务伙伴</div>
+            <div className="jarvis-name">贾维斯</div>
+            <div className="jarvis-sub">你的 AI 管家</div>
           </div>
         </div>
 
         <div className="jarvis-right">
           <div className="jarvis-greeting">
-            <span className="greet-main">你好，我已准备就绪。</span>
+            <span className="greet-main">{greetingForHour(new Date().getHours())}，我已准备就绪。</span>
             <span className="greet-sub">今天想让我分析什么？</span>
           </div>
 
@@ -1144,7 +1152,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 ) : (
                   <div className="chat-empty">
                     {provider.isReal
-                      ? '请下达业务指令，鎏灏管家会实时分析。'
+                      ? '请下达业务指令，贾维斯会实时分析。'
                       : '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'}
                   </div>
                 )

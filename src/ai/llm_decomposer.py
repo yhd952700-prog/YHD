@@ -354,7 +354,7 @@ class LLMTaskDecomposer:
             assign_fields = ""
 
         return (
-            "你是「鎏灏管家」的任务拆解器。把用户目标拆成 1-"
+            "你是「贾维斯」的任务拆解器。把用户目标拆成 1-"
             f"{self._max_tasks} 个可执行子任务，只输出一个 JSON 数组，不要任何解释。\n"
             "每个任务对象字段：\n"
             '- name: 简短中文任务名（≤20 字，必须唯一）\n'

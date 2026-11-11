@@ -904,7 +904,7 @@ class AIStateManager:
                     name=self._SEED_DEFAULT_NAME,
                     agent_count=3,
                     agent_types=["planner", "executor", "critic"],
-                    role_description="本机默认管家员工：拆解目标并调度本地能力",
+                    role_description="本机 AI 管家：拆解目标并调度本地能力",
                     owner_account_id=default_account_id(),
                 )
                 logger.info("AIStateManager: Employee ready with %d agents (store-backed)",
@@ -3814,7 +3814,7 @@ class AIStateManager:
             "name": emp.name,
             # 面向界面的称呼：系统默认员工不在界面上暴露内部标识。
             "display_name": (
-                "默认管家" if emp.name == self._SEED_DEFAULT_NAME else emp.name
+                "贾维斯" if emp.name == self._SEED_DEFAULT_NAME else emp.name
             ),
             "employee_id": emp.stable_id(),
             "agent_count": len(emp.agents),
@@ -3967,7 +3967,7 @@ class AIStateManager:
             "employee": {
                 "name": emp.name,
                 "display_name": (
-                    "默认管家" if emp.name == self._SEED_DEFAULT_NAME else emp.name
+                    "贾维斯" if emp.name == self._SEED_DEFAULT_NAME else emp.name
                 ),
                 "employee_id": emp.stable_id(),
             },

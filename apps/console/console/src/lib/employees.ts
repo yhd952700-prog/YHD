@@ -216,7 +216,7 @@ export function isSeedEmployee(employee: MyEmployee): boolean {
 }
 
 /** 系统默认员工对外的称呼：`liuhao-default` 是内部标识，不上屏。 */
-export const SEED_EMPLOYEE_LABEL = '默认管家'
+export const SEED_EMPLOYEE_LABEL = '贾维斯'
 
 /**
  * 员工在界面上显示的名字。
