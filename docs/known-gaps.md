@@ -17,6 +17,7 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 | 5 | 取证沙箱 `rmtree` 删除不是安全擦除 | 删除后磁盘/日志/卷影副本仍可能恢复旧证据 | **保持结论**（数据残留；凭证 ACL 已在保留期内收紧，见「取证沙箱删除不是安全擦除」一节） |
 | 6 | 全权模式的「不可逆动作确认」只覆盖删除与命令两类；邮件/消息外发、付款通道当前不存在 | 不存在外发/付款通道，所以没有可确认的对象；一旦接入，必须先在通道上线前接好确认 | **等真有通道时先接确认再上线**（见 §6） |
 | 7 | 孤儿扫描器把 5 条旧登记项报成 stale，其中 3 条是短名碰撞造成的误报 | 若照 stale 警告删条目，`src.gateway.validation`、`src.pipelines.parser`、`src.performance.benchmarks` 会重新变成「未登记的零引用模块」并被门禁拦下 | **已知，仅登记**（见 §7；不删登记、不改扫描器） |
+| 8 | 0.3.0 代码层全量门禁已绿，但发布链未收口（未推送、未换章、未打包、未冒烟） | 最新**可安装**版本仍是 0.2.2；0.3.0 不得对外宣称可安装 | 登记中（见 §8；推送+CI 绿、换章、冻结打包冒烟三步未完成） |
 
 ---
 
@@ -1249,4 +1250,37 @@ payload 的 `app/runtime/Lib/site-packages` 采样，口径是"随包发出的�
 **怎么关。** 给短名命中加上「必须能在该文件所在包内解析到这个名字」的约束（也就是让短名
 分支复用相对导入解析的结果，而不是全仓文本匹配），然后再撤掉确属真引用的 2 条；
 另外 3 条应保持登记。做完重跑扫描确认 stale 归零，并补一条守门回归测试。
+
+---
+
+## 8. 0.3.0 发布链未收口：门禁绿但推送/换章/打包/冒烟未完成（2026-11-12，登记中）
+
+**当前事实。** 代码层 0.3.0 已经就绪：全量门禁第二轮
+（`D:\cache\temp\pytest-full-030-serial-r2.log`）在 2026-11-11 15:01:01 收口，
+`9650 passed, 82 skipped, 2 xfailed`，`EXITCODE=0`，HEAD 记录为 `fa2c15fe`、DIRTY=2——
+工作区里那两个文件正是 `src/gateway/skill_runtime.py` 与 `src/desktop/auto_login.py`
+的两处跨平台修复，其内容与后续提交 `723a1f01` 完全一致（提交信息与 diff 可复核）。
+两处 P0 平台缺陷（非 Windows `NameError`、无感登录错误类型不一致）自 `665bc2cf`
+起已不存在于代码中。
+
+**为什么 0.3.0 仍不可安装。** 剩余阻塞全部在发布流程，不在代码：
+
+1. `p36` 未推送到 `origin/release-0.3.0`（登记时 ahead 12 + 本登记提交），
+   CI 最新一轮（`42995983132` @ `d504968d`）仍是 13 job / 12 失败的旧红，
+   不能作为发布凭证。
+2. `release-lock` 换章漂移未处理：`verify-lock --check-source` 报
+   `installer/liuhao.iss 与盖章副本不一致（该换章了）`，退出码 3。
+   换章按治理边界只能由老板手动跑 `stamp-lock.py`，AI 不得代做。
+3. 0.3.0 未冻结、未出包、未装机冒烟：`dist/` 最新仍是
+   `LiuHao-Setup-0.2.2.exe`（2026-11-10 20:15）；`freeze-0.3.0` 不存在。
+
+**怎么关。** 依序：推送 → CI 13/13 绿 → 老板换章（`verify-lock --check-source`
+归零）→ 冻结 0.3.0 → `release-pipeline.ps1` 出包 → SHA256 → 装机冒烟
+（对照 0.2.2 的 12 项基线）→ 真机首启/填 Key/聊天/升级/回滚。
+全部完成前，对外口径：最新可安装版本为 **0.2.2**。
+
+**证据。** r2 日志尾部（EXITCODE=0）；`git log origin/release-0.3.0..HEAD` 计数；
+`python -m src.selfupgrade verify-lock --check-source --json` 输出（2026-11-12 07:03
+复测，`source_drift` 仍报 liuhao.iss）；`gh run list` 最新 release-0.3.0 run 为旧红；
+`dist/` 目录清单。
 
