@@ -159,10 +159,10 @@ describe('深链门控：成员不挂载管理员页', () => {
     window.history.replaceState(null, '', '/')
   })
 
-  test('成员 ?p=preflight：预检端点的调用次数为 0，并回落到运行看板', async () => {
+  test('成员 ?p=preflight：预检端点的调用次数为 0，并回落到企业总览', async () => {
     const { calls } = open('?p=preflight', false)
 
-    await waitFor(() => expect(pageTitle()).toBe('运行看板'))
+    await waitFor(() => expect(pageTitle()).toBe('企业总览'))
     await flush()
 
     expect(count(calls, PREFLIGHT)).toBe(0)
@@ -170,10 +170,10 @@ describe('深链门控：成员不挂载管理员页', () => {
     expect(count(calls, ALERT_RULES)).toBe(0)
   })
 
-  test('成员 ?p=status：告警两个端点的调用次数为 0，并回落到运行看板', async () => {
+  test('成员 ?p=status：告警两个端点的调用次数为 0，并回落到企业总览', async () => {
     const { calls } = open('?p=status', false)
 
-    await waitFor(() => expect(pageTitle()).toBe('运行看板'))
+    await waitFor(() => expect(pageTitle()).toBe('企业总览'))
     await flush()
 
     expect(count(calls, ALERTS)).toBe(0)

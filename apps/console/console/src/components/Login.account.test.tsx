@@ -302,7 +302,7 @@ describe('登录页状态机', () => {
     for (const key of ['members', 'matrix', 'templates', 'backup', 'recovery', 'settings', 'status']) {
       expect(visible.has(key)).toBe(false)
     }
-    expect(visible.has('overview')).toBe(true)
+    expect(visible.has('enterprise-overview')).toBe(true)
     expect(visible.has('my-keys')).toBe(true)
   })
 

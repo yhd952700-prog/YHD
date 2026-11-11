@@ -363,6 +363,69 @@ main#os-main:focus-visible {
   color: var(--os-accent-text);
 }
 
+/* 六组：组名是一级入口，点组名落到该组主视图；只有当前组展开二级项。 */
+.os-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.os-nav-group-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--os-text-dim);
+  font-size: 13.5px;
+  text-align: left;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.os-nav-group-head:hover {
+  background: var(--os-panel-hover);
+  color: var(--os-text);
+}
+
+.os-nav-group-head[data-active] {
+  color: var(--os-text);
+}
+
+.os-nav-group-head[data-active] .os-nav-icon {
+  color: var(--os-accent-text);
+}
+
+.os-nav-chevron {
+  width: 14px;
+  text-align: center;
+  color: var(--os-text-faint);
+  font-size: 13px;
+}
+
+.os-nav-kids {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 4px 16px;
+  padding-left: 8px;
+  border-left: 1px solid var(--os-border);
+}
+
+.os-nav-item-kid {
+  padding: 6px 9px;
+  font-size: 12.8px;
+}
+
+.os-nav-sublabel {
+  padding: 8px 9px 3px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--os-text-faint);
+}
+
 .os-nav-icon {
   display: grid;
   place-items: center;

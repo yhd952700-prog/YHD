@@ -55,30 +55,33 @@ function renderMobile(active: string, onNavigate = vi.fn()) {
 }
 
 describe('手机端底部导航渲染', () => {
-  test('底栏有目标与任务入口，是可用按钮且点击触发导航', () => {
-    const { onNavigate } = renderMobile('overview')
+  test('底栏六项，首项是企业总览且可点（Boss 决定）', () => {
+    const { onNavigate } = renderMobile('enterprise-overview')
     const nav = document.querySelector('.os-bottom-nav')
     expect(nav).toBeTruthy()
 
     const buttons = nav!.querySelectorAll<HTMLButtonElement>('.os-bottom-item')
     expect(buttons).toHaveLength(6)
+    expect(buttons[0].getAttribute('data-key')).toBe('enterprise-overview')
+    expect(buttons[0].textContent).toContain('企业总览')
 
-    const goal = nav!.querySelector<HTMLButtonElement>('[data-key="goals"]')
-    expect(goal).toBeTruthy()
-    expect(goal!.textContent).toContain('目标')
-    expect(goal!.disabled).toBe(false)
+    // 办公室、任务也要有真实入口，避免"回执能看到、结果打不开"。
+    const office = nav!.querySelector<HTMLButtonElement>('[data-key="my-employees"]')
+    const task = nav!.querySelector<HTMLButtonElement>('[data-key="task-center"]')
+    expect(office).toBeTruthy()
+    expect(task).toBeTruthy()
+    expect(task!.disabled).toBe(false)
 
-    goal!.click()
-    expect(onNavigate).toHaveBeenCalledWith('goals')
+    task!.click()
+    expect(onNavigate).toHaveBeenCalledWith('task-center')
   })
 
-  test('当前页是目标与任务时，入口带 aria-current=page', () => {
-    renderMobile('goals')
-    // 侧栏也有「目标与任务」，必须只查底栏那个（手机端侧栏是隐藏的）。
-    const goal = document.querySelector<HTMLButtonElement>(
-      '.os-bottom-nav [data-key="goals"]',
+  test('当前页是任务中心时，入口带 aria-current=page', () => {
+    renderMobile('task-center')
+    const task = document.querySelector<HTMLButtonElement>(
+      '.os-bottom-nav [data-key="task-center"]',
     )
-    expect(goal).toBeTruthy()
-    expect(goal!.getAttribute('aria-current')).toBe('page')
+    expect(task).toBeTruthy()
+    expect(task!.getAttribute('aria-current')).toBe('page')
   })
 })

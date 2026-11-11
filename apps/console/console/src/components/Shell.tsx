@@ -6,11 +6,11 @@
  * 快捷键提示选择文案 —— 一旦在 JS 里做布局判断，三端就会开始各自漂移。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
-import { ALL_NAV, navFor, mobileNavKeysFor } from '../lib/nav'
+import { ALL_NAV, navGroupsFor, mobileNavKeysFor, SETTINGS_SECTIONS } from '../lib/nav'
 import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../brand'
 import type { NavItem } from '../lib/nav'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
@@ -61,7 +61,7 @@ export function Shell({
 }: ShellProps) {
   const initial = (session.displayName || session.principal || '?').trim().charAt(0).toUpperCase()
   const displayName = session.displayName || session.principal
-  const navigation = navFor(caps)
+  const navigation = navGroupsFor(caps)
   const mobileKeys = mobileNavKeysFor(caps)
   const roleLabel = identityBarRole(profile)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -129,38 +129,47 @@ export function Shell({
         </div>
 
         <nav className="os-nav">
-          <div className="os-nav-label">业务</div>
-          {navigation.primary.map((item) => (
-            <NavButton
-              key={item.key}
-              item={item}
-              active={active === item.key}
-              onSelect={onNavigate}
-            />
-          ))}
-
-          <div className="os-nav-label">治理</div>
-          {navigation.governance.map((item) => (
-            <NavButton
-              key={item.key}
-              item={item}
-              active={active === item.key}
-              onSelect={onNavigate}
-            />
-          ))}
+          {navigation.map((group) => {
+            const GroupIcon = group.icon
+            const containsActive = group.items.some((item) => item.key === active)
+            return (
+              <div className="os-nav-group" key={group.key}>
+                <button
+                  type="button"
+                  className="os-nav-group-head"
+                  data-active={containsActive || undefined}
+                  title={group.label}
+                  onClick={() => onNavigate(containsActive ? active : group.defaultKey)}
+                >
+                  <span className="os-nav-icon">
+                    <GroupIcon size={17} />
+                  </span>
+                  <span className="os-nav-text">{group.label}</span>
+                </button>
+                <div className="os-nav-kids">
+                  {group.items.map((item) => {
+                    const section = SETTINGS_SECTIONS.find(
+                      (candidate) => group.key === 'settings' && candidate.startsAt === item.key,
+                    )
+                    return (
+                      <Fragment key={item.key}>
+                        {section && <div className="os-nav-sublabel">{section.label}</div>}
+                        <NavButton
+                          item={item}
+                          active={active === item.key}
+                          onSelect={onNavigate}
+                          compact
+                        />
+                      </Fragment>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
         </nav>
 
         <div className="os-sidebar-foot">
-          <nav className="os-nav" aria-label="设置">
-            {navigation.footer.map((item) => (
-              <NavButton
-                key={item.key}
-                item={item}
-                active={active === item.key}
-                onSelect={onNavigate}
-              />
-            ))}
-          </nav>
           <div className="os-user">
             <div className="os-avatar" aria-hidden="true">
               {initial}
@@ -219,16 +228,18 @@ export function Shell({
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          // 底栏用短标签："我的"替代设置入口，"贾维斯"就是管家（butler），
-          // "目标"是「目标与任务」——六项在 360px 下只有约 58px 一列。
-          const label =
-            item.key === 'settings' || item.key === 'my-keys'
-              ? '我的'
-              : item.key === 'butler'
-                ? '贾维斯'
-                : item.key === 'goals'
-                  ? '目标'
-                  : item.label.replace('我AI', '')
+          // 底栏用短标签：六项在 360px 下只有约 58px 一列，长名称会被截断。
+          const short: Record<string, string> = {
+            'enterprise-overview': '企业总览',
+            'my-employees': '办公室',
+            office: '办公室',
+            'task-center': '任务',
+            knowledge: '知识',
+            'skills-center': '能力',
+            settings: '设置',
+            me: '我的',
+          }
+          const label = short[item.key] ?? item.label
           return (
             <button
               key={item.key}
@@ -252,16 +263,19 @@ function NavButton({
   item,
   active,
   onSelect,
+  compact,
 }: {
   item: NavItem
   active: boolean
   onSelect: (key: string) => void
+  /** 组内二级项：缩进、字号略小，不抢一级组名的视觉重量。 */
+  compact?: boolean
 }) {
   const Icon = item.icon
   const hasBadge = item.badge !== undefined && item.badge !== '' && item.badge !== 0
   return (
     <button
-      className="os-nav-item"
+      className={compact ? 'os-nav-item os-nav-item-kid' : 'os-nav-item'}
       aria-current={active ? 'page' : undefined}
       title={item.hint}
       onClick={() => onSelect(item.key)}

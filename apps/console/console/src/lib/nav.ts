@@ -9,6 +9,10 @@
  *
  * 账号体系（`docs/account-ui-ia.md`）：入口裁剪在这里完成。**不渲染**而不是置灰
  * —— 未授权入口在 DOM 里根本不存在。裁剪只看 `AccountCaps`，不做授权判定。
+ *
+ * 2026-11 收敛（Boss 拍板）：39 个一级入口收成六组 —— 首页 / 办公室 / 任务 /
+ * 知识 / 能力 / 设置。低频治理入口不再和日常动作混排，全部收进「设置」。
+ * 收敛只改"入口在哪"，不改权限：每个页面的 `requires` 仍然逐项生效。
  */
 
 import type { ReactElement } from 'react'
@@ -32,7 +36,6 @@ import {
   IconShield,
   IconSparkle,
   IconTrust,
-  IconWorkbench,
   IconServer,
 } from '../components/icons'
 import type { AccountCaps } from './accountCaps'
@@ -58,7 +61,25 @@ export interface NavItem {
   requires?: NavRequirement
 }
 
-export const PRIMARY_NAV: NavItem[] = [
+/** 六组之一。`defaultKey` 是点组名时落到的页，也是该组的主视图。 */
+export interface NavGroup {
+  key: string
+  label: string
+  icon: (props: IconProps) => ReactElement
+  defaultKey: string
+  items: NavItem[]
+}
+
+/**
+ * 首页的规范 key。
+ *
+ * 旧地址 `?p=overview`（运行看板）与 `?p=runboard` 都重定向到这里；
+ * 运行看板的内容已拆进首页状态带，不再单独占一页。
+ */
+export const HOME_KEY = ENTERPRISE_OVERVIEW_PAGE.key
+
+/** ① 首页：企业总览 + 贾维斯。日常只有这两件事。 */
+const HOME_NAV: NavItem[] = [
   {
     key: ENTERPRISE_OVERVIEW_PAGE.key,
     label: ENTERPRISE_OVERVIEW_PAGE.navLabel,
@@ -66,10 +87,20 @@ export const PRIMARY_NAV: NavItem[] = [
     hint: ENTERPRISE_OVERVIEW_PAGE.sub,
   },
   {
-    key: 'overview',
-    label: '运行看板',
-    icon: IconDashboard,
-    hint: '系统健康、告警与实时活动；企业规模与任务进度看企业总览',
+    key: 'butler',
+    label: '贾维斯',
+    icon: IconButler,
+    hint: '你下目标，它拆解分派，给结论；也可以直接问',
+  },
+]
+
+/** ② 办公室：看 AI 员工在干什么；组织与员工管理是这里的两种看法。 */
+const OFFICE_NAV: NavItem[] = [
+  {
+    key: 'my-employees',
+    label: '我的员工',
+    icon: IconEmployees,
+    hint: '创建、改名、停用，或直接把一件事派给它',
   },
   {
     key: ORG_PAGE.key,
@@ -79,31 +110,23 @@ export const PRIMARY_NAV: NavItem[] = [
     // 建企业、调部门与汇报关系是根专属动作；成员看不到这一项。
     requires: 'root',
   },
-  {
-    key: 'butler',
-    label: '贾维斯',
-    icon: IconButler,
-    hint: '你下目标，它拆解分派，给结论',
-  },
-  {
-    key: 'my-employees',
-    label: '我的员工',
-    icon: IconEmployees,
-    hint: '创建、改名、停用，或直接把一件事派给它',
-  },
+]
+
+/** ③ 任务：台账、目标、项目、产出物。 */
+const TASKS_NAV: NavItem[] = [
   {
     key: TASK_CENTER_PAGE.key,
     label: TASK_CENTER_PAGE.navLabel,
     icon: IconGoals,
     hint: TASK_CENTER_PAGE.sub,
   },
-  {
-    key: 'employees',
-    label: '能力注册表',
-    icon: IconEmployees,
-    hint: '只读：系统预置了哪些能力模块',
-  },
-  { key: 'business', label: '业务中心', icon: IconBusiness },
+  { key: 'goals', label: '目标与任务', icon: IconGoals },
+  { key: 'projects', label: '项目', icon: IconProjects },
+  { key: 'files', label: '工作区文件', icon: IconFiles },
+]
+
+/** ④ 知识：喂进去的、记住的、带得走的。 */
+const KNOWLEDGE_NAV: NavItem[] = [
   {
     key: 'knowledge',
     label: '知识中心',
@@ -117,6 +140,16 @@ export const PRIMARY_NAV: NavItem[] = [
     hint: '按范围与员工查看记忆，可纠正、删除与导出',
   },
   {
+    key: 'my-data',
+    label: '我的数据',
+    icon: IconData,
+    hint: '一键导出人可读 ZIP；记忆/知识库可回导',
+  },
+]
+
+/** ⑤ 能力：它能使什么、能接什么。 */
+const CAPABILITIES_NAV: NavItem[] = [
+  {
     key: SKILLS_CENTER_PAGE.key,
     label: SKILLS_CENTER_PAGE.navLabel,
     icon: IconSparkle,
@@ -129,77 +162,96 @@ export const PRIMARY_NAV: NavItem[] = [
     hint: TOOLS_CENTER_PAGE.sub,
   },
   {
-    key: 'workbench',
-    label: '自由对话',
-    icon: IconWorkbench,
-    hint: '你自己问、自己翻，不经过管家拆解',
+    key: 'employees',
+    label: '能力注册表',
+    icon: IconEmployees,
+    hint: '只读：系统预置了哪些能力模块',
   },
-  { key: 'goals', label: '目标与任务', icon: IconGoals },
-  { key: 'projects', label: '项目', icon: IconProjects },
+  { key: 'business', label: '业务中心', icon: IconBusiness },
   { key: 'apps', label: '应用', icon: IconApps },
-  { key: 'data', label: '数据中心', icon: IconData },
+]
+
+/**
+ * ⑥ 设置：低频治理与账号面。
+ *
+ * 组内仍按「账号与成员 / 安全与审计 / 系统与诊断」三段排列（`settingSection`），
+ * 渲染时插入小标题即可；这里用扁平数组保证 key 唯一、深链白名单只有一份。
+ */
+const SETTINGS_NAV: NavItem[] = [
+  // 账号与成员
+  { key: 'settings', label: '系统设置', icon: IconSettings, requires: 'root' },
+  { key: 'members', label: '成员与权限管理', icon: IconEmployees, requires: 'root' },
+  { key: 'my-members', label: '我的账号', icon: IconEmployees, requires: 'manage' },
+  { key: 'matrix', label: '权限矩阵', icon: IconLock, requires: 'root' },
+  { key: 'templates', label: '角色模板', icon: IconShield, requires: 'root' },
+  { key: 'my-keys', label: '我的 Key', icon: IconLock },
+  {
+    key: 'account',
+    label: '账号安全',
+    icon: IconShield,
+    hint: '修改本人密码；需要当前密码',
+  },
+  {
+    key: 'recovery',
+    label: '恢复码',
+    icon: IconTrust,
+    requires: 'recovery',
+  },
+  { key: 'backup', label: '备份与迁移', icon: IconServer, requires: 'root' },
+  { key: 'me', label: '我的', icon: IconShield, hint: '账号、数据与隐私入口' },
+  // 安全与审计
+  { key: 'approval', label: '审批中心', icon: IconShield, requires: 'grant' },
+  { key: 'audit', label: '操作记录', icon: IconLock },
+  { key: 'trust', label: '信任', icon: IconTrust },
+  { key: 'network', label: '网络', icon: IconActivity },
+  { key: 'identity', label: '身份与权限', icon: IconShield },
+  // 系统与诊断
+  { key: 'status', label: '系统状态', icon: IconActivity, requires: 'root' },
   { key: 'events', label: '事件流', icon: IconEvents },
+  { key: 'data', label: '数据中心', icon: IconData },
   {
     key: 'notifications',
     label: '通知中心',
     icon: IconBell,
     hint: '只看未读、逐条标为已读；已读状态只记在这台设备上',
   },
-]
-
-/** 独立于主导航的治理入口。 */
-export const GOVERNANCE_NAV: NavItem[] = [
-  // 审批面要能签发凭据才成立；没有签发范围的账号连入口都不出现（不是点了 403）。
-  { key: 'approval', label: '审批中心', icon: IconShield, requires: 'grant' },
-  // 操作记录：后端 `/v1/audit/*` 一直有真实数据，此前没有任何页面渲染它。
-  { key: 'audit', label: '操作记录', icon: IconLock },
-  // 信任内核只读面：后端 `/v1/trust/{entity_id}` 返回真实信任状态，此前没有任何页面渲染它。
-  { key: 'trust', label: '信任', icon: IconTrust },
-  // 网络内核只读面：后端 `/v1/network/messages` 返回总线真实状态（stats + 消息历史），此前没有任何页面渲染它。
-  { key: 'network', label: '网络', icon: IconActivity },
-  // 身份与权限只读面：后端 `/v1/identity/*` 返回真实身份内核状态（主体 / 权限 / 注册表诚实度），此前没有任何页面渲染它。
-  { key: 'identity', label: '身份与权限', icon: IconShield },
-  // 工作区文件：AI 员工经 file_write 写出的产物，此前没有任何页面让人浏览/读取。
-  { key: 'files', label: '工作区文件', icon: IconFiles },
-  // 数据可携带性：每个人都能把自己的会话/记忆/员工/知识库/用量带走，
-  // 也能把记忆与知识库导回来。不属于根专属的加密备份，故不设 requires。
-  { key: 'my-data', label: '我的数据', icon: IconData, hint: '一键导出人可读 ZIP；记忆/知识库可回导' },
-  { key: 'status', label: '系统状态', icon: IconActivity, requires: 'root' },
-  // 生产预检：`/v1/production/preflight` 此前真实可用但界面上无入口，
-  // 一份算好的"能不能上生产"从未递到人眼前。只读，不含任何配置值。
   { key: 'preflight', label: '生产预检', icon: IconServer, requires: 'root' },
-
-  // ── 账号面（§9.8）────────────────────────────────────────────────────
-  { key: 'members', label: '成员与权限管理', icon: IconEmployees, requires: 'root' },
-  { key: 'matrix', label: '权限矩阵', icon: IconLock, requires: 'root' },
-  { key: 'templates', label: '角色模板', icon: IconShield, requires: 'root' },
-  { key: 'backup', label: '备份与迁移', icon: IconServer, requires: 'root' },
-  // 根账号 + 登录页自助注册的账号：后者没有管理员可代发激活码，必须有
-  // 自己补发恢复码的入口；管理员创建的成员不出现（由管理员重置密码）。
-  { key: 'recovery', label: '恢复码', icon: IconTrust, requires: 'recovery' },
-  // 成员面：只有含管理范围的账号才出现；更深层默认没有该范围。
-  { key: 'my-members', label: '我的账号', icon: IconEmployees, requires: 'manage' },
-  { key: 'my-keys', label: '我的 Key', icon: IconLock },
-  // 账号安全：所有人可见。此前后端 `/v1/accounts/{principal}/password` 只被
-  // 管理员重置成员调用，普通用户没有"改自己密码"的入口。
-  { key: 'account', label: '账号安全', icon: IconShield, hint: '修改本人密码；需要当前密码' },
-]
-
-export const FOOTER_NAV: NavItem[] = [
-  // 「我的」：手机端账号、数据与隐私入口的收敛页。桌面端侧栏也有同一入口，
-  // 这样三端对"账号面在哪里"只有一个答案，不再靠深链或猜路径。
-  { key: 'me', label: '我的', icon: IconShield, hint: '账号、数据与隐私入口' },
-  // 关于与隐私：所有人可见。首次披露不能只藏在安装前的 txt 里。
   {
     key: 'about',
     label: '关于与隐私',
     icon: IconShield,
     hint: '版本、数据目录、许可证与联网说明',
   },
-  { key: 'settings', label: '系统设置', icon: IconSettings, requires: 'root' },
 ]
 
-export const ALL_NAV: NavItem[] = [...PRIMARY_NAV, ...GOVERNANCE_NAV, ...FOOTER_NAV]
+/** 设置组内部的三个小标题；`startsAt` 指向该段第一个 key。 */
+export const SETTINGS_SECTIONS: { label: string; startsAt: string }[] = [
+  { label: '账号与成员', startsAt: 'settings' },
+  { label: '安全与审计', startsAt: 'approval' },
+  { label: '系统与诊断', startsAt: 'status' },
+]
+
+export const NAV_GROUPS: NavGroup[] = [
+  { key: 'home', label: '首页', icon: IconDashboard, defaultKey: HOME_KEY, items: HOME_NAV },
+  { key: 'office', label: '办公室', icon: IconEmployees, defaultKey: 'my-employees', items: OFFICE_NAV },
+  { key: 'tasks', label: '任务', icon: IconGoals, defaultKey: TASK_CENTER_PAGE.key, items: TASKS_NAV },
+  { key: 'knowledge', label: '知识', icon: IconKnowledge, defaultKey: 'knowledge', items: KNOWLEDGE_NAV },
+  {
+    key: 'capabilities',
+    label: '能力',
+    icon: IconSparkle,
+    defaultKey: SKILLS_CENTER_PAGE.key,
+    items: CAPABILITIES_NAV,
+  },
+  { key: 'settings', label: '设置', icon: IconSettings, defaultKey: 'settings', items: SETTINGS_NAV },
+]
+
+export const ALL_NAV: NavItem[] = NAV_GROUPS.flatMap((group) => group.items)
+
+/** 某个页面属于哪一组（用于侧栏展开当前组）。 */
+export function groupForPage(key: string): NavGroup | undefined {
+  return NAV_GROUPS.find((group) => group.items.some((item) => item.key === key))
+}
 
 function itemVisible(item: NavItem, caps: AccountCaps): boolean {
   if (!item.requires) return true
@@ -210,57 +262,76 @@ function itemVisible(item: NavItem, caps: AccountCaps): boolean {
   return !caps.isRoot && caps.canMyMembers
 }
 
-/** 按身份裁剪后的导航（未授权项直接不返回，调用方无从"置灰"）。 */
+/** 按身份裁剪后的六组（未授权项直接不返回，调用方无从"置灰"）。 */
+export function navGroupsFor(caps: AccountCaps): NavGroup[] {
+  return NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items
+      .filter((item) => itemVisible(item, caps))
+      .map((item) => {
+        if (item.key === 'my-keys' && caps.isRoot) return { ...item, label: '全部 Key' }
+        // 非根账号的入口名不能出现"成员"这类层级词；内容仍是它自己创建的账号。
+        if (item.key === 'my-members' && !caps.isRoot) return { ...item, label: '我的账号' }
+        return item
+      }),
+  })).filter((group) => group.items.length > 0)
+}
+
+/**
+ * 兼容旧调用点的三份清单。
+ *
+ * 六组是渲染用的真相；仍有人按 "业务 / 治理 / 设置" 的口径取列表，
+ * 这里直接由组派生，避免再维护第二份数据。
+ */
 export function navFor(caps: AccountCaps): {
   primary: NavItem[]
   governance: NavItem[]
   footer: NavItem[]
+  groups: NavGroup[]
 } {
-  const governance = GOVERNANCE_NAV.filter((item) => itemVisible(item, caps)).map((item) => {
-    if (item.key === 'my-keys' && caps.isRoot) return { ...item, label: '全部 Key' }
-    // 非根账号的入口名不能出现"成员"这类层级词；内容仍是它自己创建的账号。
-    if (item.key === 'my-members' && !caps.isRoot) return { ...item, label: '我的账号' }
-    return item
-  })
+  const groups = navGroupsFor(caps)
   return {
-    primary: PRIMARY_NAV.filter((item) => itemVisible(item, caps)),
-    governance,
-    footer: FOOTER_NAV.filter((item) => itemVisible(item, caps)),
+    primary: groups.flatMap((group) => group.items),
+    governance: [],
+    footer: [],
+    groups,
   }
 }
 
 /** 当前身份可见的全部页面 key —— 深链白名单。 */
 export function visibleNavKeys(caps: AccountCaps): Set<string> {
-  const { primary, governance, footer } = navFor(caps)
-  return new Set([...primary, ...governance, ...footer].map((item) => item.key))
+  return new Set(ALL_NAV.filter((item) => itemVisible(item, caps)).map((item) => item.key))
 }
 
 /**
- * 手机端底部导航：六项，含"目标与任务"与"我的"。
+ * 手机端底部导航：六项，首项是「企业总览」。
  *
- * `butler`（管家 / 对话）必须在这里 —— 此前手机端四项里没有它，
- * 于是"进入对话"在手机上没有任何一键入口，只能靠深层 URL 或外链。
+ * Boss 2026-11 定稿：手机首屏从运行看板换成企业总览（公司现在怎么样），
+ * 底栏顺序与侧栏六组一致 —— 企业总览 / 办公室 / 任务 / 知识 / 能力 / 设置。
+ * 这是产品决策，不是为了让测试变绿；改动契约测试时须在提交说明写明。
  *
- * `goals`（目标与任务）也必须在这里：窄屏下派活的结果只落在目标列表里，
- * 没有入口时用户能看到"已派活"的回执，却永远打不开结果页。
- *
- * 六项在 360px 宽下仍是一行（os.css 在 ≤420px 收紧字号与内边距），
- * 不换行、不横向溢出；每项仍是原生 <button>，可 Tab 聚焦。
- *
- * 第 6 项固定为「我的」：账号安全、我的数据、恢复码、关于与隐私都在这一页分组，
- * 不再按身份切换成设置或我的 Key —— 两种身份在手机上都要能走到账号面。
+ * `office` 是办公室工位墙；`settings` 承载账号与诊断。非根账号看不到
+ * 系统设置时，第 6 项回退到「我的」，避免底栏出现死入口。
  */
 export const MOBILE_NAV_KEYS = [
-  'overview',
+  ENTERPRISE_OVERVIEW_PAGE.key,
   'my-employees',
-  'butler',
-  'goals',
-  'approval',
-  'me',
+  TASK_CENTER_PAGE.key,
+  'knowledge',
+  SKILLS_CENTER_PAGE.key,
+  'settings',
 ]
 
 export function mobileNavKeysFor(caps: AccountCaps): string[] {
-  // 没有签发范围时底栏不留「审批中心」的死入口，换成同样可读的「工作区文件」。
-  const fourth = visibleNavKeys(caps).has('approval') ? 'approval' : 'files'
-  return ['overview', 'my-employees', 'butler', 'goals', fourth, 'me']
+  const visible = visibleNavKeys(caps)
+  const last = visible.has('settings') ? 'settings' : 'me'
+  // 办公室在步骤 2 才有独立页；此前落到「我的员工」，不留空 key。
+  const office = visible.has('office') ? 'office' : 'my-employees'
+  const keys = [ENTERPRISE_OVERVIEW_PAGE.key, office, TASK_CENTER_PAGE.key, 'knowledge', SKILLS_CENTER_PAGE.key, last]
+  // 权限裁剪后可能少项：按可见性补齐到六项，仍保证首项是企业总览。
+  for (const fallback of ['goals', 'files', 'memory', 'apps', 'me']) {
+    if (keys.length >= 6) break
+    if (visible.has(fallback) && !keys.includes(fallback)) keys.push(fallback)
+  }
+  return keys.slice(0, 6)
 }

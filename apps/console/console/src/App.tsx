@@ -96,7 +96,7 @@ import { ReadOnlyBanner } from './components/AccountChrome'
 import { buildProfile, deriveCaps } from './lib/accountCaps'
 import { countTreeMembers, loadAccounts, loadTree, useAccountData } from './lib/accounts'
 import type { AccountNode, AccountsPayload } from './lib/accounts'
-import { visibleNavKeys } from './lib/nav'
+import { visibleNavKeys, HOME_KEY } from './lib/nav'
 
 /** 把恢复码导出成本地文件；内容与设置页原来提供的一致。 */
 function downloadRecovery(recovery: PendingRecovery): void {
@@ -184,15 +184,47 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
 const KNOWN_PAGES = new Set(Object.keys(PAGE_META))
 
 /**
- * 从 `?p=` 读初始页面。
+ * 旧路由 → 新落点（Boss 2026-11 收敛）。
+ *
+ * 自由对话并进贾维斯的「直接问」后，`workbench` 不再是一个页面；运行看板拆进
+ * 首页状态带，`overview` 也不再单列。旧书签、桌面壳快捷方式、外链一律**重定向**，
+ * 不做 404、不留白屏。
+ */
+export const PAGE_ALIASES: Record<string, string> = {
+  workbench: 'butler',
+  chat: 'butler',
+  freechat: 'butler',
+  'free-chat': 'butler',
+  overview: HOME_KEY,
+  runboard: HOME_KEY,
+  // 手写地址 `#home` / `?p=home` 也落到企业总览，避免两种命名各说各话。
+  home: HOME_KEY,
+}
+
+/** 把一个可能是旧名字的 key 解析成真实页面 key；不认识的返回 null。 */
+export function resolvePageKey(raw: string): string | null {
+  const key = PAGE_ALIASES[raw] ?? raw
+  return KNOWN_PAGES.has(key) ? key : null
+}
+
+/**
+ * 从 `?p=` 或 `#hash` 读初始页面。
  *
  * 存在的理由是 PWA：`manifest.webmanifest` 的 `shortcuts` 只能通过 URL 表达"直接
  * 打开某一页"，而装成独立窗口后没有地址栏，深链是唯一的入口方式。
+ *
+ * 同时接受 hash 形式（`#butler`）——桌面壳与旧文档里两种写法都出现过，
+ * 这里统一解析、随后由 `canonicalizeUrl` 改写成规范的 `?p=`。
  */
-function readInitialPage(fallback: string = ENTERPRISE_OVERVIEW_PAGE.key): string {
+function readInitialPage(fallback: string = HOME_KEY): string {
   try {
-    const param = new URLSearchParams(window.location.search).get('p')
-    if (param && KNOWN_PAGES.has(param)) return param
+    const url = new URL(window.location.href)
+    const fromHash = url.hash.replace(/^#\/?/, '')
+    const candidate = fromHash || url.searchParams.get('p') || ''
+    if (candidate) {
+      const resolved = resolvePageKey(candidate)
+      if (resolved) return resolved
+    }
   } catch {
     // 非浏览器环境或受限 location：退回默认页。
   }
@@ -237,11 +269,9 @@ function App() {
   }, [])
 
   const [session, setSession] = useState<Session | null>(() => getSession())
-  // 桌面端与网页版打开工作台先看到企业总览；手机端底栏固定以「运行看板」为首项，
-  // 落地页保持 overview，避免底栏 6 项里没有当前项的高亮。
-  const [active, setActive] = useState<string>(() =>
-    readInitialPage(device.mode === 'mobile' ? 'overview' : ENTERPRISE_OVERVIEW_PAGE.key),
-  )
+  // 桌面端、网页版、手机端都先看到企业总览：它是六组里的「首页」。
+  // （Boss 2026-11 定稿：手机首屏从运行看板换成企业总览。）
+  const [active, setActive] = useState<string>(() => readInitialPage())
   /** 设置页要自动展开的模型（来自深链或控制台里的「去填写 Key」）。 */
   const [focusModel, setFocusModel] = useState<string>(() =>
     readInitialPage() === 'settings' ? readDeepLinkModel() : '',
@@ -296,6 +326,32 @@ function App() {
   }, [])
 
   /**
+   * 旧深链规范化：进来就把地址改写成规范形式。
+   *
+   * 三种情况：旧名字（workbench/chat/overview…）→ 新落点；hash 形式（#butler）→
+   * `?p=butler`；首页不保留 `?p=`。只 replaceState，不产生历史记录。
+   */
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href)
+      const rawHash = url.hash.replace(/^#\/?/, '')
+      const raw = rawHash || url.searchParams.get('p') || ''
+      if (!raw) return
+      // 页内锚点（#os-main 等）不是路由，别动它。
+      if (rawHash && !resolvePageKey(rawHash)) return
+      const resolved = resolvePageKey(raw)
+      if (!resolved) return
+      url.hash = ''
+      if (resolved === HOME_KEY) url.searchParams.delete('p')
+      else url.searchParams.set('p', resolved)
+      if (resolved !== raw || rawHash) {
+        window.history.replaceState(null, '', url.toString())
+      }
+    } catch {
+      // 受限环境：不改地址，只保留内存内导航。
+    }
+  }, [])
+  /**
    * 只读查看：只禁用写操作，**不切换数据源**。
    *
    * 服务端没有"生效视角"端点（IA C1）；横幅会明确写出"当前仍是你自己的数据"，
@@ -340,12 +396,12 @@ function App() {
   const pagesSettled = !session || profile?.loaded === true || Boolean(profile?.error)
   const visiblePages = useMemo(() => visibleNavKeys(caps), [caps])
   const shown = !pagesSettled
-    ? active === 'overview' || active === ENTERPRISE_OVERVIEW_PAGE.key
+    ? active === HOME_KEY
       ? active
       : null
     : visiblePages.has(active)
       ? active
-      : 'overview'
+      : HOME_KEY
 
   // Policy 审批真实状态 —— 由 App 单一持有，因为侧栏与审批面板显示的是同一份真相。
   const [acl, setAcl] = useState<ApprovalUiState>(EMPTY_STATE)
@@ -470,9 +526,10 @@ function App() {
     setFocusModel(model)
     try {
       const url = new URL(window.location.href)
-      // 企业总览是桌面/网页端的默认页；回首页时不保留 `?p=`，保持干净地址。
-      if (key === 'overview' || key === ENTERPRISE_OVERVIEW_PAGE.key) url.searchParams.delete('p')
+      // 首页（企业总览）回首页时不保留 `?p=`，保持干净地址；hash 深链也一并清掉。
+      if (key === HOME_KEY) url.searchParams.delete('p')
       else url.searchParams.set('p', key)
+      url.hash = ''
       // `model` 只对设置页有意义；离开设置页就清掉，避免下次进来莫名展开旧模型。
       if (model) url.searchParams.set('model', model)
       else url.searchParams.delete('model')
@@ -496,7 +553,7 @@ function App() {
    */
   useEffect(() => {
     if (!profile?.loaded) return
-    if (!visiblePages.has(active)) navigate('overview')
+    if (!visiblePages.has(active)) navigate(HOME_KEY)
   }, [profile?.loaded, visiblePages, active, navigate])
 
   const doLogout = useCallback(async () => {
@@ -505,7 +562,7 @@ function App() {
     setSession(null)
     setViewAs(null)
     setQuery('')
-    navigate('overview')
+    navigate(HOME_KEY)
   }, [navigate])
 
   const onTokenChange = useCallback((token: string) => {
@@ -865,7 +922,7 @@ function App() {
       ? { title: '正在确认访问权限', sub: '账号数据就绪后自动打开' }
       : shown === 'my-keys' && caps.isRoot
         ? { title: '全部 Key', sub: '每人一条授权记录；标注可代用的成员其 Key 可在模型路由中被你使用' }
-        : (PAGE_META[shown] ?? PAGE_META.overview)
+        : (PAGE_META[shown] ?? PAGE_META[HOME_KEY])
 
   return (
     <Shell
