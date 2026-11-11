@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { Card, Empty, Failure, Loading } from '../components/ui'
+import { numberText } from '../lib/format'
 import {
   UPLOAD_MAX_BYTES,
   createCategory,
@@ -105,8 +106,8 @@ function dateText(value?: string | null): string {
 function sizeText(bytes: number): string {
   if (!bytes) return '—'
   if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes < 1024 * 1024) return `${numberText(bytes / 1024, 1)} KB`
+  return `${numberText(bytes / 1024 / 1024, 1)} MB`
 }
 
 function flattenCategories(
@@ -1009,7 +1010,7 @@ export function KnowledgeEnterprise({ query = '' }: { query?: string }) {
                         <div className="ke-hit-head">
                           <strong>{hit.title}</strong>
                           <span className="os-badge" data-tone="ok">
-                            相关度 {hit.score.toFixed(2)}
+                            相关度 {numberText(hit.score, 2)}
                           </span>
                           <ExpiryBadge state={hit.expiry_state} days={hit.days_left} />
                         </div>
