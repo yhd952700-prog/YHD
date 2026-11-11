@@ -33,6 +33,11 @@ _DEFAULT_SETTINGS_PATH = (
 
 _OFF_VALUES = frozenset({"off", "0", "false", "no", "disabled"})
 
+#: 读不到配置/文件损坏/JSON 形状不对时的缺省值。必须是「开」：
+#: 确认开关的失败方向只能更严（模块文档顶部有老板 2026-11-11 的拍板口径）。
+#: 具名常量而非字面量 —— 见 .semgrep/liuhao.yml B2（except 分支不得返回成功）。
+_DEFAULT_CONFIRM_ENABLED = True
+
 _lock = threading.RLock()
 _cache: bool | None = None
 
@@ -58,15 +63,16 @@ def _env_override() -> bool | None:
 
 
 def stored_enabled() -> bool:
-    """设置页保存的值；缺失/损坏一律按「开」。"""
+    """设置页保存的值；缺失/损坏一律按「开」（``_DEFAULT_CONFIRM_ENABLED``）。"""
+    payload: Any = None
     try:
         payload = json.loads(read_text_with_retry(_settings_path()))
     except (FileNotFoundError, OSError, ValueError):
-        return True
+        payload = None  # 降级到 fail-closed 缺省，不在 except 里直接返回成功
     if not isinstance(payload, dict):
-        return True
+        return _DEFAULT_CONFIRM_ENABLED
     value = payload.get("confirmation_enabled")
-    return True if value is None else bool(value)
+    return _DEFAULT_CONFIRM_ENABLED if value is None else bool(value)
 
 
 def reload() -> None:
