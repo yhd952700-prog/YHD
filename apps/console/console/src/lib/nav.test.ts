@@ -1,9 +1,9 @@
 /**
  * 手机端底栏契约 + 六组导航契约。
  *
- * 2026-11 Boss 定稿：手机首屏从运行看板换成**企业总览**，底栏六项与侧栏六组
- * 对齐（企业总览 / 办公室 / 任务 / 知识 / 能力 / 设置）。这是产品决策，不是
- * 为了让测试变绿；改断言时须在提交说明里写明。
+ * 2026-11 Boss 定稿：手机首屏从运行看板换成**企业总览**，并要求底栏加入
+ * **贾维斯**且放在第二项 —— 企业总览 / 贾维斯 / 办公室 / 任务 / 知识 / 能力 /
+ * 设置，共七项。这是产品决策，不是为了让测试变绿；改断言时须在提交说明里写明。
  *
  * 历史缺陷（已修）：底栏曾只有四项，贾维斯与「目标与任务」在手机上无入口，
  * 窄屏只能看到派活回执、打不开结果列表。这两条继续钉死。
@@ -37,15 +37,17 @@ function memberCaps() {
 }
 
 describe('手机端底部导航', () => {
-  test('恰好六项，首项是企业总览（Boss 决定）', () => {
-    expect(MOBILE_NAV_KEYS).toHaveLength(6)
+  test('恰好七项，首项是企业总览、第二项是贾维斯（Boss 决定）', () => {
+    expect(MOBILE_NAV_KEYS).toHaveLength(7)
     // 契约锚点：首项必须是企业总览，不能退回运行看板。
     expect(MOBILE_NAV_KEYS[0]).toBe('enterprise-overview')
+    // 契约锚点：贾维斯固定在第二项，不能被权限裁剪或排序挤走。
+    expect(MOBILE_NAV_KEYS[1]).toBe('butler')
     expect(MOBILE_NAV_KEYS).not.toContain('overview')
     expect(MOBILE_NAV_KEYS).not.toContain('workbench')
   })
 
-  test('六项覆盖办公室、任务、知识、能力、设置', () => {
+  test('七项覆盖办公室、任务、知识、能力、设置', () => {
     expect(MOBILE_NAV_KEYS).toContain('office')
     expect(MOBILE_NAV_KEYS).toContain('task-center')
     expect(MOBILE_NAV_KEYS).toContain('knowledge')
@@ -59,10 +61,11 @@ describe('手机端底部导航', () => {
     }
   })
 
-  test('非根账号看不到设置时，第六项回退「我的」而不是死入口', () => {
+  test('非根账号看不到设置时，第七项回退「我的」而不是死入口', () => {
     const keys = mobileNavKeysFor(memberCaps())
-    expect(keys).toHaveLength(6)
+    expect(keys).toHaveLength(7)
     expect(keys[0]).toBe('enterprise-overview')
+    expect(keys[1]).toBe('butler')
     expect(keys).toContain('me')
   })
 

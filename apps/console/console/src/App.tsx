@@ -92,6 +92,12 @@ import { MyKeys } from './pages/MyKeys'
 import { PermissionMatrix } from './pages/PermissionMatrix'
 import { Recovery } from './pages/Recovery'
 import { RoleTemplates } from './pages/RoleTemplates'
+import { WorkflowCenter, WORKFLOW_CENTER_PAGE } from './pages/WorkflowCenter'
+import { ApprovalQueue, WORKFLOW_APPROVALS_PAGE } from './pages/ApprovalQueue'
+import {
+  KnowledgeEnterprise,
+  KNOWLEDGE_ENTERPRISE_ROUTE,
+} from './pages/KnowledgeEnterprise'
 import { ReadOnlyBanner } from './components/AccountChrome'
 import { buildProfile, deriveCaps } from './lib/accountCaps'
 import { countTreeMembers, loadAccounts, loadTree, useAccountData } from './lib/accounts'
@@ -144,6 +150,15 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   office: { title: '办公室', sub: 'AI 员工的工位墙：谁在干活、干到哪、卡在哪' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
+  [KNOWLEDGE_ENTERPRISE_ROUTE.key]: {
+    title: KNOWLEDGE_ENTERPRISE_ROUTE.label,
+    sub: KNOWLEDGE_ENTERPRISE_ROUTE.hint,
+  },
+  workflow: { title: '工作流', sub: '画流程、点运行、看每一步的输入输出与耗时' },
+  'workflow-approvals': {
+    title: '待办审批',
+    sub: '工作流卡在人工审批时，在这里通过或拒绝',
+  },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除系统内部记录）' },
   approval: { title: '审批中心', sub: '动作拦截与人工授权' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },
@@ -1030,6 +1045,8 @@ function App() {
       )}
       {shown === ORG_PAGE.key && <Org query={query} />}
       {shown === TASK_CENTER_PAGE.key && <TaskCenter query={query} />}
+      {shown === WORKFLOW_CENTER_PAGE.key && <WorkflowCenter query={query} />}
+      {shown === WORKFLOW_APPROVALS_PAGE.key && <ApprovalQueue query={query} />}
       {shown === SKILLS_CENTER_PAGE.key && <SkillCenter query={query} />}
       {shown === TOOLS_CENTER_PAGE.key && <ToolCenter query={query} />}
       {shown === 'butler' && (
@@ -1064,6 +1081,7 @@ function App() {
           onOpenUsage={() => navigate('my-keys')}
         />
       )}
+      {shown === KNOWLEDGE_ENTERPRISE_ROUTE.key && <KnowledgeEnterprise query={query} />}
       {shown === 'data' && <DataCenter query={query} isRoot={caps.isRoot} />}
       {shown === 'approval' && (
         <div className="os-grid">

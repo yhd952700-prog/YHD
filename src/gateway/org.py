@@ -75,7 +75,7 @@ MAX_IMPACT_ITEMS = 100
 MAX_DEPTH = 64
 
 _ENV_DB = "LIUHAO_ORG_DB"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ── 表结构与迁移 ──────────────────────────────────────────────
 
@@ -155,8 +155,43 @@ _SCHEMA_V1: Tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_org_versions_account ON org_versions(account_id, created_at)",
 )
 
+#: v2：组织模板。模板是数据不是代码：一套模板 = 一棵节点树 + 岗位 + 汇报边。
+#: 内置模板随包分发、只读；``org_template_prefs`` 只记录账号级的隐藏偏好。
+_SCHEMA_V2: Tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS org_templates (
+        template_id    TEXT PRIMARY KEY,
+        account_id     TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        description    TEXT NOT NULL DEFAULT '',
+        industry       TEXT NOT NULL DEFAULT '',
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        revision       INTEGER NOT NULL DEFAULT 1,
+        payload_json   TEXT NOT NULL,
+        created_at     REAL NOT NULL,
+        updated_at     REAL NOT NULL,
+        created_by     TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_org_templates_name
+        ON org_templates(account_id, name COLLATE NOCASE)
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_org_templates_account ON org_templates(account_id)",
+    """
+    CREATE TABLE IF NOT EXISTS org_template_prefs (
+        account_id   TEXT NOT NULL,
+        template_key TEXT NOT NULL,
+        hidden       INTEGER NOT NULL DEFAULT 0,
+        sort_order   INTEGER,
+        updated_at   REAL NOT NULL,
+        PRIMARY KEY (account_id, template_key)
+    )
+    """,
+)
+
 #: 版本号 -> 迁移语句。后续版本只**追加**，不改历史条目。
-_MIGRATIONS: Dict[int, Tuple[str, ...]] = {1: _SCHEMA_V1}
+_MIGRATIONS: Dict[int, Tuple[str, ...]] = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
 
 #: 快照字段白名单（P3A 要求：快照由 schema 驱动序列化，漏字段会立刻被单测抓到）。
 SNAPSHOT_NODE_FIELDS: Tuple[str, ...] = (

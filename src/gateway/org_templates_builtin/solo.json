@@ -1,0 +1,48 @@
+{
+  "kind": "liuhao.org.template",
+  "schema_version": 1,
+  "template": {
+    "key": "builtin.solo",
+    "name": "个人单兵",
+    "industry": "个人与小团队",
+    "description": "一人公司的最小参考：交付、内容、财务与外部协作各留一个岗位。仅作参考。",
+    "version": 1,
+    "sort": 40,
+    "root": {
+      "key": "studio",
+      "name": "个人工作室",
+      "kind": "company",
+      "description": "个人业务的统一落点。",
+      "children": [
+        {
+          "key": "delivery",
+          "name": "交付",
+          "kind": "position",
+          "description": "负责客户项目与交付质量。",
+          "children": []
+        },
+        {
+          "key": "content",
+          "name": "内容与获客",
+          "kind": "position",
+          "description": "负责内容生产与线索获取。",
+          "children": []
+        },
+        {
+          "key": "finance",
+          "name": "财务与合规",
+          "kind": "position",
+          "description": "负责记账、开票与合同。",
+          "children": []
+        },
+        {
+          "key": "partner",
+          "name": "外部协作",
+          "kind": "position",
+          "description": "外包与顾问的固定接口。",
+          "children": []
+        }
+      ]
+    }
+  }
+}

@@ -114,11 +114,13 @@ def test_mobile_nav_points_at_butler():
     nav = _read(root / "lib" / "nav.ts")
     assert "export const MOBILE_NAV_KEYS = [" in nav
     assert "  'butler'," in nav
-    assert "return ['overview', 'my-employees', 'butler', 'goals', fourth, 'me']" in nav
+    # 2026-11 Boss 定稿：底栏七项，贾维斯固定在第二项。
+    assert "if (keys.length >= 7) break" in nav
+    assert "return keys.slice(0, 7)" in nav
 
     shell = _read(root / "components" / "Shell.tsx")
     assert "item.key === 'butler'" in shell
-    assert "'管家'" in shell
+    assert "'贾维斯'" in shell
 
     css = _read(root / "os.css")
     assert "[data-key='butler']" in css

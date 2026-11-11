@@ -55,15 +55,22 @@ function renderMobile(active: string, onNavigate = vi.fn()) {
 }
 
 describe('手机端底部导航渲染', () => {
-  test('底栏六项，首项是企业总览且可点（Boss 决定）', () => {
+  test('底栏七项，首项是企业总览、第二项是贾维斯且可点（Boss 决定）', () => {
     const { onNavigate } = renderMobile('enterprise-overview')
     const nav = document.querySelector('.os-bottom-nav')
     expect(nav).toBeTruthy()
 
     const buttons = nav!.querySelectorAll<HTMLButtonElement>('.os-bottom-item')
-    expect(buttons).toHaveLength(6)
+    expect(buttons).toHaveLength(7)
     expect(buttons[0].getAttribute('data-key')).toBe('enterprise-overview')
     expect(buttons[0].textContent).toContain('企业总览')
+
+    // 贾维斯固定在第二项，且是真实可点的入口。
+    expect(buttons[1].getAttribute('data-key')).toBe('butler')
+    expect(buttons[1].textContent).toContain('贾维斯')
+    expect(buttons[1].disabled).toBe(false)
+    buttons[1].click()
+    expect(onNavigate).toHaveBeenCalledWith('butler')
 
     // 办公室、任务也要有真实入口，避免"回执能看到、结果打不开"。
     const office = nav!.querySelector<HTMLButtonElement>('[data-key="office"]')

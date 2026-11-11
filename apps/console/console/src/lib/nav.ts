@@ -118,13 +118,25 @@ const OFFICE_NAV: NavItem[] = [
   },
 ]
 
-/** ③ 任务：台账、目标、项目、产出物。 */
+/** ③ 任务：台账、目标、项目、产出物，以及工作流与人工审批。 */
 const TASKS_NAV: NavItem[] = [
   {
     key: TASK_CENTER_PAGE.key,
     label: TASK_CENTER_PAGE.navLabel,
     icon: IconGoals,
     hint: TASK_CENTER_PAGE.sub,
+  },
+  {
+    key: 'workflow',
+    label: '工作流',
+    icon: IconProjects,
+    hint: '画流程、点运行、看每一步的输入输出与耗时',
+  },
+  {
+    key: 'workflow-approvals',
+    label: '待办审批',
+    icon: IconShield,
+    hint: '工作流卡在人工审批时，在这里通过或拒绝',
   },
   { key: 'goals', label: '目标与任务', icon: IconGoals },
   { key: 'projects', label: '项目', icon: IconProjects },
@@ -138,6 +150,12 @@ const KNOWLEDGE_NAV: NavItem[] = [
     label: '知识中心',
     icon: IconKnowledge,
     hint: '文档上传、切块与检索；含入库进度和失败处理',
+  },
+  {
+    key: 'knowledge-enterprise',
+    label: '企业知识库',
+    icon: IconKnowledge,
+    hint: '分类归档、全文检索、版本对比、过期提醒与长期记忆',
   },
   {
     key: 'memory',
@@ -310,17 +328,19 @@ export function visibleNavKeys(caps: AccountCaps): Set<string> {
 }
 
 /**
- * 手机端底部导航：六项，首项是「企业总览」。
+ * 手机端底部导航：七项，首项是「企业总览」，第二项是「贾维斯」。
  *
  * Boss 2026-11 定稿：手机首屏从运行看板换成企业总览（公司现在怎么样），
- * 底栏顺序与侧栏六组一致 —— 企业总览 / 办公室 / 任务 / 知识 / 能力 / 设置。
- * 这是产品决策，不是为了让测试变绿；改动契约测试时须在提交说明写明。
+ * 并要求把贾维斯放进底栏第二项。底栏顺序 —— 企业总览 / 贾维斯 / 办公室 /
+ * 任务 / 知识 / 能力 / 设置。这是 Boss 的产品决定，不是为了让测试变绿；
+ * 改动契约测试时须在提交说明写明。
  *
  * `office` 是办公室工位墙；`settings` 承载账号与诊断。非根账号看不到
- * 系统设置时，第 6 项回退到「我的」，避免底栏出现死入口。
+ * 系统设置时，第 7 项回退到「我的」，避免底栏出现死入口。
  */
 export const MOBILE_NAV_KEYS = [
   ENTERPRISE_OVERVIEW_PAGE.key,
+  'butler',
   'office',
   TASK_CENTER_PAGE.key,
   'knowledge',
@@ -332,11 +352,19 @@ export function mobileNavKeysFor(caps: AccountCaps): string[] {
   const visible = visibleNavKeys(caps)
   const last = visible.has('settings') ? 'settings' : 'me'
   const office = visible.has('office') ? 'office' : 'my-employees'
-  const keys = [ENTERPRISE_OVERVIEW_PAGE.key, office, TASK_CENTER_PAGE.key, 'knowledge', SKILLS_CENTER_PAGE.key, last]
-  // 权限裁剪后可能少项：按可见性补齐到六项，仍保证首项是企业总览。
+  const keys = [
+    ENTERPRISE_OVERVIEW_PAGE.key,
+    'butler',
+    office,
+    TASK_CENTER_PAGE.key,
+    'knowledge',
+    SKILLS_CENTER_PAGE.key,
+    last,
+  ]
+  // 权限裁剪后可能少项：按可见性补齐到七项，仍保证首项是企业总览、第二项是贾维斯。
   for (const fallback of ['goals', 'files', 'memory', 'apps', 'me']) {
-    if (keys.length >= 6) break
+    if (keys.length >= 7) break
     if (visible.has(fallback) && !keys.includes(fallback)) keys.push(fallback)
   }
-  return keys.slice(0, 6)
+  return keys.slice(0, 7)
 }

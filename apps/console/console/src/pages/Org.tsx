@@ -27,6 +27,7 @@ import { useApi } from '../lib/api'
 import type { EmployeesPayload } from '../lib/contracts'
 import { employeesOf } from '../lib/employees'
 import { Card, Empty, Failure, Loading } from '../components/ui'
+import { OrgTemplateDrawer } from '../components/OrgTemplateDrawer'
 import {
   AUTHORITY_NOTE,
   addOrgMember,
@@ -1188,6 +1189,7 @@ export function Org({ query }: { query: string }) {
   const [dragging, setDragging] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const [showVersions, setShowVersions] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
   const nodeRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map())
 
   const roots = tree.data?.roots ?? []
@@ -1501,14 +1503,13 @@ export function Org({ query }: { query: string }) {
             >
               {showVersions ? '收起版本历史' : '版本历史'}
             </button>
-            {/* 行业模板留入口：本轮不实现，点开只说明后续提供，不伪造模板。 */}
+            {/* 模板只作参考：打开抽屉不预选、不自动预览、不自动写入。 */}
             <button
               type="button"
               className="os-btn os-btn-ghost"
-              disabled
-              title="行业模板将在后续版本提供；本轮不做预设部门"
+              onClick={() => setShowTemplates(true)}
             >
-              行业模板（后续提供）
+              从模板开始
             </button>
           </div>
 
@@ -1520,13 +1521,22 @@ export function Org({ query }: { query: string }) {
               title="还没有任何组织节点"
               hint="从「新建顶层节点」开始：先建企业，再往下建事业部、分公司、部门、小组或岗位。"
               action={
-                <button
-                  type="button"
-                  className="os-btn"
-                  onClick={() => openPanel({ type: 'create', parentId: null })}
-                >
-                  新建第一个节点
-                </button>
+                <div className="org-template-actions">
+                  <button
+                    type="button"
+                    className="os-btn"
+                    onClick={() => openPanel({ type: 'create', parentId: null })}
+                  >
+                    新建第一个节点
+                  </button>
+                  <button
+                    type="button"
+                    className="os-btn os-btn-ghost"
+                    onClick={() => setShowTemplates(true)}
+                  >
+                    从模板开始
+                  </button>
+                </div>
               }
             />
           )}
@@ -1742,6 +1752,18 @@ export function Org({ query }: { query: string }) {
           </div>
         )}
       </div>
+
+      <OrgTemplateDrawer
+        open={showTemplates}
+        rows={rows}
+        onClose={() => setShowTemplates(false)}
+        onApplied={(message) => {
+          setNotice(message)
+          setPageError(null)
+          setShowTemplates(false)
+          refresh()
+        }}
+      />
     </div>
   )
 }

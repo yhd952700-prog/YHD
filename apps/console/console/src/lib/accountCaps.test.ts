@@ -187,7 +187,7 @@ describe('导航裁剪：不渲染而不是置灰', () => {
   test('审批入口只对能签发凭据的一方出现，其余账号导航里没有这一项', () => {
     expect(visibleNavKeys(rootCaps).has('approval')).toBe(true)
     expect(visibleNavKeys(memberCaps).has('approval')).toBe(false)
-    // 手机底栏同样不能留死入口：成员看不到系统设置时，第六项回退「我的」。
+    // 手机底栏同样不能留死入口：成员看不到系统设置时，第七项回退「我的」。
     expect(mobileNavKeysFor(memberCaps)).not.toContain('approval')
     expect(mobileNavKeysFor(memberCaps)).toContain('me')
     expect(mobileNavKeysFor(rootCaps)).toContain('settings')

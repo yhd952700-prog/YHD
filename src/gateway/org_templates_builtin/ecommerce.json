@@ -1,0 +1,56 @@
+{
+  "kind": "liuhao.org.template",
+  "schema_version": 1,
+  "template": {
+    "key": "builtin.ecommerce",
+    "name": "电商",
+    "industry": "零售与电商",
+    "description": "商品、店铺、客服、履约四条线的电商团队参考。仅作参考，套用前可裁剪。",
+    "version": 1,
+    "sort": 30,
+    "root": {
+      "key": "ecom-bu",
+      "name": "电商事业部",
+      "kind": "business_unit",
+      "description": "电商业务的统一落点。",
+      "children": [
+        {
+          "key": "merchandise",
+          "name": "商品运营部",
+          "kind": "department",
+          "description": "负责选品、定价与库存。",
+          "children": [
+            { "key": "buyer", "name": "选品专员", "kind": "position", "description": "负责选品与供应商对接。", "children": [] }
+          ]
+        },
+        {
+          "key": "store-ops",
+          "name": "店铺运营部",
+          "kind": "department",
+          "description": "负责店铺活动与转化。",
+          "children": [
+            { "key": "store-operator", "name": "店铺运营", "kind": "position", "description": "负责活动排期与页面维护。", "children": [] }
+          ]
+        },
+        {
+          "key": "service",
+          "name": "客服组",
+          "kind": "team",
+          "description": "负责售前售后与工单。",
+          "children": [
+            { "key": "agent", "name": "客服专员", "kind": "position", "description": "负责咨询与售后处理。", "children": [] }
+          ]
+        },
+        {
+          "key": "fulfillment",
+          "name": "仓储物流组",
+          "kind": "team",
+          "description": "负责发货与退换货。",
+          "children": [
+            { "key": "warehouse", "name": "仓储专员", "kind": "position", "description": "负责库存与发货。", "children": [] }
+          ]
+        }
+      ]
+    }
+  }
+}

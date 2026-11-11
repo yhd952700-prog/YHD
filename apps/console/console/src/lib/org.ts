@@ -470,6 +470,7 @@ const ACTION_LABELS: Record<string, string> = {
   update_assignment: '调整任职',
   remove_member: '移除成员',
   rollback: '回滚',
+  template_apply: '套用模板',
 }
 
 export function versionActionLabel(action: string): string {

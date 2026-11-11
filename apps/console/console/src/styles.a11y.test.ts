@@ -430,10 +430,10 @@ describe('手机端触控目标（360px 复查）', () => {
   })
 })
 
-describe('手机端六项底栏（目标与任务入口）', () => {
+describe('手机端七项底栏（目标与任务入口）', () => {
   const osCss = read('./os.css')
 
-  test('六项共用一行时允许等比压缩，不会被长标签撑宽', () => {
+  test('七项共用一行时允许等比压缩，不会被长标签撑宽', () => {
     expect(ruleBody(osCss, "[data-mode='mobile'] .os-bottom-nav")).toMatch(
       /grid-auto-columns:\s*minmax\(0,\s*1fr\)/,
     )

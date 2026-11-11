@@ -489,6 +489,160 @@
   background: rgba(255, 93, 108, 0.18);
 }
 
+/* ── 组织模板（「从模板开始」抽屉） ─────────────────────────── */
+
+.org-template-tools,
+.org-template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.org-template-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--os-text-dim, #93a3c4);
+}
+
+.org-template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.org-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--os-border, #1c2942);
+  border-radius: 10px;
+  background: var(--os-panel-2, #101a2e);
+}
+
+.org-template-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.org-template-card-head strong {
+  font-size: 13px;
+  color: var(--os-text, #e8eefc);
+}
+
+.org-template-meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--os-text-faint, #8a9ac0);
+}
+
+.org-template-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--os-text-dim, #93a3c4);
+}
+
+.org-template-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--os-text-faint, #8a9ac0);
+}
+
+.org-template-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--os-border-soft, #141f36);
+  border-radius: 10px;
+}
+
+.org-template-section h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--os-text, #e8eefc);
+}
+
+.org-template-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.org-template-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.org-template-tree {
+  display: flex;
+  flex-direction: column;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.org-template-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  border-radius: 6px;
+}
+
+.org-template-row:hover {
+  background: var(--os-panel-hover, #16213a);
+}
+
+.org-template-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--os-text-dim, #93a3c4);
+}
+
+.org-template-danger {
+  color: var(--os-danger-ink, #ff5d6c);
+  font-weight: 600;
+}
+
+.org-template-conflicts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.org-template-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(255, 93, 108, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 93, 108, 0.08);
+  font-size: 12px;
+}
+
+.org-template-input {
+  min-width: 120px;
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--os-border, #1c2942);
+  border-radius: 6px;
+  background: var(--os-panel, #0b1120);
+  color: var(--os-text, #e8eefc);
+}
+
 /* ── 窄屏 ─────────────────────────────────────────────────── */
 
 @media (max-width: 640px) {

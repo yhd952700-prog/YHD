@@ -224,6 +224,33 @@ function mockFetch(state: MockState) {
 
     if (url === '/v1/org/tree') return json(200, state.tree)
 
+    if (url.startsWith('/v1/org/templates?')) {
+      return json(200, {
+        templates: [
+          {
+            template_id: 'builtin.software-dev',
+            name: '软件研发',
+            source: 'builtin',
+            industry: '软件与互联网',
+            description: '仅作参考的研发组织。',
+            version: 1,
+            revision: null,
+            sort: 10,
+            hidden: false,
+            editable: false,
+            deletable: false,
+            deletable_reason: '内置模板随包分发，只允许隐藏。',
+            node_count: 12,
+            position_count: 5,
+            max_depth: 3,
+          },
+        ],
+        total: 1,
+        hidden_count: 0,
+        note: '模板只作参考；选择、预览、套用都必须由人在组织架构页确认。',
+      })
+    }
+
     if (url === '/v1/employees') {
       return json(200, {
         employees: [
@@ -555,5 +582,22 @@ describe('组织架构页', () => {
     renderPage('前端')
     expect(await screen.findByText(/1 个节点。/)).toBeTruthy()
     expect(screen.getByText('小组 · 上级：鎏灏科技 / 研发部')).toBeTruthy()
+  })
+
+  test('「从模板开始」只打开参考库，不自动预览或套用', async () => {
+    renderPage()
+    await screen.findByText('鎏灏科技')
+
+    fireEvent.click(screen.getByRole('button', { name: '从模板开始' }))
+    expect(await screen.findByText('软件研发')).toBeTruthy()
+    expect(screen.getAllByText(/模板只作参考/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/内置模板只读/)).toBeTruthy()
+
+    // 只打开列表：没有自动预览、没有自动写入。
+    expect(
+      state.calls.some(
+        (item) => item.url.includes('/preview') || item.url.includes('/apply'),
+      ),
+    ).toBe(false)
   })
 })

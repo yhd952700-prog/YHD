@@ -1173,7 +1173,7 @@ main#os-main:focus-visible {
   z-index: 30;
   display: grid;
   grid-auto-flow: column;
-  /* minmax(0, 1fr)：六项共用一行时允许等比压缩，避免某一项被长标签撑宽。 */
+  /* minmax(0, 1fr)：七项共用一行时允许等比压缩，避免某一项被长标签撑宽。 */
   grid-auto-columns: minmax(0, 1fr);
   min-height: 56px;
   padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
@@ -1200,8 +1200,8 @@ main#os-main:focus-visible {
   white-space: nowrap;
 }
 
-/* 六项底栏在窄屏（360px 档）收紧字号与内边距：一列只剩约 58px，
-   12px 的「我的员工」会顶到边界。11px + 1px 内边距保证不换行、不横向溢出，
+/* 七项底栏在窄屏（360px 档）收紧字号与内边距：一列只剩约 50px，
+   12px 的「企业总览」会顶到边界。11px + 1px 内边距保证不换行、不横向溢出，
    640×360 与桌面端不受影响。 */
 @media (max-width: 420px) {
   .os-bottom-item {
@@ -1217,7 +1217,7 @@ main#os-main:focus-visible {
 }
 
 /* 管家（对话）是底栏唯一的主入口：图标更大，标签后带一个 3px 主色点。
-   其余四项保持同等宽度，避免"重点项"把五项挤成两行。 */
+   其余六项保持同等宽度，避免"重点项"把七项挤成两行。 */
 .os-bottom-item[data-key='butler'] {
   color: var(--os-text-dim);
 }

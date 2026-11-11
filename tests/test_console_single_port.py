@@ -528,10 +528,23 @@ class TestManifestCannotPointAtAPageThatDoesNotExist:
     不存在页面的快捷方式，点开就是空白。
     """
 
+    def _known_page_keys(self) -> set[str]:
+        """页面 key 的登记处：导航表 + 各页面导出的 PAGE 常量。
+
+        页面常量（如 ``ENTERPRISE_OVERVIEW_PAGE.key``）是计算属性，不能只扫
+        nav.ts 的字符串字面量；否则会把合法的规范 key 误判成"不存在"。
+        """
+        sources = [CONSOLE_APP / "src" / "lib" / "nav.ts"]
+        sources.extend(sorted((CONSOLE_APP / "src" / "pages").glob("*.tsx")))
+        keys: set[str] = set()
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            keys.update(re.findall(r"key:\s*'([a-z0-9-]+)'", text))
+        return keys
+
     def test_every_shortcut_page_exists(self, pwa_bundle):
-        nav = (CONSOLE_APP / "src" / "lib" / "nav.ts").read_text(encoding="utf-8")
-        known = set(re.findall(r"key:\s*'([a-z]+)'", nav))
-        assert known, "未能从 lib/nav.ts 解析出任何页面 key"
+        known = self._known_page_keys()
+        assert known, "未能从 nav.ts / pages 解析出任何页面 key"
 
         urls = [str(shortcut.get("url", "")) for shortcut in _manifest(pwa_bundle).get("shortcuts") or []]
         assert urls, "manifest 没有声明任何 shortcuts"
@@ -541,8 +554,9 @@ class TestManifestCannotPointAtAPageThatDoesNotExist:
 
     def test_the_parser_is_not_vacuous(self, pwa_bundle):
         # 没有这一条，上面的断言会在"一个 key 都没解析出来"时以另一种方式通过。
-        nav = (CONSOLE_APP / "src" / "lib" / "nav.ts").read_text(encoding="utf-8")
-        assert {"overview", "settings"} <= set(re.findall(r"key:\s*'([a-z]+)'", nav))
+        known = self._known_page_keys()
+        assert {"enterprise-overview", "settings"} <= known
+        assert len(known) >= 20, f"页面 key 解析明显不完整：{sorted(known)}"
 
 
 class TestClientModesAgreeAcrossTheWire:

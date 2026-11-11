@@ -228,9 +228,10 @@ export function Shell({
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          // 底栏用短标签：六项在 360px 下只有约 58px 一列，长名称会被截断。
+          // 底栏用短标签：七项在 360px 下只有约 50px 一列，长名称会被截断。
           const short: Record<string, string> = {
             'enterprise-overview': '企业总览',
+            butler: '贾维斯',
             'my-employees': '办公室',
             office: '办公室',
             'task-center': '任务',
