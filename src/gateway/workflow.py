@@ -187,6 +187,12 @@ def build_router(viewer_dependency: Optional[Callable[..., Any]] = None) -> APIR
     dependency = viewer_dependency or _no_viewer
     router = APIRouter(prefix="/v1/workflow", tags=["workflow"])
 
+    # 路由装配即启动调度线程：这是应用启动时唯一一定会走到、且属于本线的钩子。
+    # 不启动的话，interval/daily 触发器只有在有人手动点 /triggers/tick 时才走，
+    # 「定时触发」就成了摆设。`LIUHAO_WORKFLOW_SCHEDULER=0` 时构造器不会起线程，
+    # 测试与手动模式仍然只保留 tick()。
+    get_workflow_scheduler()
+
     def _store():
         return get_workflow_store()
 
