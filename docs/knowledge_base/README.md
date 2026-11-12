@@ -1,16 +1,16 @@
 # 知识库
 
-欢迎来到 LiuHao AI OS（鎏灏智能中枢）知识库。这里包含了完整的产品文档、使用指南和参考资料。
+欢迎来到 Jarvis（贾维斯）知识库。这里包含了完整的产品文档、使用指南和参考资料。
 
 ---
 
 ## 快速开始
 
-如果你是第一次使用 LiuHao AI OS，建议按以下顺序阅读：
+如果你是第一次使用 Jarvis，建议按以下顺序阅读：
 
 | 序号 | 文档 | 说明 | 阅读时间 |
 |------|------|------|---------|
-| 1 | [安装指南](getting-started/installation.md) | 安装和配置 LiuHao AI OS | 10 分钟 |
+| 1 | [安装指南](getting-started/installation.md) | 安装和配置 Jarvis | 10 分钟 |
 | 2 | [快速上手指南](getting-started/quickstart.md) | 创建你的第一个 AI 员工 | 15 分钟 |
 | 3 | [AI 员工核心概念](core-concepts/agents.md) | 理解 AI 员工的工作原理 | 20 分钟 |
 
@@ -27,7 +27,7 @@
 
 ### 💡 核心概念
 
-深入理解 LiuHao AI OS 的核心设计。
+深入理解 Jarvis 的核心设计。
 
 - [AI 员工](core-concepts/agents.md) - 什么是 AI 员工、类型、生命周期、能力
 - [记忆系统](core-concepts/memory.md) - 四层记忆模型、工作原理、检索方式
