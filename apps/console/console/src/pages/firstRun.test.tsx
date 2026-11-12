@@ -33,7 +33,7 @@ import { Butler } from './Butler'
 const session: Session = {
   token: 'token',
   principal: 'liuhao',
-  displayName: '鎏灏',
+  displayName: '贾维斯',
   scope: 'L0',
   permissions: ['account:read'],
   expiresAt: 0,
@@ -59,7 +59,7 @@ const provider: ActiveProviderStatus = {
   isReal: false,
   isMock: true,
   label: '尚未接入真实模型',
-  detail: '当前回复为演示内容，不会调用真实模型。',
+  detail: '未配置模型，请先配置模型密钥。发送消息后只会收到未配置提示，不会得到模拟回答；到「系统设置 → 模型管理」填写密钥并测试连通后，下一条消息即可使用真实模型。',
   error: null,
   loading: false,
   reload: () => {},
