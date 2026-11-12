@@ -136,8 +136,10 @@ function PreEnableCheck({
 
 export function ToolCenter({ query = '' }: { query?: string }) {
   const capabilities = useApi<unknown>('/v1/employees/capabilities', 30000)
-  const plugins = useApi<unknown>('/v1/plugins', 0)
-  const models = useApi<unknown>('/v1/models', 0)
+  // 插件与模型是易变清单：30s 轮询，避免安装/改配后页面一直显示旧表。
+  // MCP 没有接口（恒为“本地服务还没提供”），保持单次。
+  const plugins = useApi<unknown>('/v1/plugins', 30000)
+  const models = useApi<unknown>('/v1/models', 30000)
   const mcp = useApi<unknown>('/v1/mcp/servers', 0)
 
   const capabilityRows = useMemo(
@@ -158,6 +160,10 @@ export function ToolCenter({ query = '' }: { query?: string }) {
   const shownPlugins = pluginRows.filter((row) =>
     match([row.name, row.id, row.kind, row.capabilities.join(' ')].join(' ')),
   )
+  // GAP: 占位条目（source='placeholder'）是历史登记、无模块入口，后端补齐
+  // activatable/builtin 字段后方可移入主表；此前一律折叠在下方分区，不可启用。
+  const shownRealPlugins = shownPlugins.filter((row) => row.source !== 'placeholder')
+  const shownPlaceholderPlugins = shownPlugins.filter((row) => row.source === 'placeholder')
   const shownApis = apiRows.filter((row) => match([row.name, row.source].join(' ')))
 
   const highRiskCapabilities = capabilityRows.filter(
@@ -334,6 +340,10 @@ export function ToolCenter({ query = '' }: { query?: string }) {
                   : '本地服务返回了空的插件注册表。'
               }
             />
+          ) : shownRealPlugins.length === 0 ? (
+            <p className="os-hint">
+              全部 {shownPlugins.length} 项均为历史登记（见下方折叠分区），没有可启用的真实条目。
+            </p>
           ) : (
             <div className="os-table-wrap">
               <table className="os-table">
@@ -349,7 +359,7 @@ export function ToolCenter({ query = '' }: { query?: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {shownPlugins.map((row: PluginToolRecord) => (
+                  {shownRealPlugins.map((row: PluginToolRecord) => (
                     <tr key={row.id || row.name}>
                       <td>
                         <strong>{row.name}</strong>
@@ -385,9 +395,47 @@ export function ToolCenter({ query = '' }: { query?: string }) {
               </table>
             </div>
           ))}
+        {pluginState === 'ready' && shownPlaceholderPlugins.length > 0 && (
+          <details className="os-hint" style={{ marginTop: 12 }}>
+            <summary>
+              历史登记，不可启用（{shownPlaceholderPlugins.length} 项）
+            </summary>
+            <p>
+              以下条目只有注册表登记，没有模块入口（既非随包内置、也不可加载），
+              因此不计入上方主表、不提供启用入口；等本地服务补齐注册信息后再恢复。
+            </p>
+            <div className="os-table-wrap">
+              <table className="os-table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shownPlaceholderPlugins.map((row: PluginToolRecord) => (
+                    <tr key={row.id || row.name}>
+                      <td>
+                        <strong>{row.name}</strong>
+                        <div className="st-sub">{row.id || FIELD_NOT_PROVIDED}</div>
+                      </td>
+                      <td>{row.kind || FIELD_NOT_PROVIDED}</td>
+                      <td>历史登记，不可启用</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        )}
         {pluginState === 'ready' && shownPlugins.length > 0 && (
           <p className="os-hint">
-            插件注册表没有返回权限与风险字段，因此这些条目的「需要权限 / 风险等级」如实显示未提供，
+            共 {shownRealPlugins.length} 项真实条目
+            {shownPlaceholderPlugins.length > 0
+              ? `（另有 ${shownPlaceholderPlugins.length} 项历史登记未计入）`
+              : ''}
+            ；插件注册表没有返回权限与风险字段，因此这些条目的「需要权限 / 风险等级」如实显示未提供，
             本页不会代替本地服务给它们评级。
           </p>
         )}
