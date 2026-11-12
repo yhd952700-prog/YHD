@@ -65,6 +65,8 @@ export function RoleTemplates({ caps }: { caps: AccountCaps }) {
                         </span>
                       </td>
                       <td>
+                        {/* // GAP: 模板编辑端点未上线——后端只有三档固定预设，无编辑接口；
+                            本页顶部已写明“预设模板只读”，此处不画可点的编辑按钮。 */}
                         <span className="os-hint">待开放（暂不支持模板编辑）</span>
                       </td>
                     </tr>
