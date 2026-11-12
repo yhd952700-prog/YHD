@@ -661,6 +661,8 @@ export function KnowledgeEnterprise({ query = '' }: { query?: string }) {
               <span className="ke-metric">
                 <strong>{status.categories}</strong> 个分类
               </span>
+              {/* 到期计数是真 0：ExpiringResult.counts 两项为契约必填；expiring 为 null
+                  时本块不渲染（上方 Loading / Failure 已接管），?? 0 只是兜底。 */}
               <span className="ke-metric">
                 <strong>{expiring?.counts.expiring ?? 0}</strong> 即将过期
               </span>
@@ -1408,6 +1410,8 @@ function MemoryPanel({ span }: { span: 12 }) {
             <span className="ke-metric">
               <strong>{views.total}</strong> 条可见记忆
             </span>
+            {/* 各 scope 计数是真 0：后端 memory.py 固定输出全部 MEMORY_SCOPES，
+                缺失 scope 按 0 补齐；?? 0 只防旧版本响应缺键。 */}
             <span className="ke-metric">
               <strong>{views.scopes.project ?? 0}</strong> 条项目记忆
             </span>
