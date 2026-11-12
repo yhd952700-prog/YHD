@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, AgentFilter, AgentStatus, AgentType } from '../types';
 
 export interface UseAgentOptions {
-  /** 数据获取函数，默认返回空列表（便于纯 UI 场景使用） */
+  /**
+   * 数据获取函数，默认返回空列表（便于纯 UI 场景使用）。
+   * 未传入 fetcher 时返回空，不代表后端无数据——本组件库未接任何后端。
+   */
   fetcher?: (filter?: AgentFilter) => Promise<Agent[]>;
   /** 初始过滤条件 */
   initialFilter?: AgentFilter;
