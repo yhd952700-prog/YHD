@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 SEVERITIES: Tuple[str, ...] = ("blocker", "major", "minor")
 _RANK = {name: idx for idx, name in enumerate(SEVERITIES)}
