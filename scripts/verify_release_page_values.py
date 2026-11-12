@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 VERSION_RE = re.compile(r"(?<![\d./])\d+\.\d+\.\d+(?:\.\d+)?(?!\d)(?!\.\d)(?!:\d)")
 VERSION_ONLY_RE = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
 SHA_RE = re.compile(r"\b[a-fA-F0-9]{64}\b")
-EXE_RE = re.compile(r"LiuHao-Setup-([0-9][0-9A-Za-z.\-]*)\.exe", re.IGNORECASE)
+EXE_RE = re.compile(r"Jarvis-Setup-([0-9][0-9A-Za-z.\-]*)\.exe", re.IGNORECASE)
 DATA_COPY_RE = re.compile(r'data-copy\s*=\s*"([^"]*)"', re.IGNORECASE)
 # 千分位字节必须紧跟「字节」，避免把 rgb(255,255,255) 这类颜色算进来。
 GROUPED_BYTE_RE = re.compile(r"\b\d{1,3}(?:,\d{3}){2,}\b(?=\s*字节)")
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     for line, value in _iter(EXE_RE, text, 1):
         counts["文件名"] += 1
         if value != version:
-            add("文件名", line, f"LiuHao-Setup-{value}.exe 的版本 != {version}")
+            add("文件名", line, f"Jarvis-Setup-{value}.exe 的版本 != {version}")
 
     for line, value in _iter(DATA_COPY_RE, text, 1):
         counts["data-copy"] += 1
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         names = [m.group(1) for m in EXE_RE.finditer(value)]
         if not names:
-            add("data-copy", line, "既不是哈希，也不含 LiuHao-Setup-<版本>.exe")
+            add("data-copy", line, "既不是哈希，也不含 Jarvis-Setup-<版本>.exe")
         for name in names:
             if name != version:
                 add("data-copy", line, f"复制命令里的文件名版本 {name} != {version}")
