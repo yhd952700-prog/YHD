@@ -19,8 +19,8 @@ describe('apiFetch 的网络失败文案', () => {
     expect(error).toBeInstanceOf(ApiError)
     const apiError = error as ApiError
     expect(apiError.status).toBe(0)
-    expect(apiError.message).toContain('鎏灏的本地服务没有运行')
-    expect(apiError.message).toContain('请打开鎏灏')
+    expect(apiError.message).toContain('贾维斯的本地服务没有运行')
+    expect(apiError.message).toContain('请打开贾维斯')
     expect(apiError.message).not.toContain('Failed to fetch')
   })
 
@@ -40,7 +40,7 @@ describe('apiFetch 的网络失败文案', () => {
       (err: unknown) => err,
     )) as ApiError
     expect(error.status).toBe(0)
-    expect(error.message).toContain('鎏灏的本地服务在运行')
+    expect(error.message).toContain('贾维斯的本地服务在运行')
     expect(error.message).not.toContain('没有运行')
   })
 
@@ -100,7 +100,7 @@ describe('apiFetch 的网络失败文案', () => {
     const error = (await apiFetch('/v1/auth/config').catch((err: unknown) => err)) as ApiError
     expect(error).toBeInstanceOf(ApiError)
     expect(error.message).toContain('服务没有返回正常的数据')
-    expect(error.message).toContain('请确认鎏灏仍在运行')
+    expect(error.message).toContain('请确认贾维斯仍在运行')
     expect(error.message).not.toContain('Unexpected token')
   })
 })
@@ -126,7 +126,7 @@ describe('useApi 断线后自动重连', () => {
     // 首次请求失败（微任务）—— 断言"没有死路，只有进度"。
     await act(async () => {})
     expect(result.current.error).toContain('正在自动重连：第 1 次')
-    expect(result.current.error).toContain('鎏灏的本地服务没有运行')
+    expect(result.current.error).toContain('贾维斯的本地服务没有运行')
     expect(result.current.error).toContain('3 秒后')
     expect(result.current.data).toBeNull()
 
