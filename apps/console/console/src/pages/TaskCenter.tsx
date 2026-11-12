@@ -754,6 +754,8 @@ function LedgerStatusCard() {
             {TASK_STATUSES.map((status) => (
               <span key={status.value} className="tc-status-item">
                 <span className="tc-sub">{status.label}</span>
+                {/* 该状态计数是真 0：后端 by_status 由 SQL GROUP BY 生成，缺键即该状态
+                    0 条台账任务；?? 0 只把“无此状态行”读成 0，不是缺失冒充。 */}
                 <strong>{data.ledger.by_status[status.value] ?? 0}</strong>
               </span>
             ))}
