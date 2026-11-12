@@ -1,7 +1,7 @@
 """会话历史持久化 — 跨进程重启恢复对话上下文。
 
 为什么需要它：memory kernel 是进程内内存态（重启即失），audit kernel 虽 SQLite
-落盘但 details 里只存元数据（chars_in/chars_out）不存对话文本。因此"鎏灏重启后
+落盘但 details 里只存元数据（chars_in/chars_out）不存对话文本。因此"贾维斯重启后
 还记得上一段对话"这件事此前不成立。
 
 本模块提供一个最小、诚实的会话存储：把「谁(principal)在第几轮(turn)说了什么
