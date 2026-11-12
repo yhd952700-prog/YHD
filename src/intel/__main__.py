@@ -21,7 +21,7 @@ from src.intel.store import IntelStore
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.intel",
-        description="鎏灏开源技术情报中心：只发现、只建议、不自动动手。",
+        description="贾维斯开源技术情报中心：只发现、只建议、不自动动手。",
     )
     parser.add_argument("--repos", nargs="+", required=True, help="GitHub 仓库清单")
     parser.add_argument(
