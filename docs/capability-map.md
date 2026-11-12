@@ -1,4 +1,4 @@
-# 鎏灏 LIUHAO AI OS — 能力地图（2026-11-06 复核）
+# 贾维斯 LIUHAO AI OS — 能力地图（2026-11-06 复核）
 
 > **判定口径**：严格沿用 [`docs/strategy-30-directions.md`](strategy-30-directions.md) 第 6 节“四关”判定法，不另立标准。
 > **复核基线**：`HEAD 82f95450`（2026-11-06）。
