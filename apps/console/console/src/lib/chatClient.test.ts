@@ -104,7 +104,7 @@ describe('friendlyChatError 402/403 口径', () => {
     const err = friendlyChatError(new ApiError(402, '', 'budget_exceeded'))
     expect(err.text).toContain('超出当前额度')
     expect(err.text).toContain('额度由管理员在启动配置中设定')
-    expect(err.text).toContain('重启鎏灏')
+    expect(err.text).toContain('重启贾维斯')
     expect(err.text).toContain('我的 Key')
     expect(err.text).toContain('更便宜的模型')
     // 页面只做只读用量，不能承诺「去那里调整额度」。
@@ -185,7 +185,7 @@ describe('friendlyChatError', () => {
 
   test('网络不可达', () => {
     expect(friendlyChatError(new TypeError('Failed to fetch')).text).toBe(
-      '鎏灏的本地服务没有运行。请打开鎏灏后重试；刚启动的话请等几秒。',
+      '贾维斯的本地服务没有运行。请打开贾维斯后重试；刚启动的话请等几秒。',
     )
   })
 
