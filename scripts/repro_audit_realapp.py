@@ -32,7 +32,6 @@ import json
 import os
 import socket
 import sqlite3
-import statistics
 import subprocess
 import sys
 import tempfile
