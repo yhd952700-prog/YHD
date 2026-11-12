@@ -1025,7 +1025,10 @@ def case_local_proof(report: Report, inst: Instance, token: str) -> None:
         print("[SKIP] ⑥本机身份证明：非 Windows 平台不适用（POSIX 为 0600 socket）")
         return
     try:
-        import win32security
+        # 导入本身就是可用性探针：名字后续不用，但缺 pywin32 时这里必须抛错
+        # 并记一条 "pywin32 可用" 失败，而不是继续往下跑、到 _dacl_of_handle
+        # 里才报一个含义不明的 ImportError。
+        import win32security  # noqa: F401
     except Exception as exc:  # noqa: BLE001 - 缺 pywin32 必须算失败
         report.check(item, "pywin32 可用", False, True, str(exc)[:200])
         return
