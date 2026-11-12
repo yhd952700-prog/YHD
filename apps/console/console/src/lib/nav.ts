@@ -42,11 +42,12 @@ import type { AccountCaps } from './accountCaps'
 // 页面登记信息由页面自己导出，导航只引用，避免标题/副说明两处各写一份。
 import { ENTERPRISE_OVERVIEW_PAGE } from '../pages/EnterpriseOverview'
 import { ORG_PAGE } from '../pages/Org'
+import { OPERATOR_CONSOLE_PAGE } from '../pages/OperatorConsole'
 import { TASK_CENTER_PAGE } from '../pages/TaskCenter'
 import { SKILLS_CENTER_PAGE } from '../pages/SkillCenter'
 import { TOOLS_CENTER_PAGE } from '../pages/ToolCenter'
 
-export type NavRequirement = 'root' | 'manage' | 'grant' | 'recovery'
+export type NavRequirement = 'root' | 'manage' | 'grant' | 'recovery' | 'owner'
 
 export interface NavItem {
   key: string
@@ -78,8 +79,14 @@ export interface NavGroup {
  */
 export const HOME_KEY = ENTERPRISE_OVERVIEW_PAGE.key
 
-/** ① 首页：企业总览 + 贾维斯。日常只有这两件事。 */
+/** ① 首页：聊天操作台 + 企业总览 + 管家。日常只有这三件事，操作台是默认落点。 */
 const HOME_NAV: NavItem[] = [
+  {
+    key: OPERATOR_CONSOLE_PAGE.key,
+    label: '操作台',
+    icon: IconSparkle,
+    hint: '聊天操作台：跟贾维斯直接对话，工具箱在输入框上方',
+  },
   {
     key: ENTERPRISE_OVERVIEW_PAGE.key,
     label: ENTERPRISE_OVERVIEW_PAGE.navLabel,
@@ -91,6 +98,51 @@ const HOME_NAV: NavItem[] = [
     label: '贾维斯',
     icon: IconButler,
     hint: '你下目标，它拆解分派，给结论；也可以直接问',
+  },
+]
+
+/**
+ * Owner 专属入口（只对 Owner 渲染，普通账号在导航里根本看不到这一组）。
+ *
+ * 四项都是 Owner 的全局视角，复用已有真实页面，不另编数据：
+ *   * 全局总览 → Owner 总览页（全部成员/任务/用量/审计的汇总）；
+ *   * 成员管理 → 成员与权限管理页（根 variant；无成员时显示空态）；
+ *   * 全部任务 → Owner 全部任务页（`/v1/owner/tasks` 的全部目标与任务）；
+ *   * 审计 → 审计链页（Owner 看全量事件；普通账号仍在设置组看自己的
+ *     「操作记录」，那是另一项，不冲突）。
+ *
+ * 后端权限过滤与 Owner 产生、审计日志由 F 组做；这里只按登录身份
+ * 显示/隐藏（`caps.isOwner`，来自后端 `is_owner`，未下发时回落根账号）。
+ * 这一组是"多出来"的：原有入口一个不动，普通账号的导航与之前完全一致。
+ */
+const OWNER_NAV: NavItem[] = [
+  {
+    key: 'owner-overview',
+    label: '全局总览',
+    icon: IconDashboard,
+    hint: '全部成员、任务与用量的汇总（Owner 专属）',
+    requires: 'owner',
+  },
+  {
+    key: 'owner-members',
+    label: '成员管理',
+    icon: IconEmployees,
+    hint: '全部成员、状态与 Key 授权（Owner 专属）',
+    requires: 'owner',
+  },
+  {
+    key: 'owner-tasks',
+    label: '全部任务',
+    icon: IconGoals,
+    hint: '本地台账里的全部任务（Owner 专属）',
+    requires: 'owner',
+  },
+  {
+    key: 'owner-audit',
+    label: '审计',
+    icon: IconLock,
+    hint: '全量审计事件与哈希链校验（Owner 专属）',
+    requires: 'owner',
   },
 ]
 
@@ -256,7 +308,8 @@ export const SETTINGS_SECTIONS: { label: string; startsAt: string }[] = [
 ]
 
 export const NAV_GROUPS: NavGroup[] = [
-  { key: 'home', label: '首页', icon: IconDashboard, defaultKey: HOME_KEY, items: HOME_NAV },
+  { key: 'home', label: '首页', icon: IconDashboard, defaultKey: OPERATOR_CONSOLE_PAGE.key, items: HOME_NAV },
+  { key: 'owner', label: 'Owner', icon: IconShield, defaultKey: 'owner-overview', items: OWNER_NAV },
   { key: 'office', label: '办公室', icon: IconEmployees, defaultKey: 'office', items: OFFICE_NAV },
   { key: 'tasks', label: '任务', icon: IconGoals, defaultKey: TASK_CENTER_PAGE.key, items: TASKS_NAV },
   { key: 'knowledge', label: '知识', icon: IconKnowledge, defaultKey: 'knowledge', items: KNOWLEDGE_NAV },
@@ -280,6 +333,7 @@ export function groupForPage(key: string): NavGroup | undefined {
 function itemVisible(item: NavItem, caps: AccountCaps): boolean {
   if (!item.requires) return true
   if (item.requires === 'root') return caps.isRoot
+  if (item.requires === 'owner') return caps.isOwner
   if (item.requires === 'grant') return caps.isRoot || caps.canGrant || caps.canApproveQueue
   if (item.requires === 'recovery') return caps.canRecovery
   // "我的成员"是成员面的入口；根已经有完整的"成员与权限管理"，不需要这一项。
