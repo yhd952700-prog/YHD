@@ -1,4 +1,4 @@
-"""Mint a console approval token for a verified human principal.
+r"""Mint a console approval token for a verified human principal.
 
 Run:  python scripts/issue_console_token.py --list
       python scripts/issue_console_token.py --principal <id>
