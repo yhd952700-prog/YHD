@@ -69,13 +69,13 @@ class InstanceLockBusy(Exception):
         if started:
             bits.append(f"启动于 {started}")
         detail = "，".join(bits)
-        head = "鎏灏已经在运行"
+        head = "贾维斯已经在运行"
         if detail:
             head += f"（{detail}）"
         return (
             head
             + "。为避免两个进程同时写同一份数据，本次启动已退出；"
-            "如需重启，请先关闭已经运行的那个鎏灏。"
+            "如需重启，请先关闭已经运行的那个贾维斯。"
         )
 
 
