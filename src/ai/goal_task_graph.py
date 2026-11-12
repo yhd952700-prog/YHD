@@ -763,6 +763,23 @@ Example output format:
             "completed": len([t for t in tasks if t.id in self.completed_tasks]),
             "failed": len([t for t in tasks if t.id in self.failed_tasks]),
             "pending": len([t for t in tasks if t.status == TaskStatus.PENDING]),
+            # 目标的步骤记录：目标本身没有独立的 steps 表，步骤就是分解出的
+            # TaskNode（B组第二轮透出）。每一步含状态/优先级/负责人/依赖，
+            # 调用方不用再拼 get_tasks_for_goal 才能看到步骤明细。
+            "steps": [
+                {
+                    "id": t.id,
+                    "description": t.description,
+                    "task_type": t.task_type,
+                    "status": t.status.value,
+                    "priority": t.priority,
+                    "assigned_agent": t.assigned_agent,
+                    "depends_on": list(t.depends_on),
+                    "started_at": t.started_at,
+                    "completed_at": t.completed_at,
+                }
+                for t in tasks
+            ],
         }
 
     # ------------------------------------------------------------------ #
