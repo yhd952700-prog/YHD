@@ -12,7 +12,7 @@
  */
 
 import { ApiError, apiFetch } from './api'
-import { tokenHeaders } from './auth'
+import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
 
 export const ENTERPRISE_BASE = '/v1/knowledge/enterprise'
 export const UPLOAD_MAX_BYTES = 25 * 1024 * 1024
@@ -451,19 +451,43 @@ export function uploadDocument(
       }
       reject(uploadFailure(xhr))
     }
-    xhr.onerror = () => reject(new ApiError(0, '上传中断：请确认鎏灏仍在运行，然后重试。'))
+    xhr.onerror = () => reject(new ApiError(0, '上传中断：请确认贾维斯仍在运行，然后重试。'))
     xhr.ontimeout = () =>
       reject(new ApiError(408, '上传超时。文件可能仍在处理，请刷新列表确认后再决定是否重传。'))
     xhr.send(form)
   })
 }
 
-/** 下载原件：需要带令牌，普通 <a href> 拿不到鉴权头，所以取 blob 再触发保存。 */
+/** 下载原件：需要带令牌，普通 <a href> 拿不到鉴权头，所以取 blob 再触发保存。
+ *
+ * 不能走 `apiFetch`：它只解析 JSON，而这里要的是原始 blob。超时与 401 处理
+ * 与 `api.ts` 的 `apiFetchWithStatus` 对齐：15s 超时、401 清会话并广播未认证事件。
+ */
 export async function downloadDocument(documentId: string, version?: number): Promise<void> {
   const url = `${ENTERPRISE_BASE}/documents/${encodeURIComponent(documentId)}/file${
     version ? `?version=${version}` : ''
   }`
-  const response = await fetch(url, { headers: tokenHeaders(), cache: 'no-store' })
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: tokenHeaders(),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new ApiError(408, '下载超时（>15s），请稍后重试')
+    }
+    throw err
+  }
+  if (response.status === 401) {
+    clearSession()
+    try {
+      window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT))
+    } catch {
+      // 非浏览器环境：忽略。
+    }
+  }
   if (!response.ok) {
     let message = `下载失败（HTTP ${response.status}）`
     try {
