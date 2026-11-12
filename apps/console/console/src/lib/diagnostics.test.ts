@@ -100,8 +100,8 @@ describe('一键诊断包导出', () => {
     )
 
     const error = (await exportDiagnosticsBundle().catch((err: unknown) => err)) as Error
-    expect(error.message).toContain('鎏灏的本地服务没有运行')
-    expect(error.message).toContain('请打开鎏灏')
+    expect(error.message).toContain('贾维斯的本地服务没有运行')
+    expect(error.message).toContain('请打开贾维斯')
     expect(error.message).not.toContain('Failed to fetch')
   })
 
@@ -137,7 +137,7 @@ describe('一键诊断包导出', () => {
             detail: {
               code: 'DIAGNOSTIC_BUNDLE_BLOCKED',
               message:
-                '诊断包内所有文件都未通过密钥自检，已停止导出。下一步：先退出鎏灏，把旧日志改名备份后再导出。',
+                '诊断包内所有文件都未通过密钥自检，已停止导出。下一步：先退出贾维斯，把旧日志改名备份后再导出。',
               omitted_members: ['logs/liuhao.log.txt'],
             },
           },
