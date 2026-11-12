@@ -16,16 +16,16 @@ const HAS_CJK = /[\u4e00-\u9fff]/
  * 用户看到的必须是"哪台服务没运行、现在该做什么"，而不是"浏览器服务"这类指
  * 向错误的措辞：这些卡片背后是板子上的本地网关，不是浏览器。
  *
- * "三个信号"缺一不可：**对象**（鎏灏的本地服务）、**动作**（打开鎏灏）、
+ * "三个信号"缺一不可：**对象**（贾维斯的本地服务）、**动作**（打开贾维斯）、
  * **预期**（几秒后自动重连）。只写"数据不可用"会让用户以为数据坏了，
  * 实际上只是进程没起来。
  */
 export const LOCAL_SERVICE_OFFLINE =
-  '鎏灏的本地服务没有运行。请打开鎏灏后重试；稍等几秒会自动重连，也可以重启软件后再试。'
+  '贾维斯的本地服务没有运行。请打开贾维斯后重试；稍等几秒会自动重连，也可以重启软件后再试。'
 
 /** 同上，但用于"需要用户自己再点一次"的表单/导出场景（没有自动重连）。 */
 export const LOCAL_SERVICE_OFFLINE_MANUAL =
-  '鎏灏的本地服务没有运行。请打开鎏灏后重试；刚启动的话请等几秒。'
+  '贾维斯的本地服务没有运行。请打开贾维斯后重试；刚启动的话请等几秒。'
 
 /**
  * 服务活着、但这一次请求没成功。
@@ -35,7 +35,7 @@ export const LOCAL_SERVICE_OFFLINE_MANUAL =
  * 用户会去重启一个本来就在运行的服务。
  */
 export const LOCAL_SERVICE_UNSTABLE =
-  '鎏灏的本地服务在运行，但这次请求没有成功。稍等会自动重连；持续出现请重启软件后再试。'
+  '贾维斯的本地服务在运行，但这次请求没有成功。稍等会自动重连；持续出现请重启软件后再试。'
 
 /**
  * 402 `budget_exceeded`：钱/额度不够，≠ 没权限。
@@ -44,7 +44,7 @@ export const LOCAL_SERVICE_UNSTABLE =
  * 为什么调用还是失败。下一步动作单独成句，界面上同时渲染成可点入口。
  */
 export const BUDGET_DENIAL_MESSAGE =
-  '本次调用会超出当前额度，已暂停。额度由管理员在启动配置中设定，改完需要重启鎏灏才生效。你可以换一个更便宜的模型后重试，或联系管理员调整额度。'
+  '本次调用会超出当前额度，已暂停。额度由管理员在启动配置中设定，改完需要重启贾维斯才生效。你可以换一个更便宜的模型后重试，或联系管理员调整额度。'
 export const BUDGET_DENIAL_NEXT_STEP =
   '去「我的 Key → 用量」查看已经用了多少'
 /** 403 `permission_denied`：真的没有这项权限。 */
@@ -58,7 +58,7 @@ export function isBudgetDenialMessage(message: string | null | undefined): boole
 
 /** 文案是否属于"本机服务没运行"这一类（卡片标题据此区分"服务没开"与"数据异常"）。 */
 export function isLocalServiceOffline(message: string): boolean {
-  return message.includes('鎏灏的本地服务没有运行')
+  return message.includes('贾维斯的本地服务没有运行')
 }
 
 /**
