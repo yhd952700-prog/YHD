@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="liuhao-cli",
-        description="LiuHao AI OS Command Line Interface",
+        description="Jarvis · 贾维斯 Command Line Interface",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
