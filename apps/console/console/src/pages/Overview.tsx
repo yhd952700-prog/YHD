@@ -127,7 +127,8 @@ export function Overview({
       readyHealthy: healthy,
       readyTotal: blockingNames.length,
       total,
-      ratio: healthyTotal / total,
+      // 分母为 0（没有任何计入的检查项）时比率无定义：显式置 null，不让 NaN 流到界面。
+      ratio: total === 0 ? null : healthyTotal / total,
       critical: preflightKnown ? critical : null,
       warning: preflightKnown ? warning ?? 0 : null,
       firing: alertsKnown ? firing : null,
@@ -344,7 +345,7 @@ export function Overview({
           <Kpi
             label="系统健康度"
             value={
-              health && Number.isFinite(health.ratio)
+              health && health.ratio !== null
                 ? `${numberText(health.ratio * 100)}%`
                 : null
             }
@@ -374,7 +375,7 @@ export function Overview({
             error={ready.error || preflight.error || alerts.error}
             tone={
               health &&
-              (health.ratio < 1 ||
+              ((health.ratio !== null && Number.isFinite(health.ratio) && health.ratio < 1) ||
                 health.advisories.length > 0 ||
                 health.auditEvidence === 'broken' ||
                 (health.critical ?? 0) > 0 ||
@@ -404,7 +405,7 @@ export function Overview({
           {(data) => (
             <>
               <NetworkGraph
-                hubLabel="鎏灏 OS"
+                hubLabel="贾维斯 OS"
                 nodes={data.layers.map((layer) => ({
                   id: layer.id,
                   label: neutralLayerLabel(layer.name),
