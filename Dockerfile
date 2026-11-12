@@ -2,7 +2,7 @@
 #
 # 三个阶段：
 #   1. console   用 Node 构建驾驶舱前端（产物拷进运行镜像，容器里不需要 Node）
-#   2. builder   装 Python 依赖
+#   2. builder   装 Python 依赖与包本身
 #   3. runtime   运行镜像，只带运行需要的东西，非 root 用户
 #
 # 为什么前端要进镜像：原先容器只跑 API，驾驶舱得另起一个 Vite 进程。任何
@@ -28,7 +28,7 @@ RUN npm run build
 
 
 # ---------- 阶段 2：Python 依赖 ----------
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
@@ -42,9 +42,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
+# 安装包本身（此前只装了 requirements.txt 的第三方依赖，liuhao-ai-os
+# 这个发行版从未被安装：容器里没有 dist-info，`pip show liuhao-ai-os`
+# 查无此包）。
+# --no-deps：依赖已由上一行按 requirements.txt 的锁定版本装好，这里只
+# 注册发行版本身，不再重新解析整条依赖树。
+# 需要 pyproject.toml + README.md（pyproject 声明 readme="README.md"，
+# 缺了它构建直接失败）以及源码目录都在构建上下文里；.dockerignore 已
+# 为 README.md 开了例外（`*.md` 会把它拦掉）。
+# 注意：setuptools 把本仓库识别为 src 布局，可编辑安装只暴露 src/ 下
+# 的顶层包与 dist-info，`import src` 本身仍靠运行镜像的 WORKDIR /
+# PYTHONPATH（见阶段 3 的 ENV PYTHONPATH），不是靠这次安装。
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+COPY plugins/ ./plugins/
+COPY main.py error_types.py ./
+RUN pip install --no-cache-dir --user --no-deps -e .
+
 
 # ---------- 阶段 3：运行镜像 ----------
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -55,6 +72,26 @@ COPY --from=builder /root/.local /home/app/.local
 COPY --chown=app:app src/ ./src/
 COPY --chown=app:app config/ ./config/
 COPY --chown=app:app scripts/ ./scripts/
+
+# 仓库根入口与源码目录（此前缺失，容器里只有空目录/根本没有）：
+# - main.py：度量运行时 CLI（`python main.py health|ready|startup|record`），
+#   仓库根入口点；不进镜像它在容器里就不存在。
+# - plugins/：旧版工具插件源码（anagram/barcode/…）与插件注册表
+#   （plugins/registry.py）。src/ 里的新插件面（src/plugins、
+#   src/kernels/plugin）不 import 它，但内核插件注册表的回退状态目录
+#   就是 <repo>/plugins（src/kernels/plugin/__init__.py 的
+#   _default_registry_dir）；此前镜像里只有下面那个 mkdir 建的空目录。
+# - core/、libs/：core/ai_employee 目前只有一个测试文件、libs/liuhao-core
+#   是独立小库，二者今天都不被网关 import；随镜像发布是为了容器内的
+#   源码与仓库一致，而不是因为运行时需要它们 —— 别把"在镜像里"
+#   误读成"被加载了"。
+# - pyproject.toml：已安装发行版的元数据来源（版本、依赖声明），留在
+#   镜像里供 `pip show liuhao-ai-os` / 排障时核对。
+COPY --chown=app:app main.py ./main.py
+COPY --chown=app:app plugins/ ./plugins/
+COPY --chown=app:app core/ ./core/
+COPY --chown=app:app libs/ ./libs/
+COPY --chown=app:app pyproject.toml ./pyproject.toml
 
 # 迁移图（alembic.ini + alembic/versions/*）。缺了它，镜像只能靠运行时的
 # ``CREATE TABLE IF NOT EXISTS`` 自建库表：那意味着上线前无法预建、无法
@@ -102,8 +139,9 @@ COPY --from=console --chown=app:app /console/dist/ ./apps/console/console/dist/
 # 目录必须在镜像里就存在且属主正确；不进卷（日志随容器生命周期，避免卷里堆积）。
 RUN mkdir -p /app/data /app/logs && chown -R app:app /app/data /app/logs
 
-# 插件注册表默认写入 ./plugins（相对于 WORKDIR /app）。
-# 容器以非 root 用户运行，/app 根目录不可写，必须预建并赋权。
+# 插件注册表状态（registry_index.json）默认写入 ./plugins（相对于 WORKDIR /app）。
+# 上面已把 plugins/ 源码随镜像发布；这里只保证该目录存在且属主正确，
+# 容器以非 root 用户运行时注册表才能写入状态文件。
 RUN mkdir -p /app/plugins && chown -R app:app /app/plugins
 
 # 单实例锁默认落在 <instance_root>/run/instance.lock（src/common/instance_lock.py），
@@ -119,6 +157,11 @@ USER app
 ENV PATH=/home/app/.local/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 
+# 仓库根进 sys.path：`import src.*`、`import main`、`import error_types`
+# 之前只靠"启动时 CWD 恰好是 /app"才能解析，换个工作目录进容器
+# （docker exec / 排障）就 ModuleNotFoundError。显式写死，不依赖 CWD。
+ENV PYTHONPATH=/app
+
 # 平台注入端口；本文件不再把 8080 写死在启动命令里（见 src/gateway/__main__.py）。
 ENV PORT=8080
 # 网关默认只绑 127.0.0.1（桌面产品：只本机可达）。容器必须能从外部访问，
@@ -126,7 +169,7 @@ ENV PORT=8080
 ENV HOST=0.0.0.0
 EXPOSE 8080
 
-# python:3.11-slim 没有 curl，用标准库自检。端点用 /v1/ready 而不是 /v1/health：
+# python:3.12-slim 没有 curl，用标准库自检。端点用 /v1/ready 而不是 /v1/health：
 # /v1/health 只表示"进程还在回 HTTP"，依赖（审计链、身份库、模型配置）全坏时
 # 它依然 200 —— 容器会被编排系统当成健康，把"假健康"传播到负载均衡后面。
 # /v1/ready 在依赖不健康时如实返回 503，HEALTHCHECK 才会真的失败并重启/摘流量。
