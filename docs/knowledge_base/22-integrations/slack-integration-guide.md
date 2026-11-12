@@ -1,6 +1,6 @@
 # Slack 集成指南
 
-通过 Slack 集成，团队可以在频道中直接与 LiuHao AI OS 智能体交互：下达任务、接收告警、审批决策、查询记忆。本文档覆盖 Slack App 创建、事件订阅、斜杠命令、交互组件（按钮/审批）、以及安全验证的完整流程。
+通过 Slack 集成，团队可以在频道中直接与 Jarvis 智能体交互：下达任务、接收告警、审批决策、查询记忆。本文档覆盖 Slack App 创建、事件订阅、斜杠命令、交互组件（按钮/审批）、以及安全验证的完整流程。
 
 ---
 
@@ -288,7 +288,7 @@ blocks = [
     {"type": "divider"},
     {"type": "context",
      "elements": [{"type": "mrkdwn",
-                   "text": f"trace: `{trace_id}` | 由 LiuHao AI OS 驱动"}]},
+                   "text": f"trace: `{trace_id}` | 由 Jarvis 驱动"}]},
 ]
 ```
 
