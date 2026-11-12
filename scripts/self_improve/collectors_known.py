@@ -8,9 +8,9 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from collectors import MarkdownTable, TableRow, _clean, _first_token, _is_open_status, _severity_from_text, iter_tables, read_text, rel
+from collectors import _clean, _first_token, _is_open_status, _severity_from_text, iter_tables, read_text, rel
 from models import Gap, auto_eligibility
 
 STATUS_IN_HEADING_RE = re.compile(r"状态[：:]\s*\**([^*）)]+)")
