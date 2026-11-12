@@ -31,6 +31,16 @@ export interface Session {
   /** 是否账号树根。仅用于前端裁剪入口，不构成授权依据。
    *  不下发 parent/path/depth：子账号不应知道自己被谁创建、在第几层。 */
   isRoot: boolean
+  /**
+   * 是否 Owner（超级管理员 / 最大权限）。
+   *
+   * 判定规则（与登录/激活/会话解析三处一致）：后端下发的 `is_owner` 为真，
+   * 或账号树根（`is_root`）——当前单根体系里根账号就是 Owner（F 组负责
+   * 后端 Owner 产生与权限过滤）。旧会话里没有这个字段时由 `buildProfile`
+   * 按 `isRoot` 回落。前端绝不写死"谁是 Owner"（不比对 principal/名字），
+   * 只读后端给的角色。
+   */
+  isOwner?: boolean
   /** 能否自助补发**本账号**的恢复码。根账号与登录页自助注册的账号为真；
    *  管理员创建的成员为假（由管理员重置密码）。仅用于前端裁剪入口。 */
   canRotateRecovery?: boolean
@@ -204,6 +214,9 @@ function parseSession(raw: string | null): Session | null {
         ? (parsed.client as ClientMode)
         : 'web',
       isRoot: parsed.isRoot === true,
+      // 与登录/激活一致：is_owner 为真，或 isRoot 为真（旧会话没有该字段时
+      // 靠 isRoot 回落，根账号的 Owner 入口不会被裁掉）。
+      isOwner: parsed.isOwner === true || parsed.isRoot === true,
       canRotateRecovery: parsed.canRotateRecovery === true,
     }
   } catch {
@@ -246,6 +259,7 @@ export function getSession(): Session | null {
         expiresAt: decoded.expiresAt,
         client: decoded.client ?? 'web',
         isRoot: false,
+        isOwner: false,
       }
       saveSession(adopted, false)
       safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
@@ -402,7 +416,13 @@ export interface AuthConfigResult {
 export async function loadAuthConfig(): Promise<AuthConfigResult> {
   let response: Response
   try {
-    response = await fetch('/v1/auth/config', { cache: 'no-store' })
+    response = await fetch('/v1/auth/config', {
+      cache: 'no-store',
+      // 没有超时的 fetch 会在网关卡住时永远悬着，登录页的自动重试循环也
+      // 永远等不到下一次（P0 满载：登录挂起）。15 秒足够覆盖正常启动，
+      // 超时后由调用方按既定节奏重试，而不是无限等。
+      signal: AbortSignal.timeout(15_000),
+    })
   } catch {
     return {
       config: null,
@@ -417,7 +437,7 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
       return {
         config: null,
         error:
-          '无法获取登录配置。请确认鎏灏仍在运行；如果服务刚启动，请稍等几秒后刷新本页重试。',
+          '无法获取登录配置。请确认贾维斯仍在运行；如果服务刚启动，请稍等几秒后刷新本页重试。',
         status: 404,
       }
     }
@@ -433,7 +453,7 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
   } catch {
     return {
       config: null,
-      error: '服务没有返回正常的数据。请确认鎏灏仍在运行并完成初始化，然后刷新本页重试。',
+      error: '服务没有返回正常的数据。请确认贾维斯仍在运行并完成初始化，然后刷新本页重试。',
       status: response.status,
     }
   }
@@ -443,6 +463,14 @@ export interface LoginOptions {
   remember: boolean
   client: ClientMode
 }
+
+/**
+ * 登录请求超时：与后端 `LIUHAO_LOGIN_TIMEOUT_SECONDS` 默认 30 秒对齐。
+ * 没有超时的 fetch 会在网关满载卡住时永远悬着，界面一直转圈、只能刷新
+ * 甚至重启（P0）。超时后给可重试的「登录超时，请重试」，不谎报"服务没运行"
+ * （那是另一回事：超时也可能是服务端还在排队）。
+ */
+export const LOGIN_TIMEOUT_MS = 30_000
 
 /** 用凭据换一个会话。失败抛 `AuthError`（401 / 403 / 429）。 */
 export async function login(
@@ -456,8 +484,12 @@ export async function login(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ principal, secret, client: options.client }),
+      signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
     })
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new AuthError(0, '登录超时，请重试')
+    }
     throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
@@ -497,6 +529,7 @@ export async function login(
     expires_at: number
     client: string
     is_root?: boolean
+    is_owner?: boolean
     can_rotate_recovery?: boolean
   }
   const session: Session = {
@@ -510,6 +543,7 @@ export async function login(
       ? (body.client as ClientMode)
       : options.client,
     isRoot: body.is_root === true,
+    isOwner: body.is_owner === true || body.is_root === true,
     canRotateRecovery: body.can_rotate_recovery === true,
   }
   saveSession(session, options.remember)
@@ -602,6 +636,7 @@ export async function sessionFromToken(
     permissions?: string[]
     expires_at?: number | null
     is_root?: boolean
+    is_owner?: boolean
     can_rotate_recovery?: boolean
   }
   const session: Session = {
@@ -613,6 +648,7 @@ export async function sessionFromToken(
     expiresAt: Number(body.expires_at ?? decoded.expiresAt) || decoded.expiresAt,
     client: options.client,
     isRoot: body.is_root === true,
+    isOwner: body.is_owner === true || body.is_root === true,
     canRotateRecovery: body.can_rotate_recovery === true,
   }
   saveSession(session, options.remember)
@@ -655,6 +691,7 @@ export async function refreshIdentity(): Promise<{
   scope: string | null
   expires_at: number | null
   is_root?: boolean
+  is_owner?: boolean
 } | null> {
   const token = currentToken()
   if (!token) return null
