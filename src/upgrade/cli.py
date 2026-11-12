@@ -33,7 +33,7 @@ from .startup_probe import StartupCheckConfig
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.upgrade",
-        description="鎏灏自我升级：检查、下载校验、备份应用、一键回滚",
+        description="贾维斯自我升级：检查、下载校验、备份应用、一键回滚",
     )
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--app-root", default=".", help="应用根目录（默认当前目录）")
