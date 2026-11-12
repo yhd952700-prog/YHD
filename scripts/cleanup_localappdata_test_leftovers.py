@@ -29,7 +29,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 CANDIDATE_PREFIXES = ("data.after-smoke-", "data.bak-")
 SENSITIVE_NAMES = {
