@@ -260,6 +260,23 @@ components:
           title: Title
       title: AssignmentPatchRequest
       type: object
+    AuthorityModeRequest:
+      description: 切换运行模式的请求。**没有** principal 字段：主体只来自身份令牌。
+      properties:
+        mode:
+          description: standard / full
+          title: Mode
+          type: string
+        reason:
+          default: ''
+          description: 切换理由（记入审计）
+          maxLength: 500
+          title: Reason
+          type: string
+      required:
+      - mode
+      title: AuthorityModeRequest
+      type: object
     BackupExportRequest:
       properties:
         passphrase:
@@ -393,6 +410,154 @@ components:
       - file
       title: Body_knowledge_upload_document_v1_knowledge_documents_upload_post
       type: object
+    Body_upgrade_skill_v1_skills__skill_id__upgrade_post:
+      properties:
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_upgrade_skill_v1_skills__skill_id__upgrade_post
+      type: object
+    Body_upload_document_v1_knowledge_enterprise_documents_upload_post:
+      properties:
+        allow_low_quality:
+          default: false
+          title: Allow Low Quality
+          type: boolean
+        category_id:
+          default: ''
+          title: Category Id
+          type: string
+        description:
+          default: ''
+          title: Description
+          type: string
+        doc_key:
+          default: ''
+          title: Doc Key
+          type: string
+        expires_at:
+          default: ''
+          title: Expires At
+          type: string
+        expiry_notice_days:
+          default: 30
+          title: Expiry Notice Days
+          type: integer
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+        note:
+          default: ''
+          title: Note
+          type: string
+        project_id:
+          default: ''
+          title: Project Id
+          type: string
+        source_ref:
+          default: ''
+          title: Source Ref
+          type: string
+        tags:
+          default: ''
+          title: Tags
+          type: string
+        title:
+          default: ''
+          title: Title
+          type: string
+        visibility:
+          default: ''
+          title: Visibility
+          type: string
+      required:
+      - file
+      title: Body_upload_document_v1_knowledge_enterprise_documents_upload_post
+      type: object
+    BudgetUpdateRequest:
+      properties:
+        calls_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Calls Limit
+        cost_limit:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Limit
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+        period:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Period
+        reset_usage:
+          default: false
+          title: Reset Usage
+          type: boolean
+        tokens_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Tokens Limit
+      title: BudgetUpdateRequest
+      type: object
+    CategoryCreate:
+      properties:
+        description:
+          default: ''
+          title: Description
+          type: string
+        name:
+          maxLength: 80
+          minLength: 1
+          title: Name
+          type: string
+        parent_id:
+          default: ''
+          title: Parent Id
+          type: string
+        visibility:
+          default: team
+          title: Visibility
+          type: string
+      required:
+      - name
+      title: CategoryCreate
+      type: object
+    CategoryUpdate:
+      properties:
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Id
+        visibility:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Visibility
+      title: CategoryUpdate
+      type: object
     ChatExportRequest:
       properties:
         format:
@@ -507,6 +672,28 @@ components:
       - knowledge
       title: ChatResponse
       type: object
+    CopyEmployeeRequest:
+      properties:
+        copy_capabilities:
+          default: true
+          title: Copy Capabilities
+          type: boolean
+        copy_prompts:
+          default: true
+          title: Copy Prompts
+          type: boolean
+        copy_skills:
+          default: true
+          title: Copy Skills
+          type: boolean
+        name:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Name
+      title: CopyEmployeeRequest
+      type: object
     CreateMemberRequest:
       properties:
         allow_key_sharing:
@@ -550,6 +737,15 @@ components:
       required:
       - enabled
       title: CustodyRequest
+      type: object
+    DecisionRequest:
+      properties:
+        comment:
+          default: ''
+          maxLength: 1000
+          title: Comment
+          type: string
+      title: DecisionRequest
       type: object
     DeviceLoginRequest:
       properties:
@@ -602,6 +798,71 @@ components:
       - provider
       title: DiscoverPayload
       type: object
+    DocumentUpdate:
+      properties:
+        category_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category Id
+        clear_expiry:
+          default: false
+          title: Clear Expiry
+          type: boolean
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        expiry_notice_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expiry Notice Days
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        source_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref
+        tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Tags
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        visibility:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Visibility
+      title: DocumentUpdate
+      type: object
+    DuplicateRequest:
+      properties:
+        name:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Name
+      title: DuplicateRequest
+      type: object
     EmployeeUpdateRequest:
       description: 改名 / 改职责 / 停用或启用 / 改默认能力（只作用于自己的员工）。
       properties:
@@ -634,14 +895,6 @@ components:
           title: Role Description
       title: EmployeeUpdateRequest
       type: object
-    EnableRequest:
-      properties:
-        confirm_risk:
-          default: false
-          title: Confirm Risk
-          type: boolean
-      title: EnableRequest
-      type: object
     ExportAllRequest:
       properties:
         include_files:
@@ -650,6 +903,14 @@ components:
           title: Include Files
           type: boolean
       title: ExportAllRequest
+      type: object
+    FireEventRequest:
+      properties:
+        payload:
+          additionalProperties: true
+          title: Payload
+          type: object
+      title: FireEventRequest
       type: object
     GoalCreateRequest:
       description: 创建+执行 Goal 的请求体。
@@ -755,6 +1016,23 @@ components:
       - name
       title: HireEmployeeRequest
       type: object
+    HostCommandConfirmRequest:
+      description: 危险命令「一次确认」的开关请求。**没有** principal 字段。
+      properties:
+        enabled:
+          description: true=执行前确认；false=不再询问
+          title: Enabled
+          type: boolean
+        reason:
+          default: ''
+          description: 关闭/恢复的理由（记入审计）
+          maxLength: 500
+          title: Reason
+          type: string
+      required:
+      - enabled
+      title: HostCommandConfirmRequest
+      type: object
     ImpactRequest:
       properties:
         action:
@@ -787,6 +1065,29 @@ components:
       required:
       - action
       title: ImpactRequest
+      type: object
+    ImportRequest:
+      properties:
+        as_name:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: As Name
+        config:
+          description: 导出的员工配置（JSON 对象或 JSON 文本）
+          title: Config
+        confirm:
+          default: false
+          title: Confirm
+          type: boolean
+        on_conflict:
+          default: skip
+          title: On Conflict
+          type: string
+      required:
+      - config
+      title: ImportRequest
       type: object
     IngestJobRequest:
       properties:
@@ -926,6 +1227,54 @@ components:
           type: string
       title: MemoryAdoptRequest
       type: object
+    MemoryCreate:
+      properties:
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Confidence
+        content:
+          title: Content
+          type: string
+        employee_id:
+          default: ''
+          title: Employee Id
+          type: string
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        project_id:
+          default: ''
+          title: Project Id
+          type: string
+        scope:
+          default: personal
+          title: Scope
+          type: string
+        source:
+          default: ''
+          title: Source
+          type: string
+        source_ref:
+          default: ''
+          title: Source Ref
+          type: string
+        tags:
+          items:
+            type: string
+          title: Tags
+          type: array
+        title:
+          default: ''
+          title: Title
+          type: string
+      required:
+      - content
+      title: MemoryCreate
+      type: object
     MemoryDeletionReceipt:
       description: 根账号处置未归属/隔离记录的删除回执。
       properties:
@@ -993,6 +1342,66 @@ components:
           - type: 'null'
           title: Text
       title: MemoryPatchRequest
+      type: object
+    MemoryUpdate:
+      properties:
+        clear_expiry:
+          default: false
+          title: Clear Expiry
+          type: boolean
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Confidence
+        content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content
+        employee_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Id
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        scope:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scope
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        source_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref
+        tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Tags
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+      title: MemoryUpdate
       type: object
     MemoryWriteRequest:
       properties:
@@ -1423,6 +1832,23 @@ components:
       - enabled
       title: ResearchToggle
       type: object
+    ResolutionRequest:
+      properties:
+        action:
+          title: Action
+          type: string
+        key:
+          title: Key
+          type: string
+        new_name:
+          default: ''
+          title: New Name
+          type: string
+      required:
+      - key
+      - action
+      title: ResolutionRequest
+      type: object
     RetentionUpdate:
       properties:
         max_total_bytes:
@@ -1456,29 +1882,18 @@ components:
           title: Step Key
       title: RetryRequest
       type: object
-    SearchRequest:
+    RunRequest:
       properties:
-        query:
-          maxLength: 8000
-          minLength: 1
-          title: Query
-          type: string
-        threshold:
-          anyOf:
-          - maximum: 1.0
-            minimum: -1.0
-            type: number
-          - type: 'null'
-          title: Threshold
-        top_k:
-          default: 4
-          maximum: 20.0
-          minimum: 1.0
-          title: Top K
-          type: integer
-      required:
-      - query
-      title: SearchRequest
+        inputs:
+          additionalProperties: true
+          description: 本次运行的输入变量
+          title: Inputs
+          type: object
+        trigger_payload:
+          additionalProperties: true
+          title: Trigger Payload
+          type: object
+      title: RunRequest
       type: object
     SelfRegisterRequest:
       description: 自助注册只接受"我是谁"与密码；父子/深度/权限字段一律丢弃。
@@ -1513,6 +1928,24 @@ components:
       - allow
       title: SelfRegistrationSettingsRequest
       type: object
+    SkillApprovalRequest:
+      description: 处理首次运行申请：``once`` 只放行本次，``always`` 记住（默认 90 天）。
+      properties:
+        mode:
+          default: once
+          title: Mode
+          type: string
+      title: SkillApprovalRequest
+      type: object
+    SkillBindRequest:
+      properties:
+        employee:
+          title: Employee
+          type: string
+      required:
+      - employee
+      title: SkillBindRequest
+      type: object
     SkillCreateRequest:
       properties:
         description:
@@ -1538,6 +1971,41 @@ components:
           title: Confirm
           type: boolean
       title: SkillEnableRequest
+      type: object
+    SkillLocalInstallRequest:
+      description: 从本机路径安装技能包（目录 / .zip / .md / .json）。
+      properties:
+        path:
+          title: Path
+          type: string
+      required:
+      - path
+      title: SkillLocalInstallRequest
+      type: object
+    SkillRunRequest:
+      description: '运行一个已声明的脚本入口。
+
+
+        ``params`` 会以 JSON 写入运行目录的 ``input.json`` 并通过 stdin 交给脚本；
+
+        只接受 JSON 值，不接受命令行拼接。'
+      properties:
+        employee:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee
+        entrypoint:
+          title: Entrypoint
+          type: string
+        params:
+          additionalProperties: true
+          default: {}
+          title: Params
+          type: object
+      required:
+      - entrypoint
+      title: SkillRunRequest
       type: object
     SkillUpdateRequest:
       properties:
@@ -1578,6 +2046,129 @@ components:
           title: Reason
       title: TakeoverRequest
       type: object
+    TemplateApplyRequest:
+      properties:
+        mode:
+          title: Mode
+          type: string
+        preview_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preview Token
+        resolutions:
+          items:
+            $ref: '#/components/schemas/ResolutionRequest'
+          title: Resolutions
+          type: array
+        selected_keys:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Selected Keys
+        target_node_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Node Id
+        target_parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Parent Id
+      required:
+      - mode
+      title: TemplateApplyRequest
+      type: object
+    TemplateCopyRequest:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      title: TemplateCopyRequest
+      type: object
+    TemplateCreateRequest:
+      properties:
+        description:
+          default: ''
+          title: Description
+          type: string
+        industry:
+          default: ''
+          title: Industry
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - name
+      title: TemplateCreateRequest
+      type: object
+    TemplatePatchRequest:
+      properties:
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        industry:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Industry
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Revision
+        root:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Root
+      title: TemplatePatchRequest
+      type: object
+    TemplatePreviewRequest:
+      properties:
+        mode:
+          title: Mode
+          type: string
+        resolutions:
+          items:
+            $ref: '#/components/schemas/ResolutionRequest'
+          title: Resolutions
+          type: array
+        selected_keys:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Selected Keys
+        target_node_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Node Id
+        target_parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Parent Id
+      required:
+      - mode
+      title: TemplatePreviewRequest
+      type: object
     TestPayload:
       properties:
         api_key:
@@ -1616,6 +2207,61 @@ components:
       - provider
       - model
       title: TestPayload
+      type: object
+    TextIngest:
+      properties:
+        category_id:
+          default: ''
+          title: Category Id
+          type: string
+        description:
+          default: ''
+          title: Description
+          type: string
+        doc_key:
+          default: ''
+          title: Doc Key
+          type: string
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        expiry_notice_days:
+          default: 30
+          title: Expiry Notice Days
+          type: integer
+        note:
+          default: ''
+          title: Note
+          type: string
+        project_id:
+          default: ''
+          title: Project Id
+          type: string
+        source_ref:
+          default: ''
+          title: Source Ref
+          type: string
+        tags:
+          items:
+            type: string
+          title: Tags
+          type: array
+        text:
+          title: Text
+          type: string
+        title:
+          default: ''
+          title: Title
+          type: string
+        visibility:
+          default: ''
+          title: Visibility
+          type: string
+      required:
+      - text
+      title: TextIngest
       type: object
     UnassignedKnowledgeDocument:
       description: 一篇无归属历史文档（``owner_account_id`` 为空，无法反推账号）。
@@ -1826,6 +2472,71 @@ components:
       - type
       title: ValidationError
       type: object
+    src__api__routes__knowledge__SearchRequest:
+      properties:
+        query:
+          maxLength: 8000
+          minLength: 1
+          title: Query
+          type: string
+        threshold:
+          anyOf:
+          - maximum: 1.0
+            minimum: -1.0
+            type: number
+          - type: 'null'
+          title: Threshold
+        top_k:
+          default: 4
+          maximum: 20.0
+          minimum: 1.0
+          title: Top K
+          type: integer
+      required:
+      - query
+      title: SearchRequest
+      type: object
+    src__gateway__knowledge_enterprise__SearchRequest:
+      properties:
+        category_id:
+          default: ''
+          title: Category Id
+          type: string
+        include_expired:
+          default: false
+          title: Include Expired
+          type: boolean
+        include_subcategories:
+          default: true
+          title: Include Subcategories
+          type: boolean
+        min_score:
+          default: 0.0
+          title: Min Score
+          type: number
+        project_id:
+          default: ''
+          title: Project Id
+          type: string
+        query:
+          title: Query
+          type: string
+        top_k:
+          default: 8
+          title: Top K
+          type: integer
+      required:
+      - query
+      title: SearchRequest
+      type: object
+    src__gateway__lan_access__EnableRequest:
+      properties:
+        confirm_risk:
+          default: false
+          title: Confirm Risk
+          type: boolean
+      title: EnableRequest
+      type: object
     src__gateway__tasks_api__RollbackRequest:
       properties:
         migration_id:
@@ -1835,6 +2546,16 @@ components:
       required:
       - migration_id
       title: RollbackRequest
+      type: object
+    src__gateway__workflow__EnableRequest:
+      properties:
+        enabled:
+          description: true=启用，false=停用（停用后不能再启动新运行）
+          title: Enabled
+          type: boolean
+      required:
+      - enabled
+      title: EnableRequest
       type: object
     src__upgrade__api__RollbackRequest:
       properties:
@@ -2538,7 +3259,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchRequest'
+              $ref: '#/components/schemas/src__api__routes__knowledge__SearchRequest'
         required: true
       responses:
         '200':
@@ -2584,7 +3305,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchRequest'
+              $ref: '#/components/schemas/src__api__routes__knowledge__SearchRequest'
         required: true
       responses:
         '200':
@@ -3889,6 +4610,264 @@ paths:
       summary: List Alert Rules
       tags:
       - observability
+  /v1/approvals:
+    get:
+      operationId: list_approvals_v1_approvals_get
+      parameters:
+      - in: query
+        name: status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: pending
+          title: Status
+      - in: query
+        name: run_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 100
+          maximum: 300
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Approvals V1 Approvals Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Approvals
+      tags:
+      - workflow-approvals
+  /v1/approvals/summary:
+    get:
+      operationId: approval_summary_v1_approvals_summary_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Approval Summary V1 Approvals Summary Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Approval Summary
+      tags:
+      - workflow-approvals
+  /v1/approvals/{approval_id}:
+    get:
+      operationId: get_approval_v1_approvals__approval_id__get
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Approval V1 Approvals  Approval Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Approval
+      tags:
+      - workflow-approvals
+  /v1/approvals/{approval_id}/approve:
+    post:
+      operationId: approve_v1_approvals__approval_id__approve_post
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/DecisionRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Approve V1 Approvals  Approval Id  Approve Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Approve
+      tags:
+      - workflow-approvals
+  /v1/approvals/{approval_id}/reject:
+    post:
+      operationId: reject_v1_approvals__approval_id__reject_post
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/DecisionRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reject V1 Approvals  Approval Id  Reject Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reject
+      tags:
+      - workflow-approvals
   /v1/audit/events:
     get:
       description: '列出审计事件（只读）。
@@ -5339,6 +6318,98 @@ paths:
       summary: List Employee Capabilities
       tags:
       - ai-management
+  /v1/employees/import:
+    post:
+      description: 确认导入：重新校验后落盘；未先预览（confirm=false）一律拒绝。
+      operationId: import_employee_v1_employees_import_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Import Employee V1 Employees Import Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Import Employee
+      tags:
+      - ai-management
+      - employees
+  /v1/employees/import/preview:
+    post:
+      description: 导入 dry-run：校验、冲突处理与将执行的动作；不落盘。
+      operationId: import_preview_v1_employees_import_preview_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Import Preview V1 Employees Import Preview Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Import Preview
+      tags:
+      - ai-management
+      - employees
   /v1/employees/{agent_id}:
     get:
       description: 获取单个 AI Employee（agent）详情（不可见 = 404）。
@@ -5579,6 +6650,248 @@ paths:
       summary: Update Employee
       tags:
       - ai-management
+  /v1/employees/{name}/budget:
+    delete:
+      description: 移除预算（回到不限）。
+      operationId: clear_budget_v1_employees__name__budget_delete
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Clear Budget V1 Employees  Name  Budget Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Clear Budget
+      tags:
+      - ai-management
+      - employees
+    get:
+      description: 当前周期消耗、剩余额度、是否已超限。
+      operationId: read_budget_v1_employees__name__budget_get
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Read Budget V1 Employees  Name  Budget Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read Budget
+      tags:
+      - ai-management
+      - employees
+    put:
+      description: 设置/修改预算；超限后下一次派活直接 402。
+      operationId: write_budget_v1_employees__name__budget_put
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetUpdateRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Write Budget V1 Employees  Name  Budget Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Write Budget
+      tags:
+      - ai-management
+      - employees
+  /v1/employees/{name}/copy:
+    post:
+      description: 复制员工配置；副本默认停用，不继承任务、记忆与运行历史。
+      operationId: copy_employee_v1_employees__name__copy_post
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/CopyEmployeeRequest'
+              - type: 'null'
+              title: Req
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Copy Employee V1 Employees  Name  Copy Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Copy Employee
+      tags:
+      - ai-management
+      - employees
+  /v1/employees/{name}/export:
+    get:
+      description: 导出员工配置为可读 JSON：只含配置白名单字段，绝不含密钥。
+      operationId: export_employee_v1_employees__name__export_get
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Export Employee V1 Employees  Name  Export Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Export Employee
+      tags:
+      - ai-management
+      - employees
   /v1/employees/{name}/memories:
     get:
       description: '某位员工产生的记忆（归属该员工所属账号）。
@@ -5631,6 +6944,52 @@ paths:
       summary: List Employee Memories
       tags:
       - ai-management
+  /v1/employees/{name}/quality:
+    get:
+      description: 基于台账真实任务行给出完成率/失败率/平均耗时/人工返工次数。
+      operationId: employee_quality_v1_employees__name__quality_get
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Employee Quality V1 Employees  Name  Quality Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Employee Quality
+      tags:
+      - ai-management
+      - employees
   /v1/events:
     get:
       description: '近期真实事件（只读）。
@@ -7179,6 +8538,727 @@ paths:
       tags:
       - knowledge
       - knowledge
+  /v1/knowledge/enterprise/categories:
+    get:
+      operationId: get_categories_v1_knowledge_enterprise_categories_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Categories V1 Knowledge Enterprise Categories Get
+                type: object
+          description: Successful Response
+      summary: Get Categories
+      tags:
+      - knowledge-enterprise
+    post:
+      operationId: add_category_v1_knowledge_enterprise_categories_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryCreate'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Add Category V1 Knowledge Enterprise Categories Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Add Category
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/categories/{category_id}:
+    delete:
+      operationId: remove_category_v1_knowledge_enterprise_categories__category_id__delete
+      parameters:
+      - in: path
+        name: category_id
+        required: true
+        schema:
+          title: Category Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Remove Category V1 Knowledge Enterprise Categories  Category Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Remove Category
+      tags:
+      - knowledge-enterprise
+    patch:
+      operationId: edit_category_v1_knowledge_enterprise_categories__category_id__patch
+      parameters:
+      - in: path
+        name: category_id
+        required: true
+        schema:
+          title: Category Id
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryUpdate'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Edit Category V1 Knowledge Enterprise Categories  Category Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Edit Category
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents:
+    get:
+      operationId: get_documents_v1_knowledge_enterprise_documents_get
+      parameters:
+      - in: query
+        name: category_id
+        required: false
+        schema:
+          default: ''
+          title: Category Id
+          type: string
+      - in: query
+        name: include_subcategories
+        required: false
+        schema:
+          default: true
+          title: Include Subcategories
+          type: boolean
+      - in: query
+        name: project_id
+        required: false
+        schema:
+          default: ''
+          title: Project Id
+          type: string
+      - in: query
+        name: include_expired
+        required: false
+        schema:
+          default: false
+          title: Include Expired
+          type: boolean
+      - in: query
+        name: q
+        required: false
+        schema:
+          default: ''
+          title: Q
+          type: string
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 20
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Documents V1 Knowledge Enterprise Documents Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Documents
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents/text:
+    post:
+      operationId: ingest_text_v1_knowledge_enterprise_documents_text_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextIngest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Ingest Text V1 Knowledge Enterprise Documents Text Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Ingest Text
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents/upload:
+    post:
+      operationId: upload_document_v1_knowledge_enterprise_documents_upload_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_document_v1_knowledge_enterprise_documents_upload_post'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upload Document V1 Knowledge Enterprise Documents Upload Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Upload Document
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents/{document_id}:
+    delete:
+      operationId: remove_document_v1_knowledge_enterprise_documents__document_id__delete
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Remove Document V1 Knowledge Enterprise Documents  Document Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Remove Document
+      tags:
+      - knowledge-enterprise
+    get:
+      operationId: get_document_v1_knowledge_enterprise_documents__document_id__get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: query
+        name: include_text
+        required: false
+        schema:
+          default: true
+          title: Include Text
+          type: boolean
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Document V1 Knowledge Enterprise Documents  Document Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Document
+      tags:
+      - knowledge-enterprise
+    patch:
+      operationId: patch_document_v1_knowledge_enterprise_documents__document_id__patch
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentUpdate'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Document V1 Knowledge Enterprise Documents  Document Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Document
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents/{document_id}/diff:
+    get:
+      operationId: diff_document_versions_v1_knowledge_enterprise_documents__document_id__diff_get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: query
+        name: from_version
+        required: true
+        schema:
+          minimum: 1
+          title: From Version
+          type: integer
+      - in: query
+        name: to_version
+        required: true
+        schema:
+          minimum: 1
+          title: To Version
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Diff Document Versions V1 Knowledge Enterprise Documents  Document Id  Diff
+                  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Diff Document Versions
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents/{document_id}/file:
+    get:
+      operationId: download_document_v1_knowledge_enterprise_documents__document_id__file_get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: query
+        name: version
+        required: false
+        schema:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Download Document
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/documents/{document_id}/versions/{version}:
+    get:
+      operationId: get_document_version_v1_knowledge_enterprise_documents__document_id__versions__version__get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: path
+        name: version
+        required: true
+        schema:
+          title: Version
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Document Version V1 Knowledge Enterprise Documents  Document Id  Versions  Version  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Document Version
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/expiring:
+    get:
+      operationId: get_expiring_v1_knowledge_enterprise_expiring_get
+      parameters:
+      - in: query
+        name: days
+        required: false
+        schema:
+          default: 30
+          maximum: 3650
+          minimum: 0
+          title: Days
+          type: integer
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 100
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Expiring V1 Knowledge Enterprise Expiring Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Expiring
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/memory:
+    get:
+      operationId: get_memories_v1_knowledge_enterprise_memory_get
+      parameters:
+      - in: query
+        name: project_id
+        required: false
+        schema:
+          default: ''
+          title: Project Id
+          type: string
+      - in: query
+        name: employee_id
+        required: false
+        schema:
+          default: ''
+          title: Employee Id
+          type: string
+      - in: query
+        name: scope
+        required: false
+        schema:
+          default: ''
+          title: Scope
+          type: string
+      - in: query
+        name: q
+        required: false
+        schema:
+          default: ''
+          title: Q
+          type: string
+      - in: query
+        name: include_expired
+        required: false
+        schema:
+          default: false
+          title: Include Expired
+          type: boolean
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Memories V1 Knowledge Enterprise Memory Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Memories
+      tags:
+      - knowledge-enterprise
+    post:
+      operationId: add_memory_v1_knowledge_enterprise_memory_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryCreate'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Add Memory V1 Knowledge Enterprise Memory Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Add Memory
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/memory/views:
+    get:
+      operationId: get_memory_views_v1_knowledge_enterprise_memory_views_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Memory Views V1 Knowledge Enterprise Memory Views Get
+                type: object
+          description: Successful Response
+      summary: Get Memory Views
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/memory/{memory_id}:
+    delete:
+      operationId: remove_memory_v1_knowledge_enterprise_memory__memory_id__delete
+      parameters:
+      - in: path
+        name: memory_id
+        required: true
+        schema:
+          title: Memory Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Remove Memory V1 Knowledge Enterprise Memory  Memory Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Remove Memory
+      tags:
+      - knowledge-enterprise
+    get:
+      operationId: get_memory_v1_knowledge_enterprise_memory__memory_id__get
+      parameters:
+      - in: path
+        name: memory_id
+        required: true
+        schema:
+          title: Memory Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Memory V1 Knowledge Enterprise Memory  Memory Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Memory
+      tags:
+      - knowledge-enterprise
+    patch:
+      operationId: patch_memory_v1_knowledge_enterprise_memory__memory_id__patch
+      parameters:
+      - in: path
+        name: memory_id
+        required: true
+        schema:
+          title: Memory Id
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryUpdate'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Memory V1 Knowledge Enterprise Memory  Memory Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Memory
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/search:
+    post:
+      operationId: search_documents_v1_knowledge_enterprise_search_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/src__gateway__knowledge_enterprise__SearchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Search Documents V1 Knowledge Enterprise Search Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Search Documents
+      tags:
+      - knowledge-enterprise
+  /v1/knowledge/enterprise/status:
+    get:
+      operationId: knowledge_status_v1_knowledge_enterprise_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Status V1 Knowledge Enterprise Status Get
+                type: object
+          description: Successful Response
+      summary: Knowledge Status
+      tags:
+      - knowledge-enterprise
   /v1/knowledge/export:
     post:
       description: 导出自己的知识库为可回导 JSON（另附纯文本正文）。
@@ -7586,7 +9666,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchRequest'
+              $ref: '#/components/schemas/src__api__routes__knowledge__SearchRequest'
         required: true
       responses:
         '200':
@@ -7631,7 +9711,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchRequest'
+              $ref: '#/components/schemas/src__api__routes__knowledge__SearchRequest'
         required: true
       responses:
         '200':
@@ -7874,7 +9954,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EnableRequest'
+              $ref: '#/components/schemas/src__gateway__lan_access__EnableRequest'
         required: true
       responses:
         '200':
@@ -9946,6 +12026,566 @@ paths:
       summary: Move Node
       tags:
       - org
+  /v1/org/templates:
+    get:
+      operationId: list_templates_v1_org_templates_get
+      parameters:
+      - in: query
+        name: include_hidden
+        required: false
+        schema:
+          default: false
+          title: Include Hidden
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Templates V1 Org Templates Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Templates
+      tags:
+      - org-templates
+    post:
+      operationId: create_template_v1_org_templates_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateCreateRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Template V1 Org Templates Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Template
+      tags:
+      - org-templates
+  /v1/org/templates/import:
+    post:
+      operationId: import_template_v1_org_templates_import_post
+      parameters:
+      - in: query
+        name: name
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Payload
+              type: object
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Import Template V1 Org Templates Import Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Import Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}:
+    delete:
+      operationId: delete_template_v1_org_templates__template_id__delete
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Template V1 Org Templates  Template Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Template
+      tags:
+      - org-templates
+    get:
+      operationId: get_template_v1_org_templates__template_id__get
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Template V1 Org Templates  Template Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Template
+      tags:
+      - org-templates
+    patch:
+      operationId: patch_template_v1_org_templates__template_id__patch
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplatePatchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Template V1 Org Templates  Template Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}/apply:
+    post:
+      operationId: apply_template_v1_org_templates__template_id__apply_post
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateApplyRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Apply Template V1 Org Templates  Template Id  Apply Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Apply Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}/copy:
+    post:
+      operationId: copy_template_v1_org_templates__template_id__copy_post
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateCopyRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Copy Template V1 Org Templates  Template Id  Copy Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Copy Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}/export:
+    get:
+      operationId: export_template_v1_org_templates__template_id__export_get
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Export Template V1 Org Templates  Template Id  Export Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Export Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}/hide:
+    post:
+      operationId: hide_template_v1_org_templates__template_id__hide_post
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Hide Template V1 Org Templates  Template Id  Hide Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Hide Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}/preview:
+    post:
+      operationId: preview_template_v1_org_templates__template_id__preview_post
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplatePreviewRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Preview Template V1 Org Templates  Template Id  Preview Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Preview Template
+      tags:
+      - org-templates
+  /v1/org/templates/{template_id}/unhide:
+    post:
+      operationId: unhide_template_v1_org_templates__template_id__unhide_post
+      parameters:
+      - in: path
+        name: template_id
+        required: true
+        schema:
+          title: Template Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Unhide Template V1 Org Templates  Template Id  Unhide Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Unhide Template
+      tags:
+      - org-templates
   /v1/org/tree:
     get:
       description: 返回账号可见的整棵组织树（含负责人、成员、层级深度）。
@@ -10554,6 +13194,110 @@ paths:
       summary: Get Approval
       tags:
       - policy
+  /v1/policy/authority-mode:
+    get:
+      description: '当前运行模式（只读）。
+
+
+        ``mode`` 是本进程**启动时**快照到的生效值；``next_mode`` 是重启后会生效的
+
+        值。两者不同只可能出现在"开启全权还没重启"这一种情况 —— 放宽不做热切，
+
+        避免一次任务中途出现"半套权限"；收回则由总闸立即生效。'
+      operationId: get_authority_mode_v1_policy_authority_mode_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Authority Mode V1 Policy Authority Mode Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Authority Mode
+      tags:
+      - policy
+    put:
+      description: '保存运行模式（管理员）。收**立即**生效；开**重启后**生效。
+
+
+        收紧（→ standard）走总闸语义：``revoke_now`` 当场把本进程压回标准模式，
+
+        再把盘上的值写回 standard，所以重启也不会"复活"全权。放宽（→ full）只写盘，
+
+        必须重启 —— 避免一次任务中途出现"半套权限"的窗口。
+
+
+        切换记录本身进审计（``AUTHORITY_MODE_CHANGED``）：谁、何时、从什么切到
+
+        什么、为什么。收回时顺带撤销该主体名下所有仍有效的审批凭据 —— 全权期间
+
+        签出去的授权不应在收紧之后继续活着。'
+      operationId: set_authority_mode_v1_policy_authority_mode_put
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorityModeRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Authority Mode V1 Policy Authority Mode Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Authority Mode
+      tags:
+      - policy
   /v1/policy/enforcement:
     get:
       description: '内核层拦截配置快照（只读）。默认 ``enabled: false`` = 记录型（L1）。'
@@ -10591,6 +13335,94 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Enforcement
+      tags:
+      - policy
+  /v1/policy/host-command-confirmation:
+    get:
+      description: 危险命令确认开关（只读）。默认开启。
+      operationId: get_host_command_confirmation_v1_policy_host_command_confirmation_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Host Command Confirmation V1 Policy Host Command Confirmation Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Host Command Confirmation
+      tags:
+      - policy
+    put:
+      description: '开关危险命令的一次确认（管理员）。
+
+
+        **关闭前先写审计**（G3）：如果审计写不进去，就不关闭 —— 不允许出现「关掉了
+
+        但查不到是谁关的」。恢复同样留痕（G4）。'
+      operationId: set_host_command_confirmation_v1_policy_host_command_confirmation_put
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostCommandConfirmRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Host Command Confirmation V1 Policy Host Command Confirmation Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Host Command Confirmation
       tags:
       - policy
   /v1/production/preflight:
@@ -11607,14 +14439,210 @@ paths:
       summary: Create Skill
       tags:
       - skills
+  /v1/skills/approvals/{approval_id}:
+    delete:
+      description: 清除一条"记住的授权"：之后该入口再次运行需要重新确认。
+      operationId: revoke_approval_v1_skills_approvals__approval_id__delete
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Revoke Approval V1 Skills Approvals  Approval Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Revoke Approval
+      tags:
+      - skills
+  /v1/skills/approvals/{approval_id}/approve:
+    post:
+      description: 批准一次运行申请。``mode=once`` 只放行这次；``always`` 记住（90 天）。
+      operationId: approve_run_v1_skills_approvals__approval_id__approve_post
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/SkillApprovalRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Approve Run V1 Skills Approvals  Approval Id  Approve Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Approve Run
+      tags:
+      - skills
+  /v1/skills/approvals/{approval_id}/reject:
+    post:
+      operationId: reject_run_v1_skills_approvals__approval_id__reject_post
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reject Run V1 Skills Approvals  Approval Id  Reject Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reject Run
+      tags:
+      - skills
+  /v1/skills/bindings:
+    get:
+      description: 全部绑定（可按员工过滤）。读不出来时 503，不返回空表假装没绑定。
+      operationId: list_bindings_v1_skills_bindings_get
+      parameters:
+      - in: query
+        name: employee
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Bindings V1 Skills Bindings Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Bindings
+      tags:
+      - skills
   /v1/skills/import:
     post:
-      description: '从技能文件导入（``.md`` / ``.json``）。
+      description: '从技能包安装：``.zip`` / ``.md`` / ``.json``。
 
 
-        压缩包一律拒绝：解包任意 zip 会引入 zip-slip 与"导入即执行"风险，而本版
+        zip 走 ``skill_install`` 的安全解包：路径穿越、符号链接、盘符、``..``、
 
-        并没有沙箱化的技能运行时。拒绝比假装支持诚实。'
+        可执行文件、条目数/单文件/总量超限一律**拒绝整包**；先解到临时目录校验，
+
+        通过后才整体移入 ``<data>/skills/<skill_id>``，失败回滚到安装前状态。
+
+
+        导入的技能一律落为「未启用」，且脚本**不会**因为安装了就能跑：第一次运行
+
+        还需要 Boss 单独授权。'
       operationId: import_skill_v1_skills_import_post
       parameters:
       - in: header
@@ -11657,9 +14685,103 @@ paths:
       summary: Import Skill
       tags:
       - skills
+  /v1/skills/install/local:
+    post:
+      description: '从本机路径安装（目录 / .zip / .md / .json）。
+
+
+        Windows 没法用浏览器上传一个目录，所以目录安装走这个接口；路径必须由
+
+        Boss 自己在界面上填，服务端不做任何路径猜测。'
+      operationId: install_local_v1_skills_install_local_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillLocalInstallRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Install Local V1 Skills Install Local Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Install Local
+      tags:
+      - skills
+  /v1/skills/runs/{run_id}:
+    get:
+      operationId: get_run_v1_skills_runs__run_id__get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Run V1 Skills Runs  Run Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Run
+      tags:
+      - skills
   /v1/skills/{skill_id}:
     delete:
-      description: 删除技能。**有员工在用时返回 409 并点名**，不静默级联删除。
+      description: 删除技能。**有员工真实绑定时返回 409 并点名**，不静默级联删除。
       operationId: delete_skill_v1_skills__skill_id__delete
       parameters:
       - in: path
@@ -11750,6 +14872,293 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Update Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/approvals:
+    delete:
+      description: 一次清掉某个技能所有"记住的授权"。
+      operationId: revoke_skill_approvals_v1_skills__skill_id__approvals_delete
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Revoke Skill Approvals V1 Skills  Skill Id  Approvals Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Revoke Skill Approvals
+      tags:
+      - skills
+    get:
+      description: 列出待确认的申请与已记住的授权（可在这里逐条清除）。
+      operationId: list_approvals_v1_skills__skill_id__approvals_get
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Approvals V1 Skills  Skill Id  Approvals Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Approvals
+      tags:
+      - skills
+  /v1/skills/{skill_id}/audit:
+    get:
+      operationId: get_audit_v1_skills__skill_id__audit_get
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 500
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Audit V1 Skills  Skill Id  Audit Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Audit
+      tags:
+      - skills
+  /v1/skills/{skill_id}/bind:
+    post:
+      description: 把技能绑定给一位真实员工（幂等）。
+      operationId: bind_skill_v1_skills__skill_id__bind_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillBindRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Bind Skill V1 Skills  Skill Id  Bind Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Bind Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/bind/{employee}:
+    delete:
+      operationId: unbind_skill_v1_skills__skill_id__bind__employee__delete
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: path
+        name: employee
+        required: true
+        schema:
+          title: Employee
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Unbind Skill V1 Skills  Skill Id  Bind  Employee  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Unbind Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/bindings:
+    get:
+      operationId: list_skill_bindings_v1_skills__skill_id__bindings_get
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Skill Bindings V1 Skills  Skill Id  Bindings Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Skill Bindings
       tags:
       - skills
   /v1/skills/{skill_id}/disable:
@@ -11857,6 +15266,151 @@ paths:
       summary: Enable Skill
       tags:
       - skills
+  /v1/skills/{skill_id}/export:
+    get:
+      description: 把已安装的技能包导出成 zip。
+      operationId: export_skill_v1_skills__skill_id__export_get
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Export Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/files:
+    get:
+      description: 已安装包的文件清单与哈希。没安装包时返回空清单并说明。
+      operationId: list_skill_files_v1_skills__skill_id__files_get
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Skill Files V1 Skills  Skill Id  Files Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Skill Files
+      tags:
+      - skills
+  /v1/skills/{skill_id}/run:
+    post:
+      description: '运行一个脚本入口。
+
+
+        没授权时返回 ``202 + state=pending_approval``，由 Boss 调
+
+        ``/v1/skills/approvals/{approval_id}/approve`` 后才真正执行。
+
+        输出会同时写进运行记录，并由 ``skill_prompt`` 注入已绑定员工的上下文。'
+      operationId: run_skill_v1_skills__skill_id__run_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillRunRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Run Skill V1 Skills  Skill Id  Run Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run Skill
+      tags:
+      - skills
   /v1/skills/{skill_id}/test:
     post:
       description: '核对技能声明的能力在本机是否真的注册且可用。
@@ -11905,6 +15459,62 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Test Skill
+      tags:
+      - skills
+  /v1/skills/{skill_id}/upgrade:
+    post:
+      description: '用新包覆盖同一个技能（保留技能 id 与员工绑定）。
+
+
+        失败时回滚到升级前的包目录 —— 不会留下"半新半旧"的技能。升级后包的哈希
+
+        会变，之前"记住的授权"自动失效，第一次运行需要重新确认。'
+      operationId: upgrade_skill_v1_skills__skill_id__upgrade_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upgrade_skill_v1_skills__skill_id__upgrade_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upgrade Skill V1 Skills  Skill Id  Upgrade Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Upgrade Skill
       tags:
       - skills
   /v1/startup:
@@ -12692,6 +16302,815 @@ paths:
       summary: 当前升级状态（只读）
       tags:
       - upgrade
+  /v1/workflow/definitions:
+    get:
+      operationId: list_definitions_v1_workflow_definitions_get
+      parameters:
+      - in: query
+        name: include_disabled
+        required: false
+        schema:
+          default: true
+          title: Include Disabled
+          type: boolean
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 100
+          maximum: 300
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Definitions V1 Workflow Definitions Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Definitions
+      tags:
+      - workflow
+    post:
+      operationId: create_definition_v1_workflow_definitions_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Payload
+              type: object
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Definition V1 Workflow Definitions Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Definition
+      tags:
+      - workflow
+  /v1/workflow/definitions/{def_id}:
+    get:
+      operationId: get_definition_v1_workflow_definitions__def_id__get
+      parameters:
+      - in: path
+        name: def_id
+        required: true
+        schema:
+          title: Def Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Definition V1 Workflow Definitions  Def Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Definition
+      tags:
+      - workflow
+    put:
+      operationId: update_definition_v1_workflow_definitions__def_id__put
+      parameters:
+      - in: path
+        name: def_id
+        required: true
+        schema:
+          title: Def Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Payload
+              type: object
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Definition V1 Workflow Definitions  Def Id  Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Definition
+      tags:
+      - workflow
+  /v1/workflow/definitions/{def_id}/duplicate:
+    post:
+      operationId: duplicate_definition_v1_workflow_definitions__def_id__duplicate_post
+      parameters:
+      - in: path
+        name: def_id
+        required: true
+        schema:
+          title: Def Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/DuplicateRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Duplicate Definition V1 Workflow Definitions  Def Id  Duplicate Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Duplicate Definition
+      tags:
+      - workflow
+  /v1/workflow/definitions/{def_id}/enable:
+    post:
+      operationId: enable_definition_v1_workflow_definitions__def_id__enable_post
+      parameters:
+      - in: path
+        name: def_id
+        required: true
+        schema:
+          title: Def Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/src__gateway__workflow__EnableRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Enable Definition V1 Workflow Definitions  Def Id  Enable Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Enable Definition
+      tags:
+      - workflow
+  /v1/workflow/definitions/{def_id}/export:
+    get:
+      operationId: export_definition_v1_workflow_definitions__def_id__export_get
+      parameters:
+      - in: path
+        name: def_id
+        required: true
+        schema:
+          title: Def Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Export Definition V1 Workflow Definitions  Def Id  Export Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Export Definition
+      tags:
+      - workflow
+  /v1/workflow/definitions/{def_id}/run:
+    post:
+      operationId: run_definition_v1_workflow_definitions__def_id__run_post
+      parameters:
+      - in: path
+        name: def_id
+        required: true
+        schema:
+          title: Def Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RunRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Run Definition V1 Workflow Definitions  Def Id  Run Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run Definition
+      tags:
+      - workflow
+  /v1/workflow/events/{event_name}/fire:
+    post:
+      operationId: fire_event_v1_workflow_events__event_name__fire_post
+      parameters:
+      - in: path
+        name: event_name
+        required: true
+        schema:
+          title: Event Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/FireEventRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Fire Event V1 Workflow Events  Event Name  Fire Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Fire Event
+      tags:
+      - workflow
+  /v1/workflow/import:
+    post:
+      operationId: import_definition_v1_workflow_import_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Payload
+              type: object
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Import Definition V1 Workflow Import Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Import Definition
+      tags:
+      - workflow
+  /v1/workflow/node-types:
+    get:
+      operationId: node_types_v1_workflow_node_types_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Node Types V1 Workflow Node Types Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Node Types
+      tags:
+      - workflow
+  /v1/workflow/runs:
+    get:
+      operationId: list_runs_v1_workflow_runs_get
+      parameters:
+      - in: query
+        name: def_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Def Id
+      - in: query
+        name: status
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          title: Offset
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Runs V1 Workflow Runs Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Runs
+      tags:
+      - workflow
+  /v1/workflow/runs/{run_id}:
+    get:
+      operationId: get_run_v1_workflow_runs__run_id__get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Run V1 Workflow Runs  Run Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Run
+      tags:
+      - workflow
+  /v1/workflow/runs/{run_id}/cancel:
+    post:
+      operationId: cancel_run_v1_workflow_runs__run_id__cancel_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Cancel Run V1 Workflow Runs  Run Id  Cancel Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cancel Run
+      tags:
+      - workflow
+  /v1/workflow/summary:
+    get:
+      operationId: workflow_summary_v1_workflow_summary_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Workflow Summary V1 Workflow Summary Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Workflow Summary
+      tags:
+      - workflow
+  /v1/workflow/templates:
+    get:
+      operationId: templates_v1_workflow_templates_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Templates V1 Workflow Templates Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Templates
+      tags:
+      - workflow
+  /v1/workflow/triggers/tick:
+    post:
+      operationId: trigger_tick_v1_workflow_triggers_tick_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Trigger Tick V1 Workflow Triggers Tick Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Trigger Tick
+      tags:
+      - workflow
   /v1/workflows:
     get:
       description: 列出**当前账号可见**的 Workflow 执行状态（以 Goal 为维度）。
