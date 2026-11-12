@@ -184,10 +184,10 @@ def make_update_check_handler(
             result = await asyncio.to_thread(manager.check, trigger="weekly")
             notified = False
             if result.update_available and result.release is not None:
-                title = f"鎏灏有新版本 {result.release.version}"
+                title = f"贾维斯有新版本 {result.release.version}"
                 body = (
                     f"当前版本 {result.current_version}，发现新版本 {result.release.version}。"
-                    "请打开鎏灏确认升级；不会自动安装。"
+                    "请打开贾维斯确认升级；不会自动安装。"
                 )
                 notifier = (notifier_factory or build_default_notifier)()
                 results = await asyncio.to_thread(notifier.notify, title, body)
