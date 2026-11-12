@@ -44,7 +44,7 @@
 | `installation.json` | 程序目录完整性（`src` / `runtime` / `console` 是否齐）、两个目录的写入探测结果 | 安装被删了一半 |
 | `db_check.json` | 每个 SQLite 库的只读 `quick_check` 结论（**不含任何行内容**） | 审计/会话数据坏了 |
 | `ports.json` | 端口监听状态与占用进程（进程名 + PID） | 端口被占用 |
-| `processes.json` | 与鎏灏相关的进程清单 | 判断是不是有僵尸进程 |
+| `processes.json` | 与贾维斯相关的进程清单 | 判断是不是有僵尸进程 |
 | `ready_probe.json` | 对 `/v1/health` 的探测结果（服务活着时才有内容） | 不确定服务到底起没起 |
 | `model_health.json` | 模型端点的 DNS/TCP 探测与日志里的鉴权/网络信号 | Key / 连不上 |
 | `providers.json` | 当前生效的 provider / model / base_url（**不含 Key**） | 模型名填错 |
@@ -72,7 +72,7 @@
   唯一受影响的是“需要逐条看那份日志原文”的场景；`REDACTED-MEMBERS.txt` 会写明少了哪份，
   支持可以直接说明还需要它。
 - **需不需要额外提供什么？** 一般不需要，先把 zip 发出去。若支持明确要那份日志，
-  让用户**先退出鎏灏**，把数据目录 `logs\` 下的 `liuhao.log`、`error.log`、
+  让用户**先退出贾维斯**，把数据目录 `logs\` 下的 `liuhao.log`、`error.log`、
   `desktop-gateway.log` 都**改名备份**（把后缀 `.log` 改成 `.log.bak-日期`，
   例如 `liuhao.log` → `liuhao.log.bak-20261108`）后再导出一次——**不要删掉**，
   删除等于销毁排查证据。改名后的文件不会再被收进诊断包。
@@ -167,7 +167,7 @@
 - installation.json · logs_dir_write_probe.writable = False（PermissionError，winerror=5，errno=13，stage=create_directory）
 - 其余动作（按需再做）：让管理员给当前目录授予写权限（右键属性 → 安全 → 编辑）；检查安全软件是否拦截写入；日志目录不可写时把它同样换到可写位置
 
-下一步：把数据目录改到 %LOCALAPPDATA%\LiuHao\data，然后重启鎏灏。
+下一步：把数据目录改到 %LOCALAPPDATA%\LiuHao\data，然后重启贾维斯。
 
 # 结论来源：directory_not_writable
 ```
@@ -201,7 +201,7 @@
 - diagnosis.json · 共 9 项检查：检出 2 项、无法判定 2 项、其余正常
 - 其余动作（按需再做）：若无法清理，把数据目录换到其它剩余空间充足的卷后重启
 
-下一步：清理磁盘上数据目录所在卷的可用空间，然后重启鎏灏。
+下一步：清理磁盘上数据目录所在卷的可用空间，然后重启贾维斯。
 
 # 结论来源：disk_space_low
 ```
