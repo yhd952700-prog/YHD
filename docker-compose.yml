@@ -48,7 +48,10 @@ services:
       - liuhao
 
   postgres:
-    image: postgres:16-alpine
+    # 与 docker-compose.infra.yml / docker-compose.prod.yml 一致钉在 15：
+    # 15 是生产与 infra 已在用的版本，31 张表已在 PG 15.19 上验证通过；
+    # 升 16 需对已有卷做 pg_upgrade/dump-restore，直接改镜像号会让旧卷起不来。
+    image: postgres:15-alpine
     container_name: liuhao-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-liuhao}
