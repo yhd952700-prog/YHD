@@ -42,7 +42,6 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-import time
 
 # Defensive: even a stray import of src.* must not land on the root store.
 os.environ["AUDIT_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "forensics_probe.db")
