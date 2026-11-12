@@ -1,6 +1,7 @@
 # 品牌口径（BRAND CANON）
 
-> 一句话：**主名只认 `LiuHao AI OS · 鎏灏智能中枢`；改名只改 `src/brand.json`。**
+> 一句话：**主名只认 `Jarvis · 贾维斯`；改名只改 `src/brand.json`（出厂默认）。
+> 运行时改名不改代码，走首次启动向导或设置页，存在数据目录的 `workspace_settings.json`。**
 
 ## 1. 唯一来源
 
@@ -13,11 +14,18 @@
 `src/brand.json` 的 `name_en` 与 `name_zh` 用 ` · ` 拼成 lockup：
 
 ```text
-LiuHao AI OS · 鎏灏智能中枢
+Jarvis · 贾维斯
 ```
 
 任何安装器、快捷方式、安装目录说明、控制台、PWA、关于页、诊断包、`/docs`、
 Nginx、云打包脚本都必须引用上述常量；**禁止另写一份主名**。
+
+工作台名字可改（2026-11-12 用户要求：Joseph 这份叫“贾维斯”，别人用的时候
+自己起名字）：`src/brand.json` 只提供**出厂默认值**；运行时生效的名字存在
+数据目录的 `workspace_settings.json`（后端 `src/brand.py` 的 `resolve_brand()` /
+`set_workspace_name()`，端点 `GET /v1/workspace/name` 公开读、`PUT /v1/workspace/name`
+仅根账号写；前端 `apps/console/console/src/lib/workspaceName.ts` 是全站唯一
+的名字来源，顶栏 / 登录页 / 助手名都只读它）。改了名，整个界面就显示新名字。
 
 ## 2. 允许的短名
 
@@ -25,20 +33,19 @@ Nginx、云打包脚本都必须引用上述常量；**禁止另写一份主名*
 
 | 短名 | 允许位置 | 说明 |
 | --- | --- | --- |
-| `鎏灏智能中枢` | PWA `short_name`、Apple / application name、favicon `aria-label` | 中文主名的短写 |
-| `鎏灏管家` | `butler` 导航项 | 既有产品功能名 |
-| `鎏灏 OS` | 网络图 `hubLabel` | 既有图形短标签 |
-| `LiuHao` | 安装器 `AppPublisher`、数据目录 `%LOCALAPPDATA%\LiuHao` | 厂商 / 发布者名，不是产品主名 |
+| `贾维斯` | PWA `short_name`、Apple / application name、favicon `aria-label`、`butler` 导航项、助手名 | 中文主名（也就是工作台中文名） |
+| `贾维斯 OS` | 网络图 `hubLabel` | 既有图形短标签 |
+| `Jarvis` | 安装器 `AppPublisher`、数据目录 `%LOCALAPPDATA%\LiuHao`（路径名未改，避免搬动已有用户数据） | 厂商 / 发布者名，不是产品主名 |
 
-单独的 `鎏灏` 只允许作为日志 / 代码注释 / 桌面通知里的口语简称；
-**窗口标题、托盘提示、关于页、安装器、快捷方式、诊断包、`/docs` 等品牌位必须用 lockup**，
-新增的用户可见品牌位不得只写 `鎏灏`。
+单独的 `贾维斯`（中文名）可用在导航、助手名、日志 / 代码注释 / 桌面通知里的
+口语简称；**窗口标题、托盘提示、关于页、安装器、快捷方式、诊断包、`/docs`
+等品牌位优先用 lockup**，新增的用户可见品牌位不得出现旧名。
 
 ## 3. 禁止项
 
 以下内容不得出现在任何**现行**品牌文本里（历史文档与历史证据除外）：
 
-- 旧主名：`LIUHAO X`、`鎏灏 X`（只能作为“旧称”在命名说明里出现）
+- 旧主名：`LiuHao AI OS · 鎏灏智能中枢`、`LIUHAO X`、`鎏灏 X`（只能作为“旧称”在命名说明里出现）
 - 错字：`镭灏`
 - 死域名：`api.liuhao-ai-os.com`
 - 对外版本号：`1.0.0`（必须等于 `src/version.py` 的 `APP_VERSION`）
@@ -47,12 +54,12 @@ Nginx、云打包脚本都必须引用上述常量；**禁止另写一份主名*
 
 | 渲染点 | 读取方式 | 期望文本 |
 | --- | --- | --- |
-| 安装器 `AppName` / 快捷方式 / 卸载显示名 | `installer/liuhao.iss` 的 `AppName` | `LiuHao AI OS · 鎏灏智能中枢` |
-| `START-HERE.txt` | `packaging/stage_payload.py` | `LiuHao AI OS · 鎏灏智能中枢 0.1.1 —— 先看这里` |
-| `BEFORE-INSTALL.txt` | `installer/assets/BEFORE-INSTALL.txt` | `LiuHao AI OS · 鎏灏智能中枢 —— 安装前请先读这 6 条` |
-| `THIRD-PARTY-NOTICES.txt` | `packaging/third-party-notices.template.txt` | `LiuHao AI OS · 鎏灏智能中枢 —— 第三方软件许可声明（THIRD-PARTY-NOTICES）` |
-| 控制台页头 / 登录页 | `Shell.tsx` / `Login.tsx` 引用 `brand.ts` | lockup |
-| 浏览器标题 / PWA | `index.html` / `manifest.webmanifest` | `<title>` 与 `name` = lockup；`short_name` = `鎏灏智能中枢` |
+| 安装器 `AppName` / 快捷方式 / 卸载显示名 | `installer/liuhao.iss` 的 `AppName` | `Jarvis · 贾维斯` |
+| `START-HERE.txt` | `packaging/stage_payload.py` | `Jarvis · 贾维斯 <版本> —— 先看这里` |
+| `BEFORE-INSTALL.txt` | `installer/assets/BEFORE-INSTALL.txt` | `Jarvis · 贾维斯 —— 安装前请先读这 7 条` |
+| `THIRD-PARTY-NOTICES.txt` | `packaging/third-party-notices.template.txt` | `Jarvis · 贾维斯 —— 第三方软件许可声明（THIRD-PARTY-NOTICES）` |
+| 控制台页头 / 登录页 | `Shell.tsx` / `Login.tsx` 引用 `lib/workspaceName.ts` | lockup（改名后跟着变） |
+| 浏览器标题 / PWA | `index.html` / `manifest.webmanifest` | `<title>` 与 `name` = lockup；`short_name` = `贾维斯` |
 | 窗口标题 / 关于页 / 诊断包 README / `about.json` | `src/desktop/about.py` 的 `APP_NAME` | lockup |
 | 托盘提示 | `src/desktop/app.py` 的 `_tooltip_text()` | `lockup · 状态…`（**必须以 lockup 开头**，状态只做后缀） |
 | `/docs` 标题 | `src/gateway/main.py` | `lockup Gateway - Swagger UI`（` Gateway` 是角色词，不属于品牌字面） |
@@ -110,10 +117,12 @@ npx vitest run src/brand.test.ts
 
 ## 6. 改名流程
 
-1. 只改 `src/brand.json` 的 `name_en` / `name_zh`。
-2. 运行 5.1 与 5.2；必须全绿。
-3. 重新构建安装包；构建期门禁会再挡一次。
-4. 只有版本变化时才重新生成 `openapi.yaml`。
+1. 只改 `src/brand.json` 的 `name_en` / `name_zh`（改的是**出厂默认值**）。
+2. 运行时改名不改代码：用户在首次启动向导或控制台「系统设置 → 工作台名字」
+   里改，走 `PUT /v1/workspace/name`，存在数据目录的 `workspace_settings.json`。
+3. 运行 5.1 与 5.2；必须全绿。
+4. 重新构建安装包；构建期门禁会再挡一次。
+5. 只有版本变化时才重新生成 `openapi.yaml`。
 
 ## 7. 允许清单（历史文本为什么可以保留旧称）
 
