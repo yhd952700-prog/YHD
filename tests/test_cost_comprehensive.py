@@ -671,3 +671,44 @@ class TestMultipleProviders:
         assert len(tracker.records) == len(categories)
         breakdown = tracker.by_category()
         assert len(breakdown) == len(categories)
+
+
+# ======================================================================
+# By-model breakdown (B组第二轮 M4)
+# ======================================================================
+
+from src.cost.cost_manager import (
+    CostManager as LegacyCostManager,
+    Provider as LegacyProvider,
+    UsageRecord as LegacyUsageRecord,
+)
+
+
+class TestByModelBreakdown:
+    """Per-model usage/cost breakdowns."""
+
+    def test_tracker_by_model(self):
+        tracker = CostTracker()
+        tracker.record_cost(CostCategory.API_CALLS, 10.0, "openai",
+                            metadata={"model": "gpt-4"})
+        tracker.record_cost(CostCategory.API_CALLS, 5.0, "openai",
+                            metadata={"model": "gpt-4"})
+        tracker.record_cost(CostCategory.API_CALLS, 7.0, "openai",
+                            metadata={"model": "gpt-3.5-turbo"})
+        # 没有带 model 的记录不计入任何模型（不编 "unknown" 桶）。
+        tracker.record_cost(CostCategory.COMPUTE, 100.0, "aws")
+
+        breakdown = tracker.by_model()
+        assert breakdown == {"gpt-4": 15.0, "gpt-3.5-turbo": 7.0}
+
+    def test_legacy_cost_manager_usage_by_model(self):
+        manager = LegacyCostManager()
+        manager.track(LegacyUsageRecord(LegacyProvider.OPENAI, "gpt-4", 1000, 500))
+        manager.track(LegacyUsageRecord(LegacyProvider.OPENAI, "gpt-4", 1000, 0))
+
+        by_model = manager.usage_by_model()
+        assert by_model["gpt-4"]["input_tokens"] == 2000
+        assert by_model["gpt-4"]["output_tokens"] == 500
+        assert by_model["gpt-4"]["total_tokens"] == 2500
+        # OPENAI flat pricing 0.002/1k tokens: 2500 * 0.002 / 1000 = 0.005
+        assert by_model["gpt-4"]["cost_usd"] == pytest.approx(0.005)
