@@ -121,7 +121,7 @@ def benchmark_mcp_servers():
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="LiuHao AI OS 性能基准测试")
+    parser = argparse.ArgumentParser(description="Jarvis 性能基准测试")
     parser.add_argument('--provider', action='store_true', 
                         help='测试Provider生成延迟')
     parser.add_argument('--mcp', action='store_true',
