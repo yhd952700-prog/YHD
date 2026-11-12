@@ -1,4 +1,4 @@
-﻿# LiuHao AI OS · 鎏灏智能中枢 —— Windows 安装包一键构建
+# Jarvis · 贾维斯 —— Windows 安装包一键构建
 #
 # 一条命令完成：前端构建 → 后端 payload 组装（含离线 Python 运行时）
 #              → 冒烟验证 → 升级发布包 ZIP+清单 → Inno Setup 编译
@@ -17,9 +17,9 @@
 #   dist\payload\app\              安装内容
 #   dist\payload\manifest.json     内容清单
 #   dist\smoke-report.json         冒烟结果
-#   dist\release\liuhao-<版本>.zip 升级用发布包
+#   dist\release\jarvis-<版本>.zip 升级用发布包
 #   dist\release\LIUHAO_RELEASE.json  升级发布清单（规范见 docs/self-upgrade.md §2.2）
-#   dist\installer\LiuHao-Setup-*.exe   安装包（仅在 ISCC 可用时）
+#   dist\installer\Jarvis-Setup-*.exe   安装包（仅在 ISCC 可用时）
 #   dist\installer\SHA256SUMS.txt  校验和
 
 [CmdletBinding()]
@@ -119,7 +119,7 @@ if ($UpgradeBackupRoot) {
     }
 }
 
-Write-Host "LiuHao AI OS · 鎏灏智能中枢 安装包构建  version=$Version"
+Write-Host "Jarvis · 贾维斯 安装包构建  version=$Version"
 Write-Host "  仓库  $Root"
 Write-Host "  输出  $OutRoot"
 Write-Host "  Python $Python"
@@ -267,11 +267,11 @@ if ($SkipRelease) {
     Write-Step "生成升级发布包与清单（规范：docs/self-upgrade.md §2.2）"
     $releaseTreeNote = "安装树整包（含根级模块与 config/，不含 runtime/ 与数据目录）"
     if (-not $SkipSmoke -and $smokeCode -eq 0) {
-        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建 payload 冒烟通过。"
+        $releaseNotes = "Jarvis · 贾维斯 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建 payload 冒烟通过。"
     } elseif ($SkipSmoke) {
-        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建跳过冒烟（未验证运行）。"
+        $releaseNotes = "Jarvis · 贾维斯 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建跳过冒烟（未验证运行）。"
     } else {
-        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建冒烟未通过，产物未验证。"
+        $releaseNotes = "Jarvis · 贾维斯 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。$signingNote 本次构建冒烟未通过，产物未验证。"
     }
     $releaseArgs = @((Join-Path $Root "packaging\make_release.py"), "--app-root", $PayloadApp, "--out", $releaseDir, "--notes", $releaseNotes)
     if ($StrictReleaseDevPaths) { $releaseArgs += "--strict-dev-paths" }
@@ -386,7 +386,7 @@ if (-not $iscc) {
   发布清单     $(if ($releaseManifest -and (Test-Path $releaseManifest)) { $releaseManifest } else { '（-SkipRelease 未生成）' })
 
 未完成：
-  LiuHao-Setup-*.exe（未生成，也未伪造）
+  Jarvis-Setup-*.exe（未生成，也未伪造）
 
 补齐方式（二选一）：
   1) 安装 Inno Setup 6：https://jrsoftware.org/isdl.php
@@ -416,9 +416,9 @@ if ($LASTEXITCODE -ne 0) {
 
 # ------------------------------------------------------------ 5. 产物信息
 Write-Step "产物信息"
-$setup = Get-ChildItem (Join-Path $InstallerOut "LiuHao-Setup-*.exe") |
+$setup = Get-ChildItem (Join-Path $InstallerOut "Jarvis-Setup-*.exe") |
     Sort-Object LastWriteTime | Select-Object -Last 1
-if (-not $setup) { throw "编译成功但找不到 LiuHao-Setup-*.exe" }
+if (-not $setup) { throw "编译成功但找不到 Jarvis-Setup-*.exe" }
 
 # ------------------------------------------------------- 5.1 代码签名（自签名）
 # 必须在计算 SHA256 之前签名：签名会改写 PE 校验和与附加数据，先算哈希再签名
