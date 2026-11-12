@@ -1,6 +1,6 @@
 # SDK 用户指南
 
-LiuHao AI OS 提供多种编程语言的 SDK，方便开发者在不同环境中集成和使用 LiuHao AI OS 的能力。本指南介绍各 SDK 的快速上手和使用方法。
+Jarvis 提供多种编程语言的 SDK，方便开发者在不同环境中集成和使用 Jarvis 的能力。本指南介绍各 SDK 的快速上手和使用方法。
 
 ---
 
@@ -60,7 +60,7 @@ client = LiuHaoClient.from_env()
 
 ```python
 # 简单对话
-response = client.chat.send("你好，请介绍一下 LiuHao AI OS")
+response = client.chat.send("你好，请介绍一下 Jarvis")
 print(response.content)
 
 # 带上下文的对话
