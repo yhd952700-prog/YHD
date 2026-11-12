@@ -404,7 +404,7 @@ def _listening_owners() -> dict[int, dict[str, Any]]:
             "pid": conn.pid,
             "process": name,
             "command": command[:200],
-            # 是鎏灏自己占的端口就不是"冲突"，诊断结论必须能区分这两件事。
+            # 是贾维斯自己占的端口就不是"冲突"，诊断结论必须能区分这两件事。
             "app_related": name.lower().startswith("liuhao")
             or any(marker in haystack for marker in _APP_PROCESS_MARKERS),
         }
@@ -422,7 +422,7 @@ def _collect_ports(ports: list[int], owners: dict[int, dict[str, Any]] | None = 
         }
         for port in ports
     ]
-    # 只看"被别的进程占着"的端口：鎏灏自己监听的端口不算冲突。
+    # 只看"被别的进程占着"的端口：贾维斯自己监听的端口不算冲突。
     conflicts = [
         item
         for item in entries
@@ -481,7 +481,7 @@ def _collect_ready_probe(ports: list[int]) -> dict[str, Any]:
 def _is_gateway_process(item: dict[str, Any]) -> bool:
     """只把真正的网关子进程算作"服务在运行"。
 
-    桌面壳自己（``src.desktop``）、诊断命令（``diagnose``）同样是鎏灏进程，
+    桌面壳自己（``src.desktop``）、诊断命令（``diagnose``）同样是贾维斯进程，
     但它们在服务死掉时仍然存在；拿它们当"网关还活着"的证据会误判。
     网关的实际启动命令是 ``python -m src.desktop._runner``。
     """
@@ -1657,7 +1657,7 @@ def _build_diagnosis(
                 "id": "service_not_running",
                 "title": "服务未启动 / 已停止",
                 "status": "clear",
-                "conclusion": "已探测到鎏灏网关的 /v1/health 响应，服务正在运行",
+                "conclusion": "已探测到贾维斯网关的 /v1/health 响应，服务正在运行",
                 "evidence": [
                     _evidence("ready_probe.json", "probes", gateway_hits[:3]),
                     _evidence("service.json", "reachable", service.get("reachable")),
@@ -1671,7 +1671,7 @@ def _build_diagnosis(
                 "title": "服务未启动 / 已停止",
                 "status": "inconclusive",
                 "conclusion": (
-                    "端口上有响应或存在相关进程，但没有确认到鎏灏网关的 /v1/health："
+                    "端口上有响应或存在相关进程，但没有确认到贾维斯网关的 /v1/health："
                     "服务可能卡在启动，或端口被其它程序占用"
                 ),
                 "evidence": [
@@ -1687,7 +1687,7 @@ def _build_diagnosis(
                 "id": "service_not_running",
                 "title": "服务未启动 / 已停止",
                 "status": "detected",
-                "conclusion": "候选端口上没有任何鎏灏网关响应，也没有发现网关子进程：服务没有启动",
+                "conclusion": "候选端口上没有任何贾维斯网关响应，也没有发现网关子进程：服务没有启动",
                 "evidence": [
                     _evidence(
                         "ready_probe.json",
@@ -1789,7 +1789,7 @@ def _build_diagnosis(
                 "id": "port_conflict",
                 "title": "端口被占用",
                 "status": "inconclusive",
-                "conclusion": f"端口 {ports_text} 正在监听，但无法识别占用进程（可能正是鎏灏自身）",
+                "conclusion": f"端口 {ports_text} 正在监听，但无法识别占用进程（可能正是贾维斯自身）",
                 "evidence": [_evidence("ports.json", "port_conflicts", conflicts)],
             }
         )
@@ -2127,7 +2127,7 @@ def _build_summary(
             f"磁盘空间不足：数据目录所在卷只剩 {shown}（低于 {_MIN_FREE_BYTES // (1024 * 1024)} MB），"
             + ("写入已经失败（errno 28 / winerror 112）" if failed_write else "新建文件随时会失败")
         )
-        action = "清理磁盘上数据目录所在卷的可用空间，然后重启鎏灏。"
+        action = "清理磁盘上数据目录所在卷的可用空间，然后重启贾维斯。"
         extra_actions.append("若无法清理，把数据目录换到其它剩余空间充足的卷后重启")
         chosen = checks.get("disk_space_low")
         # 磁盘满时目录写入探测可能仍然成功（只是剩余空间低），它不构成证据，
@@ -2156,9 +2156,9 @@ def _build_summary(
             + "，程序无法保存数据或日志"
         )
         if "数据目录" in failed_labels:
-            action = "把数据目录改到 %LOCALAPPDATA%\\LiuHao\\data，然后重启鎏灏。"
+            action = "把数据目录改到 %LOCALAPPDATA%\\LiuHao\\data，然后重启贾维斯。"
         else:
-            action = "把日志目录改到当前用户可写的位置，然后重启鎏灏。"
+            action = "把日志目录改到当前用户可写的位置，然后重启贾维斯。"
         extra_actions.extend(
             [
                 "让管理员给当前目录授予写权限（右键属性 → 安全 → 编辑）",
@@ -2211,7 +2211,7 @@ def _build_summary(
         ]
         names = "、".join(str(item.get("path")) for item in failed) or "未知库文件"
         conclusion = f"数据库文件损坏：{names} 的 quick_check 未通过"
-        action = "把损坏的数据库文件改名成 .corrupt-日期 后重启鎏灏（会自动重建空库）。"
+        action = "把损坏的数据库文件改名成 .corrupt-日期 后重启贾维斯（会自动重建空库）。"
         extra_actions.append("改名前先把整个数据目录备份一份")
         chosen = checks.get("database_corrupt")
     elif status("port_conflict") == "detected":
@@ -2235,7 +2235,7 @@ def _build_summary(
             if isinstance(item, dict) and "value" in item
         )
         if quota:
-            action = "给这把 Key 充值，或换成一把有额度的 Key 后重启鎏灏。"
+            action = "给这把 Key 充值，或换成一把有额度的 Key 后重启贾维斯。"
             extra_actions.append("在「系统设置 → 模型管理」重新填 Key 并点「测试连接」")
         else:
             action = "打开「系统设置 → 模型管理」，重新填写 Key 并点「测试连接」。"
@@ -2596,7 +2596,7 @@ def create_bundle(
         raise RuntimeError(
             f"诊断包内所有文件都未通过密钥自检（{names}），没有可安全转发的文件。"
             "这是罕见兜底（通常是扫描规则误判或日志残留无法自动脱敏的片段），不是常见故障。"
-            "下一步：先退出鎏灏，把数据目录 logs 下的 liuhao.log、error.log、"
+            "下一步：先退出贾维斯，把数据目录 logs 下的 liuhao.log、error.log、"
             "desktop-gateway.log（以及 .log.1 轮转文件）改名备份——把 .log 改成 "
             ".log.bak-日期，不要直接删除，它们是排查证据；再重新打开并导出。"
             "如果仍被拦，请把这条提示截图发给技术支持。"
