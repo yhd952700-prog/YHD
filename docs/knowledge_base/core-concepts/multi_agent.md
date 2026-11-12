@@ -1,6 +1,6 @@
 # 多智能体协作
 
-单个智能体的能力是有限的。LiuHao AI OS 支持多智能体协作，让多个专业智能体像团队一样协同工作，完成更复杂的任务。
+单个智能体的能力是有限的。Jarvis 支持多智能体协作，让多个专业智能体像团队一样协同工作，完成更复杂的任务。
 
 ---
 
@@ -148,7 +148,7 @@ client.agents.send_message(
 
 ## 协作模式
 
-LiuHao AI OS 支持多种多智能体协作模式。
+Jarvis 支持多种多智能体协作模式。
 
 ### 模式一：主从模式（Master-Slave）
 
@@ -331,7 +331,7 @@ if conflict.cannot_resolve() and conflict.impact > THRESHOLD:
 
 ## 黑板模式详解
 
-黑板模式是 LiuHao AI OS 中一种重要的协作模式，特别适合解决复杂的、开放式的问题。
+黑板模式是 Jarvis 中一种重要的协作模式，特别适合解决复杂的、开放式的问题。
 
 ### 核心思想
 
