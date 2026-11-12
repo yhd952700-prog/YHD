@@ -98,7 +98,7 @@ def run_e2e_demo(
     set_provider(provider)
     try:
         # ------------------------------------------------- Act 1: Organization
-        org = Organization("鎏灏研究院", budget=5000.0)
+        org = Organization("贾维斯研究院", budget=5000.0)
         org.add_policy("外部写盘需经 World 授权")
         research_dept = org.create_department("研究部")
         org.create_department("质量部")
@@ -115,7 +115,7 @@ def run_e2e_demo(
         delegate = team.delegate(manager, Role.RESEARCHER, "梳理 14 kernel 架构")
         pipeline = team.pipeline(
             [Role.RESEARCHER, Role.ANALYST, Role.QA],
-            seed="鎏灏 OS：十源 DNA，14 kernel",
+            seed="贾维斯 OS：十源 DNA，14 kernel",
         )
         report_text = pipeline["final"]
         org.remember("final_report", report_text)
@@ -185,7 +185,7 @@ def main() -> None:
         out["world_read_back"]["status"] == "observed"
         and out["world_read_back"]["data"] == out["report_text"]
     )
-    print("=== 鎏灏 OS 四层端到端演示 ===")
+    print("=== 贾维斯 OS 四层端到端演示 ===")
     print(f"组织: {out['org']}")
     print(
         f"协作管线: {out['pipeline_status']}  "
