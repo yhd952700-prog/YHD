@@ -1,11 +1,11 @@
 # 快速开始指南
 
-## 10分钟上手 LiuHao AI OS · 鎏灏智能中枢
+## 10分钟上手 Jarvis · 贾维斯
 
 ### 前置条件
 
-- Python 3.11+
-- LiuHao AI OS · 鎏灏智能中枢 已安装
+- Python 3.12
+- Jarvis · 贾维斯 已安装
 - D:\\LiuHao-AI-OS 目录权限
 
 ### 安装步骤
@@ -167,7 +167,7 @@ storage_cfg = create_storage_config(
 function_cfg = create_function_config(
     provider="aws",
     function_name="process-data",
-    runtime="python3.11",
+    runtime="python3.12",
     handler="handler.main",
     timeout=60,
     memory=256,
