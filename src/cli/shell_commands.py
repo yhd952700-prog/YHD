@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List
 
+from ..brand import resolve_brand
 from ..version import APP_VERSION
 
 
@@ -122,7 +123,7 @@ class ShellSession:
             ),
             ShellCommand(
                 name="version",
-                description="Show LiuHao AI OS version",
+                description="Show Jarvis version",
                 handler=self._cmd_version,
                 aliases=["ver"],
                 category="system",
@@ -251,7 +252,7 @@ class ShellSession:
     def _cmd_info(self, args: List[str]) -> Dict[str, Any]:
         """Info command handler."""
         return {
-            "system": "LiuHao AI OS",
+            "system": resolve_brand()["lockup"],
             "description": "Enterprise-grade AI operating system",
             "version": APP_VERSION,
             "architecture": "multi-agent",
@@ -276,37 +277,67 @@ class ShellSession:
 
     def _cmd_version(self, args: List[str]) -> Dict[str, Any]:
         """Version command handler."""
-        return {"product": "LiuHao AI OS", "version": APP_VERSION}
+        return {"product": resolve_brand()["lockup"], "version": APP_VERSION}
 
     def _cmd_agent(self, args: List[str]) -> Dict[str, Any]:
-        """Agent subcommand handler (placeholder)."""
+        """Agent subcommand handler.
+
+        Only ``help`` is served here. No agent manager is wired into
+        this shell session, so any real subcommand is reported as not
+        implemented instead of echoed back as if it had run.
+        """
         if not args or args[0] == "help":
             return {
                 "subcommands": ["list", "create", "get", "delete", "run", "status", "stop", "metrics", "logs"],
                 "usage": "agent <subcommand> [options...]",
                 "note": "Full agent management available via CLI: liuhao-cli agent ...",
             }
-        return {"agent_command": args[0], "args": args[1:]}
+        return {
+            "error": f"agent {args[0]} is not implemented in this shell: no agent manager is wired here; use 'liuhao-cli agent ...'",
+            "status": "not_implemented",
+            "agent_command": args[0],
+            "args": args[1:],
+        }
 
     def _cmd_memory(self, args: List[str]) -> Dict[str, Any]:
-        """Memory subcommand handler (placeholder)."""
+        """Memory subcommand handler.
+
+        Only ``help`` is served here. No memory manager is wired into
+        this shell session, so any real subcommand is reported as not
+        implemented instead of echoed back as if it had run.
+        """
         if not args or args[0] == "help":
             return {
                 "subcommands": ["add", "get", "search", "delete", "list", "stats", "clear", "export", "import"],
                 "usage": "memory <subcommand> [options...]",
                 "note": "Full memory management available via CLI: liuhao-cli memory ...",
             }
-        return {"memory_command": args[0], "args": args[1:]}
+        return {
+            "error": f"memory {args[0]} is not implemented in this shell: no memory manager is wired here; use 'liuhao-cli memory ...'",
+            "status": "not_implemented",
+            "memory_command": args[0],
+            "args": args[1:],
+        }
 
     def _cmd_health(self, args: List[str]) -> Dict[str, Any]:
-        """Health subcommand handler (placeholder)."""
+        """Health subcommand handler.
+
+        Only ``help`` is served here. No health checker is wired into
+        this shell session, so any real subcommand is reported as not
+        implemented instead of echoed back as if it had run.
+        """
         if not args or args[0] == "help":
             return {
                 "subcommands": ["check", "status", "components", "history", "liveness", "readiness"],
                 "usage": "health <subcommand> [options...]",
                 "note": "Full health checks available via CLI: liuhao-cli health ...",
             }
-        return {"health_command": args[0], "args": args[1:]}
+        return {
+            "error": f"health {args[0]} is not implemented in this shell: no health checker is wired here; use 'liuhao-cli health ...'",
+            "status": "not_implemented",
+            "health_command": args[0],
+            "args": args[1:],
+        }
 
     # =================================================================
     # Shell execution
@@ -349,7 +380,7 @@ class ShellSession:
             Exit code.
         """
         self._running = True
-        print("LiuHao AI OS Shell")
+        print(f"{resolve_brand()['lockup']} Shell")
         print("Type 'help' for available commands, 'exit' to quit.")
         print()
 
