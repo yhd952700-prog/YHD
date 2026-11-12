@@ -252,11 +252,11 @@ def _page(title: str, body: str) -> str:
 
 def splash_page() -> str:
     return _page(
-        "鎏灏",
+        "贾维斯",
         """
-  <div class="brand">LIUHAO<span>鎏灏</span></div>
+  <div class="brand">JARVIS<span>贾维斯</span></div>
   <div class="spinner"></div>
-  <h1>正在启动鎏灏…</h1>
+  <h1>正在启动贾维斯…</h1>
   <p>正在准备本地服务，首次启动通常需要几秒。</p>
   <p class="hint">启动完成后会自动进入登录页，无需手动刷新。</p>
 """,
@@ -269,12 +269,12 @@ def error_page(title: str, reason: str) -> str:
         or "服务没有在预期时间内就绪。"
     )
     return _page(
-        "鎏灏",
+        "贾维斯",
         f"""
-  <div class="brand">LIUHAO<span>鎏灏</span></div>
+  <div class="brand">JARVIS<span>贾维斯</span></div>
   <h1>{title}</h1>
   <p class="reason">{safe}</p>
-  <p>鎏灏正在等本地服务（网关）就绪：端口要能连上，核心组件也要加载完成。
+  <p>贾维斯正在等本地服务（网关）就绪：端口要能连上，核心组件也要加载完成。
      首次启动一般需要 10–30 秒，最长约 60 秒。</p>
   <div class="actions">
     <button onclick="retry()">重试检查</button>
@@ -291,12 +291,12 @@ def conflict_page(port: int, owner: str) -> str:
     )
     suggestion = port + 1 if port < 65535 else 8080
     return _page(
-        "鎏灏：网关端口被占用",
+        "贾维斯：网关端口被占用",
         f"""
-  <div class="brand">LIUHAO<span>鎏灏</span></div>
+  <div class="brand">JARVIS<span>贾维斯</span></div>
   <h1>网关端口 {port} 已被占用</h1>
   <p class="reason">占用者：{safe_owner}</p>
-  <p>为避免地址变化，鎏灏不会自动换端口。请选一个继续：</p>
+  <p>为避免地址变化，贾维斯不会自动换端口。请选一个继续：</p>
   <div class="actions">
     <button onclick="retry()">关掉占用程序再试</button>
     <button class="ghost" onclick="usePort()">换一个端口继续</button>
@@ -558,12 +558,12 @@ def ask_missing_webview2() -> str:
     它只出现在缺组件的机器上，不参与正常启动路径。tkinter 不可用时退回
     MessageBoxW（是=去安装）。
     """
-    title = "鎏灏：缺少显示组件"
+    title = "贾维斯：缺少显示组件"
     message = (
-        "这台电脑缺少鎏灏桌面窗口所需的组件（WebView2）。\n\n"
+        "这台电脑缺少贾维斯桌面窗口所需的组件（WebView2）。\n\n"
         "· 去安装 WebView2：打开微软官方下载页（约 1.6 MB 的联网安装器），"
-        "装完后重新打开鎏灏即可。\n"
-        "· 稍后再说：先关闭这个提示，装好 WebView2 后再重新打开鎏灏。"
+        "装完后重新打开贾维斯即可。\n"
+        "· 稍后再说：先关闭这个提示，装好 WebView2 后再重新打开贾维斯。"
     )
     try:
         import tkinter as tk
@@ -613,10 +613,10 @@ def _messagebox_webview2() -> str:
 
         yes = ctypes.windll.user32.MessageBoxW(
             None,
-            "这台电脑缺少鎏灏桌面窗口所需的组件（WebView2）。\n\n"
-            "点「是」打开微软官方下载页（约 1.6 MB）；装好后重新打开鎏灏。\n"
+            "这台电脑缺少贾维斯桌面窗口所需的组件（WebView2）。\n\n"
+            "点「是」打开微软官方下载页（约 1.6 MB）；装好后重新打开贾维斯。\n"
             "点「否」先关闭。",
-            "鎏灏：缺少显示组件",
+            "贾维斯：缺少显示组件",
             0x00000004 | 0x00000040,  # MB_YESNO | MB_ICONINFORMATION
         )
         return "install" if yes == 6 else "cancel"
@@ -634,10 +634,10 @@ def show_install_help() -> None:
         ctypes.windll.user32.MessageBoxW(
             None,
             "浏览器已打开 WebView2 下载页。\n\n"
-            "请下载并运行 Evergreen 安装器，安装完成后重新打开鎏灏。\n\n"
-            "如果安装失败或这台电脑无法联网，请先解决网络/安装问题；鎏灏桌面窗口"
+            "请下载并运行 Evergreen 安装器，安装完成后重新打开贾维斯。\n\n"
+            "如果安装失败或这台电脑无法联网，请先解决网络/安装问题；贾维斯桌面窗口"
             "依赖 WebView2，装好后即可正常打开。",
-            "鎏灏：安装 WebView2",
+            "贾维斯：安装 WebView2",
             0x00000040,  # MB_ICONINFORMATION
         )
     except Exception:  # noqa: BLE001
