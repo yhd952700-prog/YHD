@@ -81,7 +81,7 @@ TRAY_CLASS_PREFIX = "LiuHaoTray"
 #: 菜单文案的唯一定义处。状态窗口的按钮直接复用这些常量：同一个功能在托盘
 #: 与界面里必须写同一句话，改一处两边同时生效，不会再出现"停服务"和"停止
 #: 服务（仅停网关）"两种说法。
-LABEL_OPEN_CONSOLE = "打开鎏灏窗口"
+LABEL_OPEN_CONSOLE = "打开贾维斯窗口"
 LABEL_OPEN_BROWSER = "在浏览器中打开"
 LABEL_SHOW_STATUS = "查看状态"
 LABEL_RESTART_SERVICE = "重新启动服务"
