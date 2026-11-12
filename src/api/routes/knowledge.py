@@ -10,9 +10,15 @@ keeps access to unowned legacy documents from pre-account installations.
 Cross-account access is a neutral 404 (indistinguishable from "not found").
 
 Retrieval and ingest go through :class:`KnowledgeDocumentService`, which uses
-the process-level SQLite vector store and a **real** embedding provider. When no
-provider is configured the endpoints answer 503 with "未启用" -- they never
-return fabricated vectors or a mock-written answer.
+the process-level vector store (local SQLite by default, Qdrant when one is
+reachable and selected) and a **real** embedding provider. When no external
+embedding service is reachable the service falls back to deterministic local
+hash vectors and says so in ``GET /v1/knowledge/status`` (``embedding_mode`` /
+``semantic`` / ``vector_backend``) -- the fallback is lexical, not semantic,
+and its scores are real token-overlap cosines, never placeholders. Set
+``LIUHAO_KNOWLEDGE_LOCAL_FALLBACK=0`` to restore the old behaviour: no
+provider -> the endpoints answer 503 with "未启用". They never return
+fabricated vectors or a mock-written answer.
 
 ``POST /v1/knowledge/search`` returns the finalized relevance-gate contract
 (owned by :mod:`src.knowledge.abstention`; do not rename):
