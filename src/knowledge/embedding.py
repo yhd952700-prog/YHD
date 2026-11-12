@@ -10,6 +10,13 @@ Two layers live here:
   operator is *explicitly* in development mode **and** opted in; otherwise the
   builder raises :class:`EmbeddingUnavailableError` (fail-closed) so the
   knowledge base reports "未启用" instead of pretending to answer.
+* :class:`LocalHashingEmbedder` — the dependency-free local fallback used when
+  no external embedding service is reachable (see
+  :func:`build_embedding_provider_with_local_fallback`). It is a **lexical**
+  hash embedder, not a semantic model: its cosine scores are real numbers
+  computed from deterministic token-hash vectors, but they measure token
+  overlap, not meaning. Callers must label it honestly (``semantic=False``)
+  and never present its scores as semantic similarity.
 
 **Switching provider or model is not a free change.** The relevance gate
 (``abstention``) is tuned against the cosine-score distribution of a specific
@@ -28,6 +35,7 @@ Do not change the model without changing the thresholds.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.error
@@ -38,6 +46,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from error_types import ProviderError
 
 from .chunker import chunk_text
+from .vector_store import tokenize_for_index
 
 #: Local install defaults. A user who only installed the product (no env vars)
 #: should still get a working knowledge base when the bundled Ollama runtime is
@@ -464,6 +473,101 @@ class MockEmbedder:
 
     def embed(self, texts: Sequence[str]) -> List[List[float]]:
         return [[0.0] * self.dimension for _ in texts]
+
+
+class LocalHashingEmbedder:
+    """Dependency-free **local** embedder (signed SHA-256 token hashing).
+
+    Moved here from ``evaluation.HashingEmbedder`` so the live knowledge base
+    can use it when no external embedding service is reachable. Identical
+    vectors for identical text (``name`` / ``model`` unchanged), so the
+    abstention profile calibrated for it (``hashing:sha256-bigram-512``) still
+    applies.
+
+    Honesty contract -- read before using:
+
+    * this is a **lexical** embedder, not a semantic model: a query only
+      scores well when it shares tokens (CJK bigrams / ASCII words) with the
+      chunk. Paraphrases with no shared words score ~0 and are correctly
+      reported as "no relevant content";
+    * the cosine scores it produces are **real** numbers computed from real
+      vectors (``cosine_similarity`` over these hash vectors), never
+      placeholders -- but they are token-overlap scores, so callers must
+      label the backend ``local_hashing`` / ``semantic=False`` and must not
+      describe a hit as "语义相关";
+    * the hybrid path still runs: the FTS5/BM25 lexical list is fused with
+      these vectors, which is what keeps keyword-heavy queries working.
+    """
+
+    name = "hashing"
+    model = "sha256-bigram-512"
+    #: Not a semantic model; status surfaces must say so.
+    semantic = False
+    #: True when this instance is serving as the no-external-service fallback.
+    local_fallback = True
+
+    def __init__(self, dimensions: int = 512) -> None:
+        self.dimensions = dimensions
+
+    def embed(self, texts: Sequence[str]) -> List[List[float]]:
+        vectors: List[List[float]] = []
+        for text in texts:
+            vector = [0.0] * self.dimensions
+            for token in tokenize_for_index(text).split():
+                digest = hashlib.sha256(token.encode("utf-8")).digest()
+                index = int.from_bytes(digest[:4], "big") % self.dimensions
+                sign = 1.0 if digest[4] & 1 else -1.0
+                vector[index] += sign
+            norm = sum(value * value for value in vector) ** 0.5
+            if norm > 0:
+                vector = [value / norm for value in vector]
+            vectors.append(vector)
+        return vectors
+
+
+#: Set to ``0``/``false``/``no`` to restore the old fail-closed behaviour
+#: (no embedding provider -> knowledge base reports "未启用"). Default is on:
+#: a plain install with no Ollama and no cloud key still gets a working,
+#: honestly labelled local knowledge base instead of an empty one.
+LOCAL_FALLBACK_ENV = "LIUHAO_KNOWLEDGE_LOCAL_FALLBACK"
+
+
+def local_embedding_fallback_enabled() -> bool:
+    """Whether the local hashing fallback is allowed (default: yes)."""
+    raw = (os.environ.get(LOCAL_FALLBACK_ENV) or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def build_embedding_provider_with_local_fallback() -> object:
+    """Live knowledge-base embedder: real provider first, local hashing second.
+
+    Tries :func:`build_embedding_provider` unchanged (explicit choice, Ollama
+    auto-detect, cloud only when explicitly chosen). When that raises
+    :class:`EmbeddingUnavailableError` -- i.e. there is no usable external
+    embedding service at all -- returns a :class:`LocalHashingEmbedder`
+    instead of failing, so ingest and search keep working on a plain install.
+
+    The returned object always tells the truth about itself:
+    ``getattr(embedder, "local_fallback", False)`` is True and
+    ``getattr(embedder, "semantic", True)`` is False exactly for the fallback.
+    Status surfaces must surface those two flags (see
+    ``KnowledgeDocumentService.status``). Set
+    ``LIUHAO_KNOWLEDGE_LOCAL_FALLBACK=0`` to get the old fail-closed error
+    back instead.
+    """
+    try:
+        return build_embedding_provider()
+    except EmbeddingUnavailableError as exc:
+        if not local_embedding_fallback_enabled():
+            raise
+        import logging
+
+        logging.getLogger("liuhao.knowledge.embedding").warning(
+            "no external embedding provider (%s); using local hashing vectors "
+            "(lexical, not semantic) so the knowledge base stays usable",
+            exc,
+        )
+        return LocalHashingEmbedder()
 
 
 def build_embedding_provider() -> object:
