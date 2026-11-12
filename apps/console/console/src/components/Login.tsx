@@ -43,7 +43,7 @@ import {
   localProofHeader,
   type LocalProofKind,
 } from '../lib/localProof'
-import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../brand'
+import { useWorkspaceName } from '../lib/workspaceName'
 import { LOCAL_SERVICE_OFFLINE_MANUAL, readErrorMessage } from '../lib/errorMessage'
 import {
   IconAlert,
@@ -99,14 +99,14 @@ const CONFIG_RETRY_LIMIT = 30
  * 0.1.2 没有这套能力，配对中继已整包回退。
  */
 const CONFIG_UNAUTHORIZED_MESSAGE =
-  '无法读取登录配置（401）。请在这台电脑上打开鎏灏桌面端继续操作；手机端目前没有单独的登录或恢复入口。'
+  '无法读取登录配置（401）。请在这台电脑上打开贾维斯桌面端继续操作；手机端目前没有单独的登录或恢复入口。'
 
 /**
  * 首次初始化只能在本机完成。手机浏览器提交必然被网关拒绝，文案必须指到
  * 这台电脑上的桌面端，而不是让用户"打开控制台/命令行"——手机上做不到。
  */
 const BOOTSTRAP_LOCAL_ONLY_MESSAGE =
-  '首次初始化需要在这台电脑上的鎏灏桌面端完成。请打开这台电脑上的鎏灏桌面端，在登录页完成初始化后再回到当前设备登录。'
+  '首次初始化需要在这台电脑上的贾维斯桌面端完成。请打开这台电脑上的贾维斯桌面端，在登录页完成初始化后再回到当前设备登录。'
 
 /** 首次进入的页面：没有初始账号、或初始化停在半路，都直接进设置表单。 */
 function initialStage(config: AuthConfig): Stage {
@@ -129,8 +129,15 @@ async function postJson<T>(
         ...(proof ? localProofHeader(proof) : {}),
       },
       body: JSON.stringify(body),
+      // 注册/恢复/重置/导入都没有超时会永远悬着（与 lib/auth.login 同一
+      // P0：满载时登录挂起只能重启）。30 秒与后端登录预算对齐；超时是
+      // 可重试的「请求超时，请重试」，不谎报"服务没运行"。
+      signal: AbortSignal.timeout(30_000),
     })
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new AuthError(0, '请求超时，请重试')
+    }
     throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
@@ -147,6 +154,9 @@ function loginErrorText(message: string): string {
 }
 
 export function Login({ mode, notice = null, onSuccess }: LoginProps) {
+  // 登录页标题只从工作台名字配置读（`lib/workspaceName.ts`）：改了名，
+  // 下次打开登录页就显示新名字，不用等重建。
+  const workspaceName = useWorkspaceName()
   const [principal, setPrincipal] = useState('')
   const [secret, setSecret] = useState('')
   const [remember, setRemember] = useState(true)
@@ -255,8 +265,8 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             </svg>
           </div>
           <div>
-            <div className="os-login-aside-title">{BRAND_NAME_ZH}</div>
-            <div className="os-login-aside-en">{BRAND_NAME_EN}</div>
+            <div className="os-login-aside-title">{workspaceName.name_zh}</div>
+            <div className="os-login-aside-en">{workspaceName.name_en}</div>
           </div>
         </div>
 
@@ -298,7 +308,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             桌面端栅格也不能显示这条说明，否则等于网页端自称桌面端。 */}
         {isDesktopShell() && (
           <p className="os-login-aside-note">
-            桌面端只有一个鎏灏窗口；关闭窗口会退到系统托盘，本地服务继续运行。需要时从托盘重新打开即可。
+            桌面端只有一个贾维斯窗口；关闭窗口会退到系统托盘，本地服务继续运行。需要时从托盘重新打开即可。
           </p>
         )}
       </aside>
@@ -317,7 +327,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             </svg>
           </div>
           <div>
-            <h1 className="os-login-title">{BRAND_NAME_EN}</h1>
+            <h1 className="os-login-title">{workspaceName.name_en}</h1>
             <p className="os-login-sub">
               {stage === 'bootstrap'
                 ? '首次使用 · 初始化本机'
@@ -1184,7 +1194,7 @@ function RecoveryForm({
         </p>
         <div className="os-note" role="status" data-testid="recovery-path">
           <span>
-            重置密码需要在这台电脑上完成。请打开这台电脑上的鎏灏桌面端，在登录页选择「忘记密码」，
+            重置密码需要在这台电脑上完成。请打开这台电脑上的贾维斯桌面端，在登录页选择「忘记密码」，
             用初始化时保存的恢复码设置新密码，完成后回到当前设备登录。
             手机端目前不提供重置密码的入口。
           </span>
@@ -1208,7 +1218,7 @@ function RecoveryForm({
       </p>
       {!canSelfServiceHere && (
         <div className="os-note" role="status">
-          <span>恢复码需要在电脑上的鎏灏桌面端生成后在这里输入。</span>
+          <span>恢复码需要在电脑上的贾维斯桌面端生成后在这里输入。</span>
         </div>
       )}
       <div className="os-field">
@@ -1296,7 +1306,7 @@ function RecoveryForm({
           </button>
         ) : (
           <span className="os-hint">
-            没有恢复码？请在这台电脑的鎏灏桌面端生成后再输入。
+            没有恢复码？请在这台电脑的贾维斯桌面端生成后再输入。
           </span>
         )}
         <button type="button" className="os-link" onClick={onLost}>
