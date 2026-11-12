@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""鎏灏智能中枢一键启动器。
+"""贾维斯一键启动器。
 
 一条命令把「网关 + 控制台」拉起来，并等健康探针真正通过后再交还控制权。
 
@@ -203,7 +203,7 @@ def _ask_port_choice(
     from tkinter import messagebox, simpledialog
 
     root = tk.Tk()
-    root.title(f"鎏灏：{label}端口被占用")
+    root.title(f"贾维斯：{label}端口被占用")
     root.resizable(False, False)
     root.attributes("-topmost", True)
     choice = {"action": "cancel", "port": None}
@@ -732,9 +732,9 @@ def _show_instance_notice(text: str, *, warning: bool) -> None:
         root = tk.Tk()
         root.withdraw()
         if warning:
-            messagebox.showwarning("鎏灏已在运行（服务无响应）", text, parent=root)
+            messagebox.showwarning("贾维斯已在运行（服务无响应）", text, parent=root)
         else:
-            messagebox.showinfo("鎏灏已在运行", text, parent=root)
+            messagebox.showinfo("贾维斯已在运行", text, parent=root)
         root.destroy()
     except Exception:  # noqa: BLE001 - 弹窗失败时至少日志里已经有一句人话
         pass
@@ -757,7 +757,7 @@ def _handoff_to_running_instance(holder: dict, *, no_browser: bool) -> int:
     detail = "，".join(
         part for part in (f"pid={pid}" if pid else "", url) if part
     )
-    print(f"[instance] 鎏灏已经在运行（{detail}）。" if detail else "[instance] 鎏灏已经在运行。", flush=True)
+    print(f"[instance] 贾维斯已经在运行（{detail}）。" if detail else "[instance] 贾维斯已经在运行。", flush=True)
     try:
         from src.desktop.tray import request_show
 
@@ -768,29 +768,29 @@ def _handoff_to_running_instance(holder: dict, *, no_browser: bool) -> int:
 
     if shown:
         if healthy:
-            summary = "鎏灏已经在运行，已为你切换到正在运行的状态窗口。"
+            summary = "贾维斯已经在运行，已为你切换到正在运行的状态窗口。"
         else:
             summary = (
-                "鎏灏已经在运行，但服务暂时没有响应。\n\n"
+                "贾维斯已经在运行，但服务暂时没有响应。\n\n"
                 f"进程 pid={pid}。已为你切换到状态窗口，可在其中查看状态或重新启动服务；"
                 "本次没有启动第二个服务。"
             )
     elif healthy:
         if no_browser:
             # --no-browser（运维/自测）下不能声称"已打开控制台"。
-            summary = f"鎏灏已经在运行，控制台地址：{url}/"
+            summary = f"贾维斯已经在运行，控制台地址：{url}/"
         else:
-            summary = f"鎏灏已经在运行，已为你打开控制台：{url}/"
+            summary = f"贾维斯已经在运行，已为你打开控制台：{url}/"
             with contextlib.suppress(webbrowser.Error):
                 webbrowser.open(_console_url_with_proof(url))
     elif url:
         summary = (
-            "鎏灏已经在运行，但服务暂时没有响应。\n\n"
-            f"进程 pid={pid}，地址 {url}。请打开任务栏通知区的鎏灏图标查看状态，"
+            "贾维斯已经在运行，但服务暂时没有响应。\n\n"
+            f"进程 pid={pid}，地址 {url}。请打开任务栏通知区的贾维斯图标查看状态，"
             "或结束该进程后重试；本次没有启动第二个服务。"
         )
     else:
-        summary = "鎏灏已经在运行。请使用任务栏通知区（托盘）的图标打开窗口或控制台。"
+        summary = "贾维斯已经在运行。请使用任务栏通知区（托盘）的图标打开窗口或控制台。"
     print(f"[instance] {summary}")
     if _headless():
         # pythonw 下 print 进 launcher.log：把判断依据一并留档，便于远程排障。
@@ -860,7 +860,7 @@ def _run_diagnose() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="启动鎏灏：FastAPI 网关 + 控制台")
+    parser = argparse.ArgumentParser(description="启动贾维斯：FastAPI 网关 + 控制台")
     parser.add_argument(
         "--host",
         default=DEFAULT_API_HOST,
@@ -938,7 +938,7 @@ def main() -> int:
     single_port = not args.backend_only and not args.vite
 
     # 启动前先确认配置端口可用。绑定 0.0.0.0 时端口占用检查用 127.0.0.1 探测即可。
-    # 顺序很重要：先确认「没有第二个鎏灏在跑」，再看端口，否则会出现
+    # 顺序很重要：先确认「没有第二个贾维斯在跑」，再看端口，否则会出现
     # "端口被占" + "已经在运行" 两句自相矛盾的提示。
     probe_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
     api_port = _resolve_port_or_explain(probe_host, args.api_port, "网关", "--api-port")
@@ -1003,7 +1003,7 @@ def main() -> int:
     if _wait_gateway_ready(probe_api_base, gateway) is None:
         _shutdown_all()
         return 1
-    # 端口探针可能被「已经在这个端口上的另一个鎏灏」满足（双击竞态时第二个
+    # 端口探针可能被「已经在这个端口上的另一个贾维斯」满足（双击竞态时第二个
     # 启动器正是这种情况）。自己的子进程若已退出，就不能宣称启动成功，
     # 而要给出和网关入口同一句可读提示。
     if gateway.poll() is not None:
@@ -1082,7 +1082,7 @@ def main() -> int:
 
     print()
     print("=" * 62)
-    print("鎏灏已就绪")
+    print("贾维斯已就绪")
     print(f"  控制台    {ui_base}")
     print(f"  API       {api_base}     文档 {api_base}/docs")
     print(f"  健康探针  {api_base}/v1/health")
