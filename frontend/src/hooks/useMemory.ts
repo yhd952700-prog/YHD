@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MemoryEntry, MemoryNode, MemoryStats, MemoryType } from '../types';
 
 export interface UseMemoryOptions {
+  /**
+   * 数据获取函数（记忆树 / 统计 / 搜索），全部可选。
+   * 未传入时对应操作静默返回空（搜索返回空列表），不代表后端无数据——
+   * 本组件库未接任何后端。
+   */
   fetchTree?: () => Promise<MemoryNode[]>;
   fetchStats?: () => Promise<MemoryStats>;
   onSearch?: (query: string) => Promise<MemoryEntry[]>;
@@ -18,6 +23,9 @@ export interface UseMemoryResult {
   searchQuery: string;
   searchResults: MemoryEntry[];
   searching: boolean;
+  /** 最近一次搜索失败的原因（`Error | null`，与 useAgent/useTask 的 error 字段同模式）。
+   * 搜索失败时保留旧的 searchResults，只置此字段，不把失败画成“搜不到”。 */
+  searchError: Error | null;
   toggleExpanded: (id: string) => void;
   expandAll: () => void;
   collapseAll: () => void;
@@ -63,6 +71,7 @@ export function useMemory(options: UseMemoryOptions = {}): UseMemoryResult {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<MemoryEntry[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<Error | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -96,19 +105,24 @@ export function useMemory(options: UseMemoryOptions = {}): UseMemoryResult {
     if (autoLoad) void refresh();
   }, [autoLoad, refresh]);
 
-  // 防抖搜索
+  // 防抖搜索：失败时保留旧结果并置 searchError，不清空成“搜不到”。
   useEffect(() => {
     if (!searchQuery.trim() || !onSearch) {
       setSearchResults([]);
+      setSearchError(null);
       return;
     }
     setSearching(true);
     const timer = window.setTimeout(async () => {
       try {
         const results = await onSearch(searchQuery);
-        if (mountedRef.current) setSearchResults(results);
-      } catch {
-        if (mountedRef.current) setSearchResults([]);
+        if (mountedRef.current) {
+          setSearchResults(results);
+          setSearchError(null);
+        }
+      } catch (e) {
+        if (mountedRef.current)
+          setSearchError(e instanceof Error ? e : new Error(String(e)));
       } finally {
         if (mountedRef.current) setSearching(false);
       }
@@ -152,6 +166,7 @@ export function useMemory(options: UseMemoryOptions = {}): UseMemoryResult {
     searchQuery,
     searchResults,
     searching,
+    searchError,
     toggleExpanded,
     expandAll,
     collapseAll,
