@@ -6,11 +6,10 @@ import json
 import re
 import shutil
 import subprocess
-import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from collectors import (
     OUT_DIR,
@@ -20,7 +19,7 @@ from collectors import (
     read_text,
     rel,
 )
-from models import AUTO_TODO_PREFIXES, Gap, auto_eligibility, path_is_sensitive
+from models import Gap, auto_eligibility
 
 TODO_RE = re.compile(r"(?<![\w])(TODO|FIXME|XXX)(?![\w])")
 
