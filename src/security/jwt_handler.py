@@ -70,7 +70,16 @@ def _record_revocation_check_failure() -> None:
         pass
 
 
-class IdentityStoreUnavailable(jwt.InvalidTokenError):
+# ``jwt`` is None when PyJWT is not installed (see the guarded import
+# above): the class definition itself must not dereference it, or the
+# whole module fails to import and every conftest fixture that touches
+# ``src.security`` errors out. With PyJWT present the base is exactly
+# ``jwt.InvalidTokenError``, as the docstring requires; without it the
+# exception degrades to a plain Exception (no token can be verified in
+# that environment anyway).
+class IdentityStoreUnavailable(
+    jwt.InvalidTokenError if jwt is not None else Exception
+):
     """撤销库/身份库读不出来 —— **基础设施故障，不是令牌无效**。
 
     仍然继承 ``jwt.InvalidTokenError``：验证函数一旦读不出吊销状态就必须
