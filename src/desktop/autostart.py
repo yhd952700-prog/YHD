@@ -79,7 +79,7 @@ def build_command(root: Path | None = None) -> str:
     if entry.name == DESKTOP_ENTRY.name:
         args.append("--autostart")
     else:
-        # 安装入口默认只启动鎏灏窗口；自启场景保持不打扰用户。
+        # 安装入口默认只启动贾维斯窗口；自启场景保持不打扰用户。
         args.append("--no-browser")
     return subprocess.list2cmdline(args)
 
