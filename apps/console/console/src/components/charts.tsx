@@ -292,7 +292,7 @@ export interface NetworkGraphProps {
  * 布局完全由索引决定（黄金角分布），**不用随机数** —— 否则每次重渲染节点都会
  * 跳动，看起来像数据在变，实际上只是布局在抖。
  */
-export function NetworkGraph({ nodes, hubLabel = '鎏灏 OS', height = 232 }: NetworkGraphProps) {
+export function NetworkGraph({ nodes, hubLabel = '贾维斯 OS', height = 232 }: NetworkGraphProps) {
   const width = 340
   if (nodes.length === 0) {
     return <EmptyChart height={height} hint="暂无注册项" />
