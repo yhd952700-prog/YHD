@@ -1,0 +1,43 @@
+/**
+ * 合并页与带标签的中心页共用的标签排样式。
+ *
+ * 照抄 KnowledgeEnterprise.css 里的 .ke-tabs / .ke-tab（同一套视觉），
+ * 只改类名前缀，避免合并页去 import 另一个页面的 CSS。
+ * 标签语义与 KnowledgeEnterprise 一致：div role="tablist" +
+ * button role="tab" + aria-selected。
+ */
+.mp-tabs-bar {
+  margin-bottom: 12px;
+}
+
+.mp-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--os-border-soft);
+  border-radius: 10px;
+  background: var(--os-panel-2);
+}
+
+.mp-tab {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--os-text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mp-tab:hover {
+  color: var(--os-text);
+  background: var(--os-panel-hover);
+}
+
+.mp-tab-active {
+  border-color: color-mix(in srgb, var(--os-accent) 40%, var(--os-border));
+  background: var(--os-accent-soft);
+  color: var(--os-text);
+  font-weight: 600;
+}
