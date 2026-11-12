@@ -1,5 +1,5 @@
 """
-Main FastAPI Application for LiuHao AI OS Gateway
+Main FastAPI Application for Jarvis Gateway
 
 Provides the unified entry point for all services with:
 - Lifecycle management (startup/shutdown)
@@ -1021,7 +1021,7 @@ async def lifespan(app: FastAPI):
 
     # Startup
     _startup_begin_run()
-    logger.info("Starting LiuHao AI OS Gateway...")
+    logger.info("Starting Jarvis Gateway...")
 
     # D-1 护栏：必须在任何请求进入线程池之前装好。它只影响 anyio 的工作线程
     # 启动方式（不再在事件循环里无限等新线程跑起来），失败也不阻断启动。
@@ -1289,7 +1289,7 @@ async def lifespan(app: FastAPI):
             )
             print("!! 首次注册不要求桌面端一次性证明，也不校验调用者与本机是否同一")
             print("!! Windows 账户 —— 本机任何进程都可能抢先注册掉第一个账号。")
-            print("!! 正式使用请从鎏灏桌面窗口/启动器进入。")
+            print("!! 正式使用请从贾维斯桌面窗口/启动器进入。")
             print("!" * 62)
     except Exception as _proof_exc:  # noqa: BLE001
         app.state.local_proof_broker = False
@@ -1885,7 +1885,7 @@ async def lifespan(app: FastAPI):
     yield  # App runs here
 
     # Shutdown
-    logger.info("Shutting down LiuHao AI OS Gateway...")
+    logger.info("Shutting down Jarvis Gateway...")
 
     try:
         _loop_watchdog.stop()
@@ -2687,6 +2687,12 @@ def get_app() -> FastAPI:
     app.include_router(log_settings_router, dependencies=[Depends(_require_settings_owner)])
     _startup_mark("路由：log settings 完成")
 
+    # 工作台名字：GET 公开（登录页未登录时也要显示名字），PUT 仅根账号
+    # （写闸门在端点内用 require_account_principal 收敛，见 gateway/workspace.py）。
+    from .workspace import router as workspace_router
+    app.include_router(workspace_router)
+    _startup_mark("路由：workspace name 完成")
+
     # Knowledge base: canonical /v1/knowledge (unified with the rest of the
     # gateway) plus a deprecated /knowledge alias for existing clients.
     from src.api.routes.knowledge import (
@@ -2701,7 +2707,7 @@ def get_app() -> FastAPI:
     app.include_router(knowledge_enterprise_router)
     _startup_mark("路由：knowledge 完成")
 
-    # 鎏灏对话端点（真实 LLM 对话闭环）。
+    # 贾维斯对话端点（真实 LLM 对话闭环）。
     from .chat import router as chat_router
     app.include_router(chat_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：chat 完成")
@@ -2830,6 +2836,13 @@ def get_app() -> FastAPI:
     from .accounts import router as accounts_router
     app.include_router(accounts_router)
     _startup_mark("路由：accounts（账号树）完成")
+
+    # Owner（超级管理员）面：全局总览 / 全部成员 / 全部任务 / 审计。
+    # 无公开端点，全部走 require_owner（非 Owner 一律 403）；再套一层人类
+    # 闸门做纵深防御。Owner 身份只来自账号树根位置，不来自请求体或令牌 claim。
+    from .owner import router as owner_router
+    app.include_router(owner_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：owner（超级管理员）完成")
 
     # 记忆面（列表 / 检索 / 导出 / 代管开关）。每个端点都按令牌主体 + 账号树
     # 收敛 owner：别人的条目一律 404；主账号只读聚合整棵子树，不提供改写入口。
