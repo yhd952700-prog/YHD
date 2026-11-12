@@ -1,4 +1,4 @@
-"""鎏灏管家 · 真实网关端到端验收（本机 Ollama，五项场景）。
+"""贾维斯 · 真实网关端到端验收（本机 Ollama，五项场景）。
 
 与 ``butler_real_model_acceptance.py``（直接跑 AgentRuntime）不同，本脚本
 **启动真实网关**（真实 FastAPI 应用 + 真实 TCP 端口），通过 HTTP 调用管家
@@ -73,7 +73,7 @@ FILLER_ONLY = ("已安排", "已收到", "正在安排", "稍后为你处理")
 
 # ────────────────────────────────────────────────────────────── 环境 / 服务
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="鎏灏管家真实网关端到端验收")
+    parser = argparse.ArgumentParser(description="贾维斯真实网关端到端验收")
     parser.add_argument(
         "--model",
         default=os.environ.get("LIUHAO_ACCEPTANCE_MODEL", DEFAULT_MODEL),
