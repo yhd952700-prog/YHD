@@ -26,6 +26,11 @@ import { LogRetentionPanel } from '../components/LogRetentionPanel'
 import { MobileAccessCard } from '../components/MobileAccessCard'
 import { UpgradePanel } from '../components/UpgradePanel'
 import { getReducedMotion, setReducedMotion } from '../lib/reducedMotion'
+import {
+  setWorkspaceNameLocal,
+  useWorkspaceName,
+  type WorkspaceName,
+} from '../lib/workspaceName'
 import type { AccountCaps } from '../lib/accountCaps'
 import { navFor, SETTINGS_SECTIONS } from '../lib/nav'
 import type { NavItem } from '../lib/nav'
@@ -175,6 +180,99 @@ interface HostCommandConfirmState {
   env_var: string
   env_value: string
   note: string
+}
+
+/** 工作台名字：`PUT /v1/workspace/name`，保存后顶栏 / 登录页 / 助手名立即跟着变。 */
+function WorkspaceNameCard({ canManage }: { canManage: boolean }) {
+  const current = useWorkspaceName()
+  const [nameZh, setNameZh] = useState(current.name_zh)
+  const [nameEn, setNameEn] = useState(current.name_en)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  // 服务端名字到了（App 挂载时拉取）再同步进输入框；用户正在改时不覆盖。
+  useEffect(() => {
+    setNameZh(current.name_zh)
+    setNameEn(current.name_en)
+  }, [current.name_zh, current.name_en])
+
+  const save = async () => {
+    const zh = nameZh.trim()
+    if (!zh) {
+      setError('中文名不能为空')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    try {
+      const result = await apiFetch<WorkspaceName>('/v1/workspace/name', {
+        method: 'PUT',
+        body: JSON.stringify({ name_zh: zh, name_en: nameEn.trim() || undefined }),
+      })
+      setWorkspaceNameLocal(result)
+      setSaved(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="os-field">
+        <label htmlFor="settings-workspace-name-zh">工作台名字（中文）</label>
+        <div className="os-input">
+          <input
+            id="settings-workspace-name-zh"
+            value={nameZh}
+            maxLength={40}
+            disabled={!canManage || busy}
+            onChange={(event) => {
+              setNameZh(event.target.value)
+              setSaved(false)
+            }}
+          />
+        </div>
+      </div>
+      <div className="os-field">
+        <label htmlFor="settings-workspace-name-en">英文名（可空，留空则与中文名相同）</label>
+        <div className="os-input">
+          <input
+            id="settings-workspace-name-en"
+            value={nameEn}
+            maxLength={80}
+            disabled={!canManage || busy}
+            onChange={(event) => {
+              setNameEn(event.target.value)
+              setSaved(false)
+            }}
+          />
+        </div>
+      </div>
+      <p className="os-hint">
+        当前显示：{current.lockup}。改名后顶栏、登录页、助手的名字都跟着变；助手就叫这个名字。
+      </p>
+      {!canManage && <p className="os-hint">工作台名字由最高权限账号统一管理，当前账号只读。</p>}
+      {error && (
+        <p className="os-hint" role="alert">
+          {error}
+        </p>
+      )}
+      {saved && (
+        <p className="os-hint" role="status">
+          已保存，全站已显示新名字。
+        </p>
+      )}
+      <div className="os-kb-actions" style={{ marginTop: 12 }}>
+        <button className="os-btn" onClick={() => void save()} disabled={!canManage || busy}>
+          {busy ? '保存中…' : '保存名字'}
+        </button>
+      </div>
+    </>
+  )
 }
 
 export function Settings({
@@ -384,7 +482,7 @@ export function Settings({
           {isDesktopShell() && (
             <span className="os-attention-item" data-tone="warn">
               <strong>关闭窗口不会退出</strong>
-              桌面端只有一个鎏灏窗口；关闭后会退到系统托盘，本地服务继续运行，需要时从托盘重新打开即可。
+              桌面端只有一个贾维斯窗口；关闭后会退到系统托盘，本地服务继续运行，需要时从托盘重新打开即可。
               <button
                 className="os-link"
                 onClick={() =>
@@ -425,6 +523,15 @@ export function Settings({
             </div>
           ))}
         </div>
+      </Card>
+
+      <Card
+        id="settings-workspace-name"
+        title="工作台名字"
+        sub="顶栏、登录页、助手都叫这个名字；改了就全站跟着变，不用重建"
+        span={12}
+      >
+        <WorkspaceNameCard canManage={canManageSettings} />
       </Card>
 
       <Card
