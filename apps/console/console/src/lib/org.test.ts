@@ -56,7 +56,7 @@ function assignment(
 const TREE: OrgTreeNode[] = [
   node({
     node_id: 'n1',
-    name: '鎏灏科技',
+    name: '贾维斯科技',
     kind: 'company',
     children: [
       node({
@@ -73,9 +73,9 @@ const TREE: OrgTreeNode[] = [
 describe('flattenOrg', () => {
   test('按视觉顺序展开，并给出深度与上级路径', () => {
     const rows = flattenOrg(TREE)
-    expect(rows.map((row) => row.node.name)).toEqual(['鎏灏科技', '研发部', '前端组', '市场部'])
+    expect(rows.map((row) => row.node.name)).toEqual(['贾维斯科技', '研发部', '前端组', '市场部'])
     expect(rows.map((row) => row.depth)).toEqual([0, 1, 2, 1])
-    expect(rows[2].path).toBe('鎏灏科技 / 研发部')
+    expect(rows[2].path).toBe('贾维斯科技 / 研发部')
     expect(rows[0].path).toBe('')
   })
 })
@@ -134,7 +134,7 @@ describe('diffSnapshots', () => {
             node_id: 'n1',
             parent_id: '',
             kind: 'company',
-            name: '鎏灏科技',
+            name: '贾维斯科技',
             description: '',
             sort_order: 0,
             created_at: 0,
