@@ -67,6 +67,18 @@ import { numberText, relativeTime } from '../lib/format'
 import { BudgetDenialActions, Card, Empty, Failure, Guard, Loading } from '../components/ui'
 import { isBudgetDenialMessage } from '../lib/errorMessage'
 import { providerLabel } from '../components/ModelManager'
+import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
+import { KnowledgeEnterprise } from './KnowledgeEnterprise'
+import { Memory } from './Memory'
+import './MergedPages.css'
+
+export type KnowledgeTab = 'knowledge' | 'enterprise' | 'memory'
+
+const TABS: { id: KnowledgeTab; label: string }[] = [
+  { id: 'knowledge', label: '知识中心' },
+  { id: 'enterprise', label: '企业知识库' },
+  { id: 'memory', label: '记忆' },
+]
 
 /**
  * 成功态的分块数：服务端结果优先，其次真实处理数。
@@ -92,12 +104,22 @@ export function Knowledge({
   query,
   onOpenSettings,
   onOpenUsage,
+  initialTab = 'knowledge',
+  profile,
+  caps,
+  readOnly = false,
 }: {
   query: string
   onOpenSettings: () => void
   /** 402 预算拒绝时去用量页调额度；换模型走 onOpenSettings。 */
   onOpenUsage?: () => void
+  initialTab?: KnowledgeTab
+  /** 记忆标签要用的身份信息（App.tsx 传入；不传时记忆标签不渲染内容）。 */
+  profile?: AccountProfile | null
+  caps?: AccountCaps | null
+  readOnly?: boolean
 }) {
+  const [tab, setTab] = useState<KnowledgeTab>(initialTab)
   const ime = useImeComposition<HTMLInputElement>()
   const status = useApi<KnowledgeStatus>('/v1/knowledge/status', 30_000)
   const disabled = status.data ? !status.data.enabled : false
@@ -704,7 +726,28 @@ export function Knowledge({
     searchResult?.hits.some((hit) => !nameMap.has(hitDocumentId(hit))),
   )
 
+  // 新标签排用 role="tablist"，与页内已有的筛选/检索控件不是一套；
+  // App.tsx 用 key={shown} 强制按 active 换 tab 时重挂载，所以这里只
+  // 用 initialTab 做 useState 初始值即可。
   return (
+    <div>
+      <div className="mp-tabs-bar">
+        <div className="mp-tabs" role="tablist" aria-label="知识中心视图">
+          {TABS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.id}
+              className={`mp-tab${tab === item.id ? ' mp-tab-active' : ''}`}
+              onClick={() => setTab(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {tab === 'knowledge' ? (
     <div className="os-grid">
       <Card title="知识库状态" sub="真实状态，每 30 秒自动刷新" span={4}>
         <Guard
@@ -1484,6 +1527,12 @@ export function Knowledge({
           </li>
         </ul>
       </Card>
+    </div>
+      ) : tab === 'enterprise' ? (
+        <KnowledgeEnterprise query={query} />
+      ) : profile && caps ? (
+        <Memory profile={profile} caps={caps} readOnly={readOnly} />
+      ) : null}
     </div>
   )
 }
