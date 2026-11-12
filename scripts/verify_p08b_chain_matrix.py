@@ -77,7 +77,7 @@ def canon(obj) -> str:
 # ===========================================================================
 def probe_hc01() -> None:
     from src.kernels.audit import (
-        AuditStore, AuditEventType, AuditScope, HASH_ALGORITHMS, DEFAULT_HASH_ALG,
+        AuditStore, AuditEventType, AuditScope, DEFAULT_HASH_ALG,
     )
 
     hc = "HC-01"
