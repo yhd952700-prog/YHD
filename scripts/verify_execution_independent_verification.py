@@ -16,7 +16,6 @@ HC-01 audit evidence is never touched.
 
 import os
 import sys
-import tempfile
 
 # --- Redirect persistence to temp BEFORE importing anything that reads it. ---
 os.environ.setdefault("LIUHAO_WORKSPACE_ROOT", "/tmp/liuhao_indep_verify_ws")
