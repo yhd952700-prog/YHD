@@ -382,6 +382,33 @@ class TestAuthEndpoints:
         assert response.status_code == 401
         assert "application/json" in response.headers["content-type"]
 
+    def test_login_times_out_instead_of_hanging(self, client, auth_env, monkeypatch):
+        """P0 满载：凭据校验被拖住时登录必须在预算内回 504，而不是无限挂起。
+
+        用一个睡 3 秒的 ``authenticate`` 模拟满载下线程池排队/磁盘争用，
+        预算压到 1 秒：响应必须在远小于 3 秒时回来，且文案是可重试的
+        「登录超时，请重试」（不是让用户重启）。
+        """
+        import time
+
+        monkeypatch.setenv("LIUHAO_LOGIN_TIMEOUT_SECONDS", "1")
+        monkeypatch.setattr(
+            auth, "authenticate", lambda *args, **kwargs: time.sleep(3)
+        )
+        started = time.monotonic()
+        response = client.post(
+            "/v1/auth/login",
+            json={"principal": "xin.hongda", "secret": PASSWORD},
+        )
+        elapsed = time.monotonic() - started
+        assert response.status_code == 504, response.text
+        body = response.json()
+        # 网关把 {"code","message"} 的 detail 摊平成顶层错误体（见
+        # structured_error_body），前端 readError 读的也是顶层字段。
+        assert body.get("code") == "LOGIN_TIMEOUT"
+        assert body.get("message") == "登录超时，请重试"
+        assert elapsed < 2.5, f"login took {elapsed:.2f}s, budget was 1s"
+
     def test_me_without_a_token_is_401(self, client, auth_env):
         assert client.get("/v1/auth/me").status_code == 401
 
