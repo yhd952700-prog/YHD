@@ -1215,12 +1215,17 @@ export function Org({ query }: { query: string }) {
   const selected = selectedId ? (nodeById.get(selectedId) ?? null) : null
 
   // 首次拿到数据后把键盘焦点落到第一行，避免"树在那儿但 Tab 进不去"。
+  //
+  // 必须用函数式更新：effect 的闭包可能来自「树刚渲染、用户还没点」的那一帧。
+  // 若直接读闭包里的 selectedId 再写回，满载机器上 effect 会晚于用户的点击落地，
+  // 把刚选中的节点覆盖回第一行——「设负责人」就会打到 n1/lead 而不是 n2/lead。
+  // 函数式更新在真正写入时读最新状态：只要当前选中的节点还在树里，就不覆盖。
   useEffect(() => {
-    if (focusId && nodeById.has(focusId)) return
-    const first = rows[0]?.node.node_id ?? null
-    setFocusId(first)
-    if (!selectedId && first) setSelectedId(first)
-  }, [rows, focusId, nodeById, selectedId])
+    if (rows.length === 0) return
+    const first = rows[0].node.node_id
+    setFocusId((prev) => (prev && nodeById.has(prev) ? prev : first))
+    setSelectedId((prev) => (prev && nodeById.has(prev) ? prev : first))
+  }, [rows, nodeById])
 
   // 选中节点被删掉后，回到第一行，而不是让右侧停在一个不存在的节点上。
   useEffect(() => {
