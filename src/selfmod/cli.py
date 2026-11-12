@@ -30,7 +30,7 @@ from .service import SelfModService
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.selfmod",
-        description="鎏灏受控自改代码：生成补丁、展示 diff、人工确认、副本测试、可回滚应用",
+        description="贾维斯受控自改代码：生成补丁、展示 diff、人工确认、副本测试、可回滚应用",
     )
     parser.add_argument("--workspace", default=".", help="工作区目录（默认当前目录）")
     parser.add_argument("--state-dir", default=None, help="状态目录（默认 <workspace>/.selfmod-state）")
