@@ -37,13 +37,11 @@ acknowledged:
   # backup above.
 
   # --- endpoint defined but never mounted -----------------------------------
-  - module: src.feedback.feedback_api
-    classification: endpoint-not-mounted
-    reason: >-
-      Declares `router = APIRouter(prefix="/feedback")` but no module ever
-      includes it (verified: zero importers of src.feedback.* outside the
-      package, and src/gateway does not reference it). The feedback submission
-      endpoint therefore does not exist at runtime.
+  # 2026-11-12 (jarvis-0.4.4 减法组)：src.feedback.feedback_api 已删除——该路由
+  # 从未挂载到网关（见上），反馈服务层 src/feedback/{model,service,repository}
+  # 与 tests/feedback/test_phase4_feedback.py 保留。按本文件顶部契约，模块删
+  # 除后条目随之移除，否则守护脚本会报 stale。
+
 
   # --- 2026-11-11：两条自升级条目已撤掉，都不再是孤儿 ----------------------
   # src.selfupgrade.rescue 是扫描器误判：runner.py 用 `from . import paths, rescue`
@@ -126,11 +124,10 @@ acknowledged:
       application code. The only textual match is inside the module itself.
 
   # --- legacy ---------------------------------------------------------------
-  - module: src.adapters.observability.opentelemetry_adapter
-    classification: legacy-not-wired
-    reason: >-
-      Module docstring already self-declares "[LEGACY / NOT WIRED]". Real
-      OpenTelemetry export remains a Phase 7 leftover; nothing consumes it.
+  # 2026-11-12 (jarvis-0.4.4 减法组)：src.adapters.observability.opentelemetry_adapter
+  # 已删除——模块自声明 "[LEGACY / NOT WIRED]" 且已被取代，权威 OTEL 实现是
+  # src/observability/tracing.py 与 src/adapters/observability/observability_adapter.py。
+  # 模块删除后条目随之移除，否则守护脚本会报 stale。
 
   # --- superseded by the S2 multi-platform refactor: REMOVED 2026-09-15 ------
   # Owner-approved deletion (boss: "1 删了"). Byte-identical backup taken first:
