@@ -6,7 +6,7 @@
  * 由**一个** 30 秒轮询统一驱动，不按区块各取一遍。
  *
  * 边界（与 PRD 的 S1 一致）：
- * - 「等你确认」只做查看/跳转，不做就地批准 —— 批准仍在审批中心，避免一次
+ * - 「等你确认」只做查看/跳转，不做就地批准 —— 批准仍在审批签发，避免一次
  *   误触就签发凭据；
  * - 三行各自有空态、失败态；403 说「无权查看」，不说成「没有待办」；
  * - 任何一行失败只降级该行，其余行照常显示；
@@ -186,7 +186,7 @@ export function StatusBand({ onNavigate }: { onNavigate: (key: string) => void }
             title="等你确认"
             count={approvals.data ? pending.length : null}
             onOpenAll={pending.length > 0 ? () => onNavigate('approval') : undefined}
-            openAllLabel="去审批中心"
+            openAllLabel="去审批签发"
           />
           {approvals.status === 403 ? (
             // 403 不是空列表：这里说清楚「你看不到」，而不是让用户以为天下太平。
@@ -219,7 +219,7 @@ export function StatusBand({ onNavigate }: { onNavigate: (key: string) => void }
               </div>
               {pending.length > STATUS_BAND_LIMIT && (
                 <p className="os-band-more">
-                  还有 {pending.length - STATUS_BAND_LIMIT} 条，点「去审批中心」逐条处理。
+                  还有 {pending.length - STATUS_BAND_LIMIT} 条，点「去审批签发」逐条处理。
                 </p>
               )}
             </>
@@ -367,7 +367,7 @@ function PendingRow({
       type="button"
       className="os-row os-band-entry"
       onClick={onOpen}
-      title="点开去审批中心处理；这里只做查看，不会直接批准"
+      title="点开去审批签发处理；这里只做查看，不会直接批准"
     >
       <span className="os-row-main">
         <span className="os-row-title">{title}</span>
