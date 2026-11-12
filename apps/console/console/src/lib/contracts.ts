@@ -278,7 +278,7 @@ export interface EnforcementPayload {
   [key: string]: unknown
 }
 
-/** 审批凭据统计（审批中心用到的两个数字，这里只声明读到的部分）。 */
+/** 审批凭据统计（审批签发用到的两个数字，这里只声明读到的部分）。 */
 export interface ApprovalSummary {
   count: number
   grants: { id: string; remaining_seconds?: number; is_active?: boolean }[]
