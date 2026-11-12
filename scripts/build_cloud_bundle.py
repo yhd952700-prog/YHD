@@ -561,7 +561,7 @@ PORTABLE_SCRIPTS: Tuple[str, ...] = (
 PORTABLE_ROOT_FILES: Tuple[str, ...] = ("start-liuhao.bat",)
 
 _PORTABLE_START_BAT = '''@echo off
-rem LiuHao AI OS · 鎏灏智能中枢 自用版 — 双击启动。先跑首次运行向导，再起网关。
+rem Jarvis · 贾维斯 自用版 — 双击启动。先跑首次运行向导，再起网关。
 setlocal
 cd /d "%~dp0"
 set "PY="
@@ -572,7 +572,7 @@ if exist ".venv\\Scripts\\python.exe" (
     if %errorlevel%==0 set "PY=python"
 )
 if not defined PY (
-    echo [FAIL] 没找到 Python 3.11+。
+    echo [FAIL] 没找到 Python 3.12。
     echo        安装后执行：  python -m venv .venv ^&^& .venv\\Scripts\\python.exe -m pip install -r requirements.txt
     pause
     exit /b 1
@@ -592,7 +592,7 @@ rem Do not pause here, otherwise a no-op start leaves a window hanging.
 exit /b 0
 :lh_failed
 echo.
-echo [FAIL] 鎏灏未能正常启动（退出码 %LH_CODE%）。
+echo [FAIL] 贾维斯未能正常启动（退出码 %LH_CODE%）。
 echo        原因见上方输出与日志。
 echo.
 echo 按任意键关闭此窗口。
