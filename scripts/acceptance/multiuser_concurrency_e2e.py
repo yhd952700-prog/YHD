@@ -1283,7 +1283,7 @@ def print_report(report: Dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="鎏灏多用户并发压测（真实网关）")
+    parser = argparse.ArgumentParser(description="贾维斯多用户并发压测（真实网关）")
     parser.add_argument("--accounts", type=int, default=8)
     parser.add_argument("--soak-seconds", type=int, default=1200)
     parser.add_argument("--tick-seconds", type=float, default=10.0)
