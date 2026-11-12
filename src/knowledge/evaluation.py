@@ -109,7 +109,6 @@ here; see ``vector_store`` module documentation.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -134,10 +133,11 @@ from .abstention import (
 from .documents import KnowledgeDocumentService
 from .embedding import (
     EmbeddingUnavailableError,
+    LocalHashingEmbedder,
     OllamaEmbedder,
     OpenAICompatibleEmbedder,
 )
-from .vector_store import PersistentVectorStore, tokenize_for_index
+from .vector_store import PersistentVectorStore
 
 # ---------------------------------------------------------------------------
 # Evaluation set (20-30 queries over four categories)
@@ -426,29 +426,11 @@ BASELINE: Dict[str, float] = {
 # Deterministic embedder
 # ---------------------------------------------------------------------------
 
-class HashingEmbedder:
-    """Signed hashing embedder over CJK bigrams / ASCII tokens (no deps)."""
-
-    name = "hashing"
-    model = "sha256-bigram-512"
-
-    def __init__(self, dimensions: int = 512) -> None:
-        self.dimensions = dimensions
-
-    def embed(self, texts: Sequence[str]) -> List[List[float]]:
-        vectors: List[List[float]] = []
-        for text in texts:
-            vector = [0.0] * self.dimensions
-            for token in tokenize_for_index(text).split():
-                digest = hashlib.sha256(token.encode("utf-8")).digest()
-                index = int.from_bytes(digest[:4], "big") % self.dimensions
-                sign = 1.0 if digest[4] & 1 else -1.0
-                vector[index] += sign
-            norm = sum(value * value for value in vector) ** 0.5
-            if norm > 0:
-                vector = [value / norm for value in vector]
-            vectors.append(vector)
-        return vectors
+#: The lexical baseline lives in :mod:`src.knowledge.embedding` now so the live
+#: knowledge base can use it as its no-external-service fallback; this alias
+#: keeps the evaluation's existing references (and ``"semantic": not
+#: isinstance(embedder, HashingEmbedder)``) working unchanged.
+HashingEmbedder = LocalHashingEmbedder
 
 
 # ---------------------------------------------------------------------------
