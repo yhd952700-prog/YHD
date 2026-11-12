@@ -161,7 +161,7 @@ def check_duplicates(repo_root: Path, exe_name: str, exe_hash: str, exe_size: in
     live: list[Path] = []
     archived = 0
     groups: dict[str, set[str]] = {}
-    for candidate in dist.rglob("LiuHao-Setup-*.exe"):
+    for candidate in dist.rglob("Jarvis-Setup-*.exe"):
         if not candidate.is_file():
             continue
         if is_archived(candidate):
