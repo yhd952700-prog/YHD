@@ -82,7 +82,7 @@ def render_report(
     partial_count = sum(1 for candidate in candidates if candidate.last_status == "partial")
     unfetched_count = sum(1 for candidate in candidates if candidate.last_status == "not_fetched")
     lines: list[str] = [
-        "# 鎏灏 · 开源技术雷达周报",
+        "# 贾维斯 · 开源技术雷达周报",
         "",
         f"- 生成时间：{generated}",
         (
