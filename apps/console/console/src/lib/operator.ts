@@ -848,6 +848,7 @@ export function getTrust(entityId: string): Promise<TrustSummary> {
 // 总线没有任何消息时 history 为空数组，前端如实展示"总线暂无消息"，不编造占位消息。
 // 严格只读：没有发送 / 写入入口（真实外部 send 是安全风险且无真实路径）。401 由 apiFetch
 // 统一抛出并清会话；其他错误原样展示，不退化成"暂无数据"。
+// GAP: 网络内核消息发送入口未上线——本层有意只读；若后端提供受控发送端点，需另行评审后接线。
 
 export interface NetworkMessageEntry {
   /** 消息 id（内核 Message.id） */
