@@ -1,4 +1,4 @@
-"""鎏灏对话 HTTP 端点。
+"""贾维斯对话 HTTP 端点。
 
 - ``POST /v1/chat``          发送一条消息，返回结构化回复
 - ``GET  /v1/chat/stats``    查看会话统计
@@ -277,7 +277,7 @@ def warmup() -> None:
             logger.warning("history search index warmup failed", exc_info=True)
 
 
-# 进程内会话表：**principal 与 session_id 的复合键** -> 鎏灏实例。
+# 进程内会话表：**principal 与 session_id 的复合键** -> 贾维斯实例。
 #
 # 复合键是冲突隔离的关键：此前直接拿客户端传来的 ``session_id`` 当键，于是
 # 另一个已登录用户只要猜中 ``"default"`` 就能读到同一实例的历史与画像。
