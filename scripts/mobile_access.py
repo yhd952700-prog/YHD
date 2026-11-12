@@ -227,7 +227,7 @@ def _devices() -> int:
 
 
 def main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(description="鎏灏手机访问开关（电脑端）")
+    parser = argparse.ArgumentParser(description="贾维斯手机访问开关（电脑端）")
     parser.add_argument(
         "command",
         nargs="?",
