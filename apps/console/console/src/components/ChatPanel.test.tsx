@@ -91,7 +91,7 @@ describe('ChatPanel 结束帧', () => {
     render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -126,7 +126,7 @@ describe('ChatPanel 结束帧', () => {
     )
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -172,7 +172,7 @@ describe('ChatPanel 结束帧', () => {
     )
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -215,7 +215,7 @@ describe('ChatPanel 结束帧', () => {
     )
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -248,7 +248,7 @@ describe('ChatPanel 结束帧', () => {
     render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} onOpenUsage={vi.fn()} />)
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -275,7 +275,7 @@ describe('ChatPanel 结束帧', () => {
     render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -302,7 +302,7 @@ describe('ChatPanel 结束帧', () => {
     render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
 
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: '你好' } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -354,7 +354,7 @@ describe('ChatPanel 会话发现', () => {
 describe('ChatPanel 工具卡与状态行', () => {
   function fillAndSend(text: string) {
     fireEvent.change(
-      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      screen.getByPlaceholderText('未配置模型，请先配置模型密钥'),
       { target: { value: text } },
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
@@ -465,7 +465,7 @@ describe('ChatPanel 工具卡与状态行', () => {
  * 这里用 compositionstart/end + keyCode 229 复现真实输入法事件序列；改前必须红。
  */
 describe('ChatPanel 输入法回车', () => {
-  const INPUT_PLACEHOLDER = '未配置真实模型：当前发送将得到模拟回复'
+  const INPUT_PLACEHOLDER = '未配置模型，请先配置模型密钥'
 
   function stubStream() {
     const calls: string[] = []
@@ -546,7 +546,7 @@ describe('ChatPanel 输入法回车', () => {
 })
 
 describe('ChatPanel 历史与会话状态', () => {
-  const EMPTY_PROMPT = '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'
+  const EMPTY_PROMPT = '当前未配置真实模型：未配置模型，请先配置模型密钥。发送后只会收到未配置提示，不会生成模拟回答。'
 
   function stub(overrides: {
     history?: () => Promise<Response>
@@ -629,7 +629,7 @@ describe('ChatPanel 历史与会话状态', () => {
  * 以及流式时「用户上翻不被拉回底部」。
  */
 describe('ChatPanel 长会话窗口化与超大输入', () => {
-  const INPUT_PLACEHOLDER = '未配置真实模型：当前发送将得到模拟回复'
+  const INPUT_PLACEHOLDER = '未配置模型，请先配置模型密钥'
 
   function stub(overrides: { history?: () => Promise<Response>; streamBody?: () => Response }) {
     vi.stubGlobal(
@@ -749,5 +749,86 @@ describe('ChatPanel 长会话窗口化与超大输入', () => {
       controller!.enqueue(encoder.encode('data: {"type":"done","status":"completed"}\n\n'))
       controller!.close()
     })
+  })
+})
+
+/**
+ * 工具箱与单助手结合版回归。
+ *
+ * 2026-11-12 用户纠正：不要两个可切换的助手（Muse / 小龙虾），只要结合版。
+ * 因此这里钉住：界面上只有一个助手（贾维斯），没有切换器；快捷问题与工具箱
+ * 都只有一套；工具箱点下去是把"指令模板 + 输入框内容"作为一条普通消息走
+ * `POST /v1/chat/stream` 发给同一个助手，生成结果回到对话里。
+ */
+describe('ChatPanel 工具箱（单助手结合版）', () => {
+  const INPUT_PLACEHOLDER = '未配置模型，请先配置模型密钥'
+
+  function stubStream() {
+    const bodies: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input)
+        if (path === '/v1/models') return json({ models: [], default_id: null })
+        if (path === '/v1/chat/stream') {
+          bodies.push(String(init?.body ?? ''))
+          return sse(['data: {"type":"done","status":"completed"}\n\n'])
+        }
+        return json({})
+      }),
+    )
+    return bodies
+  }
+
+  const input = () => screen.getByPlaceholderText(INPUT_PLACEHOLDER) as HTMLTextAreaElement
+
+  test('界面上只有一个助手，没有 Muse / 小龙虾切换器', async () => {
+    stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    expect(await screen.findByText('贾维斯')).toBeTruthy()
+    expect(screen.queryByText('小龙虾')).toBeNull()
+    expect(screen.queryByText('Muse')).toBeNull()
+    // 工具箱只有一组：六个工具，不按人格分流。
+    const toolbox = screen.getByRole('group', { name: '工具箱' })
+    const buttons = Array.from(toolbox.querySelectorAll('button')).map((button) =>
+      button.textContent?.trim(),
+    )
+    expect(buttons).toEqual(['总结', '写邮件', '润色', '翻译', '想点子', '代码示例'])
+  })
+
+  test('输入框有内容时点「总结」：模板 + 内容作为一条消息走 /v1/chat/stream', async () => {
+    const bodies = stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    fireEvent.change(input(), { target: { value: '本周做了 A、B 两件事' } })
+    fireEvent.click(screen.getByRole('button', { name: '总结' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    const sent = JSON.parse(bodies[0]) as { message: string }
+    expect(sent.message).toContain('总结')
+    expect(sent.message).toContain('本周做了 A、B 两件事')
+  })
+
+  test('输入框是空的点「写邮件」：只填入指令，不发空消息', async () => {
+    const bodies = stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '写邮件' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(0))
+    expect(input().value).toContain('写一封得体的邮件')
+    expect(screen.getByText(/已填入「写邮件」指令/)).toBeTruthy()
+  })
+
+  test('快捷问题只有一套：点一下直接发给唯一助手', async () => {
+    const bodies = stubStream()
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '帮我想几个新点子' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    const sent = JSON.parse(bodies[0]) as { message: string }
+    expect(sent.message).toBe('帮我想几个新点子')
   })
 })
