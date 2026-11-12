@@ -574,7 +574,7 @@ def run_gates(
             gates.append(
                 _skip(
                     gate_id,
-                    "工作区缺少 docs/spec/SELF-EVOLUTION.md：SE-Gate 只对鎏灏源码树生效；"
+                    "工作区缺少 docs/spec/SELF-EVOLUTION.md：SE-Gate 只对贾维斯源码树生效；"
                     "演练工作区的全部门禁记为 skip（证据件保留该事实）。",
                 )
             )
