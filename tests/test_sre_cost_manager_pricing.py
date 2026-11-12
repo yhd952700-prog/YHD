@@ -102,3 +102,32 @@ def test_self_hosted_provider_is_known_free_not_unknown():
     assert cost == 0.0
     assert manager.unknown_cost_records == []
     assert manager.cost_summary()["total_cost_complete"] is True
+
+
+def test_usage_by_model_breakdown():
+    """B组第二轮：用量按模型明细（SRE CostManager）。"""
+    manager = CostManager()
+    manager.track(UsageRecord(Provider.OPENAI, "gpt-4", 1000, 500))
+    manager.track(UsageRecord(Provider.OPENAI, "gpt-4", 1000, 0))
+    manager.track(UsageRecord(Provider.OPENAI, "gpt-3.5-turbo", 2000, 0))
+
+    by_model = manager.usage_by_model()
+    assert by_model["openai/gpt-4"]["input_tokens"] == 2000
+    assert by_model["openai/gpt-4"]["output_tokens"] == 500
+    assert by_model["openai/gpt-4"]["total_tokens"] == 2500
+    # gpt-4: (2000/1000*0.03) + (500/1000*0.06) = 0.09
+    assert by_model["openai/gpt-4"]["cost_usd"] == pytest.approx(0.09)
+    assert by_model["openai/gpt-4"]["cost_complete"] is True
+    assert by_model["openai/gpt-3.5-turbo"]["cost_usd"] == pytest.approx(0.003)
+
+
+def test_usage_by_model_unpriced_model_has_null_cost():
+    """B组第二轮：无价格数据的模型 cost_usd 为 None，绝不按 0 计入。"""
+    manager = CostManager()
+    manager.track(UsageRecord(Provider.GOOGLE, "gemini-2.5-flash", 1000, 0))
+
+    by_model = manager.usage_by_model()
+    entry = by_model["google/gemini-2.5-flash"]
+    assert entry["input_tokens"] == 1000
+    assert entry["cost_usd"] is None
+    assert entry["cost_complete"] is False
