@@ -151,7 +151,7 @@ describe('深链门控：成员不挂载管理员页', () => {
   beforeEach(() => {
     window.localStorage.clear()
     window.sessionStorage.clear()
-    document.title = '鎏灏'
+    document.title = '贾维斯'
   })
 
   afterEach(() => {
@@ -196,6 +196,13 @@ describe('深链门控：成员不挂载管理员页', () => {
     await waitFor(() => expect(count(calls, ALERTS)).toBeGreaterThan(0))
     expect(count(calls, ALERT_RULES)).toBeGreaterThan(0)
     expect(screen.getByText('运维告警')).toBeTruthy()
+  })
+
+  test('不带 ?p= 时默认进聊天操作台（不是企业总览）', async () => {
+    open('', true)
+
+    await waitFor(() => expect(screen.getByRole('group', { name: '工具箱' })).toBeTruthy())
+    expect(screen.queryByText('企业运行概况')).toBeNull()
   })
 
   test('未知页面回落到默认页（企业总览），不白屏', async () => {
@@ -255,19 +262,19 @@ describe('?mode=web：浏览器模式标识', () => {
   beforeEach(() => {
     window.localStorage.clear()
     window.sessionStorage.clear()
-    document.title = '鎏灏'
+    document.title = '贾维斯'
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
     window.history.replaceState(null, '', '/')
-    document.title = '鎏灏'
+    document.title = '贾维斯'
   })
 
   test('带 ?mode=web：标题有后缀，常驻提示可见且可关闭', async () => {
     open('?mode=web', false)
 
-    await waitFor(() => expect(document.title).toBe('鎏灏 · 浏览器模式'))
+    await waitFor(() => expect(document.title).toBe('Jarvis · 贾维斯 · 浏览器模式'))
     const notice = screen.getByTestId('browser-mode-notice')
     expect(notice.textContent).toContain('当前为浏览器模式')
 
@@ -275,11 +282,11 @@ describe('?mode=web：浏览器模式标识', () => {
     expect(screen.queryByTestId('browser-mode-notice')).toBeNull()
   })
 
-  test('不带参数：打开工作台先看到企业总览，标题无后缀，提示不存在', async () => {
+  test('不带参数：打开工作台先看到聊天操作台，标题无后缀，提示不存在', async () => {
     open('', false)
 
-    await waitFor(() => expect(pageTitle()).toBe('企业总览'))
-    expect(document.title).toBe('鎏灏')
+    await waitFor(() => expect(screen.getByRole('group', { name: '工具箱' })).toBeTruthy())
+    expect(document.title).toBe('Jarvis · 贾维斯')
     expect(screen.queryByTestId('browser-mode-notice')).toBeNull()
   })
 })
