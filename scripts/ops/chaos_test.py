@@ -11,7 +11,6 @@ import asyncio
 import time
 import random
 from typing import Dict, Any, List, Callable, Optional
-from concurrent.futures import ThreadPoolExecutor
 
 
 class ChaosInjector:
