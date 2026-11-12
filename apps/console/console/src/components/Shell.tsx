@@ -10,13 +10,16 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
-import { ALL_NAV, navGroupsFor, mobileNavKeysFor, SETTINGS_SECTIONS } from '../lib/nav'
+import { ALL_NAV, dailyNavKeysFor, navGroupsFor, navGroupsForScope, mobileNavKeysFor, persistNavScope, readNavScope, SETTINGS_SECTIONS } from '../lib/nav'
+import type { NavScope } from '../lib/nav'
 import { useWorkspaceName } from '../lib/workspaceName'
 import type { NavItem } from '../lib/nav'
+import type { NavBadge } from '../lib/navBadges'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { identityBarRole } from '../lib/accountCaps'
 import { IconActivity, IconBell, IconLogout, IconSearch, IconSparkle } from './icons'
 import { DesktopDownloadLink } from './DesktopDownloadLink'
+import { ReactorMark } from './ReactorMark'
 
 export interface OsNotification {
   id: string
@@ -40,6 +43,11 @@ export interface ShellProps {
   query: string
   onQueryChange: (value: string) => void
   notifications: OsNotification[]
+  /**
+   * 侧栏入口徽标（App 层取数后传进来）：key 是导航 key，值是真实计数。
+   * 不传或某项缺失时该入口不显示徽标 —— 加载中、失败、403 与 0 都不画徽标。
+   */
+  navBadges?: Record<string, NavBadge>
   children: ReactNode
 }
 
@@ -57,11 +65,30 @@ export function Shell({
   query,
   onQueryChange,
   notifications,
+  navBadges,
   children,
 }: ShellProps) {
   const initial = (session.displayName || session.principal || '?').trim().charAt(0).toUpperCase()
   const displayName = session.displayName || session.principal
-  const navigation = navGroupsFor(caps)
+  // 导航范围：默认「日常」只显示 8 个常用入口，点「全部」/「更多」展开全部。
+  // 状态记在本地与 URL 参数里（`lib/nav.ts` 的 readNavScope/persistNavScope），
+  // 刷新后不丢。`navGroupsFor` 本身不动，全部入口仍在，只是默认不渲染。
+  const [navScope, setNavScope] = useState<NavScope>(() => readNavScope())
+  // 徽标贴在裁剪后的导航项上：App 传进来的只有 > 0 的真数，缺失即不显示。
+  // 手机底栏不动（底栏不贴徽标）。
+  const navigation = navGroupsForScope(caps, navScope, active).map((group) => ({
+    ...group,
+    items: group.items.map((item) => {
+      const badge = navBadges?.[item.key]
+      return badge ? { ...item, badge: badge.value, badgeTone: badge.tone } : item
+    }),
+  }))
+  const dailyCount = dailyNavKeysFor(caps).length
+  const allCount = navGroupsFor(caps).flatMap((group) => group.items).length
+  const changeNavScope = useCallback((scope: NavScope) => {
+    setNavScope(scope)
+    persistNavScope(scope)
+  }, [])
   const mobileKeys = mobileNavKeysFor(caps)
   const roleLabel = identityBarRole(profile)
   // 顶栏品牌与管家页入口只从工作台名字配置读（`lib/workspaceName.ts`）：
@@ -115,15 +142,7 @@ export function Shell({
       <aside className="os-sidebar" aria-label="主导航">
         <div className="os-brand">
           <div className="os-brand-mark">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M12 2.6l7.4 4.3v8.6L12 19.8 4.6 15.5V6.9z"
-                stroke="#fff"
-                strokeWidth="1.6"
-                strokeLinejoin="round"
-              />
-              <circle cx="12" cy="12" r="2.4" fill="#fff" />
-            </svg>
+            <ReactorMark size={22} />
           </div>
           <div>
             <div className="os-brand-name">{workspaceName.name_en}</div>
@@ -132,6 +151,27 @@ export function Shell({
         </div>
 
         <nav className="os-nav">
+          {/* 日常 / 全部切换：默认日常 8 个入口，全部才展开所有入口。 */}
+          <div className="os-nav-scope" role="group" aria-label="导航范围">
+            <button
+              type="button"
+              className="os-nav-scope-btn"
+              data-active={navScope === 'daily' || undefined}
+              aria-pressed={navScope === 'daily'}
+              onClick={() => changeNavScope('daily')}
+            >
+              日常 · {dailyCount}
+            </button>
+            <button
+              type="button"
+              className="os-nav-scope-btn"
+              data-active={navScope === 'all' || undefined}
+              aria-pressed={navScope === 'all'}
+              onClick={() => changeNavScope('all')}
+            >
+              全部 · {allCount}
+            </button>
+          </div>
           {navigation.map((group) => {
             const GroupIcon = group.icon
             const containsActive = group.items.some((item) => item.key === active)
@@ -170,6 +210,16 @@ export function Shell({
               </div>
             )
           })}
+          {/* 日常模式下的「更多」：其余入口没有删，点这里展开全部。 */}
+          {navScope === 'daily' && allCount > dailyCount && (
+            <button
+              type="button"
+              className="os-nav-more"
+              onClick={() => changeNavScope('all')}
+            >
+              更多 · 还有 {allCount - dailyCount} 个入口
+            </button>
+          )}
         </nav>
 
         <div className="os-sidebar-foot">
