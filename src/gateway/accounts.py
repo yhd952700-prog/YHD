@@ -292,7 +292,7 @@ def _require_loopback(request: Request, *, message: str) -> None:
 
 
 _PROOF_MESSAGE = (
-    "本机恢复流程还需要桌面端的一次性证明：请从鎏灏桌面窗口点“打开控制台”"
+    "本机恢复流程还需要桌面端的一次性证明：请从贾维斯桌面窗口点“打开控制台”"
     "重新进入后再试（直接在浏览器里输入地址不算本机证明）。"
 )
 
@@ -321,7 +321,7 @@ def _require_same_user(request: Request) -> None:
     raise deny(
         403,
         CODE_LOCAL_USER_MISMATCH,
-        "该操作只允许启动鎏灏的那个 Windows 账户完成，请回到桌面窗口重试。",
+        "该操作只允许启动贾维斯的那个 Windows 账户完成，请回到桌面窗口重试。",
     )
 
 
@@ -347,7 +347,7 @@ def _require_bootstrap_source(request: Request) -> str:
     raise deny(
         403,
         CODE_RECOVERY_PROOF_REQUIRED,
-        "首次注册需要从鎏灏桌面窗口点“打开控制台”进入后再试"
+        "首次注册需要从贾维斯桌面窗口点“打开控制台”进入后再试"
         "（直接在浏览器里输入地址不算本机可信入口）。",
     )
 
@@ -503,7 +503,7 @@ def _require_initialization_proof(request: Request) -> str:
     raise deny(
         403,
         CODE_RECOVERY_PROOF_REQUIRED,
-        "补全初始化需要桌面端的一次性证明：请从鎏灏桌面窗口点“打开控制台”"
+        "补全初始化需要桌面端的一次性证明：请从贾维斯桌面窗口点“打开控制台”"
         "重新进入后再试（直接在浏览器里输入地址不算本机证明）。",
     )
 
