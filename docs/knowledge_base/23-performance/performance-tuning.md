@@ -1,6 +1,6 @@
 # 性能调优指南
 
-本文档是 LiuHao AI OS 的性能调优总纲：从性能方法论出发，覆盖应用运行时（Python/asyncio）、LLM 调用链路、消息总线与系统级调优。专项主题另见：[缓存策略](caching-strategies.md)、[数据库优化](database-optimization.md)、[API 速率优化](api-rate-optimization.md)。
+本文档是 Jarvis 的性能调优总纲：从性能方法论出发，覆盖应用运行时（Python/asyncio）、LLM 调用链路、消息总线与系统级调优。专项主题另见：[缓存策略](caching-strategies.md)、[数据库优化](database-optimization.md)、[API 速率优化](api-rate-optimization.md)。
 
 ---
 
@@ -46,7 +46,7 @@
 
 ## 性能预算与 SLO
 
-LiuHao AI OS 参考 SLO：
+Jarvis 参考 SLO：
 
 | 指标 | 目标 | 说明 |
 |------|------|------|
