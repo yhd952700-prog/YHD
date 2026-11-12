@@ -1,4 +1,4 @@
-"""鎏灏智能中枢（LiuHao AI OS）Windows 桌面集成层。
+"""贾维斯（Jarvis）Windows 桌面集成层。
 
 本包只做**系统层**支撑，不承载业务逻辑，也不导入或修改
 ``src/gateway``、``src/knowledge``、``src/automation``、``src/intel``、
