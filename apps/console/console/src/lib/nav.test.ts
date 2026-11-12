@@ -1,5 +1,5 @@
 /**
- * 手机端底栏契约 + 六组导航契约。
+ * 手机端底栏契约 + 七组导航契约。
  *
  * 2026-11 Boss 定稿：手机首屏从运行看板换成**企业总览**，并要求底栏加入
  * **贾维斯**且放在第二项 —— 企业总览 / 贾维斯 / 办公室 / 任务 / 知识 / 能力 /
@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { ALL_NAV, MOBILE_NAV_KEYS, NAV_GROUPS, mobileNavKeysFor } from './nav'
+import { ALL_NAV, MOBILE_NAV_KEYS, NAV_GROUPS, mobileNavKeysFor, visibleNavKeys } from './nav'
 import { buildProfile, deriveCaps } from './accountCaps'
 import type { Session } from './auth'
 
@@ -77,14 +77,31 @@ describe('手机端底部导航', () => {
 })
 
 describe('六组导航', () => {
-  test('恰好六组，顺序固定', () => {
+  test('恰好七组，顺序固定', () => {
     expect(NAV_GROUPS.map((group) => group.label)).toEqual([
       '首页',
+      'Owner',
       '办公室',
       '任务',
       '知识',
       '能力',
       '设置',
+    ])
+  })
+
+  test('Owner 组只有四项，且只对 Owner 渲染', () => {
+    const owner = NAV_GROUPS.find((group) => group.key === 'owner')
+    expect(owner?.items.map((item) => item.key)).toEqual([
+      'owner-overview',
+      'owner-members',
+      'owner-tasks',
+      'owner-audit',
+    ])
+    expect(owner?.items.map((item) => item.label)).toEqual([
+      '全局总览',
+      '成员管理',
+      '全部任务',
+      '审计',
     ])
   })
 
@@ -94,9 +111,11 @@ describe('六组导航', () => {
     }
   })
 
-  test('贾维斯在首页组，运行看板不再单独占入口', () => {
+  test('操作台在首页组首位，运行看板不再单独占入口', () => {
     const home = NAV_GROUPS.find((group) => group.key === 'home')
-    expect(home?.items.map((item) => item.key)).toEqual(['enterprise-overview', 'butler'])
+    expect(home?.items.map((item) => item.key)).toEqual(['console', 'enterprise-overview', 'butler'])
+    // 点"首页"组名落到操作台（登录后的默认页），不是企业总览。
+    expect(home?.defaultKey).toBe('console')
     expect(ALL_NAV.some((item) => item.key === 'overview')).toBe(false)
     expect(ALL_NAV.some((item) => item.key === 'workbench')).toBe(false)
   })
@@ -129,5 +148,78 @@ describe('导航去重（截图事故回归）', () => {
         ALL_NAV.findIndex((other) => other.key === item.key) !== index,
     )
     expect(overlaps).toEqual([])
+  })
+})
+
+describe('Owner 专属入口（F 组）', () => {
+  /** Owner 会话：首次注册的账号，后端下发 is_owner。 */
+  function ownerCaps() {
+    const session: Session = {
+      token: 't',
+      principal: 'owner',
+      displayName: 'Owner',
+      scope: 'human',
+      permissions: [],
+      expiresAt: 0,
+      client: 'web',
+      isRoot: true,
+      isOwner: true,
+    }
+    return deriveCaps(
+      buildProfile(
+        session,
+        { members: [{ principal: 'owner', permissions: [], status: 'active' }], count: 1 },
+        'live',
+        null,
+      ),
+    )
+  }
+
+  test('Owner 看得到全部四项 Owner 入口，普通成员一项都看不到', () => {
+    const ownerKeys = visibleNavKeys(ownerCaps())
+    for (const key of ['owner-overview', 'owner-members', 'owner-tasks', 'owner-audit']) {
+      expect(ownerKeys.has(key)).toBe(true)
+    }
+    const memberKeys = visibleNavKeys(memberCaps())
+    for (const key of ['owner-overview', 'owner-members', 'owner-tasks', 'owner-audit']) {
+      expect(memberKeys.has(key)).toBe(false)
+    }
+  })
+
+  test('Owner 入口在 Owner 组（不是设置组），不另开第八组', () => {
+    expect(NAV_GROUPS).toHaveLength(7)
+    const owner = NAV_GROUPS.find((group) => group.key === 'owner')
+    expect(owner?.items.map((item) => item.key)).toEqual([
+      'owner-overview',
+      'owner-members',
+      'owner-tasks',
+      'owner-audit',
+    ])
+    const settings = NAV_GROUPS.find((group) => group.key === 'settings')
+    expect(settings?.items.some((item) => item.key === 'owner-overview')).toBe(false)
+    expect(settings?.items.some((item) => item.key === 'owner-tasks')).toBe(false)
+  })
+
+  test('旧会话没有 is_owner 时回落到 isRoot，Owner 入口不消失', () => {
+    const session: Session = {
+      token: 't',
+      principal: 'owner',
+      displayName: 'Owner',
+      scope: 'human',
+      permissions: [],
+      expiresAt: 0,
+      client: 'web',
+      isRoot: true,
+    }
+    const caps = deriveCaps(
+      buildProfile(
+        session,
+        { members: [{ principal: 'owner', permissions: [], status: 'active' }], count: 1 },
+        'live',
+        null,
+      ),
+    )
+    expect(caps.isOwner).toBe(true)
+    expect(visibleNavKeys(caps).has('owner-overview')).toBe(true)
   })
 })
