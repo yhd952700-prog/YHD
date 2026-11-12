@@ -10,11 +10,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed data is opt-in only (env LIUHAO_DEMO_SEED=1).
+
+    Without it no solution templates or deployments exist; sample
+    solutions must never be mixed into production-facing state by
+    default.
+    """
+    return os.environ.get("LIUHAO_DEMO_SEED") == "1"
+
+
+def _uptime_seconds(deployed_at: Optional[str]) -> Optional[float]:
+    """Real uptime: seconds between deployment time and now.
+
+    Returns None if the deployment time is missing/unparseable
+    instead of a fabricated constant.
+    """
+    if not deployed_at:
+        return None
+    try:
+        deployed = datetime.fromisoformat(deployed_at)
+    except ValueError:
+        return None
+    return max(0.0, round((datetime.utcnow() - deployed).total_seconds(), 2))
 
 
 class SolutionStatus(str, Enum):
@@ -65,10 +91,15 @@ class SolutionManager:
     def __init__(self) -> None:
         self._templates: Dict[str, SolutionTemplate] = {}
         self._deployments: Dict[str, SolutionDeployment] = {}
-        self._seed_sample_data()
+        if _demo_seed_enabled():
+            self._seed_sample_data()
 
     def _seed_sample_data(self) -> None:
-        """Seed with sample solution data."""
+        """Seed with sample solution data (demo mode only).
+
+        Only runs when LIUHAO_DEMO_SEED=1. The templates/deployment
+        below are fictional demo data, never production state.
+        """
         templates = [
             (
                 "sol-customer-support",
@@ -281,7 +312,7 @@ class SolutionManager:
             "status": deployment.status.value,
             "deployed_at": deployment.deployed_at,
             "last_updated": deployment.last_updated,
-            "uptime_seconds": 86400,  # placeholder
+            "uptime_seconds": _uptime_seconds(deployment.deployed_at),
         }
 
     def configure_solution(
@@ -317,6 +348,11 @@ class SolutionManager:
     def get_solution_metrics(self, deployment_id: str) -> Dict[str, Any]:
         """Get metrics for a deployed solution.
 
+        success_rate, avg_response_time_ms and cost_estimate are null
+        (with a note): the deployment records no success/failure
+        counts, latency observations or cost data, so no real values
+        can be computed for them.
+
         Args:
             deployment_id: Deployment identifier.
 
@@ -334,12 +370,22 @@ class SolutionManager:
             "solution_id": deployment.solution_id,
             "period": "last_30_days",
             "metrics": {
-                "tasks_completed": deployment.metrics.get("tasks_handled", 0),
-                "success_rate": 0.95,
-                "avg_response_time_ms": 1200,
-                "user_satisfaction": deployment.metrics.get("satisfaction_score", 0.85),
-                "cost_estimate": 150.0,
+                # 种子键名以客服方案的语义为准：部署的是客服方案，记录的是
+                # tickets_handled（工单数），不是 tasks_handled。B组第二轮
+                # 统一：读方改成 tickets_handled，种子不动。
+                "tasks_completed": deployment.metrics.get("tickets_handled"),
+                "success_rate": None,
+                "avg_response_time_ms": None,
+                "user_satisfaction": deployment.metrics.get("satisfaction_score"),
+                "cost_estimate": None,
             },
+            "note": (
+                "success_rate, avg_response_time_ms and cost_estimate are "
+                "not available: the deployment records no success/failure "
+                "counts, latency observations or cost data. tasks_completed "
+                "and user_satisfaction are null when the deployment records "
+                "no such value."
+            ),
         }
 
 
