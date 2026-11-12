@@ -128,6 +128,45 @@ class CostManager:
         """Usage records whose model has no price data (cost not summed)."""
         return list(self._unknown_records)
 
+    def usage_by_model(self) -> Dict[str, dict]:
+        """Return usage and cost broken down by model.
+
+        B组第二轮补：此前只有总量（``cost_summary``）和按 provider 的预算
+        状态，没有按模型明细。键为 ``"<provider>/<model>"``（同一模型名
+        可能分属不同 provider，定价也不同，必须区分）。每个模型返回
+        provider、input/output/total tokens 与 ``cost_usd``；无价格数据
+        的模型 ``cost_usd`` 为 ``None``（与 ``estimate_cost`` 的约定一致，
+        绝不按 0 计入），并在 ``cost_complete`` 为 False 时标明。
+        """
+        per_model: Dict[str, dict] = {}
+        for record in self._records:
+            key = f"{record.provider.value}/{record.model}"
+            entry = per_model.setdefault(
+                key,
+                {
+                    "provider": record.provider.value,
+                    "model": record.model,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                    "cost_complete": True,
+                },
+            )
+            entry["input_tokens"] += record.input_tokens
+            entry["output_tokens"] += record.output_tokens
+            entry["total_tokens"] += record.input_tokens + record.output_tokens
+            cost = self.estimate_cost(record)
+            if cost is None:
+                entry["cost_complete"] = False
+                entry["cost_usd"] = None
+            elif entry["cost_usd"] is not None:
+                entry["cost_usd"] = round(entry["cost_usd"] + cost, 6)
+        for entry in per_model.values():
+            if entry["cost_usd"] is not None:
+                entry["cost_usd"] = round(entry["cost_usd"], 6)
+        return per_model
+
     def cost_summary(self) -> dict:
         """Report the accumulated cost and whether it is complete.
 
