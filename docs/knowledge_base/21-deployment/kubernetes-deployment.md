@@ -1,6 +1,6 @@
 # Kubernetes 部署指南
 
-本文档提供将 LiuHao AI OS 部署到 Kubernetes 的完整指南，包含全部组件的 YAML 清单：API 网关、智能体运行时、内核服务、PostgreSQL、Redis 与消息总线。适用于生产环境部署，也适用于本地 minikube/kind 验证。
+本文档提供将 Jarvis 部署到 Kubernetes 的完整指南，包含全部组件的 YAML 清单：API 网关、智能体运行时、内核服务、PostgreSQL、Redis 与消息总线。适用于生产环境部署，也适用于本地 minikube/kind 验证。
 
 ---
 
@@ -137,7 +137,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:15-alpine
           ports:
             - containerPort: 5432
           env:
