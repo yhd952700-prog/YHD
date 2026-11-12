@@ -62,6 +62,37 @@ class CostManager:
         token_cost = (record.input_tokens + record.output_tokens) * pricing / 1000
         self.total_cost += token_cost
 
+    def usage_by_model(self) -> Dict[str, Dict[str, Any]]:
+        """Return usage and cost broken down by model.
+
+        B组第二轮补：此前只有总量（``total_cost``）和按 provider 的预算
+        统计，没有按模型明细。每个模型返回 input/output/total tokens 与
+        按 ``track()`` 同一套 provider 定价算出的 ``cost_usd``；没有用量
+        记录的模型不出现（不编零行）。
+        """
+        pricing = {
+            Provider.OPENAI: 0.002,  # $0.002 per 1K tokens
+            Provider.ANTHROPIC: 0.003,
+            Provider.GOOGLE: 0.0025,
+        }
+        per_model: Dict[str, Dict[str, Any]] = {}
+        for record in self.usage_history:
+            entry = per_model.setdefault(
+                record.model,
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.0},
+            )
+            entry["input_tokens"] += record.input_tokens
+            entry["output_tokens"] += record.output_tokens
+            entry["total_tokens"] += record.input_tokens + record.output_tokens
+            entry["cost_usd"] += (
+                (record.input_tokens + record.output_tokens)
+                * pricing.get(record.provider, 0.002)
+                / 1000
+            )
+        for entry in per_model.values():
+            entry["cost_usd"] = round(entry["cost_usd"], 6)
+        return per_model
+
     def apply_budget_policy(self, policy_name: str) -> bool:
         """Apply a budget policy and return if within budget."""
         policy = self.budget_policies.get(policy_name)
