@@ -35,6 +35,9 @@ export const BANNED_ACCOUNT_TERMS = [
 
 export interface AccountCaps {
   isRoot: boolean
+  /** 是否 Owner（超级管理员）。当前单根体系里与 isRoot 同值；导航与
+   *  入口裁剪优先读它，语义上与"能管成员"这类派生能力区分开。 */
+  isOwner: boolean
   canMembers: boolean
   canMatrix: boolean
   canTemplates: boolean
@@ -58,6 +61,10 @@ export interface AccountProfile {
   identityPermissions: string[]
   accountPermissions: string[]
   isRoot: boolean
+  /** 是否 Owner：后端下发的 `is_owner` 为准；旧会话没有该字段时回落到
+   *  isRoot（当前单根体系里根账号就是 Owner）。测试里手工拼的旧 profile
+   *  可以缺省，deriveCaps 会按 false 处理。 */
+  isOwner?: boolean
   /** 能否自助补发本账号的恢复码（根账号 + 登录页自助注册账号）。 */
   canSelfRecover: boolean
   members: AccountMember[]
@@ -77,6 +84,7 @@ export function buildProfile(
   subtreeMemberCount?: number,
 ): AccountProfile {
   const isRoot = session.isRoot
+  const isOwner = session.isOwner ?? session.isRoot
   const self = payload?.members.find((member) => member.principal === session.principal)
   const members = payload?.members ?? []
   const directCount = members.filter((member) => member.principal !== session.principal).length
@@ -90,6 +98,7 @@ export function buildProfile(
     // 里的主体权限，否则成员会丢掉 `account:manage_children`，"我的成员"入口消失。
     accountPermissions: self?.permissions ?? session.permissions,
     isRoot,
+    isOwner,
     canSelfRecover: session.canRotateRecovery === true,
     members,
     memberCount,
@@ -101,10 +110,12 @@ export function buildProfile(
 
 export function deriveCaps(profile: AccountProfile | null): AccountCaps {
   const isRoot = profile?.isRoot === true
+  const isOwner = profile?.isOwner === true
   const permissions = profile?.accountPermissions ?? []
   const canManageChildren = permissions.includes(SCOPE_MANAGE_CHILDREN)
   return {
     isRoot,
+    isOwner,
     canMembers: isRoot,
     canMatrix: isRoot,
     canTemplates: isRoot,
