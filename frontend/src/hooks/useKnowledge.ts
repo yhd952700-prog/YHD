@@ -14,6 +14,11 @@ export interface UploadProgress {
 }
 
 export interface UseKnowledgeOptions {
+  /**
+   * 数据获取函数（集合 / 文档 / 上传 / 删除 / 搜索），全部可选。
+   * 未传入时对应操作静默返回空（搜索返回空列表），不代表后端无数据——
+   * 本组件库未接任何后端。
+   */
   fetchCollections?: () => Promise<KnowledgeCollection[]>;
   fetchDocuments?: (collectionId: string) => Promise<KnowledgeDocument[]>;
   onUpload?: (
@@ -37,6 +42,9 @@ export interface UseKnowledgeResult {
   searchQuery: string;
   searchResults: KnowledgeSearchResult[];
   searching: boolean;
+  /** 最近一次搜索失败的原因（`Error | null`，与 useAgent/useTask 的 error 字段同模式）。
+   * 搜索失败时保留旧的 searchResults，只置此字段，不把失败画成“搜不到”。 */
+  searchError: Error | null;
   setActiveCollection: (id: string | null) => void;
   upload: (files: File[]) => Promise<void>;
   removeDocument: (documentId: string) => Promise<void>;
@@ -69,6 +77,7 @@ export function useKnowledge(options: UseKnowledgeOptions = {}): UseKnowledgeRes
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<Error | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -123,19 +132,24 @@ export function useKnowledge(options: UseKnowledgeOptions = {}): UseKnowledgeRes
     };
   }, [activeCollectionId, fetchDocuments]);
 
-  // 防抖搜索
+  // 防抖搜索：失败时保留旧结果并置 searchError，不清空成“搜不到”。
   useEffect(() => {
     if (!searchQuery.trim() || !onSearch) {
       setSearchResults([]);
+      setSearchError(null);
       return;
     }
     setSearching(true);
     const timer = window.setTimeout(async () => {
       try {
         const results = await onSearch(searchQuery, activeCollectionId ?? undefined);
-        if (mountedRef.current) setSearchResults(results);
-      } catch {
-        if (mountedRef.current) setSearchResults([]);
+        if (mountedRef.current) {
+          setSearchResults(results);
+          setSearchError(null);
+        }
+      } catch (e) {
+        if (mountedRef.current)
+          setSearchError(e instanceof Error ? e : new Error(String(e)));
       } finally {
         if (mountedRef.current) setSearching(false);
       }
@@ -240,6 +254,7 @@ export function useKnowledge(options: UseKnowledgeOptions = {}): UseKnowledgeRes
     searchQuery,
     searchResults,
     searching,
+    searchError,
     setActiveCollection,
     upload,
     removeDocument,
