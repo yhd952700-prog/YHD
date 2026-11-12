@@ -868,15 +868,17 @@ class JiraAdapter(BaseIntegrationAdapter):
 
         Returns:
             List of created JiraAttachment objects.
+
+        Raises:
+            NotImplementedError: Multipart upload is not implemented;
+                this method must never return ``[]`` as if an upload
+                had succeeded while silently dropping the file.
         """
-        # In a real implementation, this would use multipart/form-data
-        # For now, we provide a structured interface
-        self._logger.info(
-            "Attachment upload: %s to %s (%d bytes)",
-            filename, issue_key, len(file_content),
+        raise NotImplementedError(
+            "Jira attachment upload is not implemented: multipart "
+            "upload to rest/api/3/issue/{issue_key}/attachments is not "
+            "wired in this adapter, so the file was not uploaded."
         )
-        # Return placeholder - actual upload would need multipart handling
-        return []
 
     def delete_attachment(self, attachment_id: str) -> bool:
         """Delete an attachment."""
@@ -884,6 +886,9 @@ class JiraAdapter(BaseIntegrationAdapter):
             self._api_call("DELETE", f"rest/api/3/attachment/{attachment_id}")
             return True
         except Exception:
+            self._logger.exception(
+                "Failed to delete Jira attachment %s", attachment_id
+            )
             return False
 
     # ------------------------------------------------------------------
