@@ -49,6 +49,10 @@ import {
   type StepProgress,
 } from '../lib/taskLedger'
 import { Card, Empty, Guard } from '../components/ui'
+import { WorkflowCenter } from './WorkflowCenter'
+import { Goals } from './Goals'
+import { Projects } from './Projects'
+import './MergedPages.css'
 
 /** 页面登记信息：等 `nav.ts` / `App.tsx` 统一接线时直接引用，避免两处各写一份。 */
 export const TASK_CENTER_PAGE = {
@@ -96,7 +100,23 @@ function actionErrorText(error: unknown): string {
   return errorText(error)
 }
 
-export function TaskCenter({ query }: { query: string }) {
+export type TaskCenterTab = 'tasks' | 'workflow' | 'goals' | 'projects'
+
+const TABS: { id: TaskCenterTab; label: string }[] = [
+  { id: 'tasks', label: '任务中心' },
+  { id: 'workflow', label: '工作流' },
+  { id: 'goals', label: '目标与任务' },
+  { id: 'projects', label: '项目' },
+]
+
+export function TaskCenter({
+  query,
+  initialTab = 'tasks',
+}: {
+  query: string
+  initialTab?: TaskCenterTab
+}) {
+  const [tab, setTab] = useState<TaskCenterTab>(initialTab)
   const [statusFilter, setStatusFilter] = useState('')
   const [limit, setLimit] = useState(PAGE_SIZE)
   const path = useMemo(() => tasksPath(statusFilter, limit), [statusFilter, limit])
@@ -236,8 +256,29 @@ export function TaskCenter({ query }: { query: string }) {
   const total = payload?.total ?? 0
   const canLoadMore = payload !== null && limit < MAX_PAGE_SIZE && total > (payload?.items.length ?? 0)
 
+  // 新标签排用 role="tablist"，与下面的七态筛选条（role="group"）是两套
+  // 不同的控件，别混成一套；App.tsx 用 key={shown} 强制按 active 换 tab
+  // 时重挂载，所以这里只用 initialTab 做 useState 初始值即可。
   return (
-    <div className="os-grid">
+    <div>
+      <div className="mp-tabs-bar">
+        <div className="mp-tabs" role="tablist" aria-label="任务中心视图">
+          {TABS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.id}
+              className={`mp-tab${tab === item.id ? ' mp-tab-active' : ''}`}
+              onClick={() => setTab(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {tab === 'tasks' ? (
+      <div className="os-grid">
       <Card title="说明" sub="这个页面能看到什么、看不到什么" span={12}>
         <ul className="os-list">
           <li>任务来自本地台账（`/v1/tasks`），七态齐全：待分配、待执行、执行中、待审核、已完成、失败、已取消。</li>
@@ -560,6 +601,14 @@ export function TaskCenter({ query }: { query: string }) {
       )}
 
       <LedgerStatusCard />
+      </div>
+      ) : tab === 'workflow' ? (
+        <WorkflowCenter query={query} />
+      ) : tab === 'goals' ? (
+        <Goals query={query} />
+      ) : (
+        <Projects query={query} />
+      )}
     </div>
   )
 }
