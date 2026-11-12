@@ -34,7 +34,6 @@ import argparse
 import base64
 import hashlib
 import json
-import locale
 import os
 import re
 import subprocess
@@ -588,7 +587,7 @@ def checklist_rows(repo: Path) -> List[Tuple[str, str, str, str, str]]:
 def render_checklist(repo: Path) -> int:
     rows = checklist_rows(repo)
     missing = [row for row in rows if row[3] == "缺"]
-    print(f"LiuHao 本轮修复核对表 · {repo}")
+    print(f"贾维斯本轮修复核对表 · {repo}")
     print("-" * 100)
     print(f"{'类别':<6} {'条目':<22} {'证据文件':<46} {'状态':<4} 说明")
     for category, item, rel, state, note in rows:
@@ -654,7 +653,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1 if failed else 0
 
-    print(f"LiuHao 冻结前置清单 · {repo}")
+    print(f"贾维斯冻结前置清单 · {repo}")
     print(f"解释器 {python}")
     print(f"结论：{'还差 %d 条，拒绝出包' % len(failed) if failed else '全部通过，可以出包'}"
           f"（{elapsed:.1f}s）")
