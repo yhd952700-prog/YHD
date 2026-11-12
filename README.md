@@ -1,13 +1,14 @@
-# LiuHao AI OS · 鎏灏智能中枢
+# Jarvis · 贾维斯
 
 > **Human-Sovereign Agent Operating System（人类主权自主智能体 OS）。**
 > 由十源 DNA（ULTRON / VISION / ADA / EDITH / FRIDAY / JARVIS / JOCaSTA / KAREN / ENOCH / ZOON）
 > 统一形成。形态是**系统集成**，不是统一人格。
 >
-> **命名口径**：主品牌 **LiuHao AI OS · 鎏灏智能中枢**，品类
+> **命名口径**：主品牌 **Jarvis · 贾维斯**，品类
 > **Human-Sovereign Agent Operating System**。唯一字面来源是
 > [`src/brand.json`](src/brand.json)；代码与文档不得另写一套主名。
-> 历史名称 **LIUHAO X / 鎏灏 X** 已收敛为旧称，不再作为主品牌引用。
+> 历史名称 **LiuHao AI OS · 鎏灏智能中枢 / LIUHAO X / 鎏灏 X** 已收敛为旧称，不再作为主品牌引用。
+> 工作台名字可改：在首次启动向导或控制台「系统设置 → 工作台名字」里改，存在数据目录的 `workspace_settings.json` 里；助手就叫这个名字。
 
 ## 获取与安装（唯一入口）
 
@@ -16,10 +17,12 @@
 页面自身的字节数与哈希随每次发布变化（同日两次实测已不同），本文不写死。
 也可以从本仓库构建输出目录取同一批产物；除这两个来源外，不要从网盘/聊天附件安装：
 
-- 安装包：`dist/installer/` 下 `LiuHao-Setup-<版本>.exe`——文件名、体积、SHA256 以同目录 `SHA256SUMS.txt` / `README-DELIVERY.txt` 为准，本文不写死
+- 安装包：`dist/installer/` 下 `Jarvis-Setup-<版本>.exe`——文件名、体积、SHA256 以同目录 `SHA256SUMS.txt` / `README-DELIVERY.txt` 为准，本文不写死
 - 校验值：`dist/installer/SHA256SUMS.txt`（安装包与升级包两行同表）
-- 升级包（只给已安装的机器）：`dist/release/` 下与安装包同版本的 `liuhao-<版本>-upgrade.zip`
+- 升级包（只给已安装的机器）：`dist/release/` 下与安装包同版本的 `jarvis-<版本>-upgrade.zip`
 - 发布清单：`dist/release/LIUHAO_RELEASE.json`（`version`、`releases[].signature`、`files_count` 在这里；`python -m src.upgrade check --manifest <文件>` 可直接读）
+
+> 安装包仅支持 Windows（`Jarvis-Setup-<版本>.exe`）；Linux/macOS 没有安装包，请用源码启动方式（见下文「5 分钟跑起来」）。
 
 > **版本口径（2026-11-09 核对，不要手改版本号糊平）**
 >
@@ -73,6 +76,7 @@
 **最简单的办法**：双击仓库根目录的 `start-liuhao.bat`。它会起服务并自动打开浏览器；
 关掉窗口（或在窗口里按 `Ctrl+C`）即停止。这是**源码仓库的命令行启动方式**；
 安装版的桌面快捷方式走托盘常驻形态：关窗只是隐藏到托盘，退出用托盘菜单（见 `docs/END-USER-GUIDE.md`）。
+Linux/macOS 用 `./start-liuhao.sh`（与上面 Windows 命令等价，参数同样透传给 `scripts/start_liuhao.py`）。
 
 命令行等价：
 
@@ -84,7 +88,7 @@
 启动器会**等健康探针真正通过**才返回，并打印：
 
 ```
-鎏灏已就绪
+贾维斯已就绪
   控制台    http://127.0.0.1:8080
   API       http://127.0.0.1:8080     文档 http://127.0.0.1:8080/docs
   健康探针  http://127.0.0.1:8080/v1/health
@@ -113,7 +117,7 @@ node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 
 ### 环境要求
 
-- Python 3.11+（仓库自带 `.venv`；依赖见 `requirements.txt`）
+- Python 3.12（仓库自带 `.venv`；依赖见 `requirements.txt`）
 - Node.js（控制台已装好 `node_modules`）
 - **Ollama**（本机 LLM，可选）。默认模型口径：**首启向导默认 `qwen2.5:7b`**，
   **源码冒烟脚本默认 `qwen2.5:3b`**（见 `src/ai/chat.py`）；两者都可在界面/环境变量里改。
