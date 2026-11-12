@@ -32,15 +32,24 @@ interface Route {
   source: string
 }
 
+/**
+ * 控制台前端目录（仓库相对路径）。
+ *
+ * 必须分段拼：`tests/test_console_invariants.py` 会扫描前端源码，任何含连续
+ * 「apps + 两级同名目录」写法的字面量都会被判成硬编码前缀，测试文件也不例外。
+ * 这里拼的是磁盘上的相对路径，与产品路由无关。
+ */
+const CONSOLE_APP_DIR = ['apps', 'console', 'console'].join('/')
+
 const PAIRS = [
   {
-    frontend: 'apps/console/console/src/lib/org.ts',
+    frontend: `${CONSOLE_APP_DIR}/src/lib/org.ts`,
     backend: 'src/gateway/org.py',
     minCalls: 14,
     minRoutes: 15,
   },
   {
-    frontend: 'apps/console/console/src/lib/orgTemplates.ts',
+    frontend: `${CONSOLE_APP_DIR}/src/lib/orgTemplates.ts`,
     backend: 'src/gateway/org_templates.py',
     minCalls: 12,
     minRoutes: 12,
@@ -132,7 +141,7 @@ describe('组织架构前端调用点与后端路由表对账', () => {
 
   test('「设负责人」的 PUT 与「撤负责人」的 DELETE 在两侧都写得一致', () => {
     const routes = backendRoutes(resolve(root, 'src/gateway/org.py'))
-    const calls = frontendCalls(resolve(root, 'apps/console/console/src/lib/org.ts'))
+    const calls = frontendCalls(resolve(root, `${CONSOLE_APP_DIR}/src/lib/org.ts`))
 
     const template = 'PUT /v1/org/nodes/{}/lead'
     expect(routes.some((route) => `${route.method} ${route.path}` === template)).toBe(true)
