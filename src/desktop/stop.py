@@ -1,4 +1,4 @@
-"""停止安装目录下正在运行的鎏灏桌面壳与网关进程（幂等）。
+"""停止安装目录下正在运行的贾维斯桌面壳与网关进程（幂等）。
 
 卸载器在进入文件删除阶段之前调用
 ``runtime\\python.exe -m src.desktop stop --root <安装目录>``。不先停，
@@ -8,7 +8,7 @@
 匹配条件（三条同时满足，避免误杀）：
   * 可执行文件位于 ``root`` 之下；
   * 文件名是 ``python.exe`` / ``pythonw.exe``；
-  * 命令行包含鎏灏入口标记（``liuhao_desktop.py`` / ``launch_installed.py`` /
+  * 命令行包含贾维斯入口标记（``liuhao_desktop.py`` / ``launch_installed.py`` /
     ``https_proxy.py`` / ``-m src.desktop`` / ``-m src.gateway``）。
 
 ``node.exe`` 只在命令行同时出现 ``--vite`` 与本安装根时才算（开发/便携模式的
@@ -60,7 +60,7 @@ def stop_installed(
     *,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
-    """终止 ``root`` 下属于鎏灏的 python/pythonw 进程；没有进程时直接返回。"""
+    """终止 ``root`` 下属于贾维斯的 python/pythonw 进程；没有进程时直接返回。"""
     try:
         import psutil
     except Exception as exc:  # noqa: BLE001 - 打包环境缺 psutil 时如实报错
