@@ -108,7 +108,7 @@ def _conversation_markdown(session_id: str, turns: List[Dict[str, Any]]) -> str:
     ]
     for item in turns:
         role = str(item.get("role") or "")
-        label = "我" if role == "user" else "鎏灏"
+        label = "我" if role == "user" else "贾维斯"
         stamp = _iso_from_epoch(item.get("created_at"))
         lines.append(f"## {label}" + (f" · {stamp}" if stamp else ""))
         lines.append("")
