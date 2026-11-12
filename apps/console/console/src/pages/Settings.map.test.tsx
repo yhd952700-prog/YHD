@@ -82,12 +82,41 @@ describe('系统设置 · 设置分组目录', () => {
     expect(screen.getByText('安全与审计')).toBeTruthy()
     expect(screen.getByText('系统与诊断')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '成员与权限管理' }))
-    expect(onNavigate).toHaveBeenCalledWith('members')
-    fireEvent.click(screen.getByRole('button', { name: '操作记录' }))
-    expect(onNavigate).toHaveBeenCalledWith('audit')
-    fireEvent.click(screen.getByRole('button', { name: '系统状态' }))
-    expect(onNavigate).toHaveBeenCalledWith('status')
+    // 简约版：目录只列设置组自身的 8 项（除本页），被并掉的旧 key
+    //（成员与权限管理 / 操作记录）已不在目录里，改从合并页进。
+    fireEvent.click(screen.getByRole('button', { name: '我的账号与安全' }))
+    expect(onNavigate).toHaveBeenCalledWith('my-account-security')
+    fireEvent.click(screen.getByRole('button', { name: '审批签发' }))
+    expect(onNavigate).toHaveBeenCalledWith('approval')
+    fireEvent.click(screen.getByRole('button', { name: '系统状态与诊断' }))
+    expect(onNavigate).toHaveBeenCalledWith('system-diagnostics')
+  })
+
+  test('三段归属：账号与成员 / 安全与审计 / 系统与诊断各收对条目', () => {
+    renderSettings()
+
+    // 设置组新顺序：settings、my-account-security、approval、backup、
+    // notifications、preflight、about、system-diagnostics；SETTINGS_SECTIONS
+    // 起点不变（settings / approval / system-diagnostics），所以分桶是：
+    // 账号与成员收「我的账号与安全」；安全与审计收审批签发、备份与迁移、
+    // 通知中心、生产预检、关于与隐私；系统与诊断收「系统状态与诊断」。
+    const columns = document.querySelectorAll('.os-settings-map-col')
+    const bySection: Record<string, string[]> = {}
+    columns.forEach((column) => {
+      const title = column.querySelector('.os-settings-map-title')?.textContent ?? ''
+      bySection[title] = [...column.querySelectorAll('button')].map(
+        (button) => button.textContent ?? '',
+      )
+    })
+    expect(bySection['账号与成员']).toEqual(['我的账号与安全'])
+    expect(bySection['安全与审计']).toEqual([
+      '审批签发',
+      '备份与迁移',
+      '通知中心',
+      '生产预检',
+      '关于与隐私',
+    ])
+    expect(bySection['系统与诊断']).toEqual(['系统状态与诊断'])
   })
 
   test('根账号的目录里不出现成员面的「我的账号」', () => {
