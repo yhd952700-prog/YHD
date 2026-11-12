@@ -47,14 +47,14 @@ describe('后端错误文案可读化', () => {
     expect(failure.message).toContain('超出当前额度')
     expect(failure.message).toContain('额度由管理员在启动配置中设定')
     expect(failure.message).toContain('我的 Key')
-    expect(failure.message).toContain('重启鎏灏')
+    expect(failure.message).toContain('重启贾维斯')
     expect(failure.message).not.toContain('权限')
     expect(failure.message).not.toContain('Payment Required')
   })
 
   test('连不上服务（status 0）明确告诉用户先启动服务', () => {
     const failure = describeFailure(null, 0, '', null)
-    expect(failure.message).toContain('鎏灏的本地服务没有运行')
+    expect(failure.message).toContain('贾维斯的本地服务没有运行')
     expect(failure.message).toContain('重试')
   })
 
