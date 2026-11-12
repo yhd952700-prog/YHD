@@ -1,6 +1,6 @@
 # 缓存策略
 
-缓存是智能体系统性价比最高的优化手段：一次 LLM 调用成本是 Redis 查询的一万倍。本文档覆盖 LiuHao AI OS 的多级缓存体系：语义缓存（LLM 结果）、检索缓存、读模型缓存与会话缓存，以及失效策略、穿透/击穿/雪崩防护。
+缓存是智能体系统性价比最高的优化手段：一次 LLM 调用成本是 Redis 查询的一万倍。本文档覆盖 Jarvis 的多级缓存体系：语义缓存（LLM 结果）、检索缓存、读模型缓存与会话缓存，以及失效策略、穿透/击穿/雪崩防护。
 
 ---
 
@@ -144,7 +144,7 @@ async def get_agent_dashboard(agent_id: str) -> dict:
 | Read-Through | 缓存层自己回源 | 多语言共享缓存时 |
 | Write-Behind | 写缓存异步刷库 | 高写低读、可容忍丢失（计数器类） |
 
-LiuHao AI OS 默认 Cache-Aside。
+Jarvis 默认 Cache-Aside。
 
 ---
 
