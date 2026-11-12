@@ -397,7 +397,7 @@ def _run(host: str, port: int) -> int:
     timeout_options = resolve_timeout_options()
     _startup_profile.mark("入口配置解析完成")
     warn_if_exposed(host, port)
-    print(f"鎏灏网关启动： http://{display_host(host)}:{port}  (log_level={log_level})")
+    print(f"贾维斯网关启动： http://{display_host(host)}:{port}  (log_level={log_level})")
     _startup_profile.mark("uvicorn.run：绑定端口并运行 lifespan 启动")
     try:
         server = uvicorn.Server(
