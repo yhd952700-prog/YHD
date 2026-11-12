@@ -1,20 +1,16 @@
 #!/usr/bin/env python
-"""首次运行向导（自用版分发）。
+"""首次运行向导（控制台简化版，一键安装版用）。
 
-目标
-----
-自用版默认 fail-closed：没有注册人类身份 → 没人能登录；没有配置模型 → 聊天
-路由无可用 provider。双击启动后用户面对一个"进不去"的界面，体验是断的。
+只做三件事（都是大白话，不问技术细节）：
 
-这个向导在启动器拉起网关**之前**跑一遍，把最小闭环补齐：
+1. 建一个管理员账号（用户名 + 密码）。密码必须输两次，两次不一样就
+   重输，输空不许通过；建号失败就大声失败并停住，不许返回成功继续走。
+2. 给工作台起个名字：直接回车就用默认「贾维斯」。
+3. 选模型：默认跳过。跳过后在数据目录写一个标记文件，以后每次启动
+   不再追问；登录后在控制台「系统设置 → 模型管理」里再配。没配模型
+   时聊天只会老实提示「未配置模型，请先配置模型密钥」，不编假回复。
 
-1. 检测是否已有可登录的人类身份；没有就引导创建一个管理员（复用
-   ``scripts/register_human_identity.py`` 的注册 + 凭据写入 + 登录校验逻辑）。
-2. 引导选择 provider（Ollama 本地 / OpenAI 兼容云），填模型名；API Key 写入
-   模型配置存储的**加密** SQLite（AES-256-GCM，``src.ai.model_config``），
-   **不**写进 ``.env`` 明文。
-3. 每一步都可跳过；跳过向导会明确打印"现在无法登录 / 聊天不可用"，而不是
-   装作一切就绪。
+不问 Ollama 安装，不问 API Key / base_url——配模型留到控制台里做。
 
 可跳过（``--skip``），适合 CI / 已知已配置的环境。
 """
@@ -75,8 +71,50 @@ def stdin_is_interactive() -> bool:
 
 
 def needs_setup() -> bool:
-    """True 表示首启向导还有必须由人完成的事（账号或模型）。"""
-    return not (_has_loginable_human() and _has_enabled_model())
+    """True 表示首启向导还有必须由人完成的事（账号或模型）。
+
+    模型跳过也算「做完了」：用户跳过一次后写了标记文件，以后启动
+    不再追问（登录后在控制台设置里再配）。
+    """
+    return not (_has_loginable_human() and _has_model_or_skip())
+
+
+#: 模型跳过标记：放在数据目录里（``%LOCALAPPDATA%\\LiuHao\\data`` 或
+#: ``LIUHAO_DATA_DIR``）。用户在向导里跳过选模型后写下这个文件，
+#: 以后每次启动都不再追问；登录后在控制台「系统设置 → 模型管理」里再配。
+MODEL_SKIP_MARKER_NAME = "model_setup_skipped"
+
+
+def _model_skip_marker() -> Path:
+    return resolve_data_dir() / MODEL_SKIP_MARKER_NAME
+
+
+def _model_setup_skipped() -> bool:
+    """True 表示用户之前已在向导里跳过选模型（标记文件还在）。"""
+    try:
+        return _model_skip_marker().is_file()
+    except OSError:  # noqa: BLE001 - 标记读不了就当没跳过，下次再问一次
+        return False
+
+
+def _mark_model_skipped() -> bool:
+    """写下「已跳过选模型」标记；写不进去时返回 False（下次启动再问一次）。"""
+    try:
+        marker = _model_skip_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            "skipped by first-run wizard; configure a model in console settings.\n",
+            encoding="utf-8",
+        )
+        return True
+    except OSError as exc:  # noqa: BLE001 - 标记写不进去不是致命错
+        print(f"  [!!] 跳过标记写不进去（{exc}），下次启动可能还会问一次选模型。", file=sys.stderr)
+        return False
+
+
+def _has_model_or_skip() -> bool:
+    """True 表示已有启用模型，或者用户已明确跳过选模型。"""
+    return _has_enabled_model() or _model_setup_skipped()
 
 
 def needs_account_setup() -> bool:
@@ -276,12 +314,12 @@ def run_wizard(skip: bool = False) -> int:
             print("       runtime\\python.exe scripts\\register_human_identity.py "
                   "--principal <name> --password-stdin")
         print("  !! 若未配置模型，聊天功能不可用。")
-        print("     在「系统设置 → 模型管理」里添加，或重跑本向导。")
+        print("     登录后在「系统设置 → 模型管理」里添加。")
         return 0
 
-    # 已配置完整（有可登录身份 + 有启用模型）→ 不打扰，直接退出。
-    # 这样双击 LiuHao.bat 时向导只在真正需要时弹出来。
-    if _has_loginable_human() and _has_enabled_model():
+    # 已配置完整（有可登录身份 + 有启用模型或已明确跳过选模型）→ 不打扰，
+    # 直接退出。这样双击启动时向导只在真正需要时弹出来。
+    if _has_loginable_human() and _has_model_or_skip():
         print("[ok] 已检测到管理员身份和模型配置，跳过首次运行向导。")
         return 0
 
@@ -315,87 +353,57 @@ def _prompt_secret(label: str) -> str:
         raise WizardAborted("输入流已关闭（命令行窗口被关掉或没有控制台）。") from exc
 
 
+def _prompt_new_password() -> str:
+    """让用户输两次新密码：输空不许通过，两次不一样就重输，直到通过为止。"""
+    while True:
+        print("  登录密码（输入时不显示）：")
+        first = _prompt_secret("  密码: ")
+        if not first:
+            print("  密码不能为空，请重新输入。")
+            continue
+        second = _prompt_secret("  再输一次密码: ")
+        if first != second:
+            print("  两次输入的密码不一样，请重新输入。")
+            continue
+        return first
+
+
 def _run_interactive_setup() -> int:
     print()
     print("=" * 62)
-    print("数据与联网说明")
+    print("贾维斯首次设置：只做三件事，做完就自动启动。")
     print(f"  数据目录：{resolve_data_dir()}")
-    print("  账号、对话、知识库、记忆、审计都写在这里。")
-    print("  只有 API Key 用 AES-256-GCM 加密；对话、知识库、审计是本地明文 SQLite。")
-    print(
-        "  备份=退出后复制整个目录（含 data\\model_config.key 与 "
-        "data\\model_registry.sqlite3）。"
-    )
-    print("  卸载默认保留数据，连续两次确认才会删除。")
-    print("  默认不联网；只有你配置云端模型后，对话内容与检索到的知识片段才会发到")
-    print("  你填写的 base_url。本机 Ollama 的模型推理只连 127.0.0.1，不出网。")
-    print("  「联网检索」默认关闭；只有你在「设置 → 隐私与联网」显式开启后，才会把")
-    print("  提炼后的检索关键词（最多 48 字）发到 hn.algolia.com、api.github.com、")
-    print("  export.arxiv.org 三个公开接口。")
-    print("  只发送提炼后的关键词；不发送你的对话内容、对话历史、个人画像、账号信息或 API Key。")
-    print("  关闭后立即生效，无需重启。不做统计上报，也不自动检查更新。")
+    print("  账号、对话、知识库都存在这里。")
     print("=" * 62)
 
-    # ---- 1. 人类身份 ----
+    # ---- 1. 管理员账号 ----
+    # 建号失败必须停住（返回 1），不许装作成功继续启动：否则用户拿到
+    # 一个能打开但永远登不进去的登录页。
     if _has_loginable_human():
         print()
-        print("[1/2] 已有可登录的人类身份，跳过身份创建。")
+        print("[1/3] 已有可登录的账号，跳过建账号。")
     else:
         print()
-        print("[1/2] 未发现可登录的人类身份 —— 没有它就登不进去。")
+        print("[1/3] 先建一个管理员账号（以后就用它登录）。")
         principal = _prompt("管理员账号（英文，如 liuhao）", default="liuhao")
         display = _prompt("显示名（中文可）", default=principal)
-        print("  登录密码（输入时不显示）：")
-        password = _prompt_secret("  密码: ")
-        if not password:
-            print("  密码不能为空，跳过身份创建。", file=sys.stderr)
-        else:
-            ok = register_admin(principal, display, password)
-            if ok != 0:
-                print("  [FAIL] 身份创建未通过校验（见上方输出）。", file=sys.stderr)
-
-    # ---- 2. 模型 provider ----
-    print()
-    print("[2/2] 选择模型服务商（决定聊天用哪个模型）。")
-    print("  1) Ollama 本地（需先安装 Ollama 并执行 ollama pull <model>）")
-    print("  2) OpenAI 兼容云（接口地址 + API Key）")
-    print("  0) 跳过（没 Key 也能先装；之后在「系统设置 → 模型管理」添加）")
-    print("     DeepSeek Key 申请：https://platform.deepseek.com →「API Keys」")
-    choice = _prompt("选择", default="0")
-    if choice == "1":
-        model = _prompt("模型名（如 qwen2.5:7b）", default="qwen2.5:7b")
-        base_url = _prompt("Ollama 地址", default=OLLAMA_DEFAULT_BASE_URL)
+        password = _prompt_new_password()
         try:
-            result = configure_ollama(model, base_url)
-            print(f"  [ok] 已登记 Ollama 模型 {result['id']}（{result['model']}）")
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
-    elif choice == "2":
-        base_url = _prompt("接口地址 base_url（以 /v1 结尾，如 https://api.deepseek.com/v1）")
-        model = _prompt("模型名（如 deepseek-chat；OpenAI 填 gpt-4o-mini）")
-        api_key = _prompt_secret("  API Key: ")
-        if not base_url or not model or not api_key:
-            print("  接口地址 / 模型名 / API Key 缺一不可，跳过。", file=sys.stderr)
-        else:
-            try:
-                result = configure_openai_compatible(base_url, model, api_key)
-                print(f"  [ok] 已登记模型 {result['id']}（{result['model']}），"
-                      "API Key 已加密存储。")
-                print("       Key 保存在数据目录的 data\\model_registry.sqlite3；"
-                      "解密密钥 data\\model_config.key 在同目录，仅当前 Windows 用户可读。")
-                print("       删除：系统设置 → 模型管理 → 删除该模型（Key 会一起删除）。")
-                print("       联网：对话内容会直接发送到你填写的 base_url，"
-                      "不经过贾维斯服务器。")
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
-    else:
-        print("  [skip] 未配置模型；安装与启动不受影响，"
-              "之后可在「系统设置 → 模型管理」添加。")
+            ok = register_admin(principal, display, password)
+        except Exception as exc:  # noqa: BLE001 - 建号异常必须停住
+            print(f"  [FAIL] 建账号失败：{exc}", file=sys.stderr)
+            print("  启动已停住。请重新双击启动，再试一次。", file=sys.stderr)
+            return 1
+        if ok != 0:
+            print("  [FAIL] 建账号没有通过校验（见上方输出）。", file=sys.stderr)
+            print("  启动已停住。请重新双击启动，再试一次。", file=sys.stderr)
+            return 1
+        print("  [ok] 管理员账号建好了。")
 
-    # ---- 3. 工作台名字（可改，不是写死）----
+    # ---- 2. 工作台名字（可改，不是写死）----
     # 顶栏、登录页和助手都显示这个名字；默认贾维斯，别人用时自己起一个。
     print()
-    print("给工作台起个名字（顶栏、登录页和助手都显示这个名字）。")
+    print("[2/3] 给工作台起个名字（顶栏、登录页和助手都显示这个名字）。")
     print("  直接回车就用默认「贾维斯」；以后随时在控制台「系统设置 → 工作台名字」里改。")
     name_zh = _prompt("工作台名字（中文）", default="贾维斯")
     name_en = _prompt("英文名（可空，留空则与中文名相同）")
@@ -420,6 +428,22 @@ def _run_interactive_setup() -> int:
                 file=sys.stderr,
             )
 
+    # ---- 3. 选模型（默认跳过）----
+    # 跳过就是跳过：不问 Ollama 安装，不问 API Key / base_url，配模型
+    # 留到登录后在控制台「系统设置 → 模型管理」里做。跳过后写标记文件，
+    # 以后每次启动不再重新弹出追问。
+    print()
+    if _has_enabled_model():
+        print("[3/3] 已有启用的模型，跳过选模型。")
+    elif _model_setup_skipped():
+        print("[3/3] 上次已跳过选模型，不再问。")
+    else:
+        print("[3/3] 选模型：这一步可以跳过。")
+        print("  直接回车就跳过；登录后在控制台「系统设置 → 模型管理」里再配。")
+        _prompt("直接回车就跳过选模型")
+        if _mark_model_skipped():
+            print("  [ok] 已跳过选模型；以后启动不再问。")
+
     print()
     print("=" * 62)
     print("向导完成。接着会自动启动服务；服务真正就绪后才会打印可访问地址")
@@ -433,7 +457,7 @@ def _run_interactive_setup() -> int:
         print("[!!] 未配置模型：聊天目前不可用。")
         print("     发送消息只会收到「未配置模型，请先配置模型密钥」的提示，")
         print("     不会生成模拟回答。配好后无需重装：")
-        print("       在「系统设置 → 模型管理」填写密钥并测试连通，或重跑本向导。")
+        print("       登录后在「系统设置 → 模型管理」填写密钥并测试连通。")
     print("=" * 62)
     return 0
 
