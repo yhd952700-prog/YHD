@@ -147,6 +147,76 @@ def test_wizard_auto_skips_when_fully_configured(capsys, isolated_env, monkeypat
     assert "跳过首次运行向导" in out
 
 
+def test_wizard_completion_warns_when_model_skipped(capsys, isolated_env, monkeypatch):
+    """向导完成时模型仍未配：必须明说聊天只会回未配置提示、不编模拟回答。"""
+    monkeypatch.setattr(frw, "_has_loginable_human", lambda: True)
+    monkeypatch.setattr(frw, "_has_enabled_model", lambda: False)
+    # 名字提示用默认值（回车 = 贾维斯）：只给模型选择返回 "0"，不把 "0"
+    # 当成工作台名字存下来。
+    monkeypatch.setattr(
+        frw, "_prompt", lambda label, default=None: "0" if label == "选择" else (default or "")
+    )
+
+    rc = frw._run_interactive_setup()
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "向导完成" in out
+    assert "未配置模型" in out
+    assert "请先配置模型密钥" in out
+    assert "不会生成模拟回答" in out
+
+
+def test_wizard_saves_custom_workspace_name(isolated_env, monkeypatch):
+    """向导里起了新名字：存在隔离的 workspace_settings.json，之后全站读它。"""
+    import json
+
+    from src.brand import resolve_brand
+
+    settings_file = isolated_env / "workspace_settings.json"
+    monkeypatch.setenv("LIUHAO_WORKSPACE_SETTINGS_FILE", str(settings_file))
+    monkeypatch.setattr(frw, "_has_loginable_human", lambda: True)
+    monkeypatch.setattr(frw, "_has_enabled_model", lambda: False)
+    answers = {
+        "选择": "0",
+        "工作台名字（中文）": "阿强",
+        "英文名（可空，留空则与中文名相同）": "",
+    }
+    monkeypatch.setattr(
+        frw, "_prompt", lambda label, default=None: answers.get(label, default or "")
+    )
+
+    rc = frw._run_interactive_setup()
+
+    assert rc == 0
+    assert json.loads(settings_file.read_text(encoding="utf-8")) == {
+        "name_en": "阿强",
+        "name_zh": "阿强",
+    }
+    assert resolve_brand()["name_zh"] == "阿强"
+    assert resolve_brand()["lockup"] == "阿强"
+
+
+def test_wizard_default_name_writes_no_settings_file(isolated_env, monkeypatch):
+    """名字直接回车（默认贾维斯）：不写配置文件，出厂默认继续生效。"""
+    from src.brand import resolve_brand
+
+    settings_file = isolated_env / "workspace_settings.json"
+    monkeypatch.setenv("LIUHAO_WORKSPACE_SETTINGS_FILE", str(settings_file))
+    monkeypatch.setattr(frw, "_has_loginable_human", lambda: True)
+    monkeypatch.setattr(frw, "_has_enabled_model", lambda: False)
+    monkeypatch.setattr(
+        frw, "_prompt", lambda label, default=None: "0" if label == "选择" else (default or "")
+    )
+
+    rc = frw._run_interactive_setup()
+
+    assert rc == 0
+    assert not settings_file.exists()
+    assert resolve_brand()["name_zh"] == "贾维斯"
+    assert resolve_brand()["customized"] is False
+
+
 def test_wizard_stops_when_integrity_key_unwritable(isolated_env, monkeypatch, tmp_path):
     monkeypatch.delenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, raising=False)
     # 指向一个无法创建目录的位置（用文件当目录），密钥落盘必然失败。
