@@ -20,10 +20,10 @@
 
 三个场景
 --------
-1. **无 D 盘**：默认数据目录回退到 ``%LOCALAPPDATA%\\LiuHao\\data``，
+1. **无 D 盘**：默认数据目录回退到 ``%LOCALAPPDATA%\\Jarvis\\data``，
    预填值是完整绝对路径；用户不改、只按「下一步」就能通过第 1 页；完整首启
    提交（``commit``）也能在这个预填目录里跑通。
-2. **D 盘可写**：仍默认 ``D:\\LiuHaoData``——回退只在 D 不可用时发生；
+2. **D 盘可写**：仍默认 ``D:\\JarvisData``——回退只在 D 不可用时发生；
    同时验证「D 存在但不可写」也会回退。
 3. **旧 D 盘标记失效**：``data-dir.txt`` 指向一个不存在的路径时，
    ``src.upgrade.manager`` 读 marker、``scripts.launch_installed`` 拒绝启动并
@@ -94,7 +94,7 @@ def _scenario_no_d_drive(tmp: Path, results: _Results) -> None:
 
     localappdata = tmp / "localappdata"
     localappdata.mkdir(parents=True, exist_ok=True)
-    expected = (localappdata / "LiuHao" / "data").resolve()
+    expected = (localappdata / "Jarvis" / "data").resolve()
 
     env_snapshot = {key: os.environ.get(key) for key in _ENV_KEYS}
     marker_snapshot = gui.DATA_DIR_MARKER
@@ -106,11 +106,11 @@ def _scenario_no_d_drive(tmp: Path, results: _Results) -> None:
 
         # 1a. D 盘不存在。
         gui.D_DRIVE_ROOT = tmp / "no-such-drive-D"
-        gui.DEFAULT_D_DATA_DIR = gui.D_DRIVE_ROOT / "LiuHaoData"
+        gui.DEFAULT_D_DATA_DIR = gui.D_DRIVE_ROOT / "JarvisData"
         gui._d_drive_usable = lambda: False
         prefill = gui.default_data_dir()
         results.check(
-            "无 D 盘：默认数据目录回退到 %LOCALAPPDATA%\\LiuHao\\data",
+            "无 D 盘：默认数据目录回退到 %LOCALAPPDATA%\\Jarvis\\data",
             prefill == expected,
             f"实测={prefill}",
         )
@@ -123,7 +123,7 @@ def _scenario_no_d_drive(tmp: Path, results: _Results) -> None:
         # 1b. D 盘存在但不可写，也必须回退。
         gui.D_DRIVE_ROOT = tmp / "readonly-drive-D"
         gui.D_DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        gui.DEFAULT_D_DATA_DIR = gui.D_DRIVE_ROOT / "LiuHaoData"
+        gui.DEFAULT_D_DATA_DIR = gui.D_DRIVE_ROOT / "JarvisData"
         prefill_unwritable = gui.default_data_dir()
         results.check(
             "D 盘存在但不可写：同样回退到用户目录",
@@ -177,7 +177,7 @@ def _scenario_no_d_drive(tmp: Path, results: _Results) -> None:
             {
                 "data_dir": str(prefill),
                 "principal": "liuhao",
-                "display": "鎏灏管理员",
+                "display": "贾维斯管理员",
                 "password": "liuhao2026",
                 "confirm": "liuhao2026",
                 "model": "skip",
@@ -209,7 +209,7 @@ def _scenario_no_d_drive(tmp: Path, results: _Results) -> None:
 
 
 def _scenario_d_drive_usable(tmp: Path, results: _Results) -> None:
-    """场景 2：D 盘可写 → 仍默认 D:\\LiuHaoData（不误回退）。"""
+    """场景 2：D 盘可写 → 仍默认 D:\\JarvisData（不误回退）。"""
     from scripts import first_run_gui as gui
 
     env_snapshot = os.environ.get("LOCALAPPDATA")
@@ -219,19 +219,19 @@ def _scenario_d_drive_usable(tmp: Path, results: _Results) -> None:
         d_root = tmp / "writable-drive-D"
         d_root.mkdir(parents=True, exist_ok=True)
         gui.D_DRIVE_ROOT = d_root
-        gui.DEFAULT_D_DATA_DIR = d_root / "LiuHaoData"
+        gui.DEFAULT_D_DATA_DIR = d_root / "JarvisData"
         gui._d_drive_usable = lambda: True
 
         prefill = gui.default_data_dir()
-        expected = (d_root / "LiuHaoData").resolve()
+        expected = (d_root / "JarvisData").resolve()
         results.check(
-            "D 盘可写：默认仍是 D:\\LiuHaoData",
+            "D 盘可写：默认仍是 D:\\JarvisData",
             prefill == expected,
             f"实测={prefill}",
         )
         _, error = gui.validate_data_dir(str(prefill))
         results.check(
-            "D 盘可写：D:\\LiuHaoData 预填值本身可写",
+            "D 盘可写：D:\\JarvisData 预填值本身可写",
             error == "",
             error or "可写",
         )
@@ -255,7 +255,7 @@ def _scenario_stale_marker(tmp: Path, results: _Results) -> None:
     # 「父路径是文件」模拟盘符不存在：mkdir 失败方式与拔盘后一致。
     blocker = tmp / "gone-drive"
     blocker.write_text("模拟：这个盘符不存在（这里用一个文件占位）", encoding="utf-8")
-    target = blocker / "LiuHaoData"
+    target = blocker / "JarvisData"
     marker = app_root / "data-dir.txt"
     marker.write_text("\ufeff" + str(target), encoding="utf-8")
 
