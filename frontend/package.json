@@ -1,7 +1,7 @@
 {
   "name": "@liuhao-ai-os/frontend",
   "version": "0.3.0",
-  "description": "LiuHao AI OS - React + TypeScript UI component library",
+  "description": "LiuHao AI OS - React + TypeScript UI component library (not a runnable app: no backend connection, no app entry; hooks return empty lists when no fetcher is passed)",
   "type": "module",
   "license": "MIT",
   "main": "./dist/index.js",
@@ -22,6 +22,7 @@
     "build": "tsc --noEmit && vite build --mode lib",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "node --test src/utils/utils.test.ts src/hooks/useTask.test.ts",
     "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {
