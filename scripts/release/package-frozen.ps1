@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   冻结后一键打包（可重复执行、失败即停）。
 
@@ -16,8 +16,8 @@
     4. 许可证/SBOM 不齐却已出包      → `verify_package_compliance.py --exe`；不 PASS 不写 `SHA256SUMS.txt`
 
   产物命名：
-    <OutRoot>\installer\LiuHao-Setup-<Version>.exe
-    <OutRoot>\release\liuhao-<Version>-upgrade.zip
+    <OutRoot>\installer\Jarvis-Setup-<Version>.exe
+    <OutRoot>\release\jarvis-<Version>-upgrade.zip
     <OutRoot>\installer\SHA256SUMS.txt
     <OutRoot>\FREEZE-RECORD.json      ← 版本/提交/解释器/ISCC/模块数/指纹/哈希
 
@@ -298,7 +298,7 @@ if (Test-Path $OutRoot) {
 # 1.7 dist 现状（只报告，不改动）。
 $distRoot = Join-Path $RepoRoot "dist"
 $distEntries = if (Test-Path $distRoot) { @(Get-ChildItem $distRoot -Force) } else { @() }
-$sameVersionExe = Join-Path $distRoot ("installer\LiuHao-Setup-$Version.exe")
+$sameVersionExe = Join-Path $distRoot ("installer\Jarvis-Setup-$Version.exe")
 if ($distEntries.Count -eq 0) {
     Add-Check "dist 现状" "PASS" "dist\ 为空"
 } elseif (Test-Path $sameVersionExe) {
@@ -533,12 +533,12 @@ Invoke-PyGate "payload 前端同源" @("frontend-payload", "--repo", $RepoRoot, 
 
 # ------------------------------------------------------------ 9. 产物记录
 Write-Step "产物与 SHA256"
-$setupExe = Join-Path $OutRoot ("installer\LiuHao-Setup-$Version.exe")
+$setupExe = Join-Path $OutRoot ("installer\Jarvis-Setup-$Version.exe")
 if (-not (Test-Path $setupExe)) {
-    $candidates = @(Get-ChildItem (Join-Path $OutRoot "installer") -Filter "LiuHao-Setup-*.exe" -ErrorAction SilentlyContinue)
+    $candidates = @(Get-ChildItem (Join-Path $OutRoot "installer") -Filter "Jarvis-Setup-*.exe" -ErrorAction SilentlyContinue)
     if ($candidates.Count -eq 1) { $setupExe = $candidates[0].FullName }
 }
-if (-not (Test-Path $setupExe)) { throw "编译结束但找不到 LiuHao-Setup-$Version.exe（见 $buildLog）" }
+if (-not (Test-Path $setupExe)) { throw "编译结束但找不到 Jarvis-Setup-$Version.exe（见 $buildLog）" }
 
 $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupExe).Hash
 $exeBytes = (Get-Item $setupExe).Length
@@ -912,9 +912,9 @@ if ((Resolve-Path $OutRoot).Path -ne (Resolve-Path $distRoot).Path) {
     if (Test-Path $distSums) {
         $prevCandidates = Get-Content -LiteralPath $distSums -ErrorAction SilentlyContinue |
             ForEach-Object { ($_ -split '\s+')[-1] } |
-            Where-Object { $_ -match '^LiuHao-Setup-(?<v>\d+\.\d+\.\d+)\.exe$' }
+            Where-Object { $_ -match '^Jarvis-Setup-(?<v>\d+\.\d+\.\d+)\.exe$' }
         foreach ($name in $prevCandidates) {
-            $v = [regex]::Match($name, '^LiuHao-Setup-(?<v>\d+\.\d+\.\d+)\.exe$').Groups['v'].Value
+            $v = [regex]::Match($name, '^Jarvis-Setup-(?<v>\d+\.\d+\.\d+)\.exe$').Groups['v'].Value
             $keep = Join-Path $distInstaller "SHA256SUMS-$v.txt"
             if ($v -ne $Version -and -not (Test-Path $keep)) { Copy-Item -LiteralPath $distSums -Destination $keep -Force }
         }
@@ -945,7 +945,7 @@ if ((Resolve-Path $OutRoot).Path -ne (Resolve-Path $distRoot).Path) {
 # LiuHao-Setup-0.1.2.exe，内容不同，没有任何检查吭声。谁是要发的那份只能靠猜。
 # 这里不看版本号，只看「同名文件是否唯一」：多一份不同字节的同名 exe 就失败。
 Write-Step "dist 同名产物冲突检查"
-$distSetupExes = @(Get-ChildItem (Join-Path $RepoRoot "dist") -Recurse -Filter "LiuHao-Setup-*.exe" -File -ErrorAction SilentlyContinue |
+$distSetupExes = @(Get-ChildItem (Join-Path $RepoRoot "dist") -Recurse -Filter "Jarvis-Setup-*.exe" -File -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch '\\_archive\\' })
 $sameNameProblems = @()
 foreach ($group in ($distSetupExes | Group-Object { $_.Name.ToLower() })) {
@@ -964,7 +964,7 @@ if ($sameNameProblems.Count -gt 0) {
     $sameNameProblems | ForEach-Object { Write-Host "  !! $_" -ForegroundColor Red }
     Add-Check "dist 同名产物唯一" "FAIL" (($sameNameProblems -join " | ") + " → 把非发布副本移到 dist\_archive\ 或改名（文件名带哈希）后重跑，别让「哪份要发」靠猜")
 } else {
-    Add-Check "dist 同名产物唯一" "PASS" ("{0} 个非归档 LiuHao-Setup-*.exe，同名均只有 1 个哈希" -f $distSetupExes.Count)
+    Add-Check "dist 同名产物唯一" "PASS" ("{0} 个非归档 Jarvis-Setup-*.exe，同名均只有 1 个哈希" -f $distSetupExes.Count)
 }
 
 # 本门禁在记录落盘之后才跑，把结果补写回记录，避免「记录里的检查项」与实际门禁脱节。
