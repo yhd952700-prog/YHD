@@ -17,7 +17,8 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 | 5 | 取证沙箱 `rmtree` 删除不是安全擦除 | 删除后磁盘/日志/卷影副本仍可能恢复旧证据 | **保持结论**（数据残留；凭证 ACL 已在保留期内收紧，见「取证沙箱删除不是安全擦除」一节） |
 | 6 | 全权模式的「不可逆动作确认」只覆盖删除与命令两类；邮件/消息外发、付款通道当前不存在 | 不存在外发/付款通道，所以没有可确认的对象；一旦接入，必须先在通道上线前接好确认 | **等真有通道时先接确认再上线**（见 §6） |
 | 7 | 孤儿扫描器把 5 条旧登记项报成 stale，其中 3 条是短名碰撞造成的误报 | 若照 stale 警告删条目，`src.gateway.validation`、`src.pipelines.parser`、`src.performance.benchmarks` 会重新变成「未登记的零引用模块」并被门禁拦下 | **已知，仅登记**（见 §7；不删登记、不改扫描器） |
-| 8 | 0.3.0 代码层全量门禁已绿，但发布链未收口（未推送、未换章、未打包、未冒烟） | 最新**可安装**版本仍是 0.2.2；0.3.0 不得对外宣称可安装 | 登记中（见 §8；推送+CI 绿、换章、冻结打包冒烟三步未完成） |
+| 8 | 0.3.0 发布链收口中：本地门禁绿、两处 CI 真红已修并推送，待 CI 全绿 → 换章 → 打包 → 冒烟 | 最新**可安装**版本仍是 0.2.2；0.3.0 不得对外宣称可安装 | 登记中（见 §8；换章、冻结打包冒烟未完成） |
+| 9 | 11 处 Store 的 legacy 缺省路径仍指向仓库根目录点文件，容器镜像里根目录不可写 | 容器/生产布局下懒加载 Store 首次使用会 `sqlite3.OperationalError`（workflow 一处已在启动路径上，已修） | **已知，仅登记**（见 §9；不拦 CI 启动门禁，逐处整改排后续） |
 
 ---
 
@@ -1263,11 +1264,19 @@ payload 的 `app/runtime/Lib/site-packages` 采样，口径是"随包发出的�
 两处 P0 平台缺陷（非 Windows `NameError`、无感登录错误类型不一致）自 `665bc2cf`
 起已不存在于代码中。
 
-**为什么 0.3.0 仍不可安装。** 剩余阻塞全部在发布流程，不在代码：
+**为什么 0.3.0 仍不可安装。** 代码层阻塞已在 2026-11-12 收口四处
+（详见下），剩余阻塞在发布流程：
 
-1. `p36` 未推送到 `origin/release-0.3.0`（登记时 ahead 12 + 本登记提交），
-   CI 最新一轮（`42995983132` @ `d504968d`）仍是 13 job / 12 失败的旧红，
-   不能作为发布凭证。
+1. ~~p36 未推送~~ **已推送**（2026-11-12，`d504968d..dc767887`，5 个提交）。
+   CI 真红逐一归因并修复：① Semgrep B2 形状命中（`confirm.py` fail-closed
+   缺省改具名常量，`f44d39b9`，隔离环境复扫 0 findings，run `43119840379`
+   已转绿）；② Build Verification 容器启动即崩（workflow store 缺省路径落
+   根上不可写，`1dad9658`，见 §9）；③ Linux runner 上 6 条 Windows 中心测试
+   按仓库惯例平台收口（skill_runtime 4 条执行类 + selfupgrade 2 条守卫类，
+   `dc767887`）；④ 3 处环境敏感/真实竞态用例确定性化（alerts 采集器钉良性
+   快照、scheduler 等终态、console Org 放宽 waitFor 上限，`dc767887`）。
+   Integration/Smoke/Guardrails/P0 的红是 CRITICAL-5 设计好的链式阻断
+   （上游红则大声红），不是独立 bug。
 2. `release-lock` 换章漂移未处理：`verify-lock --check-source` 报
    `installer/liuhao.iss 与盖章副本不一致（该换章了）`，退出码 3。
    换章按治理边界只能由老板手动跑 `stamp-lock.py`，AI 不得代做。
@@ -1283,4 +1292,41 @@ payload 的 `app/runtime/Lib/site-packages` 采样，口径是"随包发出的�
 `python -m src.selfupgrade verify-lock --check-source --json` 输出（2026-11-12 07:03
 复测，`source_drift` 仍报 liuhao.iss）；`gh run list` 最新 release-0.3.0 run 为旧红；
 `dist/` 目录清单。
+
+---
+
+## 9. 11 处 Store 的 legacy 缺省路径落在仓库根目录点文件，容器布局不可写（2026-11-12，已知仅登记）
+
+**看到什么。** 下列模块在所有覆盖变量都未设置时，缺省存储路径是
+`<repo_root>/.<文件名>`（仓库根目录直接落文件）。容器镜像以 `USER app` 运行，
+`/app` 根目录属 root 不可写（只有 `data/ logs/ plugins/ run/` 已预建赋权）。
+其中 `workflow` 一处因为在 import 期实例化（`a5879fac` 统一挂载后），
+**容器启动即崩**——已在 `1dad9658` 修复（缺省移到 `<root>/data/`，
+旧文件存在时沿用）；其余 10 处是懒加载/带 env 覆盖，不拦启动门禁，
+但容器里首次使用仍会 `sqlite3.OperationalError` / `PermissionError`：
+
+| 模块 | 缺省路径 | 容器里现状 |
+|---|---|---|
+| `src/workflow/store.py` | `.liuhao_workflows.db` | **已修**（`1dad9658`，移入 `data/`） |
+| `src/security/jwt_handler.py` | `.liuhao_jwt_revocation.db` | verify 脚本以 `LIUHAO_JWT_REVOCATION_DB` 覆盖；裸跑仍不可写 |
+| `src/artifacts/index.py` | `.liuhao_artifacts.db` | 懒加载，首用即崩 |
+| `src/ai/budget.py` | `.liuhao_employee_budgets.json` | 懒加载，首用即崩 |
+| `src/ai/employee_store.py` | `.liuhao_employees.json` | 懒加载，首用即崩 |
+| `src/ai/goal_task_graph.py` | `.planner_state.json` | 懒加载，首用即崩 |
+| `src/gateway/ai_management.py` | `.liuhao_goals.json` | 懒加载，首用即崩 |
+| `src/gateway/skill_store.py` | `.liuhao_skills.json` | 懒加载，首用即崩 |
+| `src/gateway/task_ledger.py` | `.liuhao_tasks.db` | 懒加载，首用即崩 |
+| `src/gateway/skill_bindings.py` | `.liuhao_skill_bindings.json` | 懒加载，首用即崩 |
+| `src/gateway/projects.py` | `.liuhao_projects.json` | 懒加载，首用即崩 |
+
+**为什么现在只修 workflow、其余只登记。** 启动门禁（Build Verification）
+只证明 boot + health，懒加载 Store 不在门禁覆盖里；一次性把 10 处全改，
+等于把「一处启动 bug 的最小修复」扩散成一次无充分复验的大翻修——违反
+本仓库「先归因、最小改动、逐处复验」的纪律。桌面安装布局（装到用户目录、
+根目录可写）不受影响，所以这不拦 0.3.0 出包。
+
+**怎么关。** 逐处把 legacy 缺省移到 `<root>/data/`（沿用 `1dad9658` 的
+连续性回退模式），每处一个提交、带定向回归；或统一走 `resolve_store_path`
+的 data-root 覆盖并在容器入口设 `LIUHAO_DATA_DIR=/app/data`。做完后
+容器模式下逐 Store 首用冒烟。
 
