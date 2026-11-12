@@ -44,7 +44,7 @@ LLM API Key、数据库口令、JWT 签名密钥、Webhook Secret——智能体
 | Sealed Secrets（K8s） | 小团队 K8s | git 可存密文、简单 | 无轮换/审计 |
 | SOPS + age | 小团队 Compose/裸机 | 文件级加密、git 友好 | 手动分发 |
 
-LiuHao AI OS 推荐：**生产用 Vault 或云 Secrets Manager + External Secrets Operator；开发用 SOPS**。
+Jarvis 推荐：**生产用 Vault 或云 Secrets Manager + External Secrets Operator；开发用 SOPS**。
 
 ---
 
