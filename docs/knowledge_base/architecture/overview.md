@@ -1,6 +1,6 @@
 # 架构总览
 
-LiuHao AI OS（鎏灏智能中枢）是一个人类主权自主智能体操作系统（Human-Sovereign Agent Operating System）。本文档从高层次介绍系统架构、设计原则和技术选型。
+Jarvis（贾维斯）是一个人类主权自主智能体操作系统（Human-Sovereign Agent Operating System）。本文档从高层次介绍系统架构、设计原则和技术选型。
 
 ---
 
@@ -74,7 +74,7 @@ L-CORE 是人类与系统交互的主接口，提供多种接入方式：
 
 ## 14 个内核
 
-LiuHao AI OS 的核心是 14 个内核，每个内核负责一组核心能力。
+Jarvis 的核心是 14 个内核，每个内核负责一组核心能力。
 
 ### 智能内核（Intelligence Kernels）— 6 个
 
@@ -173,7 +173,7 @@ LiuHao AI OS 的核心是 14 个内核，每个内核负责一组核心能力。
 
 | 组件 | 技术选择 | 说明 |
 |------|---------|------|
-| 主语言 | Python 3.11+ | 生态丰富，AI 领域事实标准 |
+| 主语言 | Python 3.12 | 生态丰富，AI 领域事实标准 |
 | Web 框架 | FastAPI | 高性能异步，自动生成 API 文档 |
 | 数据库 | PostgreSQL 15+ / SQLite | 生产用 PG，开发/轻量用 SQLite |
 | ORM | SQLAlchemy | Python 最成熟的 ORM |
@@ -259,7 +259,7 @@ LiuHao AI OS 的核心是 14 个内核，每个内核负责一组核心能力。
 
 ## 系统边界
 
-### LiuHao AI OS 负责什么
+### Jarvis 负责什么
 
 - 智能体的生命周期管理
 - 记忆系统和知识管理
@@ -269,7 +269,7 @@ LiuHao AI OS 的核心是 14 个内核，每个内核负责一组核心能力。
 - 安全、审计和合规
 - API 和 SDK 接口
 
-### LiuHao AI OS 不负责什么
+### Jarvis 不负责什么
 
 - 模型训练（只负责推理和微调）
 - 底层基础设施管理（依赖云厂商或自托管）
