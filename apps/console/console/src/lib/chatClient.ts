@@ -1,5 +1,5 @@
 /**
- * 鎏灏对话 HTTP 客户端 — 通过 SSE 流式读取回复。
+ * 贾维斯对话 HTTP 客户端 — 通过 SSE 流式读取回复。
  *
  * 浏览器原生 EventSource 只支持 GET，而后端对话端点是 POST，因此这里用
  * fetch + ReadableStream 手动解析 Server-Sent Events（一行一个 data: 帧）。
