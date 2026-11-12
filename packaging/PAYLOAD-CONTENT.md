@@ -9,8 +9,8 @@
 ## 目录布局
 
 ```
-D:\LiuHao\                    程序目录（升级时整体替换，不含用户数据）
-│                             D 盘不可用 → %LOCALAPPDATA%\Programs\LiuHao
+D:\Jarvis\                    程序目录（升级时整体替换，不含用户数据）
+│                             D 盘不可用 → %LOCALAPPDATA%\Programs\Jarvis
 ├─ runtime\                  离线 CPython 3.12 运行时 + 第三方发行包（含 tcl/tk 数据）
 ├─ src\                      网关 / 内核源码（含 src\desktop 托盘模块）
 ├─ config\                   配置模板（已剔除凭据与私钥）
@@ -63,7 +63,7 @@ D:\LiuHaoData\                用户数据（卸载默认保留）
 | **源码仓库的 `.env`** | 不进包；安装版在 `data/config/app.env` 首次生成 |
 | 开发/测试依赖 | pytest、ruff、mypy、semgrep 等不随包 |
 | Docker / 数据库服务 | 安装版是单机单进程 + SQLite，不依赖 Docker/Postgres |
-| 代码签名 | 项目自签名（`CN=鎏灏智能中枢`）；导入随包信任脚本后属性显示「有效」，但 SmartScreen 仍按未签名处理，可能提示「未知发布者」 |
+| 代码签名 | 项目自签名（`CN=贾维斯`）；导入随包信任脚本后属性显示「有效」，但 SmartScreen 仍按未签名处理，可能提示「未知发布者」 |
 
 ## 与仓库便携包的区别
 
