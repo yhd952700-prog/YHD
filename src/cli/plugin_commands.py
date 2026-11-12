@@ -11,10 +11,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed data is opt-in only (env LIUHAO_DEMO_SEED=1).
+
+    Without it no plugins are reported as installed and the registry
+    is empty; sample plugins must never be mixed into
+    production-facing state by default.
+    """
+    return os.environ.get("LIUHAO_DEMO_SEED") == "1"
 
 
 class PluginStatus(str, Enum):
@@ -52,10 +63,16 @@ class PluginManager:
     def __init__(self) -> None:
         self._plugins: Dict[str, PluginRecord] = {}
         self._registry: Dict[str, Dict[str, Any]] = {}
-        self._seed_sample_data()
+        if _demo_seed_enabled():
+            self._seed_sample_data()
 
     def _seed_sample_data(self) -> None:
-        """Seed with sample plugins and registry data."""
+        """Seed with sample plugins and registry data (demo mode only).
+
+        Only runs when LIUHAO_DEMO_SEED=1. Registry download/rating
+        figures are deterministic demo values (registry index based,
+        not hash(), which is salted per process).
+        """
         sample_plugins = [
             ("plugin-slack", "Slack Integration", "1.2.0", "Integrate with Slack for notifications",
              "liuhao", "notification", ["slack", "messaging"], PluginStatus.ENABLED),
@@ -90,7 +107,7 @@ class PluginManager:
             ("plugin-grafana", "Grafana Integration", "2.0.0", "Grafana dashboards integration",
              "liuhao", "monitoring", ["grafana", "dashboards", "metrics"]),
         ]
-        for pid, name, ver, desc, author, cat, tags in registry_plugins:
+        for idx, (pid, name, ver, desc, author, cat, tags) in enumerate(registry_plugins):
             self._registry[pid] = {
                 "plugin_id": pid,
                 "name": name,
@@ -99,8 +116,8 @@ class PluginManager:
                 "author": author,
                 "category": cat,
                 "tags": tags,
-                "downloads": 1000 + hash(pid) % 5000,
-                "rating": 3.5 + hash(pid) % 15 / 10,
+                "downloads": 1000 + idx * 1000,
+                "rating": round(4.0 + idx * 0.2, 1),
             }
 
     def list_plugins(
