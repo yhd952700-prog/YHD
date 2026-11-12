@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { ApiError, apiFetch } from './api'
 import { LOCAL_SERVICE_OFFLINE_MANUAL, describeDetail, readErrorMessage } from './errorMessage'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
 
@@ -176,60 +177,38 @@ function fallbackStatusMessage(status: number): string {
   return '操作没有完成，请稍后重试；持续出现可导出诊断包。'
 }
 
+/**
+ * 账号面的唯一请求入口 —— 委托给 `api.ts` 的 `apiFetch`，只做账号面自己的
+ * 错误映射，不再自带第二套取数实现。
+ *
+ * 收敛前这里复制了 apiFetch 的全部机制（令牌双写、15 秒超时、401 清会话、
+ * 错误体解析），两处修法必然分叉（例如本文件曾给 FormData 也写
+ * `Content-Type: application/json`，会破坏 multipart 边界，而 apiFetch
+ * 会正确跳过）。收敛后传输语义只有一份，账号面只保留两条自己的规则：
+ *   1. 401 一律中性化成「登录状态已失效，请重新登录」，不把服务端原文
+ *     （例如 `missing bearer token`）透给界面；
+ *   2. 其余错误保留 apiFetch 已归一化的文案与稳定 code，只在文案为空时
+ *      按状态补一句兜底（`isRouteMissing` 依赖 code 为 null 判定「路由未挂载」，
+ *      这里原样透传 code，不改写）。
+ * `exportAllData` 仍走自己的 fetch：它要读原始 `Response`（blob + 文件名），
+ * 不经过 JSON 解析，无法复用 `apiFetch`。
+ */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = tokenHeaders(init?.headers)
-  if (init?.body) headers.set('Content-Type', 'application/json')
-  let response: Response
   try {
-    // 与 api.ts 相同：没有超时的 fetch 会在服务卡住时永远悬着，界面一直转圈。
-    response = await fetch(path, {
-      ...init,
-      headers,
-      signal: init?.signal ?? AbortSignal.timeout(15_000),
-    })
+    return await apiFetch<T>(path, init)
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'TimeoutError') {
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        throw new AccountApiError(401, error.code, '登录状态已失效，请重新登录')
+      }
       throw new AccountApiError(
-        408,
-        null,
-        '这次读取超时（15 秒）。本地服务可能正忙，请重试；如果一直超时，请重启鎏灏后再试。',
+        error.status,
+        error.code,
+        error.message || fallbackStatusMessage(error.status),
       )
     }
-    throw new AccountApiError(0, null, LOCAL_SERVICE_OFFLINE_MANUAL)
+    throw error
   }
-  if (!response.ok) {
-    let code: string | null = null
-    let message = ''
-    try {
-      const body = (await response.json()) as {
-        code?: string
-        detail?: unknown
-        message?: unknown
-      }
-      code = typeof body.code === 'string' ? body.code : null
-      // 与 api.ts 同一条规则：只保留含中文的可读说明，英文原文/机器串不上屏。
-      message = describeDetail(body.detail || body.message)
-    } catch {
-      message = await readErrorMessage(response)
-    }
-    // 令牌失效（过期 / 被改密或授权变更吊销）与"未带令牌"都必须回到登录页，
-    // 不能把 `missing bearer token` 这类协议细节直接摊给用户。
-    if (response.status === 401) {
-      clearSession()
-      try {
-        window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT))
-      } catch {
-        // 非浏览器环境：忽略。
-      }
-      throw new AccountApiError(401, code, '登录状态已失效，请重新登录')
-    }
-    throw new AccountApiError(
-      response.status,
-      code,
-      message || fallbackStatusMessage(response.status),
-    )
-  }
-  return (await response.json()) as T
 }
 
 /** 路由未挂载（而非业务拒绝）——只有这种 404 才能落到桩。 */
