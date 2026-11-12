@@ -132,7 +132,7 @@ _SINGLE_INSTANCE_HANDLE: Any = None
 _ERROR_ALREADY_EXISTS = 183
 
 #: 端口被占用窗口的标题（与 docs/TROUBLESHOOTING-USER-20261108.md 的「有桌面时」一致）。
-PORT_CONFLICT_TITLE = "鎏灏：网关端口被占用"
+PORT_CONFLICT_TITLE = "贾维斯：网关端口被占用"
 PORT_RETRY_LABEL = "关掉占用程序再试"
 PORT_SWITCH_LABEL = "换一个端口继续"
 
@@ -391,7 +391,7 @@ def _raise_foreground(widget_id: int) -> None:
 
 
 class DesktopApp:
-    """装配鎏灏窗口、托盘与网关服务。"""
+    """装配贾维斯窗口、托盘与网关服务。"""
 
     #: 类级默认值：单元测试会用 ``__new__`` 造"裸对象"只测个别方法，
     #: 这些新增字段必须有默认值，不能让方法因缺属性而 AttributeError。
@@ -586,9 +586,9 @@ class DesktopApp:
                     logger.warning("evt=webview2.install_open_failed 浏览器未能打开下载页")
                     # 桌面端不由这里自降级到浏览器：装好 WebView2 再重新打开。
                     _windows_message(
-                        "鎏灏：无法打开下载页",
+                        "贾维斯：无法打开下载页",
                         "没能打开 WebView2 下载页（可能没有网络，或默认浏览器不可用）。\n"
-                        "鎏灏桌面窗口依赖 WebView2；请先解决网络/安装问题，装好后重新打开鎏灏。",
+                        "贾维斯桌面窗口依赖 WebView2；请先解决网络/安装问题，装好后重新打开贾维斯。",
                         warning=True,
                     )
                     return 1
@@ -609,8 +609,8 @@ class DesktopApp:
         except Exception:  # noqa: BLE001 - 缺包/初始化失败都不能静默退出
             logger.exception("原生窗口创建失败")
             _windows_message(
-                "鎏灏：无法创建窗口",
-                "原生窗口组件初始化失败，鎏灏没有启动。\n"
+                "贾维斯：无法创建窗口",
+                "原生窗口组件初始化失败，贾维斯没有启动。\n"
                 "请安装/修复 WebView2 后重新打开；如仍失败，请把日志发给维护者：\n"
                 f"{LOG_DIR}\\desktop.log",
                 warning=True,
@@ -625,9 +625,9 @@ class DesktopApp:
         except Exception:  # noqa: BLE001 - WebView2 初始化失败时给出明确出路
             logger.exception("原生窗口运行失败")
             _windows_message(
-                "鎏灏：窗口启动失败",
-                "鎏灏窗口没能启动（WebView2 可能未正确安装）。\n"
-                "请安装/修复 WebView2 后重新打开鎏灏。",
+                "贾维斯：窗口启动失败",
+                "贾维斯窗口没能启动（WebView2 可能未正确安装）。\n"
+                "请安装/修复 WebView2 后重新打开贾维斯。",
                 warning=True,
             )
         return 0 if (self._boot_result or {}).get("started") else 1
@@ -754,10 +754,10 @@ class DesktopApp:
         if self._tray is not None and not self._closing:
             self._tray.set_tooltip(self._tooltip_text())
 
-        # 桌面语境只说「鎏灏窗口」，地址只属于浏览器模式（不写进状态窗口）。
+        # 桌面语境只说「贾维斯窗口」，地址只属于浏览器模式（不写进状态窗口）。
         if started:
             if "console" in self._labels:
-                self._labels["console"].config(text="鎏灏窗口：已就绪（首屏为登录页）")
+                self._labels["console"].config(text="贾维斯窗口：已就绪（首屏为登录页）")
             if self._stop_result is None and "stop" in self._labels:
                 # _begin_boot 写的是"正在重新启动"；启动成功后不能留在窗口里。
                 self._labels["stop"].config(text="最近停止：—（本次尚未停止过）")
@@ -790,9 +790,9 @@ class DesktopApp:
                 session = self._bootstrap_auto_login()
                 if "console" in self._labels:
                     self._labels["console"].config(
-                        text="鎏灏窗口：已就绪（已自动登录）"
+                        text="贾维斯窗口：已就绪（已自动登录）"
                         if session
-                        else "鎏灏窗口：已就绪（首屏为登录页）"
+                        else "贾维斯窗口：已就绪（首屏为登录页）"
                     )
             self._start_state_poller()
             if self.window_mode == WINDOW_NATIVE and self._native is not None:
@@ -808,7 +808,7 @@ class DesktopApp:
                 self._open_in_browser()
         elif self._native is not None and not self._closing and not has_conflict:
             state = gate.get("state")
-            title = "鎏灏启动超时" if state == "timeout" else "鎏灏暂时无法启动"
+            title = "贾维斯启动超时" if state == "timeout" else "贾维斯暂时无法启动"
             detail = str(gate.get("detail") or "").strip() or "网关没有在预期时间内就绪。"
             if not started and self.service.last_error:
                 detail = f"{detail}\n最近一次错误：{self.service.last_error}"
@@ -818,13 +818,13 @@ class DesktopApp:
             state = gate.get("state")
             detail = str(gate.get("detail") or "")[:250]
             if state == "ready":
-                self._tray.notify("鎏灏已就绪", "双击托盘图标，或选「打开鎏灏窗口」。")
+                self._tray.notify("贾维斯已就绪", "双击托盘图标，或选「打开贾维斯窗口」。")
             elif state == "degraded":
-                self._tray.notify("鎏灏已启动（部分组件未就绪）", detail, warning=True)
+                self._tray.notify("贾维斯已启动（部分组件未就绪）", detail, warning=True)
             elif state == "timeout":
-                self._tray.notify("鎏灏启动超时", detail, warning=True)
+                self._tray.notify("贾维斯启动超时", detail, warning=True)
             else:
-                self._tray.notify("鎏灏启动失败", detail, warning=True)
+                self._tray.notify("贾维斯启动失败", detail, warning=True)
 
         if not started and not self._closing and has_conflict:
             self._prompt_port_conflict(conflict)
@@ -874,7 +874,7 @@ class DesktopApp:
             ("startup", "启动："),
             ("health", "健康："),
             ("provider", "Provider："),
-            ("console", "鎏灏窗口："),
+            ("console", "贾维斯窗口："),
             ("data", "数据目录："),
             ("tray", "托盘："),
             ("stop", "最近停止："),
@@ -884,7 +884,7 @@ class DesktopApp:
             self._labels[key] = row
 
         self._labels["data"].config(text=f"数据目录：{DATA_DIR}")
-        self._labels["console"].config(text="鎏灏窗口：正在启动…")
+        self._labels["console"].config(text="贾维斯窗口：正在启动…")
         self._labels["stop"].config(text="最近停止：—（本次尚未停止过）")
         self._labels["next"].config(text="下一步：正在启动，通常几秒内完成…")
 
@@ -958,7 +958,7 @@ class DesktopApp:
         if not (CONSOLE_DIST / "index.html").is_file():
             tk.Label(
                 content,
-                text=f"注意：未找到控制台构建产物 {CONSOLE_DIST}，鎏灏窗口的登录页会 404（API 仍可用）。",
+                text=f"注意：未找到控制台构建产物 {CONSOLE_DIST}，贾维斯窗口的登录页会 404（API 仍可用）。",
                 fg="#a33a00",
                 wraplength=460,
                 justify=tk.LEFT,
@@ -1023,7 +1023,7 @@ class DesktopApp:
     # ------------------------------------------------------------------ #
     def _console_url(self) -> str:
         # 不写死 8080 兜底：端口未分配时宁可返回空串，也不能拼出一个可能是
-        # 别人服务的地址（P0：8080 被占用时会把占用者的页面当成鎏灏打开）。
+        # 别人服务的地址（P0：8080 被占用时会把占用者的页面当成贾维斯打开）。
         base = self.service.base_url
         return base.rstrip("/") + "/" if base else ""
 
@@ -1093,10 +1093,10 @@ class DesktopApp:
         return _with_web_mode(self._console_url_with_proof())
 
     def _gateway_status(self) -> tuple[bool, str]:
-        """打开任何页面前的身份校验：进程在、端口有、健康接口认鎏灏。
+        """打开任何页面前的身份校验：进程在、端口有、健康接口认贾维斯。
 
         只看 ``console_ok`` 或端口号是不够的：8080 可能被代理/Node/别的应用
-        占着，直接打开会把占用者的页面当鎏灏展示（P0-1）。
+        占着，直接打开会把占用者的页面当贾维斯展示（P0-1）。
         """
         if not self.service.is_running():
             return False, "网关进程未运行（服务已停止或启动失败）"
@@ -1113,7 +1113,7 @@ class DesktopApp:
         detail = f"（占用者：{owner}）" if owner else ""
         return (
             False,
-            f"端口 {port} 上的服务没有通过鎏灏健康校验{detail}；"
+            f"端口 {port} 上的服务没有通过贾维斯健康校验{detail}；"
             "可能被其他程序占用，或网关正在退出。",
         )
 
@@ -1125,9 +1125,9 @@ class DesktopApp:
             self._labels["next"].config(text=f"下一步：{text}")
         elif self._tray is not None:
             with contextlib.suppress(Exception):
-                self._tray.notify("鎏灏：服务未就绪", text, warning=True)
+                self._tray.notify("贾维斯：服务未就绪", text, warning=True)
         else:
-            _windows_message("鎏灏：服务未就绪", text, warning=True)
+            _windows_message("贾维斯：服务未就绪", text, warning=True)
 
     def _open_in_browser(self) -> None:
         """显式动作：只有托盘菜单或 ``--web`` 才会走到这里。"""
@@ -1139,7 +1139,7 @@ class DesktopApp:
         if not url:
             self._notify_unavailable("在浏览器中打开", "网关没有可用的发布地址")
             return
-        logger.info("用户选择在浏览器中打开鎏灏（网页模式）：%s", url.split("#", 1)[0])
+        logger.info("用户选择在浏览器中打开贾维斯（网页模式）：%s", url.split("#", 1)[0])
         try:
             webbrowser.open(url)
         except Exception as exc:  # noqa: BLE001 - 打开失败不能静默
@@ -1148,9 +1148,9 @@ class DesktopApp:
                 self._labels["next"].config(text="下一步：浏览器没能打开，请检查默认浏览器设置。")
             else:
                 _windows_message(
-                    "鎏灏：浏览器没能打开",
+                    "贾维斯：浏览器没能打开",
                     "系统默认浏览器没有响应。请检查默认浏览器设置，"
-                    "或从开始菜单重新打开鎏灏。",
+                    "或从开始菜单重新打开贾维斯。",
                     warning=True,
                 )
 
@@ -1164,11 +1164,11 @@ class DesktopApp:
             if not ok:
                 # 不打开任何外部页面；窗口本身是我们的，只展示明确的状态说明。
                 self._native.show_error(
-                    "鎏灏服务未就绪",
+                    "贾维斯服务未就绪",
                     reason + "\n\n可从托盘菜单「重新启动服务」再试。",
                     show=True,
                 )
-                self._notify_unavailable("打开鎏灏窗口", reason)
+                self._notify_unavailable("打开贾维斯窗口", reason)
                 return
             gate = (self._boot_result or {}).get("gate") or {}
             if self._native.loaded_url is None and gate.get("console_ok"):
@@ -1204,7 +1204,7 @@ class DesktopApp:
         """第二个桌面实例：唤起已运行的状态窗口 + 给用户一句人话。
 
         三个层次的降级，全部失败也不会静默退出：
-        1. 请已运行的托盘窗口显示鎏灏窗口（等价于点菜单「打开鎏灏窗口」）；
+        1. 请已运行的托盘窗口显示贾维斯窗口（等价于点菜单「打开贾维斯窗口」）；
         2. 找不到窗口（例如上一实例正处在启动竞态里）→ 告诉用户去通知区找图标；
         3. 两者都不可达 → 明确说明服务无响应与处理办法。
 
@@ -1220,27 +1220,27 @@ class DesktopApp:
         healthy = bool(url) and self._service_healthy(url)
         if shown:
             if healthy:
-                summary = "鎏灏已经在运行，已为你唤起鎏灏窗口。"
+                summary = "贾维斯已经在运行，已为你唤起贾维斯窗口。"
             else:
                 summary = (
-                    "鎏灏已经在运行，但服务暂时没有响应。\n\n"
-                    "已尝试唤起鎏灏窗口；若没有出现，请从托盘菜单选「重新启动服务」，"
+                    "贾维斯已经在运行，但服务暂时没有响应。\n\n"
+                    "已尝试唤起贾维斯窗口；若没有出现，请从托盘菜单选「重新启动服务」，"
                     "本次没有启动第二个服务。"
                 )
         elif healthy:
-            summary = "鎏灏已经在运行。请用任务栏通知区的托盘图标打开鎏灏窗口。"
+            summary = "贾维斯已经在运行。请用任务栏通知区的托盘图标打开贾维斯窗口。"
         elif url:
             pid = self._published_holder().get("pid")
             who = f"（pid={pid}）" if pid else ""
             summary = (
-                f"鎏灏已经在运行，但服务暂时没有响应{who}。\n\n"
-                "请在任务管理器结束该进程，然后重新打开鎏灏；"
+                f"贾维斯已经在运行，但服务暂时没有响应{who}。\n\n"
+                "请在任务管理器结束该进程，然后重新打开贾维斯；"
                 "本次没有启动第二个服务。"
             )
         else:
-            summary = "鎏灏已经在运行。请使用任务栏通知区（托盘）的图标打开窗口或控制台。"
+            summary = "贾维斯已经在运行。请使用任务栏通知区（托盘）的图标打开窗口或控制台。"
         logger.info(
-            "已有鎏灏实例在运行：已唤起窗口=%s，服务可访问=%s，地址=%s",
+            "已有贾维斯实例在运行：已唤起窗口=%s，服务可访问=%s，地址=%s",
             shown,
             healthy,
             url or "-",
@@ -1250,9 +1250,9 @@ class DesktopApp:
             return
         with contextlib.suppress(Exception):
             if shown or healthy:
-                messagebox.showinfo("鎏灏已在运行", summary)
+                messagebox.showinfo("贾维斯已在运行", summary)
             else:
-                messagebox.showwarning("鎏灏已在运行（服务无响应）", summary)
+                messagebox.showwarning("贾维斯已在运行（服务无响应）", summary)
 
     @staticmethod
     def _service_healthy(url: str) -> bool:
@@ -1268,7 +1268,7 @@ class DesktopApp:
         target = urlunsplit((parts.scheme or "http", netloc, "/v1/health", "", ""))
         info = http_json(target, timeout=2.0)
         body = info.get("body")
-        # 只认鎏灏自己的网关：端口上可能是别的程序，2xx 不代表"我们的服务活着"。
+        # 只认贾维斯自己的网关：端口上可能是别的程序，2xx 不代表"我们的服务活着"。
         return bool(info.get("ok")) and isinstance(body, dict) and body.get("service") == "liuhao-gateway"
 
     def _published_holder(self) -> dict[str, Any]:
@@ -1502,7 +1502,7 @@ class DesktopApp:
         detail = f"\n占用者：{owner}" if owner else ""
         if not suggested:
             _windows_message(
-                "鎏灏：网关端口被占用",
+                "贾维斯：网关端口被占用",
                 f"端口 {port} 已被占用{detail}\n\n"
                 "找不到可用的替代端口。请关掉占用程序后，从托盘菜单选「重新启动服务」；"
                 "或查看日志/诊断包。",
@@ -1518,7 +1518,7 @@ class DesktopApp:
                 f"是否改用空闲端口 {suggested} 继续启动？\n"
                 f"（选「否」可先关掉占用程序，再从托盘菜单选「重新启动服务」。）"
             ),
-            "鎏灏：网关端口被占用",
+            "贾维斯：网关端口被占用",
             0x00000004 | 0x00000020,  # MB_YESNO | MB_ICONQUESTION
         )
         return ("use", suggested) if result == 6 else ("cancel", None)
@@ -1560,7 +1560,7 @@ class DesktopApp:
         self._log_port_event(f"evt=port.switch old={old_port} new={new_port} action=use")
         if "console" in self._labels:
             # 桌面语境不展示 URL；真实端口只用于网关本身，不再让用户记地址。
-            self._labels["console"].config(text=f"鎏灏窗口：正在改用端口 {new_port} 启动…")
+            self._labels["console"].config(text=f"贾维斯窗口：正在改用端口 {new_port} 启动…")
         self._begin_boot(note=f"正在改用端口 {new_port}")
 
     def _generate_diagnostics(self) -> None:
@@ -1663,7 +1663,7 @@ class DesktopApp:
         open_repair_dialog(self)
 
     def _open_url(self, url: str) -> None:
-        """修复面板里的"打开设置页"：桌面端一律回到鎏灏窗口，不走系统浏览器。"""
+        """修复面板里的"打开设置页"：桌面端一律回到贾维斯窗口，不走系统浏览器。"""
         ok, reason = self._gateway_status()
         if not ok:
             self._notify_unavailable("打开设置页", reason)
@@ -1741,7 +1741,7 @@ class DesktopApp:
             self._labels["startup"].config(text="启动：已停止（网关已关闭）")
         if "console" in self._labels:
             self._labels["console"].config(
-                text="鎏灏窗口：服务已停止；点托盘菜单「重新启动服务」可恢复。"
+                text="贾维斯窗口：服务已停止；点托盘菜单「重新启动服务」可恢复。"
             )
         self._refresh_status_text(running=False)
         restart = self._restart_after_stop and not self._closing
@@ -2063,7 +2063,7 @@ class DesktopApp:
         if not self._get_token():
             self._notify_tray(
                 "未登录，无法暂停 AI 员工接活",
-                "请先在鎏灏窗口登录；未登录时托盘不显示任务状态。",
+                "请先在贾维斯窗口登录；未登录时托盘不显示任务状态。",
                 warning=True,
             )
             self._show_window()
@@ -2176,7 +2176,7 @@ class DesktopApp:
             MB_ICONQUESTION = 0x00000020
             MB_DEFBUTTON2 = 0x00000100
             result = ctypes.windll.user32.MessageBoxW(
-                None, text, "鎏灏：记住登录", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
+                None, text, "贾维斯：记住登录", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
             )
             return int(result) == 6  # IDYES
         except Exception:  # noqa: BLE001 - 弹窗失败按"不同意"处理
