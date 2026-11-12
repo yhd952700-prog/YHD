@@ -115,7 +115,7 @@ def run() -> int:
         return EXIT_ENV
 
     received: list[str] = []
-    widget = tray.SystemTray(received.append, tooltip="鎏灏（托盘恢复验收）")
+    widget = tray.SystemTray(received.append, tooltip="贾维斯（托盘恢复验收）")
     if not widget.start(timeout=5.0):
         widget.stop()
         _say("FAIL", f"托盘启动失败（图标没能进入通知区）：{widget.error}")
