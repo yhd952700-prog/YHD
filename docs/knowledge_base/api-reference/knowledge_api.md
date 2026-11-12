@@ -581,7 +581,7 @@ Content-Type: application/json
 
 ```json
 {
-  "query": "LiuHao AI OS 支持哪些部署方式？",
+  "query": "Jarvis 支持哪些部署方式？",
   "base_ids": ["kb-abc123"],
   "model": "qwen2.5:7b",
   "options": {
@@ -597,8 +597,8 @@ Content-Type: application/json
 
 ```json
 {
-  "query": "LiuHao AI OS 支持哪些部署方式？",
-  "answer": "LiuHao AI OS 支持以下几种部署方式：1. 源码部署...",
+  "query": "Jarvis 支持哪些部署方式？",
+  "answer": "Jarvis 支持以下几种部署方式：1. 源码部署...",
   "sources": [
     {
       "document": "部署指南.md",
