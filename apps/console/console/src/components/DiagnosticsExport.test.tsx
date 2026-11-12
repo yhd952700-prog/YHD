@@ -88,13 +88,13 @@ describe('一键诊断包入口', () => {
   })
 
   test('失败时展示中文原因并给出重试建议', async () => {
-    mockedExport.mockRejectedValue(new Error('无法连接到鎏灏服务。请确认服务已经启动、网络连接正常，然后重试。'))
+    mockedExport.mockRejectedValue(new Error('无法连接到贾维斯服务。请确认服务已经启动、网络连接正常，然后重试。'))
 
     render(<DiagnosticsExport />)
     fireEvent.click(screen.getByRole('button', { name: '导出诊断包' }))
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toContain('无法连接到鎏灏服务')
+      expect(screen.getByRole('alert').textContent).toContain('无法连接到贾维斯服务')
     })
     expect(screen.getByRole('alert').textContent).toContain('重试')
   })
