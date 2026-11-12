@@ -1,6 +1,6 @@
 # Jira 集成指南
 
-Jira 集成让 LiuHao AI OS 智能体参与项目管理流程：自动建单、工单分类与优先级建议、状态同步、Sprint 报告生成、需求文档问答。本文档覆盖 Jira Cloud API 认证、Webhook、双向同步与常见自动化场景。Jira Data Center（自建版）的差异在最后说明。
+Jira 集成让 Jarvis 智能体参与项目管理流程：自动建单、工单分类与优先级建议、状态同步、Sprint 报告生成、需求文档问答。本文档覆盖 Jira Cloud API 认证、Webhook、双向同步与常见自动化场景。Jira Data Center（自建版）的差异在最后说明。
 
 ---
 
