@@ -41,6 +41,19 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+#: 良性环境快照：全部 7 个真实指标键、全零值（对所有生产规则阈值都是安全的）。
+#: 用于把「环境输入」从用例中确定性化——规则引擎、store、读取面保持真实闭环。
+_BENIGN_SNAPSHOT = {
+    "memory_usage_percent": 0.0,
+    "cpu_usage_percent": 0.0,
+    "error_rate_percent": 0.0,
+    "latency_p99_ms": 0.0,
+    "service_heartbeat_interval": 0.0,
+    "audit_log_lag_seconds": 0.0,
+    "audit_write_failing": 0.0,
+}
+
+
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     """每用例独立临时告警库；绝不会写真实 store。"""
@@ -49,10 +62,22 @@ def _isolate(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     # 在构造 app 之前先注册规则，使 store 落到当前用例的临时路径。
     from src.observability.alerts import install_production_rules
+    from src.observability.metrics import MetricCollector
 
+    # 环境隔离：/v1/alerts 的指标规则评估的是**真实环境指标**（CPU/内存/延迟），
+    # 在负载高的 CI runner 上会合法触发（run 43119840379 实测：2 核 runner
+    # 满载时 cpu_usage_high firing，把「诚实空态」用例顶红）——那是产品在如实
+    # 上报环境，不是读取面造假。本文件验证的是读取面契约，不是环境本身，因此
+    # 把采集器钉在全零良性快照；firing 能力的反证由
+    # test_enabled_rule_fires_on_breach_disabled_does_not 直接驱动规则对象完成。
+    monkeypatch.setattr(
+        MetricCollector,
+        "collect_snapshot",
+        lambda self: dict(_BENIGN_SNAPSHOT),
+    )
     install_production_rules()
     app = get_app()
     with TestClient(app) as c:

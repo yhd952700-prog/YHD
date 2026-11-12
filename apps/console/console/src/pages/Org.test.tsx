@@ -536,10 +536,15 @@ describe('组织架构页', () => {
     await waitFor(() => expect(screen.getByText('检查结论：可以执行。')).toBeTruthy())
 
     fireEvent.click(screen.getByRole('button', { name: '确认移动' }))
-    await waitFor(() => {
-      const call = state.calls.find((item) => item.url === '/v1/org/nodes/n2/move')
-      expect(call?.body).toEqual({ parent_id: 'n4' })
-    })
+    await waitFor(
+      () => {
+        const call = state.calls.find((item) => item.url === '/v1/org/nodes/n2/move')
+        expect(call?.body).toEqual({ parent_id: 'n4' })
+      },
+      // CI 实测（run 43119840379）：满载 runner 上接口落地可超 waitFor 默认 1s，
+      // 契约是「最终落地且 body 正确」，放宽等待上限而非放宽断言。
+      { timeout: 5000 },
+    )
   })
 
   test('设负责人会写入真实接口', async () => {
@@ -550,12 +555,16 @@ describe('组织架构页', () => {
     fireEvent.change(await screen.findByLabelText('选择 AI 员工'), { target: { value: '小鎏' } })
     fireEvent.click(screen.getByRole('button', { name: '保存负责人' }))
 
-    await waitFor(() => {
-      const call = state.calls.find(
-        (item) => item.method === 'PUT' && item.url === '/v1/org/nodes/n2/lead',
-      )
-      expect(call?.body).toEqual({ subject_type: 'employee', subject_id: '小鎏', title: '' })
-    })
+    await waitFor(
+      () => {
+        const call = state.calls.find(
+          (item) => item.method === 'PUT' && item.url === '/v1/org/nodes/n2/lead',
+        )
+        expect(call?.body).toEqual({ subject_type: 'employee', subject_id: '小鎏', title: '' })
+      },
+      // 同上：满载 runner 上放宽等待上限（run 43119840379 实测偶发）。
+      { timeout: 5000 },
+    )
   })
 
   test('移除成员遇到下级汇报时，必须勾选一并解除才可继续', async () => {

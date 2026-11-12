@@ -24,6 +24,13 @@ from fastapi.testclient import TestClient
 
 from src.gateway.skills import router as skills_router
 
+#: 真正执行技能脚本的用例只在 Windows 跑：运行时在非 Windows 上按设计
+#: 诚实拒绝（SkillRuntimeError「技能脚本执行目前只支持 Windows」），
+#: 这些用例断言的 ok/timeout/blocked 状态只有在 Windows 才会出现。
+WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt", reason="技能脚本执行只支持 Windows（运行时在其它平台按设计拒绝）"
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
@@ -122,6 +129,7 @@ print(json.dumps({"summary": "你好 " + name, "ok": True}, ensure_ascii=False))
 """
 
 
+@WINDOWS_ONLY
 def test_install_enable_run_requires_approval_then_executes(client):
     skill = _install(client, "hello-runner", HAPPY_SCRIPT)
     assert skill["runtime"]["installed"] is True
@@ -222,6 +230,7 @@ def test_remembered_approval_can_be_revoked(client):
     assert after["state"] == "pending_approval", after
 
 
+@WINDOWS_ONLY
 def test_timeout_kills_the_process(client):
     skill = _install(
         client,
@@ -244,6 +253,7 @@ def test_timeout_kills_the_process(client):
     assert run["duration_ms"] < 20000
 
 
+@WINDOWS_ONLY
 def test_child_process_is_blocked_by_job_limit(client):
     script = """
 import json, subprocess, sys
@@ -269,6 +279,7 @@ print(json.dumps({"summary": outcome}, ensure_ascii=False))
     assert "blocked" in run["summary"], run
 
 
+@WINDOWS_ONLY
 def test_write_outside_workspace_is_blocked(client):
     script = """
 import json, os

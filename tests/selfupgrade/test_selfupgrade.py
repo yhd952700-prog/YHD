@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,7 @@ def _make_lock(root: Path, *, isc_content: bytes | None = None) -> Path:
     return lock
 
 
+@pytest.mark.skipif(os.name != "nt", reason="安装目标白名单是 Windows 安装布局（D:\\ 盘符），非 Windows 上无意义")
 def test_install_target_guard_accepts_test_and_rejects_live():
     install, data = paths.assert_safe_test_target(r"D:\LiuHaoTest", r"D:\LiuHaoTestData")
     assert install.name == "LiuHaoTest"
@@ -196,6 +198,7 @@ def test_policy_requires_refusal_list_and_test_targets(tmp_path: Path):
         load_policy(lock)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="卸载/停服守卫的白名单断言基于 Windows 安装布局（D:\\ 盘符）")
 def test_uninstall_and_stop_installed_reject_live_targets():
     """卸载/停服同样只许落测试目录：碰到线上目录必须在动手之前就拒绝。"""
     for live in (r"D:\LiuHao", r"D:\LiuHaoData", r"D:\LiuHao\logs", r"D:\LiuHaoSmoke\..\LiuHao"):

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -195,6 +196,18 @@ def test_cross_thread_start_really_fires_job(_isolate_env, tmp_path):
         assert started["ok"] is True, host.start_error
         assert fired_event.wait(5) is True, "任务在 5s 内没有被真正触发"
         assert fired == {"value": 11}
+
+        # handler 在任务体**内部**置位 fired_event；completed 终态要等 handler
+        # 返回、宿主落库之后才出现（真实生命周期）。满载 runner 上主线程此刻
+        # 立刻读会拿到 'running'（run 43117487158 实测）——按真实生命周期等
+        # 终态出现再断言，契约不变：任务真的跑完且恰好一次。
+        deadline = time.monotonic() + 10.0
+        job = scheduler.get_job(job_id)
+        while (
+            job is not None and job["status"] == "running" and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+            job = scheduler.get_job(job_id)
 
         job = scheduler.get_job(job_id)
         assert job is not None
