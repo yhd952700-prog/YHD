@@ -25,7 +25,7 @@ from .reminder_notify import Notifier, NotifyResult, build_default_notifier
 logger = logging.getLogger(__name__)
 
 #: 与提醒共用同一套出口；标题保持产品口径，不带内部术语。
-GOAL_NOTIFY_TITLE = "鎏灏任务通知"
+GOAL_NOTIFY_TITLE = "贾维斯任务通知"
 _GOAL_TEXT_LIMIT = 60
 
 
