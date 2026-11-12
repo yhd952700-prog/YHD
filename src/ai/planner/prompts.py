@@ -27,7 +27,7 @@ from typing import List, Dict, Any, Optional
 # System prompt — the planner's identity and constraints
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """你是鎏灏（LIUHAO）AI 操作系统的智能规划引擎。
+SYSTEM_PROMPT = """你是贾维斯（JARVIS）AI 操作系统的智能规划引擎。
 
 你的职责是将用户的自然语言目标分解为结构化的任务计划。
 你必须严格遵守以下规则：
