@@ -312,6 +312,9 @@ export function Office({
                 </div>
               </dl>
 
+              {/* 计数是真 0 不是缺失冒充：EmployeeStats 四项计数为契约必填
+                  （lib/contracts.ts），且 lib/employees.ts 在 stats 缺失时已
+                  补 0；这里的 ?? 0 只防 stats 整体缺失的兜底。 */}
               <div className="os-station-foot">
                 <span>
                   队列 {employee.stats?.task_queue_length ?? 0} · 完成{' '}
@@ -372,6 +375,7 @@ export function Office({
                 </div>
                 <div>
                   <dt>统计</dt>
+                  {/* 同上：四项计数为契约必填，缺失时 lib/employees.ts 已补 0，?? 0 只是兜底。 */}
                   <dd>
                     提交 {opened.stats?.total_tasks_submitted ?? 0} · 完成{' '}
                     {opened.stats?.total_tasks_completed ?? 0} · 失败{' '}
