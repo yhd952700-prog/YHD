@@ -4,7 +4,7 @@
 为什么用随包 Python 而不是 PowerShell/cmd
 ----------------------------------------
 Inno 的 [UninstallRun] 只能把 ``{app}`` 直接套进命令行。路径里一旦出现
-单引号（例如 ``D:\\O'Brien 鎏灏\\app``），PowerShell 的 ``'...'`` 字面量就会
+单引号（例如 ``D:\\O'Brien 贾维斯\\app``），PowerShell 的 ``'...'`` 字面量就会
 被提前闭合；``&``、``^``、``(``、``)`` 在 cmd/PowerShell 里也有各自的解释
 规则。用 ``runtime\\python.exe`` 直接接收 argv（Inno 走 CreateProcess，不经过
 shell），任何合法 Windows 路径都不会被当成语法。
