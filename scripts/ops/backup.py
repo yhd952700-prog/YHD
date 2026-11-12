@@ -364,7 +364,7 @@ class BackupManager:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backup management for LiuHao AI OS")
+    parser = argparse.ArgumentParser(description="Backup management for Jarvis")
     parser.add_argument("action", choices=["create", "list", "restore", "cleanup"])
     parser.add_argument("--name", help="Backup name (for create)")
     parser.add_argument("--backup", help="Backup file path (for restore)")
