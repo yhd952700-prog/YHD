@@ -7,7 +7,7 @@ import {
 import { Failure } from './ui'
 
 /**
- * 审批中心（Approval Gateway）—— 内核层真拦截的人工授权入口。
+ * 审批签发（Approval Gateway）—— 内核层真拦截的人工授权入口。
  *
  * 这是一个**展示型**组件：所有策略状态与副作用都由 App 层持有
  * （单一数据源），因为侧栏也要显示同一份真实状态。
@@ -217,7 +217,7 @@ export function ApprovalCenter({
   return (
     <div className="panel approval-panel">
       <div className="panel-title">
-        <span>审批中心</span>
+        <span>审批签发</span>
         <span className="biz-en">Approval Gateway</span>
         <span className={`health-pill ${state.authed ? 'ok' : 'na'}`}>
           {state.authed ? '已认证' : '未认证'}
