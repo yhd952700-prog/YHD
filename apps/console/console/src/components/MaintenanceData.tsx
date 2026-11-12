@@ -178,6 +178,8 @@ export function MaintenanceData() {
         sub="历史数据里无法判定归属的文档已保留原文：可查看预览与引用，也可逐条删除。本轮暂不支持自动归属或重新入库。"
         span={12}
       >
+        {/* // GAP: 自动归属 / 重新入库未上线——归属无法判定正是这些文档留在这里的原因；
+            卡片副标题已写明“暂不支持”，此处不画归属/入库按钮。 */}
         <Guard
           loading={knowledge.loading}
           error={knowledge.error}
