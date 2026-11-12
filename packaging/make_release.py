@@ -2,7 +2,7 @@
 
 产物（同一目录，默认 ``dist\\release``）：
 
-    liuhao-<version>-upgrade.zip  升级包（安装树 ZIP；不能单独运行）
+    jarvis-<version>-upgrade.zip  升级包（安装树 ZIP；不能单独运行）
     LIUHAO_RELEASE.json       发布清单（schema = liuhao.release-manifest/1）
     dev-path-report.txt       开发目录路径扫描结果（排障用，不参与升级）
 
@@ -646,11 +646,11 @@ def build(args: argparse.Namespace) -> int:
             )
 
     released_at = args.released_at or _now_iso()
-    zip_name = f"liuhao-{version}-upgrade.zip"
+    zip_name = f"jarvis-{version}-upgrade.zip"
     zip_path = out_dir / zip_name
     manifest_path = out_dir / MANIFEST_NAME
 
-    _log(f"鎏灏发布包构建  version={version}")
+    _log(f"贾维斯发布包构建  version={version}")
     _log(f"  来源    {'安装树 ' if app_tree else '仓库 '}{root}")
     _log(f"  输出    {out_dir}")
 
@@ -769,7 +769,7 @@ def build(args: argparse.Namespace) -> int:
         "sha256": sha256,
         "size": size,
         "notes": args.notes or (
-            f"LiuHao AI OS · 鎏灏智能中枢 {version}：源码与文档整包；不含模型权重、不含任何密钥。"
+            f"Jarvis · 贾维斯 {version}：源码与文档整包；不含模型权重、不含任何密钥。"
             "安装器未做代码签名，Windows 首次运行需选择“仍要运行”。"
         ),
         "released_at": released_at,
