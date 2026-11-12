@@ -57,6 +57,27 @@ def client():
         yield test_client
 
 
+def _reset_plugin_state() -> None:
+    """Clear the plugins API in-memory stores.
+
+    No demo seed data is loaded by default (LIUHAO_DEMO_SEED is unset),
+    so every plugins test starts from the honest empty state.
+    """
+    plugins_api._installed.clear()
+    plugins_api._registry.clear()
+
+
+def _seed_demo_plugins() -> None:
+    """Explicitly load the opt-in demo seed data.
+
+    Positive-path plugins tests call this themselves: the seed is
+    fictional demo data, so it must never leak in implicitly — a test
+    that needs a Slack/Trello plugin says so here, in the open.
+    """
+    _reset_plugin_state()
+    plugins_api._seed_sample_data()
+
+
 # =====================================================================
 # Agents API Tests
 # =====================================================================
@@ -373,13 +394,44 @@ class TestTasksAPI:
         response = client.delete(f"/tasks/{task_id}")
         assert response.status_code == 204
 
+    def test_create_task_with_due_date(self, client):
+        """B组第二轮 M4：任务截止时间字段应创建即透出。"""
+        response = client.post("/tasks", json={
+            "title": "Dated Task",
+            "priority": "high",
+            "due_date": "2026-12-31T23:59:59",
+        })
+        assert response.status_code == 201
+        data = response.json()
+        assert data["due_date"] == "2026-12-31T23:59:59"
+        assert data["priority"] == "high"
+        assert data["progress_pct"] == 0.0
+
+    def test_create_task_without_due_date_is_null(self, client):
+        response = client.post("/tasks", json={"title": "No Due Date"})
+        assert response.status_code == 201
+        assert response.json()["due_date"] is None
+
+    def test_update_task_due_date(self, client):
+        create_resp = client.post("/tasks", json={"title": "Update Due"})
+        task_id = create_resp.json()["id"]
+        response = client.put(f"/tasks/{task_id}", json={"due_date": "2027-01-15T12:00:00"})
+        assert response.status_code == 200
+        assert response.json()["due_date"] == "2027-01-15T12:00:00"
+
     def test_execute_task(self, client):
+        # No executor is wired to this endpoint: executing must say so
+        # (501) and leave the task untouched instead of pretending to run.
         create_resp = client.post("/tasks", json={"title": "Exec Task", "priority": "high"})
         task_id = create_resp.json()["id"]
         response = client.post(f"/tasks/{task_id}/execute", json={})
-        assert response.status_code == 202
-        data = response.json()
-        assert data["status"] == "running"
+        assert response.status_code == 501
+        assert "not implemented" in response.json()["detail"].lower()
+        assert client.get(f"/tasks/{task_id}").json()["status"] == "pending"
+
+    def test_execute_task_not_found(self, client):
+        response = client.post("/tasks/nonexistent-id/execute", json={})
+        assert response.status_code == 404
 
     def test_task_result(self, client):
         create_resp = client.post("/tasks", json={"title": "Result Task"})
@@ -389,9 +441,19 @@ class TestTasksAPI:
         assert "status" in response.json()
 
     def test_cancel_task(self, client):
+        # A pending task has nothing running to cancel: cancel is a
+        # no-op for it and the status honestly stays "pending".
         create_resp = client.post("/tasks", json={"title": "Cancel Task"})
         task_id = create_resp.json()["id"]
-        client.post(f"/tasks/{task_id}/execute", json={})
+        response = client.post(f"/tasks/{task_id}/cancel")
+        assert response.status_code == 200
+        assert response.json()["status"] == "pending"
+
+    def test_cancel_queued_task(self, client):
+        # Only a queued/running task can actually be cancelled.
+        create_resp = client.post("/tasks", json={"title": "Cancel Queued Task"})
+        task_id = create_resp.json()["id"]
+        assert client.put(f"/tasks/{task_id}", json={"status": "queued"}).status_code == 200
         response = client.post(f"/tasks/{task_id}/cancel")
         assert response.status_code == 200
         assert response.json()["status"] == "cancelled"
@@ -629,16 +691,43 @@ class TestCostAPI:
 
 
 class TestPluginsAPI:
-    """Tests for plugins API endpoints."""
+    """Tests for plugins API endpoints.
+
+    Honest default: no demo seed is loaded, so no plugins are
+    installed and the registry is empty. Positive-path tests opt in
+    explicitly via ``_seed_demo_plugins()`` (see the helper above the
+    ``client`` fixture) instead of relying on import-time fake data.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_plugin_state(self):
+        _reset_plugin_state()
+        yield
+        _reset_plugin_state()
 
     def test_list_plugins(self, client):
         response = client.get("/plugins")
         assert response.status_code == 200
         data = response.json()
-        assert "total" in data
-        assert data["total"] > 0
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    def test_list_plugins_with_demo_seed(self, client):
+        _seed_demo_plugins()
+        response = client.get("/plugins")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 4
+        assert {item["id"] for item in data["items"]} == {
+            "plugin-slack", "plugin-github", "plugin-jira", "plugin-notion",
+        }
 
     def test_get_plugin(self, client):
+        response = client.get("/plugins/plugin-slack")
+        assert response.status_code == 404
+
+    def test_get_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
         response = client.get("/plugins/plugin-slack")
         assert response.status_code == 200
         data = response.json()
@@ -650,6 +739,12 @@ class TestPluginsAPI:
         assert response.status_code == 404
 
     def test_install_plugin(self, client):
+        # Nothing is in the registry without the demo seed.
+        response = client.post("/plugins/install", json={"plugin_id": "plugin-trello"})
+        assert response.status_code == 404
+
+    def test_install_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
         response = client.post("/plugins/install", json={"plugin_id": "plugin-trello"})
         assert response.status_code == 201
         data = response.json()
@@ -658,27 +753,55 @@ class TestPluginsAPI:
 
     def test_enable_plugin(self, client):
         response = client.post("/plugins/plugin-jira/enable")
+        assert response.status_code == 404
+
+    def test_enable_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
+        response = client.post("/plugins/plugin-jira/enable")
         assert response.status_code == 200
         assert response.json()["status"] == "enabled"
 
     def test_disable_plugin(self, client):
+        response = client.post("/plugins/plugin-slack/disable")
+        assert response.status_code == 404
+
+    def test_disable_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
         response = client.post("/plugins/plugin-slack/disable")
         assert response.status_code == 200
         assert response.json()["status"] == "disabled"
 
     def test_upgrade_plugin(self, client):
         response = client.post("/plugins/plugin-github/upgrade", json={})
+        assert response.status_code == 404
+
+    def test_upgrade_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
+        response = client.post("/plugins/plugin-github/upgrade", json={})
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "upgraded"
-        assert "new_version" in data
+        assert data["old_version"] == "2.0.1"
+        assert data["new_version"] == "3.0.0"
 
     def test_get_plugin_config(self, client):
+        response = client.get("/plugins/plugin-slack/config")
+        assert response.status_code == 404
+
+    def test_get_plugin_config_with_demo_seed(self, client):
+        _seed_demo_plugins()
         response = client.get("/plugins/plugin-slack/config")
         assert response.status_code == 200
         assert "config" in response.json()
 
     def test_update_plugin_config(self, client):
+        response = client.put("/plugins/plugin-slack/config", json={
+            "config": {"webhook_url": "https://hooks.slack.com/test"}
+        })
+        assert response.status_code == 404
+
+    def test_update_plugin_config_with_demo_seed(self, client):
+        _seed_demo_plugins()
         response = client.put("/plugins/plugin-slack/config", json={
             "config": {"webhook_url": "https://hooks.slack.com/test"}
         })
@@ -690,16 +813,34 @@ class TestPluginsAPI:
         response = client.get("/plugins/registry/search", params={"query": "integration"})
         assert response.status_code == 200
         data = response.json()
-        assert "items" in data
-        assert "total" in data
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    def test_search_registry_with_demo_seed(self, client):
+        _seed_demo_plugins()
+        response = client.get("/plugins/registry/search", params={"query": "integration"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 4
 
     def test_get_registry_plugin(self, client):
+        response = client.get("/plugins/registry/plugin-sentry")
+        assert response.status_code == 404
+
+    def test_get_registry_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
         response = client.get("/plugins/registry/plugin-sentry")
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "Sentry Integration"
 
     def test_uninstall_plugin(self, client):
-        client.post("/plugins/install", json={"plugin_id": "plugin-sentry"})
+        response = client.delete("/plugins/plugin-sentry")
+        assert response.status_code == 404
+
+    def test_uninstall_plugin_with_demo_seed(self, client):
+        _seed_demo_plugins()
+        assert client.post("/plugins/install", json={"plugin_id": "plugin-sentry"}).status_code == 201
         response = client.delete("/plugins/plugin-sentry")
         assert response.status_code == 204
+        assert client.get("/plugins/plugin-sentry").status_code == 404
