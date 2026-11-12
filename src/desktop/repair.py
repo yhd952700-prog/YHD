@@ -517,7 +517,7 @@ def open_model_settings(
         + ("模型名已放入剪贴板。" if copied else "")
         + "这一版界面不能自动把光标放进 Key 输入框，需要点「编辑」后填写。"
         if opened
-        else f"没能自动打开鎏灏窗口（{error}）；请在鎏灏窗口里手动进入设置页。"
+        else f"没能自动打开贾维斯窗口（{error}）；请在贾维斯窗口里手动进入设置页。"
     )
     return _result(
         "open_model_settings",
