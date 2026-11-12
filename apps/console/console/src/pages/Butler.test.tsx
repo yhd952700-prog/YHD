@@ -1,5 +1,5 @@
 /**
- * 鎏灏管家页面级回归。钉住这一版新增的真实能力：
+ * 贾维斯管家页面级回归。钉住这一版新增的真实能力：
  *   1. 一句话提交真的发 `POST /v1/goals` 且 `background: true`；
  *   2. 运行中显示增量任务快照，**缺字段/少任务不清空已有卡片**；
  *   3. 结束后任务卡显示员工、状态、耗时，汇总含评估与可点开的产物；
@@ -47,7 +47,7 @@ const EMPLOYEES = {
         {
           id: 'agent-1',
           agent_type: 'executor',
-          name: '鎏灏执行体',
+          name: '贾维斯执行体',
           status: 'idle',
           current_task: null,
           completed_tasks: 0,
@@ -370,7 +370,7 @@ describe('贾维斯 · 页内切换', () => {
   })
 })
 
-describe('鎏灏管家 · 一句话与运行中快照', () => {
+describe('贾维斯管家 · 一句话与运行中快照', () => {
   test('一句话输入走后台目标，运行中显示可推进的计时与拆解状态', async () => {
     detailPlan = [RUNNING_DETAIL]
     renderPage()
@@ -445,14 +445,14 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
 
     await waitFor(() => expect(screen.getByText('汇总会议记录')).toBeTruthy())
     expect(screen.getByText('排队')).toBeTruthy()
-    expect(screen.getByText('小鎏（鎏灏执行体）')).toBeTruthy()
+    expect(screen.getByText('小鎏（贾维斯执行体）')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '刷新状态' }))
     await waitFor(() => expect(screen.getByText('进行中')).toBeTruthy())
 
     // 第二次快照只有 { id, status }：名称、指派、描述都必须保留，卡片不能消失。
     expect(screen.getByText('汇总会议记录')).toBeTruthy()
-    expect(screen.getByText('小鎏（鎏灏执行体）')).toBeTruthy()
+    expect(screen.getByText('小鎏（贾维斯执行体）')).toBeTruthy()
     expect(screen.getByText('读取本周会议记录')).toBeTruthy()
   })
 
@@ -464,7 +464,7 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
 
     const card = screen.getByText('汇总会议记录').closest('article') as HTMLElement
     expect(within(card).getByText('已完成')).toBeTruthy()
-    expect(within(card).getByText('小鎏（鎏灏执行体）')).toBeTruthy()
+    expect(within(card).getByText('小鎏（贾维斯执行体）')).toBeTruthy()
     expect(within(card).getByText('3.5 秒')).toBeTruthy()
 
     expect(screen.getByText(/共 2 项任务/)).toBeTruthy()
@@ -582,7 +582,7 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
   })
 })
 
-describe('鎏灏管家 · 审批与单任务重试', () => {
+describe('贾维斯管家 · 审批与单任务重试', () => {
   test('审批类失败给「待确认」与「待我确认」入口；普通失败不被误标', async () => {
     const onOpenApproval = vi.fn()
     detailPlan = [APPROVAL_DETAIL]
@@ -649,7 +649,7 @@ describe('鎏灏管家 · 审批与单任务重试', () => {
   })
 })
 
-describe('鎏灏管家 · 单独指派', () => {
+describe('贾维斯管家 · 单独指派', () => {
   test('选员工 + 写任务后发 POST /v1/goals/assign，汇总明确标为单独指派', async () => {
     detailPlan = [{ ...RUNNING_DETAIL, assigned_agent: 'agent-1' }]
     renderPage()
@@ -657,7 +657,7 @@ describe('鎏灏管家 · 单独指派', () => {
 
     fireEvent.change(screen.getByLabelText('派给谁'), { target: { value: 'agent:agent-1' } })
     fireEvent.change(screen.getByLabelText('任务'), { target: { value: '把周报合并成一份' } })
-    fireEvent.click(screen.getByRole('button', { name: /派给 小鎏 · 鎏灏执行体/ }))
+    fireEvent.click(screen.getByRole('button', { name: /派给 小鎏 · 贾维斯执行体/ }))
 
     await waitFor(() => expect(assignBodies.length).toBe(1))
     expect(assignBodies[0]).toMatchObject({
@@ -713,7 +713,7 @@ describe('鎏灏管家 · 单独指派', () => {
   })
 })
 
-describe('鎏灏管家 · 待我确认', () => {
+describe('贾维斯管家 · 待我确认', () => {
   test('队列显示动作 / 风险 / 被拦时间，批准发送队列返回的请求体', async () => {
     pendingItems = [PENDING_ITEM]
     renderPage()
@@ -854,7 +854,7 @@ describe('鎏灏管家 · 待我确认', () => {
 })
 
 /** 中文输入法组词中按 Enter 是"选词"，不能把半截拼音当目标提交。 */
-describe('鎏灏管家 · 输入法回车', () => {
+describe('贾维斯管家 · 输入法回车', () => {
   function posts(): Array<[RequestInfo | URL, RequestInit | undefined]> {
     return fetchMock.mock.calls.filter(
       ([url, init]) => String(url) === '/v1/goals' && (init as RequestInit | undefined)?.method === 'POST',
