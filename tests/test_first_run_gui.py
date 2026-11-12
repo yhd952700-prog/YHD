@@ -574,7 +574,7 @@ def test_check_page_buttons_exist_and_are_clickable(isolated_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 「进入鎏灏」这一跳的兜底：不许静默丢弃点击，也不许让按钮永久停在禁用态。
+# 「进入贾维斯」这一跳的兜底：不许静默丢弃点击，也不许让按钮永久停在禁用态。
 # ---------------------------------------------------------------------------
 
 _WINDOW_SKIP = pytest.mark.skipif(
@@ -625,7 +625,7 @@ def _all_green() -> list:
 
 @_WINDOW_SKIP
 def test_finish_while_checking_is_queued_then_auto_enters(isolated_env):
-    """自检未完成时点「进入鎏灏」：必须排队并在自检收尾后自动进入，而不是静默丢弃。"""
+    """自检未完成时点「进入贾维斯」：必须排队并在自检收尾后自动进入，而不是静默丢弃。"""
     _skip_without_desktop()
     log_path = isolated_env / "logs" / "first_run.log"
     window = _open_window(isolated_env, log_path)
@@ -706,7 +706,7 @@ def test_check_timeout_restores_enter_button_with_chinese_hint(isolated_env):
 
         assert window._check_running is False
         assert window._next.cget("state") == "normal"
-        assert window._next.cget("text") == "进入鎏灏"
+        assert window._next.cget("text") == "进入贾维斯"
         assert window._check_summary_label.cget("text") == gui.CHECK_TIMEOUT_HINT
         assert gui.CHECK_TIMEOUT_HINT == "自检超时，可以先进入，稍后在系统状态里看结果。"
 
@@ -759,3 +759,69 @@ def test_poll_after_failure_forces_finish_after_three_attempts(isolated_env, mon
         _close_window(window)
 
 
+
+
+# ---------------------------------------------------------------------------
+# 工作台改名（2026-11-12 G 组）：向导里能起名字，存在数据目录，随数据走
+# ---------------------------------------------------------------------------
+
+
+def test_validate_workbench_name_rejects_too_long():
+    assert gui.validate_workbench_name("x" * 41) is not None
+    assert gui.validate_workbench_name("贾维斯", "y" * 81) is not None
+    assert gui.validate_workbench_name("") is None
+    assert gui.validate_workbench_name("贾维斯", "") is None
+    assert gui.validate_workbench_name("阿强", "Ah Qiang") is None
+
+
+def test_commit_saves_custom_workspace_name(isolated_env):
+    """向导里起了新名字：commit 成功，名字落在数据目录的 workspace_settings.json。"""
+    import json
+
+    from src.brand import resolve_brand
+
+    ok, _message = gui.commit(
+        _values(
+            isolated_env,
+            workbench_name_zh="阿强",
+            workbench_name_en="Ah Qiang",
+        ),
+        port=0,
+    )
+    assert ok is True
+    settings_file = isolated_env / "workspace_settings.json"
+    assert json.loads(settings_file.read_text(encoding="utf-8")) == {
+        "name_en": "Ah Qiang",
+        "name_zh": "阿强",
+    }
+    assert resolve_brand()["lockup"] == "Ah Qiang · 阿强"
+    assert resolve_brand()["customized"] is True
+
+
+def test_commit_default_name_writes_no_settings_file(isolated_env):
+    """名字留默认（贾维斯 / Jarvis）：commit 成功，但不写配置文件。"""
+    from src.brand import resolve_brand
+
+    ok, _message = gui.commit(
+        _values(
+            isolated_env,
+            workbench_name_zh="贾维斯",
+            workbench_name_en="Jarvis",
+        ),
+        port=0,
+    )
+    assert ok is True
+    assert not (isolated_env / "workspace_settings.json").exists()
+    assert resolve_brand()["name_zh"] == "贾维斯"
+    assert resolve_brand()["customized"] is False
+
+
+def test_commit_refuses_too_long_workspace_name_before_creating_admin(isolated_env):
+    """名字超长：commit 在建账号之前就失败，不留半个账号。"""
+    ok, message = gui.commit(
+        _values(isolated_env, workbench_name_zh="x" * 41),
+        port=0,
+    )
+    assert ok is False
+    assert "工作台名字" in message
+    assert frw._has_loginable_human() is False
