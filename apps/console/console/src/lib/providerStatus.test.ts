@@ -1,8 +1,9 @@
 /**
  * 模型状态单一事实源的契约。
  *
- * 这些用例对应 P0 缺陷：未配真实模型时界面必须明说"模拟回复"，不能因为
- * `/v1/health` 还没返回就默认"真实可用"。
+ * 这些用例对应 P0 缺陷：未配真实模型时界面必须明说"未配置模型，请先配置
+ * 模型密钥"，且不得承诺"模拟回复"，不能因为 `/v1/health` 还没返回就默认
+ * "真实可用"。
  */
 
 import { describe, expect, test } from 'vitest'
@@ -16,7 +17,8 @@ describe('deriveProviderStatus', () => {
     expect(status.isReal).toBe(false)
     expect(status.isMock).toBe(true)
     expect(status.label).toBe('尚未接入真实模型')
-    expect(status.detail).toContain('演示内容')
+    expect(status.detail).toContain('未配置模型，请先配置模型密钥')
+    expect(status.detail).toContain('不会得到模拟回答')
     expect(status.posture.tone).toBe('danger')
   })
 
