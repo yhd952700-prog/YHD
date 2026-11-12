@@ -54,7 +54,6 @@ from src.kernels.execution import (  # noqa: E402
     ExecutionEngine,
     Goal,
     Task,
-    VerifyResult,
 )
 from src.kernels.audit import get_audit_store  # noqa: E402
 from src.kernels._crosscutting import (  # noqa: E402
