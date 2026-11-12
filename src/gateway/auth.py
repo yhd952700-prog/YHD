@@ -47,6 +47,7 @@ class.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -103,6 +104,36 @@ DEFAULT_SECRETS_PATH = _REPO_ROOT / "config" / "auth_secrets.json"
 #: Client classes the console ships. Recorded on the token, never used to
 #: grant or deny -- all three are equally authenticated.
 CLIENT_MODES = ("desktop", "web", "mobile")
+
+#: 登录请求级预算（秒），环境变量 ``LIUHAO_LOGIN_TIMEOUT_SECONDS`` 可覆盖。
+#: 凭据校验（PBKDF2 600k 次 + SQLite 读 + 审计写）是同步阻塞工作，FastAPI
+#: 把它放在线程池里跑；满载（CPU 打满/线程池排队）时没有预算，登录请求会
+#: 无限挂起、界面一直转圈，只能重启（P0，见 RELEASE-RUNBOOK.md §8 已知
+#: 问题 5）。30 秒是"平时一次登录远不到 1 秒，满载时也不该让人无限等"
+#: 的折中：超时后回 504「登录超时，请重试」，用户可重试，而不是重启。
+#: 注意：``asyncio.wait_for`` 取消的是等待，不是底下的线程 —— 超时后那
+#: 次校验仍可能在后台跑完（令牌已签发、审计已写），重试会再签一个新令牌；
+#: 旧令牌有效但客户端不知道它存在，与"超时后重试"的常规语义一致。
+LOGIN_TIMEOUT_ENV = "LIUHAO_LOGIN_TIMEOUT_SECONDS"
+DEFAULT_LOGIN_TIMEOUT_SECONDS = 30.0
+MIN_LOGIN_TIMEOUT_SECONDS = 1.0
+MAX_LOGIN_TIMEOUT_SECONDS = 300.0
+
+
+def login_timeout_seconds() -> float:
+    """读取登录请求级预算；非法/越界值退回默认 30 秒（每次调用都重读）。"""
+    raw = (os.environ.get(LOGIN_TIMEOUT_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return max(
+                MIN_LOGIN_TIMEOUT_SECONDS,
+                min(MAX_LOGIN_TIMEOUT_SECONDS, value),
+            )
+    return DEFAULT_LOGIN_TIMEOUT_SECONDS
 
 # Brute-force throttle. In-process, so it is per-replica: the same scope as
 # ``IdentityManager``'s in-memory table. Documented rather than silently
@@ -799,17 +830,24 @@ def _account_is_root(principal: str) -> Dict[str, Any]:
         node = manager.get_account(_normalize_principal(principal))
         tree_exists = bool(manager.account_nodes())
     except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述，且须 fail-closed
-        return {"is_root": False, "can_rotate_recovery": False}
+        return {"is_root": False, "is_owner": False, "can_rotate_recovery": False}
     if node is not None:
         return {
             "is_root": bool(node.is_root),
+            # Owner 即账号树根：与 is_root 同值，只是用产品语言命名，
+            # 供控制台按 Owner 裁剪入口（授权判定仍在后端，不靠该字段）。
+            "is_owner": bool(node.is_root),
             "can_rotate_recovery": bool(
                 node.is_root
                 or (node.source == "self_service" and node.is_active)
             ),
         }
     standalone = not tree_exists
-    return {"is_root": standalone, "can_rotate_recovery": standalone}
+    return {
+        "is_root": standalone,
+        "is_owner": standalone,
+        "can_rotate_recovery": standalone,
+    }
 
 
 def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
@@ -856,10 +894,33 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/auth/login", response_model=Dict[str, Any])
-def auth_login(req: LoginRequest) -> Dict[str, Any]:
-    """Exchange ``principal`` + ``secret`` for a bearer token."""
+async def auth_login(req: LoginRequest) -> Dict[str, Any]:
+    """Exchange ``principal`` + ``secret`` for a bearer <redacted>
+
+    ``authenticate()`` 是同步阻塞调用（PBKDF2 + SQLite + 审计写），这里用
+    ``asyncio.to_thread`` 把它移出事件循环，并用请求级预算
+    （``login_timeout_seconds()``，默认 30 秒）包住等待：满载时线程池排队
+    再久也不会无限挂起，超时回 504「登录超时，请重试」（可重试的错误，
+    不是让用户重启）。``AuthError`` 原样转 HTTPException。
+    """
+    timeout = login_timeout_seconds()
     try:
-        return authenticate(req.principal, req.secret, client=req.client)
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                authenticate, req.principal, req.secret, client=req.client
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "evt=auth.login.timeout principal=%s timeout_seconds=%s",
+            str(req.principal or "")[:32],
+            timeout,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail={"code": "LOGIN_TIMEOUT", "message": "登录超时，请重试"},
+        ) from None
     except AuthError as exc:
         raise HTTPException(
             status_code=exc.status_code, detail=exc.detail, headers=exc.headers
