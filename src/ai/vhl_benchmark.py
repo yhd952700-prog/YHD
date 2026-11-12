@@ -109,7 +109,7 @@ def run_vhl_benchmark(
     set_provider(provider)
     try:
         # ------------------------------------------------- T1 Organization
-        org = Organization("鎏灏研究院", budget=5000.0)
+        org = Organization("贾维斯研究院", budget=5000.0)
         org.add_policy("外部写盘需经 World 授权")
         org.create_department("研究部")
         org.create_department("质量部")
@@ -125,7 +125,7 @@ def run_vhl_benchmark(
         team.hire(Role.QA)
         pipeline = team.pipeline(
             [Role.RESEARCHER, Role.ANALYST, Role.QA],
-            seed="鎏灏 OS：十源 DNA，14 kernel",
+            seed="贾维斯 OS：十源 DNA，14 kernel",
         )
         report_text = pipeline["final"]
         org.remember("final_report", report_text)
@@ -242,7 +242,7 @@ def main() -> None:
 
     out = run_vhl_benchmark()
     b = out["baseline"]
-    print("=== 鎏灏 OS 八层端到端 VHL Benchmark ===")
+    print("=== 贾维斯 OS 八层端到端 VHL Benchmark ===")
     print(f"注册任务: {b['total_registered_tasks']}  计入: {b['total_recorded_tasks']}")
     print(f"main verified_units: {b['main']['verified_units']}  weighted: {b['main']['weighted_units']}")
     print(f"held-out verified_units: {b['held_out']['verified_units']}（隔离，不并入主指标）")
