@@ -1,4 +1,4 @@
-"""鎏灏个人画像 HTTP 端点（KAREN Personal Intelligence）。
+"""贾维斯个人画像 HTTP 端点（KAREN Personal Intelligence）。
 
 - ``GET    /v1/profile``          读取画像（默认主体 ``default``）
 - ``PUT    /v1/profile``          写入画像项（称呼/偏好/事实/兴趣/专长/关系）
