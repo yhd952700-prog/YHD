@@ -79,6 +79,12 @@ describe('手机端底部导航渲染', () => {
     expect(task).toBeTruthy()
     expect(task!.disabled).toBe(false)
 
+    // 第六项是能力中心（简约版合并页），第七项是系统设置。
+    expect(buttons[5].getAttribute('data-key')).toBe('capability-center')
+    expect(buttons[5].textContent).toContain('能力中心')
+    expect(buttons[5].disabled).toBe(false)
+    expect(buttons[6].getAttribute('data-key')).toBe('settings')
+
     task!.click()
     expect(onNavigate).toHaveBeenCalledWith('task-center')
   })
