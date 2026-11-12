@@ -44,7 +44,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from src.kernels.identity import (  # noqa: E402
     IdentityManager,
-    is_agent_id,
     is_human_identity,
 )
 from src.kernels.identity._persistence import (  # noqa: E402
@@ -54,10 +53,8 @@ from src.kernels.identity._persistence import (  # noqa: E402
     HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
     BACKEND_FILE,
     BACKEND_SQLITE,
-    JsonFileStore,
     SqliteHumanIdentityStore,
     compute_row_tag,
-    integrity_key,
 )
 
 _RESULTS: list[tuple[bool, str]] = []
