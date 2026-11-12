@@ -249,11 +249,20 @@ class AgentManager:
     def agent_metrics(self, agent_id: str) -> Dict[str, Any]:
         """Get performance metrics for an agent.
 
+        No per-agent metrics store exists: this CLI registry only
+        tracks ``total_tasks`` / ``status`` in memory, and
+        ``src.ai.usage_meter`` only aggregates provider-reported token
+        usage inside one live meter scope (no per-agent history, no
+        response-time or success-rate recording). The measured fields
+        are therefore returned as null with ``metrics_unavailable``
+        instead of fabricated numbers. ``total_tasks`` and ``status``
+        are real values from this registry.
+
         Args:
             agent_id: The agent identifier.
 
         Returns:
-            Dict with metrics data.
+            Dict with metrics data (nulls where unmeasured).
 
         Raises:
             ValueError: If agent is not found.
@@ -265,9 +274,15 @@ class AgentManager:
             "agent_id": agent_id,
             "total_tasks": agent.total_tasks,
             "status": agent.status.value,
-            "avg_response_time_ms": 450,  # placeholder
-            "success_rate": 0.97,  # placeholder
-            "tokens_used": 12500,  # placeholder
+            "avg_response_time_ms": None,
+            "success_rate": None,
+            "tokens_used": None,
+            "metrics_unavailable": True,
+            "detail": (
+                "No per-agent metrics are collected: response time, "
+                "success rate, and token usage are not recorded for "
+                "agents in this registry."
+            ),
         }
 
     def agent_logs(
@@ -275,13 +290,17 @@ class AgentManager:
     ) -> Dict[str, Any]:
         """Get logs for an agent.
 
+        No log store is wired to this registry, so there are no real
+        log entries to return. Returns an empty list explicitly marked
+        ``logs_unavailable`` instead of a synthesized log line.
+
         Args:
             agent_id: The agent identifier.
             limit: Maximum number of log entries.
             level: Minimum log level.
 
         Returns:
-            Dict with log entries.
+            Dict with (empty) log entries.
 
         Raises:
             ValueError: If agent is not found.
@@ -292,13 +311,12 @@ class AgentManager:
             "agent_id": agent_id,
             "level": level,
             "limit": limit,
-            "entries": [
-                {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "level": level.upper(),
-                    "message": f"Agent {agent_id} log entry",
-                }
-            ],
+            "entries": [],
+            "logs_unavailable": True,
+            "detail": (
+                "No agent log store is wired to this registry; "
+                "no log entries are available."
+            ),
         }
 
 
