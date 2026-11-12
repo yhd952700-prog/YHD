@@ -311,7 +311,7 @@ def omitted_members_text(omitted) -> str:
         lines.append(f"- {name}：命中 {total} 处（{detail or '疑似密钥'}）")
     lines.append("")
     lines.append(
-        "下一步：先退出鎏灏，把数据目录 logs 下的日志改名备份——"
+        "下一步：先退出贾维斯，把数据目录 logs 下的日志改名备份——"
         "liuhao.log、error.log、desktop-gateway.log 都改，"
         "例如把 .log 改成 .log.bak-日期（liuhao.log 变成 liuhao.log.bak-20261108）；"
         "不要直接删除，这些日志是排查证据。"
