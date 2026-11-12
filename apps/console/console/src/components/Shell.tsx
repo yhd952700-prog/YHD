@@ -11,7 +11,7 @@ import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
 import { ALL_NAV, navGroupsFor, mobileNavKeysFor, SETTINGS_SECTIONS } from '../lib/nav'
-import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../brand'
+import { useWorkspaceName } from '../lib/workspaceName'
 import type { NavItem } from '../lib/nav'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { identityBarRole } from '../lib/accountCaps'
@@ -64,6 +64,9 @@ export function Shell({
   const navigation = navGroupsFor(caps)
   const mobileKeys = mobileNavKeysFor(caps)
   const roleLabel = identityBarRole(profile)
+  // 顶栏品牌与管家页入口只从工作台名字配置读（`lib/workspaceName.ts`）：
+  // 设置页改了名字，这里跟着变，不用等重建。
+  const workspaceName = useWorkspaceName()
   const searchRef = useRef<HTMLInputElement>(null)
 
   // 页内切换没有真实导航，读屏用户不会自动知道内容换了。这里用礼貌播报
@@ -123,8 +126,8 @@ export function Shell({
             </svg>
           </div>
           <div>
-            <div className="os-brand-name">{BRAND_NAME_EN}</div>
-            <div className="os-brand-sub">LIVE · {BRAND_NAME_ZH}</div>
+            <div className="os-brand-name">{workspaceName.name_en}</div>
+            <div className="os-brand-sub">LIVE · {workspaceName.name_zh}</div>
           </div>
         </div>
 
@@ -229,9 +232,10 @@ export function Shell({
           if (!item) return null
           const Icon = item.icon
           // 底栏用短标签：七项在 360px 下只有约 50px 一列，长名称会被截断。
+          // 管家页入口显示当前工作台名字（改了名跟着变）。
           const short: Record<string, string> = {
             'enterprise-overview': '企业总览',
-            butler: '贾维斯',
+            butler: workspaceName.name_zh,
             'my-employees': '办公室',
             office: '办公室',
             'task-center': '任务',
@@ -273,6 +277,9 @@ function NavButton({
   compact?: boolean
 }) {
   const Icon = item.icon
+  // 管家页入口显示当前工作台名字（改了名跟着变），其余入口用导航定义。
+  const workspaceName = useWorkspaceName()
+  const label = item.key === 'butler' ? workspaceName.name_zh : item.label
   const hasBadge = item.badge !== undefined && item.badge !== '' && item.badge !== 0
   return (
     <button
@@ -284,7 +291,7 @@ function NavButton({
       <span className="os-nav-icon">
         <Icon size={17} />
       </span>
-      <span className="os-nav-text">{item.label}</span>
+      <span className="os-nav-text">{label}</span>
       {hasBadge && (
         <span className="os-nav-badge" data-tone={item.badgeTone ?? 'accent'}>
           {item.badge}
