@@ -186,7 +186,13 @@ def test_directory_source_excludes_sqlite_sidecars(tmp_path: Path) -> None:
 
 
 def test_encryption_flag_is_not_a_silent_noop(tmp_path: Path) -> None:
-    """``encryption_enabled=True`` must fail, not label plaintext as encrypted."""
+    """``encryption_enabled=True`` 没有密钥时必须拒绝写入，而不是把明文标成已加密。
+
+    2026-11-12 起加密已真实落地（AES-256-GCM，见 test_d2_core_coverage.py）：
+    带 32 字节密钥时归档真的加密落盘；缺密钥仍拒绝，且不写出任何文件。
+    """
+    import os
+
     source = tmp_path / "file.txt"
     source.write_text("plain")
     manager = BackupManager(
@@ -194,5 +200,17 @@ def test_encryption_flag_is_not_a_silent_noop(tmp_path: Path) -> None:
         source_paths={BackupSource.CONFIG: source},
         encryption_enabled=True,
     )
-    with pytest.raises(NotImplementedError, match="encryption_enabled"):
+    with pytest.raises(ValueError, match="encryption_key"):
         manager.create_backup()
+    assert list((tmp_path / "backups").glob("*")) == []
+
+    keyed = BackupManager(
+        backup_dir=tmp_path / "backups",
+        source_paths={BackupSource.CONFIG: source},
+        encryption_enabled=True,
+        encryption_key=os.urandom(32),
+    )
+    meta = keyed.create_backup()
+    assert meta.encrypted is True
+    assert b"plain" not in Path(meta.file_path).read_bytes()
+    assert keyed.verify_backup(meta.backup_id) is True
