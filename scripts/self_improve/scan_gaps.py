@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""一条命令产出「鎏灏哪里有问题、多严重、先修哪个」。
+"""一条命令产出「贾维斯哪里有问题、多严重、先修哪个」。
 
 用法（在本仓库根执行）::
 
@@ -28,7 +28,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,7 +42,6 @@ from collectors import (  # noqa: E402
     collect_security,
     git_dirty_files,
     git_head,
-    now_iso,
     read_text,
     rel,
     run_pytest,
@@ -117,7 +116,7 @@ def _render_markdown(
     repo: Dict[str, Any],
 ) -> str:
     lines: List[str] = []
-    lines.append("# 鎏灏 AI OS · 缺口扫描报告")
+    lines.append("# Jarvis · 缺口扫描报告")
     lines.append("")
     lines.append(f"- 生成时间：{run['generated_at']}")
     lines.append(f"- 仓库：`{repo['root']}`")
