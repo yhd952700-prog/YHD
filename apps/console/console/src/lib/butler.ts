@@ -124,7 +124,7 @@ export function taskPhaseInfo(task: GoalTask): TaskPhaseInfo {
         label: '待确认',
         tone: 'warn',
         raw,
-        note: '执行被策略拦截，可能需要你在审批中心授权后再重试',
+        note: '执行被策略拦截，可能需要你在审批签发授权后再重试',
       }
     }
     return { phase: 'failed', label: '失败', tone: 'danger', raw }
