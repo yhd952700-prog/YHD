@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed data is opt-in only (env LIUHAO_DEMO_SEED=1).
+
+    Without it cost records start empty; sample costs must never be
+    mixed into production-facing state by default.
+    """
+    return os.environ.get("LIUHAO_DEMO_SEED") == "1"
 
 
 class CostCategory(str, Enum):
@@ -56,18 +66,23 @@ class CostManager:
     def __init__(self) -> None:
         self._cost_records: List[Dict[str, Any]] = []
         self._budgets: Dict[str, Budget] = {}
-        self._seed_sample_data()
+        if _demo_seed_enabled():
+            self._seed_sample_data()
 
     def _seed_sample_data(self) -> None:
-        """Seed with sample cost data for demonstration."""
+        """Seed with sample cost data for demonstration (demo mode only).
+
+        Only runs when LIUHAO_DEMO_SEED=1. Amounts are deterministic
+        (category index, not hash(), which is salted per process).
+        """
         now = datetime.utcnow()
         for i in range(30):
             day = now - timedelta(days=i)
-            for category in CostCategory:
+            for idx, category in enumerate(CostCategory):
                 self._cost_records.append({
                     "date": day.strftime("%Y-%m-%d"),
                     "category": category.value,
-                    "amount": round(10 + i * 0.5 + hash(category.value) % 5, 2),
+                    "amount": round(10 + i * 0.5 + idx * 1.7, 2),
                     "details": {},
                 })
 
@@ -311,7 +326,13 @@ class CostManager:
         for r in self._cost_records:
             daily_costs[r["date"]] = daily_costs.get(r["date"], 0) + r["amount"]
         if not daily_costs:
-            return {"forecast": {}, "avg_daily": 0, "total_forecast": 0}
+            return {
+                "forecast_days": days,
+                "avg_daily": 0,
+                "total_forecast": 0,
+                "daily_forecast": {},
+                "method": "historical_average_with_variation",
+            }
 
         avg_daily = sum(daily_costs.values()) / len(daily_costs)
         now = datetime.utcnow()
