@@ -18,7 +18,7 @@
  * 副本，都会立刻制造出"控制台说已登录、面板说未认证"的分裂。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { ApprovalCenter } from './components/ApprovalCenter'
 import type { ApprovalActions, ApprovalUiState } from './components/ApprovalCenter'
@@ -57,56 +57,84 @@ import {
   revokeApproval,
 } from './lib/policyClient'
 import type { ApprovalGrant, EnforcementSnapshot } from './lib/policyClient'
-import { Overview } from './pages/Overview'
+/**
+ * 以下页面保持静态 import（不懒加载），原因各不相同，但都不动：
+ * - 导出 `*_PAGE` / `*_ROUTE` 常量，PAGE_META 与深链解析在模块层同步要用
+ *   （OperatorConsole、EnterpriseOverview、Org、TaskCenter、ApprovalQueue、
+ *   OwnerOverview）；SkillCenter、ToolCenter、WorkflowCenter、OwnerTasks、
+ *   KnowledgeEnterprise 只用常量，不在 App 里直接渲染，仍按 0.4.3 只引常量；
+ * - Preflight 保持静态：App.deepLink.test.tsx 里 ?p=preflight 用同步
+ *   getByText 断言「预检结论」，标题 waitFor 等不到懒加载 chunk（页头在
+ *   Suspense 外面）；
+ * - Knowledge、CapabilityCenter、SystemDiagnostics 在 0.4.4 Phase 2 改成
+ *   懒加载：?p=memory 与 ?p=capability-center 两个深链测试已改成等 chunk
+ *   加载后再断言（findBy*），?p=status 的 waitFor 等的是告警请求数，请求
+ *   只在组件挂载后才发，所以天然等到了 chunk，不用改；
+ * - OperatorConsole / EnterpriseOverview 是默认落点与回落页，首屏就要在。
+ */
 import { OperatorConsole, OPERATOR_CONSOLE_PAGE } from './pages/OperatorConsole'
-import { Butler } from './pages/Butler'
-import { Audit } from './pages/Audit'
-import { Files } from './pages/Files'
-import { Goals } from './pages/Goals'
-import { Projects } from './pages/Projects'
-import { Apps } from './pages/Apps'
-import { Events } from './pages/Events'
-import { Notifications } from './pages/Notifications'
-import { Trust } from './pages/Trust'
-import { Network } from './pages/Network'
-import { Identity } from './pages/Identity'
-import { BusinessCenter, Roster } from './pages/Directory'
-import { Knowledge } from './pages/Knowledge'
-import { DataCenter, SystemStatus } from './pages/Operations'
 import { Preflight } from './pages/Preflight'
-import { Settings } from './pages/Settings'
-import { About } from './pages/About'
 import { EnterpriseOverview, ENTERPRISE_OVERVIEW_PAGE } from './pages/EnterpriseOverview'
 import { Org, ORG_PAGE } from './pages/Org'
 import { TaskCenter, TASK_CENTER_PAGE } from './pages/TaskCenter'
-import { SkillCenter, SKILLS_CENTER_PAGE } from './pages/SkillCenter'
-import { ToolCenter, TOOLS_CENTER_PAGE } from './pages/ToolCenter'
-import { Backup } from './pages/Backup'
-import { Members } from './pages/Members'
-import { OwnerOverview, OWNER_OVERVIEW_PAGE } from './pages/OwnerOverview'
-import { OwnerTasks, OWNER_TASKS_PAGE } from './pages/OwnerTasks'
-import { AccountSecurity } from './pages/AccountSecurity'
-import { Memory } from './pages/Memory'
-import { MyData } from './pages/MyData'
-import { Me } from './pages/Me'
-import { MyEmployees } from './pages/MyEmployees'
-import { Office } from './pages/Office'
-import { MyKeys } from './pages/MyKeys'
-import { PermissionMatrix } from './pages/PermissionMatrix'
-import { Recovery } from './pages/Recovery'
-import { RoleTemplates } from './pages/RoleTemplates'
-import { WorkflowCenter, WORKFLOW_CENTER_PAGE } from './pages/WorkflowCenter'
 import { ApprovalQueue, WORKFLOW_APPROVALS_PAGE } from './pages/ApprovalQueue'
-import {
-  KnowledgeEnterprise,
-  KNOWLEDGE_ENTERPRISE_ROUTE,
-} from './pages/KnowledgeEnterprise'
+import { OwnerOverview, OWNER_OVERVIEW_PAGE } from './pages/OwnerOverview'
+import type { CapabilityTab } from './pages/CapabilityCenter'
+import type { SystemDiagnosticsTab } from './pages/SystemDiagnostics'
+import { SKILLS_CENTER_PAGE } from './pages/SkillCenter'
+import { TOOLS_CENTER_PAGE } from './pages/ToolCenter'
+import { OWNER_TASKS_PAGE } from './pages/OwnerTasks'
+import { WORKFLOW_CENTER_PAGE } from './pages/WorkflowCenter'
+import { KNOWLEDGE_ENTERPRISE_ROUTE } from './pages/KnowledgeEnterprise'
+
+/**
+ * 其余页面全部懒加载：首屏只下外壳 + 默认操作台，点开某页时才下那一页的
+ * chunk。只改加载方式，不改组件、props、key 与渲染条件；导航、权限、
+ * 深链逻辑一律不动。
+ * 合并页的标签类型只以 `import type` 引入，编译时擦除，不进首屏 chunk。
+ */
+const Overview = lazy(() => import('./pages/Overview').then((m) => ({ default: m.Overview })))
+const Butler = lazy(() => import('./pages/Butler').then((m) => ({ default: m.Butler })))
+const Files = lazy(() => import('./pages/Files').then((m) => ({ default: m.Files })))
+const Notifications = lazy(() =>
+  import('./pages/Notifications').then((m) => ({ default: m.Notifications })),
+)
+const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
+const About = lazy(() => import('./pages/About').then((m) => ({ default: m.About })))
+const Backup = lazy(() => import('./pages/Backup').then((m) => ({ default: m.Backup })))
+const MyData = lazy(() => import('./pages/MyData').then((m) => ({ default: m.MyData })))
+const MyEmployees = lazy(() =>
+  import('./pages/MyEmployees').then((m) => ({ default: m.MyEmployees })),
+)
+const Office = lazy(() => import('./pages/Office').then((m) => ({ default: m.Office })))
+const Knowledge = lazy(() => import('./pages/Knowledge').then((m) => ({ default: m.Knowledge })))
+const CapabilityCenter = lazy(() =>
+  import('./pages/CapabilityCenter').then((m) => ({ default: m.CapabilityCenter })),
+)
+const SystemDiagnostics = lazy(() =>
+  import('./pages/SystemDiagnostics').then((m) => ({ default: m.SystemDiagnostics })),
+)
+const MembersPermissions = lazy(() =>
+  import('./pages/MembersPermissions').then((m) => ({ default: m.MembersPermissions })),
+)
+const TasksAudit = lazy(() =>
+  import('./pages/TasksAudit').then((m) => ({ default: m.TasksAudit })),
+)
+const MyAccountSecurity = lazy(() =>
+  import('./pages/MyAccountSecurity').then((m) => ({ default: m.MyAccountSecurity })),
+)
+import type { MembersPermissionsTab } from './pages/MembersPermissions'
+import type { TasksAuditTab } from './pages/TasksAudit'
+import type { MyAccountSecurityTab } from './pages/MyAccountSecurity'
 import { ReadOnlyBanner } from './components/AccountChrome'
 import { refreshWorkspaceName, useWorkspaceName } from './lib/workspaceName'
 import { buildProfile, deriveCaps } from './lib/accountCaps'
 import { countTreeMembers, loadAccounts, loadTree, useAccountData } from './lib/accounts'
 import type { AccountNode, AccountsPayload } from './lib/accounts'
-import { visibleNavKeys, HOME_KEY } from './lib/nav'
+import { visibleNavKeys, resolveMergedTarget, HOME_KEY } from './lib/nav'
+import { buildNavBadges, pendingApprovalsFrom, runningTasksFromLedger } from './lib/navBadges'
+import { completedToday } from './lib/enterpriseOverview'
+import { parseTasksPayload } from './lib/taskLedger'
 
 /** 把恢复码导出成本地文件；内容与设置页原来提供的一致。 */
 function downloadRecovery(recovery: PendingRecovery): void {
@@ -153,6 +181,12 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   'owner-members': { title: '成员管理', sub: '全部成员、状态与 Key 授权' },
   [OWNER_TASKS_PAGE.key]: { title: OWNER_TASKS_PAGE.title, sub: OWNER_TASKS_PAGE.sub },
   'owner-audit': { title: '审计', sub: '全量审计事件与哈希链校验（只读）' },
+  // 简约版合并页（5 个）：标题与导航一致，sub 一句话说清并进了什么。
+  'capability-center': { title: '能力中心', sub: '技能、工具、能力注册表、业务与应用' },
+  'members-permissions': { title: '成员与权限', sub: '成员管理、权限矩阵与角色模板' },
+  'tasks-audit': { title: '全部任务与审计', sub: '全部任务、审计、事件流与数据中心' },
+  'my-account-security': { title: '我的账号与安全', sub: '我的 Key、账号安全、恢复码与我的账号' },
+  'system-diagnostics': { title: '系统状态与诊断', sub: '系统状态、信任、网络与身份' },
   overview: { title: '运行看板', sub: '真实运行状态 —— 每一项都能追溯到来源' },
   [ENTERPRISE_OVERVIEW_PAGE.key]: {
     title: ENTERPRISE_OVERVIEW_PAGE.title,
@@ -178,7 +212,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
     sub: '工作流卡在人工审批时，在这里通过或拒绝',
   },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除系统内部记录）' },
-  approval: { title: '审批中心', sub: '动作拦截与人工授权' },
+  approval: { title: '审批签发', sub: '动作拦截与人工授权' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },
   files: { title: '工作区文件', sub: 'AI 员工写出的真实产物（只读浏览 / 读取）' },
   goals: { title: '目标与任务', sub: 'AI 员工真实执行过的目标与任务分解（只读）' },
@@ -743,6 +777,40 @@ function App() {
     [health.data, health.error, health.loading, health.reload],
   )
 
+  // ---------------------------------------------------------------------
+  // 侧栏徽标 + 今天小结的取数（App 层一次取完，两处共用，不发两遍）
+  // ---------------------------------------------------------------------
+  // 口径（不许换）：待批数取 /v1/workflow/summary.pending_approvals（精确，
+  // 无 200 上限）；在跑数取 /v1/tasks/ledger/status.by_status.running（精确）。
+  // 轮询 30 秒一档：与 EnterpriseOverview 的任务轮询一致（WorkflowCenter
+  // 对 summary 用 15 秒、TaskCenter 对 ledger 用 60 秒，30 秒取中间）。
+  // 今日完成数取 /v1/tasks?status=completed&limit=200（completedToday 的
+  // 口径，与 EnterpriseOverview 同一条查询）。
+  const workflowSummary = useApi<unknown>(authed ? '/v1/workflow/summary' : null, 30_000)
+  const ledgerStatus = useApi<unknown>(authed ? '/v1/tasks/ledger/status' : null, 30_000)
+  const completedTasks = useApi<unknown>(
+    authed
+      ? '/v1/tasks?status=completed&limit=200&sort_by=completed_at&sort_order=desc'
+      : null,
+    30_000,
+  )
+  // 失败/无权（403）/形状不对时均为 null —— 徽标与小结都不画假数字。
+  const pendingApprovals = pendingApprovalsFrom(workflowSummary.data, workflowSummary.error)
+  const runningTasks = runningTasksFromLedger(ledgerStatus.data, ledgerStatus.error)
+  const navBadges = useMemo(
+    () => buildNavBadges({ pendingApprovals, runningTasks }),
+    [pendingApprovals, runningTasks],
+  )
+  const todaySummary = useMemo(
+    () => ({
+      completed: completedToday(parseTasksPayload(completedTasks.data), Date.now()),
+      running: runningTasks,
+      pending: pendingApprovals,
+      pendingForbidden: workflowSummary.status === 403,
+    }),
+    [completedTasks.data, runningTasks, pendingApprovals, workflowSummary.status],
+  )
+
   const notifications = useMemo<OsNotification[]>(() => {
     const items: OsNotification[] = []
 
@@ -995,6 +1063,7 @@ function App() {
       query={query}
       onQueryChange={setQuery}
       notifications={notifications}
+      navBadges={navBadges}
     >
       {browserNotice}
 
@@ -1074,11 +1143,20 @@ function App() {
         </div>
       )}
 
-      {shown === OPERATOR_CONSOLE_PAGE.key && (
+      {/* 懒加载页面的加载态：只在切页瞬间出现一句话，不动标题与导航。 */}
+      <Suspense
+        fallback={
+          <div className="os-note" role="status">
+            正在打开页面…
+          </div>
+        }
+      >
+        {shown === OPERATOR_CONSOLE_PAGE.key && (
         <OperatorConsole
           provider={provider}
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
           onOpenUsage={() => navigate('my-keys')}
+          today={todaySummary}
         />
       )}
       {shown === 'overview' && (
@@ -1093,23 +1171,171 @@ function App() {
         <EnterpriseOverview principal={session.principal} onNavigate={navigate} />
       )}
       {shown === 'owner-overview' && <OwnerOverview onNavigate={navigate} />}
-      {shown === 'owner-members' && (
-        <Members
+      {shown === ORG_PAGE.key && <Org query={query} />}
+      {/* 任务中心：旧 key workflow / goals / projects 落到对应标签。
+          key={shown} 强制按 active 换 tab 时重挂载，initialTab 只做初始值。 */}
+      {shown === TASK_CENTER_PAGE.key && <TaskCenter key={shown} query={query} />}
+      {shown === WORKFLOW_CENTER_PAGE.key && (
+        <TaskCenter key={shown} query={query} initialTab="workflow" />
+      )}
+      {shown === 'goals' && <TaskCenter key={shown} query={query} initialTab="goals" />}
+      {shown === 'projects' && (
+        <TaskCenter key={shown} query={query} initialTab="projects" />
+      )}
+      {shown === WORKFLOW_APPROVALS_PAGE.key && <ApprovalQueue query={query} />}
+      {/* 能力中心：旧 key skills-center / tools-center / employees /
+          business / apps 落到对应标签，tab 从 MERGE_MAP 查。 */}
+      {shown === 'capability-center' && (
+        <CapabilityCenter key={shown} query={query} canManageApps={caps.isRoot} />
+      )}
+      {shown === SKILLS_CENTER_PAGE.key && (
+        <CapabilityCenter
+          key={shown}
+          query={query}
+          canManageApps={caps.isRoot}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'skills') as CapabilityTab}
+        />
+      )}
+      {shown === TOOLS_CENTER_PAGE.key && (
+        <CapabilityCenter
+          key={shown}
+          query={query}
+          canManageApps={caps.isRoot}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'tools') as CapabilityTab}
+        />
+      )}
+      {shown === 'employees' && (
+        <CapabilityCenter
+          key={shown}
+          query={query}
+          canManageApps={caps.isRoot}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'roster') as CapabilityTab}
+        />
+      )}
+      {shown === 'business' && (
+        <CapabilityCenter
+          key={shown}
+          query={query}
+          canManageApps={caps.isRoot}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'business') as CapabilityTab}
+        />
+      )}
+      {shown === 'apps' && (
+        <CapabilityCenter
+          key={shown}
+          query={query}
+          canManageApps={caps.isRoot}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'apps') as CapabilityTab}
+        />
+      )}
+      {/* 成员与权限：旧 key owner-members / members / matrix / templates。 */}
+      {shown === 'members-permissions' && (
+        <MembersPermissions
+          key={shown}
           profile={profile}
           caps={caps}
-          variant="root"
           readOnly={readOnly}
           onViewAs={setViewAs}
         />
       )}
-      {shown === 'owner-tasks' && <OwnerTasks />}
-      {shown === 'owner-audit' && <Audit query={query} profile={profile} />}
-      {shown === ORG_PAGE.key && <Org query={query} />}
-      {shown === TASK_CENTER_PAGE.key && <TaskCenter query={query} />}
-      {shown === WORKFLOW_CENTER_PAGE.key && <WorkflowCenter query={query} />}
-      {shown === WORKFLOW_APPROVALS_PAGE.key && <ApprovalQueue query={query} />}
-      {shown === SKILLS_CENTER_PAGE.key && <SkillCenter query={query} />}
-      {shown === TOOLS_CENTER_PAGE.key && <ToolCenter query={query} />}
+      {shown === 'owner-members' && (
+        <MembersPermissions
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'members') as MembersPermissionsTab
+          }
+        />
+      )}
+      {shown === 'members' && (
+        <MembersPermissions
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'members') as MembersPermissionsTab
+          }
+        />
+      )}
+      {shown === 'matrix' && (
+        <MembersPermissions
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'matrix') as MembersPermissionsTab
+          }
+        />
+      )}
+      {shown === 'templates' && (
+        <MembersPermissions
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'templates') as MembersPermissionsTab
+          }
+        />
+      )}
+      {/* 全部任务与审计：旧 key owner-tasks / owner-audit / audit /
+          events / data。 */}
+      {shown === 'tasks-audit' && (
+        <TasksAudit key={shown} query={query} profile={profile} isRoot={caps.isRoot} caps={caps} />
+      )}
+      {shown === 'owner-tasks' && (
+        <TasksAudit
+          key={shown}
+          query={query}
+          profile={profile}
+          isRoot={caps.isRoot} caps={caps}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'tasks') as TasksAuditTab}
+        />
+      )}
+      {shown === 'owner-audit' && (
+        <TasksAudit
+          key={shown}
+          query={query}
+          profile={profile}
+          isRoot={caps.isRoot} caps={caps}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'audit') as TasksAuditTab}
+        />
+      )}
+      {shown === 'audit' && (
+        <TasksAudit
+          key={shown}
+          query={query}
+          profile={profile}
+          isRoot={caps.isRoot} caps={caps}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'audit') as TasksAuditTab}
+        />
+      )}
+      {shown === 'events' && (
+        <TasksAudit
+          key={shown}
+          query={query}
+          profile={profile}
+          isRoot={caps.isRoot} caps={caps}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'events') as TasksAuditTab}
+        />
+      )}
+      {shown === 'data' && (
+        <TasksAudit
+          key={shown}
+          query={query}
+          profile={profile}
+          isRoot={caps.isRoot} caps={caps}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'data') as TasksAuditTab}
+        />
+      )}
       {shown === 'butler' && (
         <Butler
           query={query}
@@ -1126,7 +1352,6 @@ function App() {
           onOpenEmployees={() => navigate('my-employees')}
         />
       )}
-      {shown === 'employees' && <Roster query={query} />}
       {shown === 'my-employees' && (
         <MyEmployees
           query={query}
@@ -1134,16 +1359,41 @@ function App() {
           onConfigureModel={() => openModelSettings(provider.provider?.model)}
         />
       )}
-      {shown === 'business' && <BusinessCenter query={query} />}
       {shown === 'knowledge' && (
         <Knowledge
+          key={shown}
           query={query}
           onOpenSettings={() => navigate('settings')}
           onOpenUsage={() => navigate('my-keys')}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
         />
       )}
-      {shown === KNOWLEDGE_ENTERPRISE_ROUTE.key && <KnowledgeEnterprise query={query} />}
-      {shown === 'data' && <DataCenter query={query} isRoot={caps.isRoot} />}
+      {shown === KNOWLEDGE_ENTERPRISE_ROUTE.key && (
+        <Knowledge
+          key={shown}
+          query={query}
+          onOpenSettings={() => navigate('settings')}
+          onOpenUsage={() => navigate('my-keys')}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          initialTab="enterprise"
+        />
+      )}
+      {shown === 'memory' && (
+        <Knowledge
+          key={shown}
+          query={query}
+          onOpenSettings={() => navigate('settings')}
+          onOpenUsage={() => navigate('my-keys')}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          initialTab="memory"
+        />
+      )}
       {shown === 'approval' && (
         <div className="os-grid">
           <div className="os-span-12">
@@ -1151,50 +1401,140 @@ function App() {
           </div>
         </div>
       )}
-      {shown === 'audit' && <Audit query={query} profile={profile} />}
       {shown === 'files' && <Files query={query} />}
-      {shown === 'goals' && <Goals query={query} />}
-      {shown === 'projects' && <Projects query={query} />}
-      {shown === 'apps' && <Apps query={query} canManage={caps.isRoot} />}
-      {shown === 'events' && <Events query={query} />}
       {shown === 'notifications' && <Notifications />}
-      {shown === 'trust' && <Trust query={query} />}
-      {shown === 'network' && <Network query={query} />}
-      {shown === 'identity' && <Identity query={query} profile={profile} />}
-      {shown === 'memory' && <Memory profile={profile} caps={caps} readOnly={readOnly} />}
-      {shown === 'my-keys' && (
-        <MyKeys profile={profile} caps={caps} readOnly={readOnly} session={session} />
-      )}
-      {shown === 'account' && <AccountSecurity profile={profile} readOnly={readOnly} />}
       {shown === 'my-data' && <MyData profile={profile} readOnly={readOnly} />}
-      {shown === 'members' && (
-        <Members
+      {/* 我的账号与安全：旧 key my-keys / account / recovery /
+          my-members / me。 */}
+      {shown === 'my-account-security' && (
+        <MyAccountSecurity
+          key={shown}
           profile={profile}
           caps={caps}
-          variant="root"
           readOnly={readOnly}
+          session={session}
+          onNavigate={navigate}
           onViewAs={setViewAs}
+        />
+      )}
+      {shown === 'my-keys' && (
+        <MyAccountSecurity
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          session={session}
+          onNavigate={navigate}
+          onViewAs={setViewAs}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'keys') as MyAccountSecurityTab}
+        />
+      )}
+      {shown === 'account' && (
+        <MyAccountSecurity
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          session={session}
+          onNavigate={navigate}
+          onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'account') as MyAccountSecurityTab
+          }
+        />
+      )}
+      {shown === 'recovery' && (
+        <MyAccountSecurity
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          session={session}
+          onNavigate={navigate}
+          onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'recovery') as MyAccountSecurityTab
+          }
         />
       )}
       {shown === 'my-members' && (
-        <Members
+        <MyAccountSecurity
+          key={shown}
           profile={profile}
           caps={caps}
-          variant="member"
           readOnly={readOnly}
+          session={session}
+          onNavigate={navigate}
           onViewAs={setViewAs}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'members') as MyAccountSecurityTab
+          }
         />
       )}
-      {shown === 'matrix' && (
-        <PermissionMatrix profile={profile} caps={caps} readOnly={readOnly} />
+      {shown === 'me' && (
+        <MyAccountSecurity
+          key={shown}
+          profile={profile}
+          caps={caps}
+          readOnly={readOnly}
+          session={session}
+          onNavigate={navigate}
+          onViewAs={setViewAs}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'me') as MyAccountSecurityTab}
+        />
       )}
-      {shown === 'templates' && <RoleTemplates caps={caps} />}
+      {/* 系统状态与诊断：旧 key status / trust / network / identity。 */}
+      {shown === 'system-diagnostics' && (
+        <SystemDiagnostics
+          key={shown}
+          query={query}
+          profile={profile}
+          provider={provider}
+        />
+      )}
+      {shown === 'status' && (
+        <SystemDiagnostics
+          key={shown}
+          query={query}
+          profile={profile}
+          provider={provider}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'status') as SystemDiagnosticsTab}
+        />
+      )}
+      {shown === 'trust' && (
+        <SystemDiagnostics
+          key={shown}
+          query={query}
+          profile={profile}
+          provider={provider}
+          initialTab={(resolveMergedTarget(shown)?.tab ?? 'trust') as SystemDiagnosticsTab}
+        />
+      )}
+      {shown === 'network' && (
+        <SystemDiagnostics
+          key={shown}
+          query={query}
+          profile={profile}
+          provider={provider}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'network') as SystemDiagnosticsTab
+          }
+        />
+      )}
+      {shown === 'identity' && (
+        <SystemDiagnostics
+          key={shown}
+          query={query}
+          profile={profile}
+          provider={provider}
+          initialTab={
+            (resolveMergedTarget(shown)?.tab ?? 'identity') as SystemDiagnosticsTab
+          }
+        />
+      )}
       {shown === 'backup' && <Backup profile={profile} caps={caps} readOnly={readOnly} />}
-      {shown === 'recovery' && <Recovery caps={caps} readOnly={readOnly} />}
-      {shown === 'status' && <SystemStatus provider={provider} />}
       {shown === 'preflight' && <Preflight />}
       {shown === 'about' && <About />}
-      {shown === 'me' && <Me caps={caps} onNavigate={navigate} />}
       {shown === 'settings' && (
         <Settings
           device={device}
@@ -1206,6 +1546,7 @@ function App() {
           focusModelId={focusModel}
         />
       )}
+      </Suspense>
     </Shell>
   )
 }
