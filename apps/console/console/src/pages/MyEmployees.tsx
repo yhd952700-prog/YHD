@@ -159,7 +159,9 @@ export function MyEmployees({
   onOpenUsage?: () => void
   onConfigureModel?: () => void
 }) {
-  const list = useApi<EmployeesPayload>('/v1/employees', 0)
+  // 员工名册易变（雇佣/停用/恢复）：30s 轮询；写操作成功后已调 list.reload()。
+  // 能力目录是静态注册表，保持单次。
+  const list = useApi<EmployeesPayload>('/v1/employees', 30000)
   const catalogApi = useApi<EmployeeCapabilitiesPayload>('/v1/employees/capabilities', 0)
   const employees = employeesOf(list.data)
   const catalog = useMemo(() => capabilityOptions(catalogApi.data), [catalogApi.data])
