@@ -1,6 +1,6 @@
 # Docker Compose 部署配置
 
-Docker Compose 是 LiuHao AI OS 推荐的**单机部署**方式，适用于开发环境、POC 验证、小型团队自建实例（≤ 50 个并发智能体）。本文档提供完整的 `docker-compose.yml`、环境变量说明、数据备份与升级流程。生产高可用部署请使用 [Kubernetes](kubernetes-deployment.md)。
+Docker Compose 是 Jarvis 推荐的**单机部署**方式，适用于开发环境、POC 验证、小型团队自建实例（≤ 50 个并发智能体）。本文档提供完整的 `docker-compose.yml`、环境变量说明、数据备份与升级流程。生产高可用部署请使用 [Kubernetes](kubernetes-deployment.md)。
 
 ---
 
@@ -49,7 +49,7 @@ x-default-logging: &default-logging
 services:
   # ---------- 基础设施 ----------
   postgres:
-    image: postgres:16-alpine
+    image: postgres:15-alpine
     container_name: liuhao-postgres
     restart: unless-stopped
     environment:
