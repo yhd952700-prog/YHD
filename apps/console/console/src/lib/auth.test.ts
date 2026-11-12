@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { loadAuthConfig, saveSession, sessionLossNotice, clearSession } from './auth'
+import {
+  AuthError,
+  loadAuthConfig,
+  login,
+  saveSession,
+  sessionLossNotice,
+  clearSession,
+} from './auth'
 import type { Session } from './auth'
 
 afterEach(() => {
@@ -29,8 +36,8 @@ describe('登录页读取配置', () => {
     const result = await loadAuthConfig()
 
     expect(result.config).toBeNull()
-    expect(result.error).toContain('鎏灏的本地服务没有运行')
-    expect(result.error).toContain('请打开鎏灏')
+    expect(result.error).toContain('贾维斯的本地服务没有运行')
+    expect(result.error).toContain('请打开贾维斯')
     expect(result.error).not.toContain('Failed to fetch')
   })
 
@@ -50,7 +57,7 @@ describe('登录页读取配置', () => {
 
     const result = await loadAuthConfig()
     expect(result.error).toContain('无法获取登录配置')
-    expect(result.error).toContain('请确认鎏灏仍在运行')
+    expect(result.error).toContain('请确认贾维斯仍在运行')
     expect(result.error).not.toContain('Not Found')
   })
 
@@ -114,6 +121,59 @@ describe('登录页读取配置', () => {
 
     const result = await loadAuthConfig()
     expect(result.status).toBeNull()
+  })
+})
+
+describe('登录超时：满载挂起时给可重试的提示，不谎报服务没运行', () => {
+  test('fetch 超时（TimeoutError）→「登录超时，请重试」', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new DOMException('Timeout', 'TimeoutError'))),
+    )
+
+    await expect(
+      login('liuhao', 'password', { remember: false, client: 'web' }),
+    ).rejects.toMatchObject({ message: '登录超时，请重试' })
+  })
+
+  test('登录请求带 AbortSignal 超时，而不是无限悬着', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({
+        access_token: 'tok',
+        principal: 'liuhao',
+        display_name: null,
+        scope: null,
+        permissions: [],
+        expires_at: 0,
+        client: 'web',
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('localStorage', memoryStorage())
+    vi.stubGlobal('sessionStorage', memoryStorage())
+
+    await login('liuhao', 'password', { remember: false, client: 'web' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  test('非超时失败仍报服务没运行（两类故障不混淆）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    )
+
+    const err = await login('liuhao', 'password', {
+      remember: false,
+      client: 'web',
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AuthError)
+    expect((err as Error).message).toContain('本地服务没有运行')
   })
 })
 
