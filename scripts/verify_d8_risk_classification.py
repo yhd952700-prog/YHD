@@ -24,7 +24,6 @@ Checks (exit 0 = all green):
 
 from __future__ import annotations
 
-import ast
 import importlib
 import inspect
 import os
@@ -95,7 +94,6 @@ print("=" * 72)
 from src.kernels._risk_classification import (  # noqa: E402
     KERNEL_ACTION_RISK,
     RiskTier,
-    ENFORCED_TIERS,
     is_enforced_tier,
     get_action_risk,
     discover_kernel_action_names,
