@@ -1687,9 +1687,33 @@ def _iter_ndjson_text(
         raise ProviderStreamIncompleteError(label, "流在没有 done 标记的情况下关闭")
 
 
-# 未配置模型时的演示数据提示：明确告诉用户发生了什么、下一步怎么做，
-# 不再输出 provider 内部状态转储。
+#: 演示模式开关（与成本/插件/组织等演示种子同一口径）：只有
+#: ``LIUHAO_DEMO_SEED=1`` 时才允许把"未配置模型"说成演示数据。默认
+#: （未设置/非 1）下 MockProvider 绝不编造回复，只返回未配置提示。
+DEMO_SEED_ENV = "LIUHAO_DEMO_SEED"
+
+
+def demo_mode_enabled() -> bool:
+    """True 当且仅当显式开启演示模式（``LIUHAO_DEMO_SEED=1``）。
+
+    每次调用都重读环境变量：测试可用 monkeypatch 切换，进程也无需重启
+    就能区分"演示"与"生产未配置"两种行为。
+    """
+    return (os.environ.get(DEMO_SEED_ENV) or "").strip() == "1"
+
+
+# 未配置模型时的提示（默认/生产行为）：明确告诉用户发生了什么、下一步
+# 怎么做，不再输出 provider 内部状态转储。**注意**：这条文案故意不带
+# "[演示数据]"前缀 —— 默认不是演示，贴演示标签本身就是假话；演示模式
+# 下的文案见 DEMO_MODEL_NOT_CONFIGURED_MESSAGE。
 MODEL_NOT_CONFIGURED_MESSAGE = (
+    "还没有配置模型，请先配置模型密钥。"
+    "请到「系统设置 → 模型管理」填写密钥并选择模型服务，然后重新发送这条消息。"
+)
+
+#: 演示模式（``LIUHAO_DEMO_SEED=1``）下的同一提示：与默认文案同一含义，
+#: 但明确标注 "[演示数据]"，让人一眼看出这不是真实模型回答。
+DEMO_MODEL_NOT_CONFIGURED_MESSAGE = (
     "[演示数据] 还没有配置模型，因此无法生成真实回答。"
     "请到「系统设置 → 模型管理」填写密钥并选择模型服务，然后重新发送这条消息。"
 )
@@ -2088,13 +2112,23 @@ class MockProvider(BaseProvider):
         )
 
     def generate(self, prompt: str, **kwargs) -> str:
-        """Return an explicit demo notice, never an internal state dump.
+        """Return the not-configured notice, never a fabricated reply.
 
         A ``MockProvider`` means no real model is configured. Echoing prompt
         content or dumping capabilities looks like a broken answer and leaks
         internal state, so the user-visible text states the situation and the
-        next action, and is explicitly labelled as demo data.
+        next action.
+
+        Demo vs. production split (``LIUHAO_DEMO_SEED``):
+
+        * demo (``=1``): the notice is explicitly labelled "[演示数据]";
+        * otherwise: the same notice **without** the demo label -- the
+          default install is not a demo, and calling it one would be a lie.
+          The text still says "请先配置模型密钥" and points at model
+          management; it never invents an answer to the prompt.
         """
+        if demo_mode_enabled():
+            return DEMO_MODEL_NOT_CONFIGURED_MESSAGE
         return MODEL_NOT_CONFIGURED_MESSAGE
 
 
@@ -3932,6 +3966,18 @@ def get_provider() -> BaseProvider:
         model,
         "configured" if api_key else "none",
     )
+    # 默认就是 mock：没有注册表默认模型、也没有配真实 provider 时，聊天
+    # 不会编造回答，只会返回"未配置模型，请先配置模型密钥"（见
+    # MockProvider.generate）。只在新建实例时记一次（实例有缓存），让首启
+    # 排障能直接看到缺口，而不是对着一条"已初始化"的日志以为模型已接通。
+    # 演示模式下不告警：演示本来就是有意的。
+    if provider_type == ProviderType.MOCK and not demo_mode_enabled():
+        logger.warning(
+            "no real model configured (AI_PROVIDER_TYPE=mock, no model "
+            "registry entry); chat will return the model-not-configured "
+            "notice instead of a generated reply -- configure a model key "
+            "in model management"
+        )
 
     return instance
 
