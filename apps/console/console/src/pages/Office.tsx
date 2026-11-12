@@ -36,8 +36,15 @@ import './Office.css'
 
 const REFRESH_MS = 30_000
 
-/** 派活抽屉里的员工摘要 + 表单。 */
-function stationTasks(employee: MyEmployee, tasks: TasksPayload['items']) {
+/**
+ * 某位员工分到的任务（按 assignee 匹配）。
+ *
+ * 匹配口径：assignee.id 对员工的 agent id、assignee.name 对员工名、
+ * 或直接按员工派活时后端写的 assignee.type=employee、id=员工名。
+ * 本函数是归属匹配的唯一口径，调用方直接复用它，不能各算各的。
+ * 匹配不上返回空数组，调用方如实显示「暂未提供」，不硬塞。
+ */
+export function stationTasks(employee: MyEmployee, tasks: TasksPayload['items']) {
   const agentIds = new Set((employee.agents ?? []).map((agent) => String(agent.id ?? '')))
   const names = new Set(
     [employee.name, employee.display_name]
