@@ -314,7 +314,7 @@ def sign_manifest(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sign_release_manifest.py",
-        description="LiuHao 发布清单签名工具（Ed25519；私钥本机绑定，不进仓库）。",
+        description="贾维斯发布清单签名工具（Ed25519；私钥本机绑定，不进仓库）。",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
