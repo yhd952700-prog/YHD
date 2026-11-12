@@ -63,7 +63,7 @@ export interface ApiResult<T> {
  *
  * 刻意用原生 `fetch` 而不是 `apiFetch`：走本模块会递归（探测自身失败又会再探测），
  * 还平白带上鉴权头；`/v1/ready` 是公开端点。探测自身失败只说明"确认不了"，
- * 按"没运行"处理是更安全的一侧 —— 用户会去看鎏灏是否在运行，而不是盯着"数据不可用"。
+ * 按"没运行"处理是更安全的一侧 —— 用户会去看贾维斯是否在运行，而不是盯着"数据不可用"。
  */
 async function probeLocalService(): Promise<boolean> {
   try {
@@ -130,7 +130,7 @@ export async function apiFetchWithStatus<T>(
     // 对用户没有信息量，这里统一换成"发生了什么 + 怎么办"。
     if (!(err instanceof DOMException && err.name === 'AbortError')) {
       // 补一次就绪探测：连接失败可能是"服务没开"，也可能只是"这一个端点出错"。
-      // 两者对用户的要求完全不同（去打开鎏灏 / 直接等），不能都写成同一句
+      // 两者对用户的要求完全不同（去打开贾维斯 / 直接等），不能都写成同一句
       // "数据不可用"。
       const alive = await probeLocalService()
       throw new ApiError(0, alive ? LOCAL_SERVICE_UNSTABLE : LOCAL_SERVICE_OFFLINE)
@@ -167,7 +167,7 @@ export async function apiFetchWithStatus<T>(
     // 用户读不懂；这里换成"服务没准备好"这一类可执行提示。
     throw new ApiError(
       response.status,
-      '服务没有返回正常的数据。请确认鎏灏仍在运行并完成初始化，然后重试。',
+      '服务没有返回正常的数据。请确认贾维斯仍在运行并完成初始化，然后重试。',
     )
   }
 }
