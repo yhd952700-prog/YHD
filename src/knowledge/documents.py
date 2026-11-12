@@ -1,8 +1,16 @@
 """Live knowledge base (ingest + retrieval over the persisted vector store).
 
-The service never fabricates an answer: if no embedding provider is configured,
-``build_embedding_provider`` raises and every caller reports "未启用". The vector
-store is the process-level SQLite singleton, so a restart keeps the corpus.
+The vector store is the process-level singleton, so a restart keeps the
+corpus: SQLite locally by default (``PersistentVectorStore``), Qdrant when
+one is reachable and selected (see ``vector_store.select_vector_backend``).
+The embedding provider is the configured one when available; when no external
+embedding service is reachable the service falls back to deterministic local
+hash vectors (``embedding.build_embedding_provider_with_local_fallback``) and
+says so in :meth:`KnowledgeDocumentService.status` (``embedding_mode`` /
+``semantic`` / ``vector_backend``) -- the fallback is lexical, not semantic,
+and must never be presented as a semantic model. Set
+``LIUHAO_KNOWLEDGE_LOCAL_FALLBACK=0`` to restore the old fail-closed
+behaviour (no provider -> "未启用").
 """
 
 from __future__ import annotations
@@ -18,8 +26,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .abstention import AbstentionConfig, resolve_abstention_config
 from .chunker import chunk_document_structured, chunk_paged_document
-from .embedding import EmbeddingUnavailableError, build_embedding_provider
+from .embedding import (
+    EmbeddingUnavailableError,
+    build_embedding_provider_with_local_fallback,
+)
 from .vector_store import get_vector_store
+from . import vector_store as vector_store_module
 
 logger = logging.getLogger("liuhao.knowledge.documents")
 
@@ -325,7 +337,7 @@ class KnowledgeDocumentService:
         if self._embedder is not None:
             return self._embedder
         try:
-            self._embedder = build_embedding_provider()
+            self._embedder = build_embedding_provider_with_local_fallback()
         except EmbeddingUnavailableError as exc:
             self._unavailable_reason = str(exc)
             raise
@@ -386,13 +398,29 @@ class KnowledgeDocumentService:
 
     # -- read-only status --------------------------------------------------
     def status(self) -> Dict[str, Any]:
-        """Human-readable availability; never raises."""
+        """Human-readable availability; never raises.
+
+        Honest-backend fields (the console's knowledge page reads this):
+
+        * ``vector_backend`` -- ``"local_sqlite"`` or ``"qdrant"``: where the
+          vectors actually live;
+        * ``qdrant_reachable`` -- whether a Qdrant server answers at the
+          configured address right now (cached 60 s);
+        * ``embedding_mode`` -- ``"configured"`` for a real embedding
+          provider, ``"local_hashing_fallback"`` when no external service is
+          reachable and the deterministic local hash embedder is in use;
+        * ``semantic`` -- False for the hashing fallback (lexical token
+          overlap, not meaning) and for the dev-only mock; True for a real
+          embedding model.
+        """
         provider = None
         model = None
+        local_fallback = False
         try:
             embedder = self._embedding()
             provider = getattr(embedder, "name", type(embedder).__name__)
             model = getattr(embedder, "model", None)
+            local_fallback = bool(getattr(embedder, "local_fallback", False))
         except EmbeddingUnavailableError as exc:
             reason = str(exc)
         else:
@@ -401,14 +429,22 @@ class KnowledgeDocumentService:
         vectors = 0
         dims: Dict[int, int] = {}
         index_meta: Dict[str, str] = {}
+        vector_backend = "local_sqlite"
         try:
             store = self._store()
             vectors = store.count()
             index_meta = store.get_index_meta() or {}
             dims = store.dimension_distribution() or {}
+            vector_backend = str(getattr(store, "backend", "local_sqlite"))
         except Exception as exc:  # pragma: no cover - 存储首次打开失败
             logger.error("knowledge status: vector store unavailable (%s)", exc)
             reason = reason or f"向量库不可用：{type(exc).__name__}"
+
+        qdrant_reachable = vector_store_module.probe_qdrant_cached()
+        embedding_mode = (
+            "local_hashing_fallback" if local_fallback else "configured"
+        )
+        semantic = (not local_fallback) and provider != "mock"
 
         # MEM-008：库级记录模型与维度；不一致时直接禁用并给中文原因，不让
         # 错配向量进入检索（历史台账在 knowledge_index_meta 表）。
@@ -439,7 +475,17 @@ class KnowledgeDocumentService:
             )
 
         if reason is None:
-            message = "知识库已启用"
+            if local_fallback and vector_backend == "local_sqlite":
+                message = (
+                    "知识库已启用（本地向量：哈希向量，非语义模型；"
+                    "向量库为本机 SQLite，未使用 Qdrant）"
+                )
+            elif local_fallback:
+                message = "知识库已启用（本地向量：哈希向量，非语义模型）"
+            elif vector_backend == "qdrant":
+                message = "知识库已启用（向量库：Qdrant）"
+            else:
+                message = "知识库已启用"
         elif reason.startswith("知识库未启用") or reason.startswith("向量库不可用"):
             # 未配置与向量库故障是两种状态：后者不能折叠成「未启用」。
             message = reason
@@ -460,6 +506,11 @@ class KnowledgeDocumentService:
             "dimensions": {str(dim): count for dim, count in sorted(dims.items())},
             "reason": reason,
             "message": message,
+            # -- honest-backend fields (see docstring) ---------------------
+            "vector_backend": vector_backend,
+            "qdrant_reachable": qdrant_reachable,
+            "embedding_mode": embedding_mode,
+            "semantic": semantic,
         }
 
     # -- write -------------------------------------------------------------
