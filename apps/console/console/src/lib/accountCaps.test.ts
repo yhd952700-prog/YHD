@@ -187,9 +187,10 @@ describe('导航裁剪：不渲染而不是置灰', () => {
   test('审批入口只对能签发凭据的一方出现，其余账号导航里没有这一项', () => {
     expect(visibleNavKeys(rootCaps).has('approval')).toBe(true)
     expect(visibleNavKeys(memberCaps).has('approval')).toBe(false)
-    // 手机底栏同样不能留死入口：成员看不到系统设置时，第七项回退「我的」。
+    // 手机底栏同样不能留死入口：成员看不到系统设置时，第七项回退「我的账号与安全」。
     expect(mobileNavKeysFor(memberCaps)).not.toContain('approval')
-    expect(mobileNavKeysFor(memberCaps)).toContain('me')
+    expect(mobileNavKeysFor(memberCaps)).toContain('my-account-security')
+    expect(mobileNavKeysFor(memberCaps)).not.toContain('me')
     expect(mobileNavKeysFor(rootCaps)).toContain('settings')
     expect(mobileNavKeysFor(rootCaps)).not.toContain('approval')
   })
@@ -248,29 +249,36 @@ describe('Owner 专属入口：只对 Owner 渲染', () => {
     expect(flagged.isOwner).toBe(true)
   })
 
-  test('Owner 多出全局总览、成员管理、全部任务、审计四项', () => {
+  test('Owner 多出全局总览、成员与权限、全部任务与审计三项（简约版）', () => {
     const visible = visibleNavKeys(ownerCaps)
-    for (const key of ['owner-overview', 'owner-members', 'owner-tasks', 'owner-audit']) {
+    for (const key of ['owner-overview', 'members-permissions', 'tasks-audit']) {
+      expect(visible.has(key)).toBe(true)
+    }
+    // 被并掉的 Owner 旧 key 仍在深链白名单里（旧深链不断）。
+    for (const key of ['owner-members', 'owner-tasks', 'owner-audit']) {
       expect(visible.has(key)).toBe(true)
     }
     const ownerGroup = navGroupsFor(ownerCaps).find((group) => group.key === 'owner')
     expect(ownerGroup?.label).toBe('Owner')
     expect(ownerGroup?.items.map((item) => item.key)).toEqual([
       'owner-overview',
-      'owner-members',
-      'owner-tasks',
-      'owner-audit',
+      'members-permissions',
+      'tasks-audit',
     ])
     expect(ownerGroup?.defaultKey).toBe('owner-overview')
   })
 
-  test('普通账号的导航里根本没有 Owner 组与四项（不是置灰）', () => {
+  test('普通账号的导航里没有 Owner 专属入口（不是置灰）；Owner 组里只剩人人可见的全部任务与审计', () => {
     expect(memberCaps.isOwner).toBe(false)
     const visible = visibleNavKeys(memberCaps)
-    for (const key of ['owner-overview', 'owner-members', 'owner-tasks', 'owner-audit']) {
+    for (const key of ['owner-overview', 'members-permissions', 'owner-members', 'owner-tasks', 'owner-audit']) {
       expect(visible.has(key)).toBe(false)
     }
-    expect(navGroupsFor(memberCaps).some((group) => group.key === 'owner')).toBe(false)
+    // 「全部任务与审计」人人可见（旧的操作记录/事件流/数据中心本来就人人可见），
+    // 所以成员的 Owner 组里只剩这一项。
+    expect(visible.has('tasks-audit')).toBe(true)
+    const memberOwnerGroup = navGroupsFor(memberCaps).find((group) => group.key === 'owner')
+    expect(memberOwnerGroup?.items.map((item) => item.key)).toEqual(['tasks-audit'])
     // 普通账号原有入口不受影响：操作台、企业总览、任务中心、操作记录都在。
     for (const key of ['console', 'enterprise-overview', 'task-center', 'audit']) {
       expect(visible.has(key)).toBe(true)
