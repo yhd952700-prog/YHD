@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   发布流水线唯一入口：构建 → 签名 → SHA256 → 清单 → 自检（一条命令）。
 
@@ -179,13 +179,13 @@ if (-not (Test-Path $payloadApp)) {
 # ------------------------------------------------- 3. 自检：定位 exe 与 zip
 Write-Step "自检 4/6：安装包签名"
 $installerDir = Join-Path $OutRoot "installer"
-$exePath = Join-Path $installerDir ("LiuHao-Setup-$Version.exe")
+$exePath = Join-Path $installerDir ("Jarvis-Setup-$Version.exe")
 if (-not (Test-Path $exePath)) {
-    $candidates = @(Get-ChildItem -LiteralPath $installerDir -Filter "LiuHao-Setup-*.exe" -ErrorAction SilentlyContinue)
+    $candidates = @(Get-ChildItem -LiteralPath $installerDir -Filter "Jarvis-Setup-*.exe" -ErrorAction SilentlyContinue)
     if ($candidates.Count -eq 1) { $exePath = $candidates[0].FullName }
 }
 if (-not (Test-Path $exePath)) {
-    Add-Check "安装包存在" "FAIL" "在 $installerDir 下找不到 LiuHao-Setup-*.exe"
+    Add-Check "安装包存在" "FAIL" "在 $installerDir 下找不到 Jarvis-Setup-*.exe"
 } else {
     $sig = Get-AuthenticodeSignature -LiteralPath $exePath
     $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "（无签名者证书）" }
@@ -196,8 +196,8 @@ if (-not (Test-Path $exePath)) {
 
 Write-Step "自检 5/6：exe / zip 的三方哈希一致"
 $zipCandidates = @(
-    (Join-Path $installerDir ("liuhao-$Version-upgrade.zip")),
-    (Join-Path $OutRoot ("release\liuhao-$Version-upgrade.zip")),
+    (Join-Path $installerDir ("jarvis-$Version-upgrade.zip")),
+    (Join-Path $OutRoot ("release\jarvis-$Version-upgrade.zip")),
     (Join-Path $OutRoot ("release\liuhao-$Version.zip")),
     (Join-Path $installerDir ("liuhao-$Version.zip"))
 ) | Where-Object { Test-Path $_ }
@@ -244,7 +244,7 @@ if (Test-Path $exePath) {
 }
 
 if (-not $zipPath) {
-    Add-Check "升级包存在" "FAIL" ("在 installer/release 下找不到 liuhao-$Version-upgrade.zip")
+    Add-Check "升级包存在" "FAIL" ("在 installer/release 下找不到 jarvis-$Version-upgrade.zip")
 } else {
     $zipHash = Get-Hash $zipPath
     $zipSize = Get-Size $zipPath
