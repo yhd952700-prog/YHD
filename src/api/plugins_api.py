@@ -9,11 +9,22 @@ RESTful API endpoints for plugin management:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed data is opt-in only (env LIUHAO_DEMO_SEED=1).
+
+    Without it no plugins are reported as installed; sample plugins
+    and registry entries must never be mixed into production-facing
+    state by default.
+    """
+    return os.environ.get("LIUHAO_DEMO_SEED") == "1"
 
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
@@ -82,7 +93,11 @@ _registry: Dict[str, Dict[str, Any]] = {}
 
 
 def _seed_sample_data() -> None:
-    """Seed with sample plugin data (once)."""
+    """Seed with sample plugin data (once, demo mode only).
+
+    Only runs when LIUHAO_DEMO_SEED=1. The entries below are fictional
+    demo data, never production state.
+    """
     if _installed:
         return
 
@@ -136,7 +151,10 @@ def _seed_sample_data() -> None:
         }
 
 
-_seed_sample_data()
+# No import-time seeding: demo data loads only when explicitly opted
+# in via LIUHAO_DEMO_SEED=1.
+if _demo_seed_enabled():
+    _seed_sample_data()
 
 
 def _get_plugin_or_404(plugin_id: str) -> Dict[str, Any]:
