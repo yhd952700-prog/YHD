@@ -561,7 +561,7 @@ export function EnterpriseOverview({ principal, onNavigate }: EnterpriseOverview
                       还有 {numberText(total - approvalItems.length)} 项未列出。
                     </p>
                   )}
-                  <p className="eov-note">本页只读展示；批准或拒绝仍需在审批中心完成。</p>
+                  <p className="eov-note">本页只读展示；批准或拒绝仍需在审批签发完成。</p>
                 </>
               )
             })()
