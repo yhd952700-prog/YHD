@@ -644,7 +644,12 @@ class TestBackupCommands:
 
 
 class TestPluginCommands:
-    """Tests for plugin CLI commands."""
+    """Tests for plugin CLI commands.
+
+    Honest default: no demo seed is loaded, so no plugins are
+    installed and the registry is empty. Positive-path tests opt in
+    explicitly via ``manager._seed_sample_data()``.
+    """
 
     @pytest.fixture
     def manager(self):
@@ -652,9 +657,20 @@ class TestPluginCommands:
 
     def test_list_plugins(self, manager):
         result = manager.list_plugins()
-        assert result["total"] > 0  # seeded with sample data
+        assert result["total"] == 0
+        assert result["items"] == []
+
+    def test_list_plugins_with_demo_seed(self, manager):
+        manager._seed_sample_data()
+        result = manager.list_plugins()
+        assert result["total"] == 4
 
     def test_get_plugin_info(self, manager):
+        with pytest.raises(ValueError, match="Plugin not found"):
+            manager.get_plugin_info("plugin-slack")
+
+    def test_get_plugin_info_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.get_plugin_info("plugin-slack")
         assert result["name"] == "Slack Integration"
         assert result["status"] == "enabled"
@@ -664,34 +680,70 @@ class TestPluginCommands:
             manager.get_plugin_info("nonexistent")
 
     def test_install_plugin(self, manager):
+        # Nothing is in the registry without the demo seed.
+        with pytest.raises(ValueError, match="not found in registry"):
+            manager.install_plugin("plugin-trello")
+
+    def test_install_plugin_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.install_plugin("plugin-trello")
         assert result["status"] == "installed"
         assert result["id"] == "plugin-trello"
 
     def test_install_already_installed(self, manager):
+        manager._seed_sample_data()
         with pytest.raises(ValueError, match="already installed"):
             manager.install_plugin("plugin-slack")
 
     def test_enable_plugin(self, manager):
+        with pytest.raises(ValueError, match="Plugin not found"):
+            manager.enable_plugin("plugin-jira")
+
+    def test_enable_plugin_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.enable_plugin("plugin-jira")
         assert result["status"] == "enabled"
 
     def test_disable_plugin(self, manager):
+        with pytest.raises(ValueError, match="Plugin not found"):
+            manager.disable_plugin("plugin-slack")
+
+    def test_disable_plugin_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.disable_plugin("plugin-slack")
         assert result["status"] == "disabled"
 
     def test_uninstall_plugin(self, manager):
+        with pytest.raises(ValueError, match="Plugin not found"):
+            manager.uninstall_plugin("plugin-notion")
+
+    def test_uninstall_plugin_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.uninstall_plugin("plugin-notion")
         assert result["status"] == "uninstalled"
+        with pytest.raises(ValueError, match="Plugin not found"):
+            manager.get_plugin_info("plugin-notion")
 
     def test_upgrade_plugin(self, manager):
+        with pytest.raises(ValueError, match="Plugin not found"):
+            manager.upgrade_plugin("plugin-github")
+
+    def test_upgrade_plugin_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.upgrade_plugin("plugin-github")
         assert result["status"] == "upgraded"
-        assert "new_version" in result
+        assert result["old_version"] == "2.0.1"
+        assert result["new_version"] == "3.0.0"
 
     def test_search_plugins(self, manager):
         result = manager.search_plugins("integration")
-        assert result["total"] > 0
+        assert result["total"] == 0
+        assert result["items"] == []
+
+    def test_search_plugins_with_demo_seed(self, manager):
+        manager._seed_sample_data()
+        result = manager.search_plugins("integration")
+        assert result["total"] == 4
 
 
 # =====================================================================
@@ -700,7 +752,13 @@ class TestPluginCommands:
 
 
 class TestOrgCommands:
-    """Tests for organization CLI commands."""
+    """Tests for organization CLI commands.
+
+    Honest default: no demo seed is loaded, so the organization
+    starts empty (no teams, no members). Positive-path tests opt in
+    explicitly via ``manager._seed_sample_data()``: the seed is 5 teams
+    and 10 members of fictional demo data.
+    """
 
     @pytest.fixture
     def manager(self):
@@ -710,28 +768,75 @@ class TestOrgCommands:
         result = manager.get_org_tree()
         assert "teams" in result
         assert "total_teams" in result
-        assert result["total_teams"] > 0
+        assert result["total_teams"] == 0
+        assert result["total_members"] == 0
+        assert result["teams"] == []
+
+    def test_get_org_tree_with_demo_seed(self, manager):
+        manager._seed_sample_data()
+        result = manager.get_org_tree()
+        assert result["total_teams"] == 5
+        assert result["total_members"] == 10
+        assert {t["team_id"] for t in result["teams"]} == {"team-exec"}
 
     def test_list_teams(self, manager):
         result = manager.list_teams()
         assert "teams" in result
-        assert len(result["teams"]) > 0
+        assert result["teams"] == []
+        assert result["total"] == 0
+
+    def test_list_teams_with_demo_seed(self, manager):
+        manager._seed_sample_data()
+        result = manager.list_teams()
+        assert len(result["teams"]) == 5
+        assert result["total"] == 5
 
     def test_list_members(self, manager):
         result = manager.list_members()
         assert "members" in result
-        assert result["total"] > 0
+        assert result["members"] == []
+        assert result["total"] == 0
+
+    def test_list_members_with_demo_seed(self, manager):
+        manager._seed_sample_data()
+        result = manager.list_members()
+        assert result["total"] == 10
+        assert len(result["members"]) == 10
 
     def test_add_member(self, manager):
+        # Without a team (none exist yet) a member can still be added.
+        result = manager.add_member(
+            name="New Member", role="individual_contributor"
+        )
+        assert result["name"] == "New Member"
+        assert result["role"] == "individual_contributor"
+        assert manager.list_members()["total"] == 1
+
+    def test_add_member_to_unknown_team_is_an_error(self, manager):
+        with pytest.raises(ValueError, match="Team not found"):
+            manager.add_member(
+                name="New Member", role="individual_contributor",
+                team_id="team-research",
+            )
+
+    def test_add_member_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.add_member(
             name="New Member", role="individual_contributor", team_id="team-research"
         )
         assert result["name"] == "New Member"
         assert result["role"] == "individual_contributor"
+        assert manager.list_members(team_id="team-research")["total"] == 6
 
     def test_remove_member(self, manager):
+        with pytest.raises(ValueError, match="Member not found"):
+            manager.remove_member("m-005")
+
+    def test_remove_member_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.remove_member("m-005")
         assert result["status"] == "removed"
+        assert manager.list_members()["total"] == 9
 
     def test_list_roles(self, manager):
         result = manager.list_roles()
@@ -742,11 +847,29 @@ class TestOrgCommands:
         result = manager.get_capacity()
         assert "total_members" in result
         assert "avg_capacity_pct" in result
+        assert result["total_members"] == 0
+        assert result["avg_capacity_pct"] == 0
+
+    def test_get_capacity_with_demo_seed(self, manager):
+        # Deterministic capacities: 80 + (numeric suffix % 20) per member.
+        manager._seed_sample_data()
+        result = manager.get_capacity()
+        assert result["total_members"] == 10
+        assert result["total_capacity_pct"] == 855.0
+        assert result["avg_capacity_pct"] == 85.5
+        assert result["agent_count"] == 2
+        assert result["human_count"] == 8
 
     def test_get_performance(self, manager):
+        # No task/quality/collaboration signals are recorded, so the
+        # metrics are null (with a note) instead of fabricated numbers.
         result = manager.get_performance()
-        assert "tasks_completed" in result
-        assert "quality_score" in result
+        assert result["tasks_completed"] is None
+        assert result["avg_turnaround_hours"] is None
+        assert result["quality_score"] is None
+        assert result["collaboration_index"] is None
+        assert result["top_performers"] == []
+        assert "not available" in result["note"]
 
 
 # =====================================================================
@@ -755,7 +878,12 @@ class TestOrgCommands:
 
 
 class TestSolutionCommands:
-    """Tests for solution CLI commands."""
+    """Tests for solution CLI commands.
+
+    Honest default: no demo seed is loaded, so no solution templates
+    or deployments exist. Positive-path tests opt in explicitly via
+    ``manager._seed_sample_data()`` (4 templates, 1 deployment).
+    """
 
     @pytest.fixture
     def manager(self):
@@ -764,9 +892,20 @@ class TestSolutionCommands:
     def test_list_solutions(self, manager):
         result = manager.list_solutions()
         assert "total" in result
-        assert result["total"] > 0
+        assert result["total"] == 0
+        assert result["items"] == []
+
+    def test_list_solutions_with_demo_seed(self, manager):
+        manager._seed_sample_data()
+        result = manager.list_solutions()
+        assert result["total"] == 4
 
     def test_get_solution_info(self, manager):
+        with pytest.raises(ValueError, match="Solution not found"):
+            manager.get_solution_info("sol-customer-support")
+
+    def test_get_solution_info_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.get_solution_info("sol-customer-support")
         assert result["name"] == "Customer Support Agent"
         assert "required_agents" in result
@@ -776,6 +915,11 @@ class TestSolutionCommands:
             manager.get_solution_info("nonexistent")
 
     def test_deploy_solution(self, manager):
+        with pytest.raises(ValueError, match="Solution not found"):
+            manager.deploy_solution("sol-code-review", name="Code Review Prod")
+
+    def test_deploy_solution_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.deploy_solution(
             "sol-code-review", name="Code Review Prod"
         )
@@ -783,20 +927,50 @@ class TestSolutionCommands:
         assert result["name"] == "Code Review Prod"
 
     def test_get_deployment_status(self, manager):
+        with pytest.raises(ValueError, match="Deployment not found"):
+            manager.get_deployment_status("dep-001")
+
+    def test_get_deployment_status_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.get_deployment_status("dep-001")
         assert "status" in result
         assert "deployment_id" in result
+        assert result["status"] == "deployed"
+        # Real uptime: seconds since the deployment timestamp, not a constant.
+        assert isinstance(result["uptime_seconds"], (int, float))
+        assert result["uptime_seconds"] >= 0
 
     def test_configure_solution(self, manager):
+        with pytest.raises(ValueError, match="Deployment not found"):
+            manager.configure_solution("dep-001", {"tier": "premium"})
+
+    def test_configure_solution_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.configure_solution(
             "dep-001", {"tier": "premium"}
         )
         assert result["status"] == "updating"
+        assert result["config"]["tier"] == "premium"
 
     def test_get_solution_metrics(self, manager):
+        with pytest.raises(ValueError, match="Deployment not found"):
+            manager.get_solution_metrics("dep-001")
+
+    def test_get_solution_metrics_with_demo_seed(self, manager):
+        manager._seed_sample_data()
         result = manager.get_solution_metrics("dep-001")
         assert "metrics" in result
-        assert "success_rate" in result["metrics"]
+        # No success/failure counts, latency observations or cost data
+        # are recorded, so those metrics are null (with a note).
+        assert result["metrics"]["success_rate"] is None
+        assert result["metrics"]["avg_response_time_ms"] is None
+        assert result["metrics"]["cost_estimate"] is None
+        # tasks_completed is a real recorded value: the seeded deployment
+        # records tickets_handled=1250 (B组第二轮统一了键名，读方与种子
+        # 一致），不是编造的常量。
+        assert result["metrics"]["tasks_completed"] == 1250
+        assert result["metrics"]["user_satisfaction"] == 0.88
+        assert "not available" in result["note"]
 
 
 # =====================================================================
@@ -899,7 +1073,7 @@ class TestShellCommands:
 
     def test_execute_info(self, session):
         result = session.execute("info")
-        assert result["system"] == "LiuHao AI OS"
+        assert result["system"] == "Jarvis · 贾维斯"
 
     def test_execute_whoami(self, session):
         result = session.execute("whoami")
@@ -908,7 +1082,7 @@ class TestShellCommands:
 
     def test_execute_version(self, session):
         result = session.execute("version")
-        assert result["product"] == "LiuHao AI OS"
+        assert result["product"] == "Jarvis · 贾维斯"
 
     def test_execute_unknown_command(self, session):
         result = session.execute("nonexistent")
