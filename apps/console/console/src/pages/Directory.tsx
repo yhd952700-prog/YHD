@@ -97,7 +97,7 @@ export function Roster({ query }: { query: string }) {
           {(data) => (
             <>
               <NetworkGraph
-                hubLabel="鎏灏 OS"
+                hubLabel="贾维斯 OS"
                 height={260}
                 nodes={data.layers.map((layer) => ({
                   id: layer.id,
