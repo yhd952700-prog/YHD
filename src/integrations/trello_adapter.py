@@ -923,12 +923,39 @@ class TrelloAdapter(BaseIntegrationAdapter):
         Verify a webhook callback.
 
         Trello sends a HEAD request to the callback URL during creation.
-        The endpoint must return a 200 response.
+        The endpoint must return a 200 response. This performs a real
+        HEAD request (bounded timeout, never unconditional True):
+        only an HTTP 200 verifies the callback.
+
+        Args:
+            callback_url: The callback URL to verify.
 
         Returns:
-            True if verification would succeed (placeholder).
+            True only if the endpoint answers HEAD with HTTP 200.
         """
-        return True
+        if not callback_url:
+            return False
+        from urllib.parse import urlparse
+
+        scheme = urlparse(callback_url).scheme.lower()
+        if scheme not in ("http", "https"):
+            return False
+        try:
+            import urllib.error
+            import urllib.request
+
+            # Bound the wait: config timeout defaults to 30s, which is
+            # too long for a verification probe; cap at 10s.
+            timeout = min(self.config.timeout, 10) if self.config.timeout else 10
+            req = urllib.request.Request(callback_url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status == 200
+        except Exception as exc:  # noqa: BLE001 - any failure = unverified
+            self._logger.warning(
+                "Webhook callback verification failed for %s: %s",
+                callback_url, exc,
+            )
+            return False
 
     def verify_webhook_signature(self, body: str,
                                  signature: str,
