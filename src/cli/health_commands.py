@@ -11,10 +11,79 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+try:  # psutil is a declared dependency (requirements.txt / pyproject.toml).
+    import psutil as _psutil
+except ImportError:  # pragma: no cover - degraded environment
+    _psutil = None
+
+# Components below have no live probe wired in this module, so their
+# status must NOT be reported as healthy. They are "unknown" until a
+# real probe is wired for each of them.
+_UNPROBED_MESSAGE = (
+    "Not probed: no live check is wired for this component, "
+    "status is not verified"
+)
+
+# Disk is reported degraded once usage reaches this fraction; the
+# measurement itself (shutil.disk_usage) is real, the threshold is an
+# operational choice, not a measured value.
+_DISK_DEGRADED_USAGE = 0.90
+
+
+def _probe_process() -> ComponentHealth:
+    """Probe the current process (real measurement, psutil or stdlib)."""
+    started = time.monotonic()
+    try:
+        if _psutil is not None:
+            rss_mb = _psutil.Process().memory_info().rss / (1024 * 1024)
+            return ComponentHealth(
+                name="process",
+                status=HealthStatus.HEALTHY,
+                message=f"Process running (RSS {rss_mb:.1f} MB)",
+                response_time_ms=round((time.monotonic() - started) * 1000, 2),
+            )
+        import resource
+
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return ComponentHealth(
+            name="process",
+            status=HealthStatus.HEALTHY,
+            message=f"Process running (peak RSS {rss_kb / 1024:.1f} MB, psutil unavailable)",
+            response_time_ms=round((time.monotonic() - started) * 1000, 2),
+        )
+    except Exception as exc:  # noqa: BLE001 - probe must never raise
+        return ComponentHealth(
+            name="process",
+            status=HealthStatus.UNKNOWN,
+            message=f"Process probe failed: {exc}",
+        )
+
+
+def _probe_disk() -> ComponentHealth:
+    """Probe the root filesystem (real measurement via shutil)."""
+    started = time.monotonic()
+    try:
+        usage = shutil.disk_usage("/")
+        used_fraction = usage.used / usage.total if usage.total else 0.0
+        return ComponentHealth(
+            name="disk",
+            status=HealthStatus.DEGRADED if used_fraction >= _DISK_DEGRADED_USAGE else HealthStatus.HEALTHY,
+            message=f"Disk {used_fraction:.1%} used ({usage.free // (1024 ** 3)} GiB free)",
+            response_time_ms=round((time.monotonic() - started) * 1000, 2),
+        )
+    except Exception as exc:  # noqa: BLE001 - probe must never raise
+        return ComponentHealth(
+            name="disk",
+            status=HealthStatus.UNKNOWN,
+            message=f"Disk probe failed: {exc}",
+        )
 
 
 class HealthStatus(str, Enum):
@@ -51,30 +120,30 @@ class HealthHistoryEntry:
 
 
 class HealthChecker:
-    """Simulated health checker for CLI operations.
+    """Health checker for CLI operations.
 
+    Only the process itself and the local disk are really probed here
+    (psutil / shutil). The other components have no live check wired in
+    this module and are reported as UNKNOWN, never as healthy.
     In production this would integrate with the real health check system
     in src.health.health_check.
     """
 
     def __init__(self) -> None:
         self._components: Dict[str, ComponentHealth] = {
-            "database": ComponentHealth(
-                name="database", status=HealthStatus.HEALTHY, message="Connected"
-            ),
-            "ai_provider": ComponentHealth(
-                name="ai_provider", status=HealthStatus.HEALTHY, message="Available"
-            ),
-            "memory_store": ComponentHealth(
-                name="memory_store", status=HealthStatus.HEALTHY, message="Operational"
-            ),
-            "auth_service": ComponentHealth(
-                name="auth_service", status=HealthStatus.HEALTHY, message="Active"
-            ),
-            "message_bus": ComponentHealth(
-                name="message_bus", status=HealthStatus.HEALTHY, message="Connected"
-            ),
+            name: ComponentHealth(
+                name=name, status=HealthStatus.UNKNOWN, message=_UNPROBED_MESSAGE
+            )
+            for name in (
+                "database",
+                "ai_provider",
+                "memory_store",
+                "auth_service",
+                "message_bus",
+            )
         }
+        self._components["process"] = _probe_process()
+        self._components["disk"] = _probe_disk()
         self._history: List[HealthHistoryEntry] = []
 
     def _record_history(self) -> None:
@@ -94,23 +163,33 @@ class HealthChecker:
             self._history = self._history[-100:]
 
     def _compute_overall(self) -> HealthStatus:
-        """Compute overall health status from components."""
+        """Compute overall health status from components.
+
+        "unknown" is never reported as "healthy": if any component is
+        unprobed, the overall status is at best UNKNOWN.
+        """
         statuses = [c.status for c in self._components.values()]
         if HealthStatus.UNHEALTHY in statuses:
             return HealthStatus.UNHEALTHY
         if HealthStatus.DEGRADED in statuses:
             return HealthStatus.DEGRADED
-        if all(s == HealthStatus.HEALTHY for s in statuses):
-            return HealthStatus.HEALTHY
-        return HealthStatus.UNKNOWN
+        if HealthStatus.UNKNOWN in statuses:
+            return HealthStatus.UNKNOWN
+        return HealthStatus.HEALTHY
 
     def run_check(self) -> Dict[str, Any]:
         """Run a full health check on all components.
 
+        Re-probes the process and disk for real; the other components
+        have no live probe and stay UNKNOWN with their last_checked
+        timestamp refreshed.
+
         Returns:
             Dict with overall status and component details.
         """
-        # Update check timestamps
+        # Re-probe what can actually be probed.
+        self._components["process"] = _probe_process()
+        self._components["disk"] = _probe_disk()
         for comp in self._components.values():
             comp.last_checked = datetime.utcnow().isoformat()
         self._record_history()
@@ -149,6 +228,9 @@ class HealthChecker:
             "unhealthy_count": sum(
                 1 for c in self._components.values() if c.status == HealthStatus.UNHEALTHY
             ),
+            "unknown_count": sum(
+                1 for c in self._components.values() if c.status == HealthStatus.UNKNOWN
+            ),
         }
 
     def list_components(self) -> Dict[str, Any]:
@@ -163,6 +245,7 @@ class HealthChecker:
                     "name": name,
                     "status": comp.status.value,
                     "message": comp.message,
+                    "response_time_ms": comp.response_time_ms,
                     "last_checked": comp.last_checked,
                 }
                 for name, comp in self._components.items()
@@ -206,13 +289,14 @@ class HealthChecker:
     def check_liveness(self) -> Dict[str, Any]:
         """Perform a liveness check.
 
+        Liveness is real here: this code is executing in the process.
+        The process is dead only if its probe reports UNHEALTHY; an
+        UNKNOWN probe (measurement unavailable) still means alive.
+
         Returns:
             Dict with liveness status.
         """
-        alive = all(
-            c.status != HealthStatus.UNHEALTHY
-            for c in self._components.values()
-        )
+        alive = self._components["process"].status != HealthStatus.UNHEALTHY
         return {
             "status": "alive" if alive else "dead",
             "alive": alive,
