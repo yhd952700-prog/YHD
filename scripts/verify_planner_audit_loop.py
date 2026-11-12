@@ -44,8 +44,6 @@ from src.ai.goal_task_graph import (
     GoalTaskGraph,
     GoalDefinition,
     TaskNode,
-    GoalStatus,
-    TaskStatus,
 )
 from src.kernels.audit import audit_query
 
