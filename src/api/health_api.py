@@ -11,9 +11,10 @@ RESTful API endpoints for health checks:
 
 from __future__ import annotations
 
+import shutil
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 
@@ -24,61 +25,182 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 _PROCESS_START = time.time()
 
+try:  # psutil is a declared dependency (requirements.txt / pyproject.toml).
+    import psutil as _psutil
+except ImportError:  # pragma: no cover - degraded environment
+    _psutil = None
+
+# Components below have no live probe wired in this module: there is no
+# database / AI-provider / auth / message-bus client configured here, so
+# their status must NOT be reported as healthy. They are reported as
+# "unknown" until a real probe is wired for each of them.
+_UNPROBED_MESSAGE = (
+    "Not probed: no live check is wired for this component, "
+    "status is not verified"
+)
+
+_UNPROBED_COMPONENTS: List[str] = [
+    "database",
+    "ai_provider",
+    "memory_store",
+    "auth_service",
+    "message_bus",
+]
+
+# Disk is reported degraded once usage reaches this fraction; the
+# measurement itself (shutil.disk_usage) is real, the threshold is an
+# operational choice, not a measured value.
+_DISK_DEGRADED_USAGE = 0.90
+
 
 # =====================================================================
-# Component health data (scaffold)
+# Component health: real probes where one exists, "unknown" otherwise
 # =====================================================================
 
 
-_components: Dict[str, Dict[str, Any]] = {
-    "database": {
-        "status": "healthy",
-        "message": "Connected",
-        "response_time_ms": 5.2,
-        "last_checked": None,
-    },
-    "ai_provider": {
-        "status": "healthy",
-        "message": "Available",
-        "response_time_ms": 120.5,
-        "last_checked": None,
-    },
-    "memory_store": {
-        "status": "healthy",
-        "message": "Operational",
-        "response_time_ms": 3.1,
-        "last_checked": None,
-    },
-    "auth_service": {
-        "status": "healthy",
-        "message": "Active",
-        "response_time_ms": 8.7,
-        "last_checked": None,
-    },
-    "message_bus": {
-        "status": "healthy",
-        "message": "Connected",
-        "response_time_ms": 2.4,
-        "last_checked": None,
-    },
-}
+def _probe_process() -> Dict[str, Any]:
+    """Probe the current process (real measurement, psutil or stdlib)."""
+    started = time.monotonic()
+    try:
+        if _psutil is not None:
+            proc = _psutil.Process()
+            rss_mb = proc.memory_info().rss / (1024 * 1024)
+            return {
+                "status": "healthy",
+                "message": f"Process running (RSS {rss_mb:.1f} MB)",
+                "response_time_ms": round((time.monotonic() - started) * 1000, 2),
+                "last_checked": datetime.utcnow().isoformat(),
+            }
+        import resource
+
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return {
+            "status": "healthy",
+            "message": f"Process running (peak RSS {rss_kb / 1024:.1f} MB, psutil unavailable)",
+            "response_time_ms": round((time.monotonic() - started) * 1000, 2),
+            "last_checked": datetime.utcnow().isoformat(),
+        }
+    except Exception as exc:  # noqa: BLE001 - probe must never raise
+        return {
+            "status": "unknown",
+            "message": f"Process probe failed: {exc}",
+            "response_time_ms": None,
+            "last_checked": datetime.utcnow().isoformat(),
+        }
+
+
+def _probe_disk() -> Dict[str, Any]:
+    """Probe the root filesystem (real measurement via shutil)."""
+    started = time.monotonic()
+    try:
+        usage = shutil.disk_usage("/")
+        used_fraction = usage.used / usage.total if usage.total else 0.0
+        return {
+            "status": "degraded" if used_fraction >= _DISK_DEGRADED_USAGE else "healthy",
+            "message": (
+                f"Disk {used_fraction:.1%} used "
+                f"({usage.free // (1024 ** 3)} GiB free)"
+            ),
+            "response_time_ms": round((time.monotonic() - started) * 1000, 2),
+            "last_checked": datetime.utcnow().isoformat(),
+        }
+    except Exception as exc:  # noqa: BLE001 - probe must never raise
+        return {
+            "status": "unknown",
+            "message": f"Disk probe failed: {exc}",
+            "response_time_ms": None,
+            "last_checked": datetime.utcnow().isoformat(),
+        }
+
+
+def _probe_components() -> Dict[str, Dict[str, Any]]:
+    """Probe every component; unprobed ones are reported as unknown.
+
+    Returns a fresh snapshot on every call (no cached fake values).
+    """
+    now = datetime.utcnow().isoformat()
+    components: Dict[str, Dict[str, Any]] = {
+        name: {
+            "status": "unknown",
+            "message": _UNPROBED_MESSAGE,
+            "response_time_ms": None,
+            "last_checked": now,
+        }
+        for name in _UNPROBED_COMPONENTS
+    }
+    components["process"] = _probe_process()
+    components["disk"] = _probe_disk()
+    return components
 
 
 def _update_check_times() -> None:
-    """Update last_checked timestamps for all components."""
-    now = datetime.utcnow().isoformat()
-    for comp in _components.values():
-        comp["last_checked"] = now
+    """Backwards-compatible no-op.
+
+    Probing is done fresh by :func:`_probe_components` on every request;
+    there is no longer a static component table whose timestamps need
+    refreshing. Kept so existing callers do not break.
+    """
+    return None
 
 
-def _compute_overall_status() -> str:
-    """Compute overall health status from components."""
-    statuses = [c["status"] for c in _components.values()]
+def _compute_overall_status(components: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    """Compute overall health status from components.
+
+    "unknown" is never reported as "healthy": if any component is
+    unprobed, the overall status is at best "unknown".
+    """
+    statuses = [c["status"] for c in (components or {}).values()]
     if "unhealthy" in statuses:
         return "unhealthy"
     if "degraded" in statuses:
         return "degraded"
+    if "unknown" in statuses:
+        return "unknown"
     return "healthy"
+
+
+def _process_resources() -> Dict[str, Any]:
+    """Measure this process's real resource usage.
+
+    Returns None for any value that cannot be measured instead of a
+    fabricated number. ``active_connections`` counts this process's own
+    inet connections (psutil); without psutil there is no reliable
+    source for it, so it is None.
+    """
+    memory_mb: Optional[float] = None
+    cpu_pct: Optional[float] = None
+    active_connections: Optional[int] = None
+    source = "unavailable"
+    if _psutil is not None:
+        try:
+            proc = _psutil.Process()
+            memory_mb = round(proc.memory_info().rss / (1024 * 1024), 2)
+            cpu_pct = round(proc.cpu_percent(interval=0.1), 2)
+            source = "psutil"
+        except Exception:  # noqa: BLE001 - fall through to stdlib fallback
+            memory_mb = None
+            cpu_pct = None
+        if memory_mb is not None:
+            try:
+                active_connections = len(proc.net_connections(kind="inet"))
+            except Exception:  # noqa: BLE001 - e.g. AccessDenied
+                active_connections = None
+    if memory_mb is None:
+        try:
+            import resource
+
+            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            # ru_maxrss is KiB on Linux, bytes on macOS.
+            memory_mb = round(rss_kb / 1024, 2)
+            source = "resource_fallback_peak_rss"
+        except Exception:  # noqa: BLE001 - nothing measurable
+            memory_mb = None
+    return {
+        "memory_usage_mb": memory_mb,
+        "cpu_usage_pct": cpu_pct,
+        "active_connections": active_connections,
+        "resource_source": source,
+    }
 
 
 # =====================================================================
@@ -96,15 +218,15 @@ async def health_overview() -> Dict[str, Any]:
     Returns:
         Dict with overall health status.
     """
-    _update_check_times()
-    overall = _compute_overall_status()
+    components = _probe_components()
+    overall = _compute_overall_status(components)
     return {
         "status": overall,
         "service": "liuhao-ai-os",
         "version": APP_VERSION,
         "timestamp": datetime.utcnow().isoformat(),
         "uptime_seconds": round(time.time() - _PROCESS_START, 2),
-        "component_count": len(_components),
+        "component_count": len(components),
     }
 
 
@@ -118,10 +240,10 @@ async def health_ready() -> Dict[str, Any]:
     Returns:
         Dict with readiness status and component checks.
     """
-    _update_check_times()
-    ready = all(c["status"] == "healthy" for c in _components.values())
+    components = _probe_components()
+    ready = all(c["status"] == "healthy" for c in components.values())
     unready = [
-        name for name, comp in _components.items()
+        name for name, comp in components.items()
         if comp["status"] != "healthy"
     ]
     return {
@@ -133,7 +255,7 @@ async def health_ready() -> Dict[str, Any]:
                 "message": comp["message"],
                 "response_time_ms": comp["response_time_ms"],
             }
-            for name, comp in _components.items()
+            for name, comp in components.items()
         },
         "unready_components": unready,
     }
@@ -167,9 +289,12 @@ async def health_detailed() -> Dict[str, Any]:
     Returns:
         Dict with detailed health information.
     """
-    _update_check_times()
-    overall = _compute_overall_status()
-    response_times = [c["response_time_ms"] for c in _components.values()]
+    components = _probe_components()
+    overall = _compute_overall_status(components)
+    response_times = [
+        c["response_time_ms"] for c in components.values()
+        if c["response_time_ms"] is not None
+    ]
     return {
         "status": overall,
         "timestamp": datetime.utcnow().isoformat(),
@@ -181,15 +306,16 @@ async def health_detailed() -> Dict[str, Any]:
                 "response_time_ms": comp["response_time_ms"],
                 "last_checked": comp["last_checked"],
             }
-            for name, comp in _components.items()
+            for name, comp in components.items()
         },
         "summary": {
-            "total_components": len(_components),
-            "healthy": sum(1 for c in _components.values() if c["status"] == "healthy"),
-            "degraded": sum(1 for c in _components.values() if c["status"] == "degraded"),
-            "unhealthy": sum(1 for c in _components.values() if c["status"] == "unhealthy"),
-            "avg_response_time_ms": round(sum(response_times) / len(response_times), 2),
-            "max_response_time_ms": round(max(response_times), 2),
+            "total_components": len(components),
+            "healthy": sum(1 for c in components.values() if c["status"] == "healthy"),
+            "degraded": sum(1 for c in components.values() if c["status"] == "degraded"),
+            "unhealthy": sum(1 for c in components.values() if c["status"] == "unhealthy"),
+            "unknown": sum(1 for c in components.values() if c["status"] == "unknown"),
+            "avg_response_time_ms": round(sum(response_times) / len(response_times), 2) if response_times else None,
+            "max_response_time_ms": round(max(response_times), 2) if response_times else None,
         },
     }
 
@@ -201,7 +327,7 @@ async def health_components() -> Dict[str, Any]:
     Returns:
         Dict with component list and individual statuses.
     """
-    _update_check_times()
+    components = _probe_components()
     return {
         "components": [
             {
@@ -211,9 +337,9 @@ async def health_components() -> Dict[str, Any]:
                 "response_time_ms": comp["response_time_ms"],
                 "last_checked": comp["last_checked"],
             }
-            for name, comp in _components.items()
+            for name, comp in components.items()
         ],
-        "total": len(_components),
+        "total": len(components),
     }
 
 
@@ -232,10 +358,10 @@ async def health_component_detail(component_name: str) -> Dict[str, Any]:
     """
     from fastapi import HTTPException
 
-    if component_name not in _components:
+    components = _probe_components()
+    if component_name not in components:
         raise HTTPException(status_code=404, detail=f"Component not found: {component_name}")
-    comp = _components[component_name]
-    comp["last_checked"] = datetime.utcnow().isoformat()
+    comp = components[component_name]
     return {
         "name": component_name,
         "status": comp["status"],
@@ -249,24 +375,31 @@ async def health_component_detail(component_name: str) -> Dict[str, Any]:
 async def health_metrics() -> Dict[str, Any]:
     """Get health-related metrics.
 
-    Returns aggregate health metrics including uptime, check counts,
-    and component performance statistics.
+    ``memory_usage_mb`` / ``cpu_usage_pct`` / ``active_connections``
+    are measured from this process (psutil, stdlib fallback for memory).
+    Any value that cannot be measured is returned as null with
+    ``resource_source`` explaining why — never a fabricated number.
 
     Returns:
         Dict with health metrics.
     """
-    response_times = [c["response_time_ms"] for c in _components.values()]
+    components = _probe_components()
+    response_times = {
+        name: comp["response_time_ms"]
+        for name, comp in components.items()
+    }
+    measured_times = [v for v in response_times.values() if v is not None]
+    resources = _process_resources()
     return {
         "uptime_seconds": round(time.time() - _PROCESS_START, 2),
-        "component_count": len(_components),
-        "healthy_count": sum(1 for c in _components.values() if c["status"] == "healthy"),
-        "total_checks": len(_components),
-        "avg_response_time_ms": round(sum(response_times) / len(response_times), 2),
-        "response_times": {
-            name: comp["response_time_ms"]
-            for name, comp in _components.items()
-        },
-        "memory_usage_mb": 128.5,  # placeholder
-        "cpu_usage_pct": 12.3,  # placeholder
-        "active_connections": 42,  # placeholder
+        "component_count": len(components),
+        "healthy_count": sum(1 for c in components.values() if c["status"] == "healthy"),
+        "unknown_count": sum(1 for c in components.values() if c["status"] == "unknown"),
+        "total_checks": len(components),
+        "avg_response_time_ms": round(sum(measured_times) / len(measured_times), 2) if measured_times else None,
+        "response_times": response_times,
+        "memory_usage_mb": resources["memory_usage_mb"],
+        "cpu_usage_pct": resources["cpu_usage_pct"],
+        "active_connections": resources["active_connections"],
+        "resource_source": resources["resource_source"],
     }
