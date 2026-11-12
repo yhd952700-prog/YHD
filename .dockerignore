@@ -10,7 +10,11 @@ docs/
 .env
 .env.*
 !.env.example
+# README.md 是 pyproject.toml 的 readme="README.md"：builder 阶段
+# `pip install -e .` 构建时必须读到它，`*.md` 会把它拦在构建上下文外。
+!README.md
 verify_metrics.db
+*.db
 __pycache__/
 *.pyc
 *.pyo
