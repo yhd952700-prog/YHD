@@ -175,7 +175,8 @@ function describeIsolation(isolation: string): string {
 }
 
 export function SkillCenter({ query = '' }: { query?: string }) {
-  const skills = useApi<unknown>('/v1/skills', 0)
+  // 技能清单易变（安装/卸载/改配）：30s 轮询。绑定关系写操作后已调 reload()，保持单次。
+  const skills = useApi<unknown>('/v1/skills', 30000)
   const state = probeState(skills)
   const records = useMemo(() => readSkills(skills.data), [skills.data])
   const bindingsApi = useApi<unknown>('/v1/skills/bindings', 0)
