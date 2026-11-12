@@ -1,19 +1,19 @@
-﻿; ==========================================================================
-; LiuHao AI OS · 鎏灏智能中枢 —— Windows 安装器（Inno Setup 6）
+; ==========================================================================
+; Jarvis · 贾维斯 —— Windows 安装器（Inno Setup 6）
 ;
 ; 设计口径（与产品负责人确认的硬要求一致）：
-;   1) 默认装到 D 盘：程序 D:\LiuHao，数据 D:\LiuHaoData —— **两者必须分离**
+;   1) 默认装到 D 盘：程序 D:\Jarvis，数据 D:\JarvisData —— **两者必须分离**
 ;      （数据不在程序目录里，卸载删程序目录不会带走账号与 Key）；
-;   2) 数据目录默认写 D:\LiuHaoData，并在向导的「数据目录」页显式展示、可改选。
+;   2) 数据目录默认写 D:\JarvisData，并在向导的「数据目录」页显式展示、可改选。
 ;      升级/覆盖安装时按「注册表 DataDir → data-dir.txt → 旧默认位置探测」找
 ;      已有目录：只要候选里已有账号/员工/记忆等真实数据，就必须优先老目录并
 ;      在日志写明来源；**绝不**在空路径上新建空库冒充老目录。记录到的目录都
 ;      不可用时让用户在这一页选择，没有可写目录就不放行安装。
 ;      例外：整机**没有任何可用非系统盘**（只有 C 盘）时，数据目录自动落到
-;      %LOCALAPPDATA%\LiuHao\data、备份落到 %LOCALAPPDATA%\LiuHao\backups，
+;      %LOCALAPPDATA%\Jarvis\data、备份落到 %LOCALAPPDATA%\Jarvis\backups，
 ;      安装继续，并在首屏与「数据目录」页明确告知「数据与备份都在 C 盘」。
-;      程序目录 D 盘不可用时的回退保持原样：有管理员权限 → %ProgramFiles%\LiuHao，
-;      否则 → %LOCALAPPDATA%\Programs\LiuHao（不需要提权、不会装到一半失败）；
+;      程序目录 D 盘不可用时的回退保持原样：有管理员权限 → %ProgramFiles%\Jarvis，
+;      否则 → %LOCALAPPDATA%\Programs\Jarvis（不需要提权、不会装到一半失败）；
 ;   3) 老用户（原先装在 C 盘）覆盖安装/升级默认沿用上次登记的位置（程序目录取
 ;      InstallLocation，数据目录取注册表 DataDir → data-dir.txt → 旧默认探测），
 ;      但会在「数据目录」页显示出来；用户可在这里改到别处（旧数据不会自动搬过去）；
@@ -55,8 +55,8 @@
   #define MaxPayloadPathLen "160"
 #endif
 
-#define AppName "LiuHao AI OS · 鎏灏智能中枢"
-#define AppPublisher "LiuHao"
+#define AppName "Jarvis · 贾维斯"
+#define AppPublisher "Jarvis"
 ; GUID 只在这里维护一份：AppId 与卸载键路径都从它派生，避免两处写死后不同步
 ; （不同步会让升级读不到 DataDir，进而丢数据目录）。
 ; 沙箱验证会用 /DAppIdGuid=<另一个 GUID> 编译，避免测试安装写进真实产品的
@@ -72,10 +72,10 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName=D:\LiuHao
-DefaultGroupName=LiuHao
-; D 盘可用时：装到 D:\LiuHao + 只写 HKCU，不需要管理员，UAC 不会弹。
-; D 盘不可用时：回退到 %ProgramFiles%\LiuHao，[Code] 会带 /ALLUSERS 自重拉并提权。
+DefaultDirName=D:\Jarvis
+DefaultGroupName=Jarvis
+; D 盘可用时：装到 D:\Jarvis + 只写 HKCU，不需要管理员，UAC 不会弹。
+; D 盘不可用时：回退到 %ProgramFiles%\Jarvis，[Code] 会带 /ALLUSERS 自重拉并提权。
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
 UsePreviousAppDir=yes
@@ -87,14 +87,14 @@ UsePreviousAppDir=yes
 UsePreviousGroup=no
 ; 不能用 yes。实测（Inno 6.7，最小脚本复现）：程序组页被禁用时，Inno 直接采用
 ; DefaultGroupName，命令行 /GROUP= 形同虚设；于是 /DIR=<临时目录> 的验收安装
-; 也写进真实用户的 LiuHao 组，卸载时整组被删（用户看到「开始菜单没了」）。
+; 也写进真实用户的 Jarvis 组，卸载时整组被删（用户看到「开始菜单没了」）。
 ; 改成「页存在但永远跳过」（见 [Code] 里的 ShouldSkipPage）：真实安装的向导
 ; 与以前一样不出现该页，同时 /GROUP= 能生效，验收安装落在独立组里。
 DisableProgramGroupPage=no
 DisableWelcomePage=no
 AllowNoIcons=yes
 OutputDir={#SetupOutputDir}
-OutputBaseFilename=LiuHao-Setup-{#AppVersion}
+OutputBaseFilename=Jarvis-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -132,7 +132,7 @@ VersionInfoDescription={#AppName} 安装程序
 VersionInfoCopyright=Copyright (C) 2026 {#AppPublisher}
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
-VersionInfoOriginalFileName=LiuHao-Setup-{#AppVersion}.exe
+VersionInfoOriginalFileName=Jarvis-Setup-{#AppVersion}.exe
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
@@ -192,13 +192,13 @@ Type: filesandordirs; Name: "{group}"
 
 [Dirs]
 ; 数据目录由安装器创建，但卸载器永不删除（删除只在 [Code] 里二次确认后按 marker 执行）。
-; 目录由 [Code] 解析：默认 D:\LiuHaoData，D 盘不可用或老安装时按实际位置。
+; 目录由 [Code] 解析：默认 D:\JarvisData，D 盘不可用或老安装时按实际位置。
 Name: "{code:GetDataDir}"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\config"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\workspace"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\data"; Flags: uninsneveruninstall
 Name: "{code:GetDataDir}\logs"; Flags: uninsneveruninstall
-; 备份根由安装器显式下发（默认取数据目录所在盘 + \LiuHaoBackups），
+; 备份根由安装器显式下发（默认取数据目录所在盘 + \JarvisBackups），
 ; 不占系统盘、也不允许升级器静默退回数据目录。卸载永不删除已有备份。
 Name: "{code:GetBackupRoot}"; Flags: uninsneveruninstall
 
@@ -230,7 +230,7 @@ Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "LIUHAO_UPGRADE
 ; 首启向导已由 liuhao_desktop.py 在拉起网关前完成（没有账号不会硬启动）。
 ; LiuHao.bat 只保留为 --console 排障入口，不作为快捷方式目标。
 ; 三处入口统一引用安装目录里的 liuhao.ico。
-Name: "{group}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "启动鎏灏（关窗后驻留托盘，服务继续运行）"
+Name: "{group}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: """{app}\scripts\liuhao_desktop.py"" app"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "启动贾维斯（关窗后驻留托盘，服务继续运行）"
 Name: "{group}\使用说明"; Filename: "{app}\START-HERE.txt"
 ; 离线合规入口：不联网也能看许可证全文与声明。打开程序根目录——licenses\、
 ; THIRD-PARTY-NOTICES.txt、sbom-cyclonedx.json 与 LICENSE 都在这一层。
@@ -349,7 +349,7 @@ var
   NeedDataDirChoice: Boolean;
   DataDirProblem: String;
   { 整机没有任何可用的非系统盘（只有 C 盘）时为 True：数据与备份都放在
-    %LOCALAPPDATA%\LiuHao 下并继续安装，而不是拒绝安装。 }
+    %LOCALAPPDATA%\Jarvis 下并继续安装，而不是拒绝安装。 }
   NoNonSystemDrive: Boolean;
   { 数据目录页的「沿用了旧账号」提示只弹一次，别每点一次下一步就弹。 }
   ReuseNoticeShown: Boolean;
@@ -636,7 +636,7 @@ end;
 
 { 目录里是否已有账号 / 员工 / 记忆这类**真实用户数据**。
 
-  只看"目录存在"或"目录非空"不够：D:\LiuHaoData 可能是上一次安装刚建的空壳
+  只看"目录存在"或"目录非空"不够：D:\JarvisData 可能是上一次安装刚建的空壳
   （config/、logs/ 都在，但没有账号）。判断真实数据的锚点是随包代码实际落盘的
   文件名（见 scripts/launch_installed.py 的环境变量与 src/upgrade/backups.py）：
   * config\human_identities.json / auth_secrets.json —— 账号与登录凭据；
@@ -731,9 +731,9 @@ begin
   end;
 end;
 
-{ 程序组页永远不显示：组名固定（真实安装 = DefaultGroupName=LiuHao），用户没有可
+{ 程序组页永远不显示：组名固定（真实安装 = DefaultGroupName=Jarvis），用户没有可
   选择的内容。但页必须「存在」——一旦用 DisableProgramGroupPage=yes 把页关掉，
-  Inno 就会无视命令行 /GROUP=，验收安装会写进真实用户的 LiuHao 组并在卸载时把
+  Inno 就会无视命令行 /GROUP=，验收安装会写进真实用户的 Jarvis 组并在卸载时把
   整组删掉。ShouldSkipPage 只是跳过展示，/GROUP= 仍照常生效。 }
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
@@ -777,24 +777,24 @@ begin
   LegacyData := ExpandConstant('{#LegacyDataDir}');
 
   { 整机是否根本没有可用的非系统盘（只有 C 盘可用）。这个判定决定两件事：
-    数据目录是否自动回退到 %LOCALAPPDATA%\LiuHao\data，以及备份根是否允许
+    数据目录是否自动回退到 %LOCALAPPDATA%\Jarvis\data，以及备份根是否允许
     与数据一起落在 C 盘。在解析数据目录之前算一次，后面共用。 }
   NoNonSystemDrive := not UsableNonSystemDriveExists;
   if NoNonSystemDrive then
     Log('没有检测到可用的非系统盘：数据与备份都会放在 C 盘的 ' +
-        ExpandConstant('{localappdata}') + '\LiuHao 下。');
+        ExpandConstant('{localappdata}') + '\Jarvis 下。');
 
   PrevInstallDir := PreviousInstallLocation;
   HasPrevInstall := PrevInstallDir <> '';
 
-  { ---- 程序目录：老安装保持原路径；全新安装优先 D:\LiuHao ---- }
+  { ---- 程序目录：老安装保持原路径；全新安装优先 D:\Jarvis ---- }
   CmdDir := CmdParamValue('/DIR');
   if HasPrevInstall then
     ResolvedAppDir := PrevInstallDir
   else if CmdDir <> '' then
     ResolvedAppDir := CmdDir
   else if DDriveUsable then
-    ResolvedAppDir := 'D:\LiuHao'
+    ResolvedAppDir := 'D:\Jarvis'
   else
   begin
     { Inno 6.7 的外层加载器独占原始安装包，Setup 无法自重拉（Exec 会被拒绝，
@@ -802,19 +802,19 @@ begin
        否则退到当前用户可写的 autopf 目录（非管理员 = %LOCALAPPDATA%\Programs）。
        两条都不需要提权、不会装到一半失败。 }
     if IsAdmin then
-      ResolvedAppDir := ExpandConstant('{commonpf}\LiuHao')
+      ResolvedAppDir := ExpandConstant('{commonpf}\Jarvis')
     else
-      ResolvedAppDir := ExpandConstant('{autopf}\LiuHao');
+      ResolvedAppDir := ExpandConstant('{autopf}\Jarvis');
     ProgramFallback := True;
   end;
 
-  { ---- 数据目录：必须与程序目录分离；默认 D:\LiuHaoData ---- }
+  { ---- 数据目录：必须与程序目录分离；默认 D:\JarvisData ---- }
   { 解析顺序（覆盖安装丢数据目录的完整修复）：
     1. /DATA= 显式指定，且该目录已有真实用户数据 —— 直接用它；
     2. /DATA= 指向不存在/空目录：优先沿用**已存在且确有用户数据**的记录目录
        （注册表 DataDir → 标记文件 → 旧默认位置探测），日志写「沿用已有数据目录」；
     3. 没带 /DATA= 的升级走同一套"沿用"逻辑；
-    4. 全新安装默认 D:\LiuHaoData；只有它没有真实数据、而旧默认位置有时才用旧
+    4. 全新安装默认 D:\JarvisData；只有它没有真实数据、而旧默认位置有时才用旧
        位置（兜底，防止以后再出现别的路径算错）；
     5. 记录到的目录都不存在/不可用时让用户选择，**绝不**在空路径上新建空库冒充
        老目录 —— 那就是「升级完东西全没了」。 }
@@ -897,29 +897,36 @@ begin
     end;
   end
   else if DirExists(LegacyData) and DataDirHasUserData(LegacyData) and
-          (not (DirExists('D:\LiuHaoData') and DataDirHasUserData('D:\LiuHaoData'))) then
+          (not (DirExists('D:\JarvisData') and DataDirHasUserData('D:\JarvisData'))) then
   begin
-    { 全新安装的兜底：D:\LiuHaoData 还没有真实数据，而旧默认位置有 —— 优先老目录。 }
+    { 全新安装的兜底：D:\JarvisData 还没有真实数据，而旧默认位置有 —— 优先老目录。 }
     ResolvedDataDir := LegacyData;
     Log('沿用已有数据目录：' + LegacyData + '（来源：探测）');
   end
-  else if DDriveUsable and DirCreatable('D:\LiuHaoData') then
+  else if DirExists('D:\LiuHaoData') and DataDirHasUserData('D:\LiuHaoData') then
   begin
-    { 全新安装：D 盘可创建就必须落在 D:\LiuHaoData。 }
+    { 改名兜底：旧默认位置 D:\LiuHaoData 里已有真实数据（改名前装的）——
+      优先沿用它，而不是在 D:\JarvisData 新建空库让老数据变孤儿。 }
     ResolvedDataDir := 'D:\LiuHaoData';
+    Log('沿用已有数据目录：D:\LiuHaoData（来源：旧默认位置探测）');
+  end
+  else if DDriveUsable and DirCreatable('D:\JarvisData') then
+  begin
+    { 全新安装：D 盘可创建就必须落在 D:\JarvisData。 }
+    ResolvedDataDir := 'D:\JarvisData';
   end
   else if NoNonSystemDrive and DirCreatable(LegacyData) then
   begin
     { 整机只有 C 盘：自动回退到旧默认位置，安装继续。
       不这样做的话，这类机器会在「数据目录」页与备份盘校验上双双卡死，
-      而文档承诺的是「D 盘不可用 → 数据自动回退 %LOCALAPPDATA%\LiuHao\data」。
+      而文档承诺的是「D 盘不可用 → 数据自动回退 %LOCALAPPDATA%\Jarvis\data」。
       显式 /DATA= 与已有数据目录的优先级在更前面，不受这里影响。
       （这里用 LegacyData，与 DefaultLegacyDataDir 同一个值；后者声明在本函数之后。） }
     ResolvedDataDir := LegacyData;
     DataFallback := True;
     DataDirProblem := '这台机器没有可用的非系统盘（D 盘等都不存在或不可写），' +
       '数据目录与升级备份都自动放在 C 盘的 ' +
-      ExpandConstant('{localappdata}') + '\LiuHao 下；建议先确认 C 盘有足够的剩余空间。';
+      ExpandConstant('{localappdata}') + '\Jarvis 下；建议先确认 C 盘有足够的剩余空间。';
     Log('数据目录自动回退到 ' + ResolvedDataDir + '（没有可用的非系统盘）。');
   end
   else
@@ -928,7 +935,7 @@ begin
     NeedDataDirChoice := True;
     DataFallback := True;
     DataDirProblem := '这台机器上 D 盘不可用（不存在 / 是可移动盘），' +
-      '或 D:\LiuHaoData 当前不可写，不能默认把数据放在 D:\LiuHaoData。';
+      '或 D:\JarvisData 当前不可写，不能默认把数据放在 D:\JarvisData。';
   end;
 
   { ---- D 盘不可用时程序目录已回退到 Program Files / 用户 Programs，见上；
@@ -945,7 +952,7 @@ begin
   Result := ResolvedDataDir;
 end;
 
-{ 显示用：注册表里的 InstallLocation 常带尾随反斜杠，避免界面上出现 "D:\LiuHao\"。 }
+{ 显示用：注册表里的 InstallLocation 常带尾随反斜杠，避免界面上出现 "D:\Jarvis\"。 }
 function DirForDisplay(const Dir: String): String;
 begin
   Result := Dir;
@@ -976,7 +983,7 @@ end;
   静默退回数据目录。取值优先级：
     1) 命令行 /BACKUPS=目录；
     2) 构建参数 -UpgradeBackupRoot 注入的预处理宏；
-    3) 数据目录所在盘 + \LiuHaoBackups（本项目即 D:\LiuHaoBackups）。
+    3) 数据目录所在盘 + \JarvisBackups（本项目即 D:\JarvisBackups）。
   这里只负责选路径；「默认推导结果落系统盘」的拒绝在 PrepareToInstall 里做。 }
 function GetBackupRoot(Param: String): String;
 var
@@ -991,13 +998,13 @@ begin
 #ifdef UpgradeBackupRoot
   Result := TrimTrailingSlash(ExpandConstant('{#UpgradeBackupRoot}'));
 #else
-  { 没有可用非系统盘时，备份与数据一起放在 %LOCALAPPDATA%\LiuHao\backups
+  { 没有可用非系统盘时，备份与数据一起放在 %LOCALAPPDATA%\Jarvis\backups
     （与升级器 default_backup_root 的最后退路一致）；否则仍按数据目录所在盘
-    推导 <盘符>:\LiuHaoBackups。 }
+    推导 <盘符>:\JarvisBackups。 }
   if NoNonSystemDrive then
-    Result := TrimTrailingSlash(ExpandConstant('{localappdata}\LiuHao\backups'))
+    Result := TrimTrailingSlash(ExpandConstant('{localappdata}\Jarvis\backups'))
   else
-    Result := TrimTrailingSlash(ExtractFileDrive(ResolvedDataDir) + '\LiuHaoBackups');
+    Result := TrimTrailingSlash(ExtractFileDrive(ResolvedDataDir) + '\JarvisBackups');
 #endif
 end;
 
@@ -1131,7 +1138,7 @@ begin
     DataPageHint := '这台机器没有可用的非系统盘：数据与升级备份都放在 C 盘（' +
       DirForDisplay(DefaultLegacyDataDir) + '），安装会继续；建议先确认 C 盘有足够的剩余空间。'
   else
-    DataPageHint := '默认 D:\LiuHaoData。请选择一个当前 Windows 账户可写的目录，然后点「下一步」。';
+    DataPageHint := '默认 D:\JarvisData。请选择一个当前 Windows 账户可写的目录，然后点「下一步」。';
   DataDirPage := CreateInputDirPage(wpSelectDir,
     '数据目录（账号与聊天记录）',
     '数据目录与程序目录分开保存；卸载默认保留，升级/重装不会覆盖你的数据。',
@@ -1147,13 +1154,13 @@ begin
     详细说明仍在 BEFORE-INSTALL.txt（向导会自动展示该页）。 }
   if ResolvedDataDir <> '' then
     Welcome :=
-      '本安装包使用项目自签名证书（签名者：CN=鎏灏智能中枢），未由公开权威 CA 签发；Windows 可能提示「未知发布者」或「Windows 已保护你的电脑」。' + #13#10 +
+      '本安装包使用项目自签名证书（签名者：CN=贾维斯），未由公开权威 CA 签发；Windows 可能提示「未知发布者」或「Windows 已保护你的电脑」。' + #13#10 +
       '这是自签名证书的正常现象：点「更多信息」→「仍要运行」即可继续；随包的「信任签名证书.cmd」可消除本机提示。' + #13#10#13#10 +
       '程序装到：' + DirForDisplay(ResolvedAppDir) + #13#10 +
       '数据放在：' + DirForDisplay(ResolvedDataDir) + '（账号与聊天记录；卸载默认保留）'
   else
     Welcome :=
-      '本安装包使用项目自签名证书（签名者：CN=鎏灏智能中枢），未由公开权威 CA 签发；Windows 可能提示「未知发布者」或「Windows 已保护你的电脑」。' + #13#10 +
+      '本安装包使用项目自签名证书（签名者：CN=贾维斯），未由公开权威 CA 签发；Windows 可能提示「未知发布者」或「Windows 已保护你的电脑」。' + #13#10 +
       '这是自签名证书的正常现象：点「更多信息」→「仍要运行」即可继续；随包的「信任签名证书.cmd」可消除本机提示。' + #13#10#13#10 +
       '程序装到：' + DirForDisplay(ResolvedAppDir) + #13#10 +
       '数据目录：请在「数据目录」页确认（已预填 ' +
@@ -1216,7 +1223,7 @@ begin
   begin
     SuppressibleMsgBox('数据目录不能放在程序目录里：' + #13#10 + Dir + #13#10#13#10 +
       '卸载或升级程序目录时会连带影响数据。请选择程序目录以外的位置' +
-      '（默认 D:\LiuHaoData）。', mbError, MB_OK, IDOK);
+      '（默认 D:\JarvisData）。', mbError, MB_OK, IDOK);
     Result := False;
     Exit;
   end;
@@ -1224,7 +1231,7 @@ begin
   begin
     SuppressibleMsgBox('数据目录不能放在 Program Files 里：' + #13#10 + Dir + #13#10#13#10 +
       '那里属于程序目录，卸载、升级或系统清理都可能删掉你的账号与记忆。' +
-      '请改选一个普通数据目录（默认 D:\LiuHaoData）。', mbError, MB_OK, IDOK);
+      '请改选一个普通数据目录（默认 D:\JarvisData）。', mbError, MB_OK, IDOK);
     Result := False;
     Exit;
   end;
@@ -1244,14 +1251,14 @@ begin
       '当前总长 ' + IntToStr(Length(Dir) + 1 + DATA_REL_MAX) + ' 个字符，' +
       '超过 Windows 的 ' + IntToStr(MAX_PATH_LIMIT + 1) + ' 个字符上限，' +
       '首次启动就无法写入。' + #13#10 +
-      '请改选更短的目录（例如 D:\LiuHaoData）。', mbError, MB_OK, IDOK);
+      '请改选更短的目录（例如 D:\JarvisData）。', mbError, MB_OK, IDOK);
     Result := False;
     Exit;
   end;
   if not DirCreatable(Dir) then
   begin
     SuppressibleMsgBox('这个数据目录当前不可写：' + #13#10 + Dir + #13#10#13#10 +
-      '请改选一个你有写权限的目录（例如 D:\LiuHaoData）。' + #13#10 +
+      '请改选一个你有写权限的目录（例如 D:\JarvisData）。' + #13#10 +
       '如果确实必须写到这里，请关闭安装器，右键安装包选择「以管理员身份运行」后重试。',
       mbError, MB_OK, IDOK);
     Result := False;
@@ -1354,7 +1361,7 @@ begin
   end;
 
   { 备份根不能默认落在系统盘：D 盘不可用、数据目录回退到 C 盘时，默认推导会
-    得到 C:\LiuHaoBackups，等于把「不占 C 盘」的要求落空。此时明确拒绝并给出
+    得到 C:\JarvisBackups，等于把「不占 C 盘」的要求落空。此时明确拒绝并给出
     可行动的处置，而不是装完才让用户发现备份在 C 盘。
     例外：整机没有任何可用非系统盘（NoNonSystemDrive）时，数据与备份按设计
     一起放在 C 盘，这条拦截不适用，只补日志。 }
@@ -1362,7 +1369,7 @@ begin
   BackupRoot := GetBackupRoot('');
 
   { Fail-closed：数据目录解析不出盘符时（ResolvedDataDir 为空、或不是绝对路径），
-    备份根会退化成没有盘符的 \LiuHaoBackups。此时 ExtractFileDrive 取到空串，
+    备份根会退化成没有盘符的 \JarvisBackups。此时 ExtractFileDrive 取到空串，
     与系统盘符不相等，下面那条「落在系统盘」的判定会**放行**，并把这个坏值写进
     HKCU\Environment\LIUHAO_UPGRADE_BACKUP_ROOT——静默安装最容易走到这里。
     宁可拒绝安装，也不写坏值。 }
@@ -1372,11 +1379,11 @@ begin
       '原因：数据目录没有解析出一个可用的盘符（本次解析结果为空' +
       '，或不是带盘符的绝对路径），安装器无法据此推导备份根。' + #13#10#13#10 +
       '请这样做：' + #13#10 +
-      '  1) 点「上一步」回到「数据目录」页，把数据目录改到 D 盘（例如 D:\LiuHaoData），' +
+      '  1) 点「上一步」回到「数据目录」页，把数据目录改到 D 盘（例如 D:\JarvisData），' +
       '再点「下一步」重试；' + #13#10 +
       '  2) 如果这台机器确实没有 D 盘，请改选其它非系统盘上的目录。' + #13#10#13#10 +
       '（仅在使用命令行安装时才需要下列参数，界面安装可忽略：' +
-      '安装包加 /DATA=D:\LiuHaoData /BACKUPS=D:\LiuHaoBackups）';
+      '安装包加 /DATA=D:\JarvisData /BACKUPS=D:\JarvisBackups）';
     Exit;
   end;
 
@@ -1392,9 +1399,9 @@ begin
       DirForDisplay(ResolvedDataDir) + '，安装器按「数据目录所在盘」推导备份根，' +
       '结果落在系统盘（' + ExpandConstant('{sd}') + '）。本产品要求备份不占 C 盘。' + #13#10#13#10 +
       '请这样做：点「上一步」回到「数据目录」页，把数据目录改到非系统盘' +
-      '（例如 D:\LiuHaoData），再点「下一步」重试。' + #13#10#13#10 +
+      '（例如 D:\JarvisData），再点「下一步」重试。' + #13#10#13#10 +
       '（仅在使用命令行安装时才需要下列参数，界面安装可忽略：' +
-      '安装包加 /DATA=D:\LiuHaoData /BACKUPS=D:\LiuHaoBackups）';
+      '安装包加 /DATA=D:\JarvisData /BACKUPS=D:\JarvisBackups）';
     Exit;
   end;
 
@@ -1415,8 +1422,8 @@ begin
         '加上当前目录后总长 ' + IntToStr(Deepest) + ' 个字符，已超过 Windows 的 ' +
         IntToStr(MAX_PATH_LIMIT + 1) + ' 个字符上限，安装会在中途失败。' + #13#10 +
         '（安装器不支持长路径，即使系统已打开 LongPathsEnabled 也一样。）' + #13#10 +
-        '请改选更短的目录（例如 D:\LiuHao，或 ' +
-        ExpandConstant('{localappdata}') + '\Programs\LiuHao）。';
+        '请改选更短的目录（例如 D:\Jarvis，或 ' +
+        ExpandConstant('{localappdata}') + '\Programs\Jarvis）。';
       Exit;
     end;
   end;
@@ -1426,15 +1433,15 @@ begin
   if Issue <> '' then
   begin
     Result := '安装路径不可用：' + Dir + #13#10#13#10 + Issue + #13#10 +
-      '请改选一个普通目录名（例如 D:\LiuHao）。';
+      '请改选一个普通目录名（例如 D:\Jarvis）。';
     Exit;
   end;
 
   if not DirCreatable(Dir) then
   begin
     Result := '安装目录不可写：' + Dir + #13#10#13#10 +
-      '请改选一个你有写权限的目录。默认是 D:\LiuHao；如果没有 D 盘，' +
-      '安装器会自动改用 ' + ExpandConstant('{localappdata}') + '\Programs\LiuHao。' + #13#10 +
+      '请改选一个你有写权限的目录。默认是 D:\Jarvis；如果没有 D 盘，' +
+      '安装器会自动改用 ' + ExpandConstant('{localappdata}') + '\Programs\Jarvis。' + #13#10 +
       '如果必须装到这个位置，请关闭安装器，右键安装包选择「以管理员身份运行」。';
     Exit;
   end;
@@ -1447,7 +1454,7 @@ begin
     Result := '没有可用的数据目录，安装已停止。' + #13#10#13#10 +
       DataDirProblem + #13#10 +
       '请重新运行安装包，在「数据目录」页选择一个可写目录；静默安装请加参数' + #13#10 +
-      '/DATA="D:\LiuHaoData"（或其它可写目录）。' + #13#10 +
+      '/DATA="D:\JarvisData"（或其它可写目录）。' + #13#10 +
       '安装器不会自行把数据回退到 C 盘。';
     Exit;
   end;
@@ -1456,7 +1463,7 @@ begin
   begin
     Result := '数据目录不能放在程序目录里：' + #13#10 + ResolvedDataDir + #13#10#13#10 +
       '卸载或升级程序目录时会连带影响数据。' + #13#10 +
-      '静默安装请用 /DATA 指定程序目录以外的位置（默认 D:\LiuHaoData）。';
+      '静默安装请用 /DATA 指定程序目录以外的位置（默认 D:\JarvisData）。';
     Exit;
   end;
 
@@ -1464,8 +1471,8 @@ begin
   begin
     Result := '数据目录不能放在 Program Files 里：' + ResolvedDataDir + #13#10#13#10 +
       '那里属于程序目录，卸载、升级或系统清理都可能删掉你的账号与记忆。' + #13#10 +
-      '请返回上一步改选一个普通数据目录（默认 D:\LiuHaoData）；' +
-      '静默安装请用 /DATA="D:\LiuHaoData" 指定。';
+      '请返回上一步改选一个普通数据目录（默认 D:\JarvisData）；' +
+      '静默安装请用 /DATA="D:\JarvisData" 指定。';
     Exit;
   end;
 
@@ -1473,8 +1480,8 @@ begin
   begin
     Result := '数据目录不可写：' + ResolvedDataDir + #13#10#13#10 +
       '数据目录不在程序目录里（账号与聊天记录都在这里）。' + #13#10 +
-      '请返回上一步，在「数据目录」页改选一个你能写入的位置（默认 D:\LiuHaoData）；' +
-      '静默安装时用 /DATA="D:\LiuHaoData" 指定。' + #13#10 +
+      '请返回上一步，在「数据目录」页改选一个你能写入的位置（默认 D:\JarvisData）；' +
+      '静默安装时用 /DATA="D:\JarvisData" 指定。' + #13#10 +
       '如果必须写到受保护位置，请右键安装包选择「以管理员身份运行」。';
     Exit;
   end;
@@ -1486,7 +1493,7 @@ begin
   begin
     Result := '数据目录不可用：' + ResolvedDataDir + #13#10#13#10 + Issue + #13#10 +
       '请返回上一步，在「数据目录」页改选一个普通目录名；' +
-      '静默安装请用 /DATA="D:\LiuHaoData" 指定。';
+      '静默安装请用 /DATA="D:\JarvisData" 指定。';
     Exit;
   end;
 
@@ -1496,8 +1503,8 @@ begin
       '数据目录里最深的文件还要再占用 ' + IntToStr(DATA_REL_MAX) + ' 个字符，' +
       '当前总长 ' + IntToStr(Length(ResolvedDataDir) + 1 + DATA_REL_MAX) + ' 个字符，' +
       '超过 Windows 的 ' + IntToStr(MAX_PATH_LIMIT + 1) + ' 个字符上限，首次启动就无法写入。' + #13#10 +
-      '请返回上一步改选更短的数据目录（默认 D:\LiuHaoData）；' +
-      '静默安装请用 /DATA="D:\LiuHaoData" 指定。';
+      '请返回上一步改选更短的数据目录（默认 D:\JarvisData）；' +
+      '静默安装请用 /DATA="D:\JarvisData" 指定。';
     Exit;
   end;
 
@@ -1519,7 +1526,7 @@ begin
       IntToStr(NEEDED_DATA_MB) + ' MB，' + ResolvedDataDir +
       ' 所在盘当前只剩 ' + IntToStr(FreeMB) + ' MB。' + #13#10#13#10 +
       '请清理该盘空间，或返回上一步在「数据目录」页改选其他磁盘；' +
-      '静默安装请用 /DATA="D:\LiuHaoData" 指定。';
+      '静默安装请用 /DATA="D:\JarvisData" 指定。';
     Exit;
   end;
 end;
