@@ -48,6 +48,28 @@ function serviceWorkerVersion(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), serviceWorkerVersion()],
+  build: {
+    rolldownOptions: {
+      output: {
+        // React 全家桶单独成 chunk：它是全站唯一共享的第三方大件（react-dom
+        // 单文件就有约 130 kB 压缩后），拆出来既让入口 chunk 变小，也让浏览器
+        // 可以跨页面复用同一份缓存。其余页面不靠这里分组，靠 App.tsx 里的
+        // React.lazy 动态 import 拆分（每个懒加载页面自成一个 chunk）。
+        // 注意：只按 node_modules 路径分，不碰任何业务模块。
+        manualChunks(id) {
+          const normalized = id.replaceAll('\\', '/')
+          if (
+            normalized.includes('node_modules/react-dom/') ||
+            normalized.includes('node_modules/react/') ||
+            normalized.includes('node_modules/scheduler/')
+          ) {
+            return 'vendor-react'
+          }
+          return undefined
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     fs: {
