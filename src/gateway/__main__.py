@@ -33,6 +33,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import uvicorn
 
@@ -56,6 +57,16 @@ _startup_profile.mark("入口模块导入完成（uvicorn 已导入）")
 #: 或 HOST=<网卡地址>），并在启动日志里给出醒目警告。
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
+
+#: 端口被占时自动顺延的开关：``LIUHAO_PORT_AUTO_SWITCH=0`` 关闭（单端口平台
+#: 必须死守注入的 ``PORT`` 时用）。默认开启：桌面双击场景下 8080 常被别的
+#: 程序占住，自动改用 8081 比"起不来、让用户自己改环境变量"更符合一键安装
+#: 的定位。最终端口一定写进数据目录的 ``gateway.port``，并打进启动日志。
+PORT_AUTO_SWITCH_ENV = "LIUHAO_PORT_AUTO_SWITCH"
+#: 顺延时最多往上试多少个端口（8080 -> 8081 -> ... -> 8179）。
+PORT_AUTO_SWITCH_MAX_ATTEMPTS = 100
+#: 数据目录下记录实际监听端口的小文件（启动器/控制台据此找真实端口）。
+GATEWAY_PORT_FILENAME = "gateway.port"
 
 #: 唯一生效的日志配置（轮转参数见文件头注释）。
 LOG_CONFIG = Path(__file__).resolve().parents[2] / "config" / "logging.yaml"
@@ -151,6 +162,86 @@ def resolve_bind() -> tuple:
     return host, port
 
 
+def port_auto_switch_enabled() -> bool:
+    """Whether an occupied port is auto-stepped (default: yes)."""
+    raw = (os.environ.get(PORT_AUTO_SWITCH_ENV) or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _can_bind(host: str, port: int) -> bool:
+    """True when ``host:port`` can be bound right now (probe, then release)."""
+    import socket
+
+    probe_host = host if host not in _WILDCARD_HOSTS else "127.0.0.1"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((probe_host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def find_available_port(
+    host: str, requested: int, max_attempts: int = PORT_AUTO_SWITCH_MAX_ATTEMPTS
+) -> Tuple[int, List[int]]:
+    """Return ``(port, occupied)``: ``requested`` when free, else the next free port above it.
+
+    ``occupied`` lists every port that was tried and found busy (empty when the
+    requested port was free). Stops after ``max_attempts`` tries or at 65535
+    and raises :class:`OSError` -- the caller turns that into a readable
+    failure instead of silently binding somewhere surprising.
+    """
+    occupied: List[int] = []
+    port = requested
+    for _ in range(max(1, max_attempts)):
+        if port > 65535:
+            break
+        if _can_bind(host, port):
+            return port, occupied
+        occupied.append(port)
+        port += 1
+    raise OSError(
+        f"从端口 {requested} 起连续 {len(occupied)} 个端口都被占用，"
+        "网关无法自动换端口启动"
+    )
+
+
+def write_gateway_port_file(
+    host: str, port: int, requested_port: int
+) -> Optional[Path]:
+    """Write the actually-listening port to ``<data_dir>/gateway.port``.
+
+    The launcher and the console read this file to learn the real port when
+    the requested one was occupied and the gateway stepped up. Best-effort:
+    a failure here must never stop the gateway from starting.
+    """
+    import json
+
+    try:
+        from ..logging_config import resolve_data_dir
+
+        data_dir = resolve_data_dir()
+        target = data_dir / GATEWAY_PORT_FILENAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "host": host,
+            "port": port,
+            "requested_port": requested_port,
+            "switched": port != requested_port,
+            "url": f"http://{display_host(host)}:{port}",
+        }
+        target.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return target
+    except Exception as exc:  # noqa: BLE001 - 端口文件写失败不影响启动
+        logger.warning("无法写入 %s（实际端口仍以启动日志为准）: %s", GATEWAY_PORT_FILENAME, exc)
+        return None
+
+
 def resolve_timeout_options() -> dict:
     """Return uvicorn kwargs derived from ``server.timeouts``.
 
@@ -182,7 +273,41 @@ def resolve_timeout_options() -> dict:
 
 
 def main() -> int:
-    host, port = resolve_bind()
+    host, requested_port = resolve_bind()
+
+    # 端口被占自动顺延（默认开启）：8080 被占就试 8081、8082……直到找到空闲
+    # 端口。顺延发生在抢单实例锁之前，这样实例锁里登记的 URL、应用层读到的
+    # LIUHAO_LISTEN_PORT、数据目录的 gateway.port 都是最终端口，不会各说各话。
+    # 探测与真正绑定之间仍有竞态（别的进程恰好抢走），那一层由 _run 里的绑定
+    # 失败分支兜底。
+    port = requested_port
+    if port_auto_switch_enabled():
+        try:
+            port, occupied = find_available_port(host, requested_port)
+        except OSError as exc:
+            print(f"[FAIL] {exc}。", file=sys.stderr, flush=True)
+            print(
+                "       请关闭占用这些端口的程序，或设置环境变量 PORT 换一个端口后重试。",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        if occupied:
+            print(
+                f"[port] 端口 {requested_port} 被占用，已自动改用 {port}。"
+                f"（控制台地址 http://{display_host(host)}:{port}/）",
+                flush=True,
+            )
+            logger.warning(
+                "网关请求端口 %s 被占用，已自动改用 %s（被占端口：%s）",
+                requested_port,
+                port,
+                occupied,
+            )
+    # 让应用层（Host 白名单 / 回环 Origin 放行 / 启动自检）知道真实的绑定
+    # 端口：必须在建 app 之前设置，_run 里还会再设一次（幂等）。
+    os.environ["LIUHAO_LISTEN_PORT"] = str(port)
+    write_gateway_port_file(host, port, requested_port)
 
     # 全局启用 faulthandler：原生崩溃（0xC0000005/0xC0000006）发生时把全线程
     # Python 栈写进 stderr（soak harness 下即 run\gateway-stdout-*.log）。
@@ -441,22 +566,16 @@ def _run(host: str, port: int) -> int:
 
 def _port_in_use(host: str, port: int) -> bool:
     """True when ``host:port`` is already bound（与启动器的探测口径一致）。"""
-    import socket
-
-    probe_host = host if host not in _WILDCARD_HOSTS else "127.0.0.1"
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.5)
-    try:
-        sock.bind((probe_host, port))
-    except OSError:
-        return True
-    finally:
-        sock.close()
-    return False
+    return not _can_bind(host, port)
 
 
 def _print_bind_failure(host: str, port: int, exc: OSError | None = None) -> None:
-    """端口不可用时的可读提示（不把裸 errno / 英文异常甩给用户）。"""
+    """端口不可用时的可读提示（不把裸 errno / 英文异常甩给用户）。
+
+    走到这里说明端口在入口探测时空闲、真正绑定时已被抢走（竞态），或者自动
+    顺延已被 ``LIUHAO_PORT_AUTO_SWITCH=0`` 关掉：不要再建议"换一个端口"，因为
+    入口已经试过（或被要求不试）。
+    """
     if exc is not None:
         # 原始异常只进调试日志，供技术支持定位；控制台文案保持中性，
         # 不用 error 级别，避免它又被控制台 handler 原样打出来。
@@ -467,7 +586,8 @@ def _print_bind_failure(host: str, port: int, exc: OSError | None = None) -> Non
         flush=True,
     )
     print(
-        "       请关闭占用该端口的程序，或设置环境变量 PORT 换一个端口后重试。",
+        "       请关闭占用该端口的程序后重试；或设置环境变量 PORT 换一个端口"
+        "（自动换端口被关掉时：去掉 LIUHAO_PORT_AUTO_SWITCH=0 再启动）。",
         file=sys.stderr,
         flush=True,
     )
