@@ -58,6 +58,7 @@ import {
 } from './lib/policyClient'
 import type { ApprovalGrant, EnforcementSnapshot } from './lib/policyClient'
 import { Overview } from './pages/Overview'
+import { OperatorConsole, OPERATOR_CONSOLE_PAGE } from './pages/OperatorConsole'
 import { Butler } from './pages/Butler'
 import { Audit } from './pages/Audit'
 import { Files } from './pages/Files'
@@ -82,6 +83,8 @@ import { SkillCenter, SKILLS_CENTER_PAGE } from './pages/SkillCenter'
 import { ToolCenter, TOOLS_CENTER_PAGE } from './pages/ToolCenter'
 import { Backup } from './pages/Backup'
 import { Members } from './pages/Members'
+import { OwnerOverview, OWNER_OVERVIEW_PAGE } from './pages/OwnerOverview'
+import { OwnerTasks, OWNER_TASKS_PAGE } from './pages/OwnerTasks'
 import { AccountSecurity } from './pages/AccountSecurity'
 import { Memory } from './pages/Memory'
 import { MyData } from './pages/MyData'
@@ -99,6 +102,7 @@ import {
   KNOWLEDGE_ENTERPRISE_ROUTE,
 } from './pages/KnowledgeEnterprise'
 import { ReadOnlyBanner } from './components/AccountChrome'
+import { refreshWorkspaceName, useWorkspaceName } from './lib/workspaceName'
 import { buildProfile, deriveCaps } from './lib/accountCaps'
 import { countTreeMembers, loadAccounts, loadTree, useAccountData } from './lib/accounts'
 import type { AccountNode, AccountsPayload } from './lib/accounts'
@@ -135,6 +139,20 @@ const EMPTY_STATE: ApprovalUiState = {
 
 /** 页面标题。与 `lib/nav.ts` 的导航项一一对应，key 是唯一的关联方式。 */
 const PAGE_META: Record<string, { title: string; sub: string }> = {
+  [OPERATOR_CONSOLE_PAGE.key]: {
+    title: OPERATOR_CONSOLE_PAGE.title,
+    sub: OPERATOR_CONSOLE_PAGE.sub,
+  },
+  // Owner 专属入口（只对 Owner 渲染；普通账号的导航里根本没有这四项）。
+  // 全局总览与全部任务用 F 组 Owner 页自带的标题/副说明（单一来源）；
+  // 成员管理与审计复用已有真实组件，无真实用户/任务/事件时各页自带空态。
+  [OWNER_OVERVIEW_PAGE.key]: {
+    title: OWNER_OVERVIEW_PAGE.title,
+    sub: OWNER_OVERVIEW_PAGE.sub,
+  },
+  'owner-members': { title: '成员管理', sub: '全部成员、状态与 Key 授权' },
+  [OWNER_TASKS_PAGE.key]: { title: OWNER_TASKS_PAGE.title, sub: OWNER_TASKS_PAGE.sub },
+  'owner-audit': { title: '审计', sub: '全量审计事件与哈希链校验（只读）' },
   overview: { title: '运行看板', sub: '真实运行状态 —— 每一项都能追溯到来源' },
   [ENTERPRISE_OVERVIEW_PAGE.key]: {
     title: ENTERPRISE_OVERVIEW_PAGE.title,
@@ -199,17 +217,17 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
 const KNOWN_PAGES = new Set(Object.keys(PAGE_META))
 
 /**
- * 旧路由 → 新落点（Boss 2026-11 收敛）。
+ * 旧路由 → 新落点（Boss 2026-11 收敛；2026-11-12 起默认落点是聊天操作台）。
  *
- * 自由对话并进贾维斯的「直接问」后，`workbench` 不再是一个页面；运行看板拆进
- * 首页状态带，`overview` 也不再单列。旧书签、桌面壳快捷方式、外链一律**重定向**，
- * 不做 404、不留白屏。
+ * `workbench` / `chat` / `freechat` 都是旧的"对话"叫法，现在统一落到聊天
+ * 操作台；运行看板拆进首页状态带，`overview` 也不再单列。旧书签、桌面壳
+ * 快捷方式、外链一律**重定向**，不做 404、不留白屏。
  */
 export const PAGE_ALIASES: Record<string, string> = {
-  workbench: 'butler',
-  chat: 'butler',
-  freechat: 'butler',
-  'free-chat': 'butler',
+  workbench: OPERATOR_CONSOLE_PAGE.key,
+  chat: OPERATOR_CONSOLE_PAGE.key,
+  freechat: OPERATOR_CONSOLE_PAGE.key,
+  'free-chat': OPERATOR_CONSOLE_PAGE.key,
   overview: HOME_KEY,
   runboard: HOME_KEY,
   // 手写地址 `#home` / `?p=home` 也落到企业总览，避免两种命名各说各话。
@@ -236,6 +254,9 @@ function readInitialPage(fallback: string = HOME_KEY): string {
     const url = new URL(window.location.href)
     const fromHash = url.hash.replace(/^#\/?/, '')
     const candidate = fromHash || url.searchParams.get('p') || ''
+    // 不带任何深链参数时默认进聊天操作台（不是企业总览）；带了不认识的
+    // 参数才回落到企业总览（见深链测试：未知页面回落总览，不白屏）。
+    if (!candidate) return OPERATOR_CONSOLE_PAGE.key
     if (candidate) {
       const resolved = resolvePageKey(candidate)
       if (resolved) return resolved
@@ -284,8 +305,8 @@ function App() {
   }, [])
 
   const [session, setSession] = useState<Session | null>(() => getSession())
-  // 桌面端、网页版、手机端都先看到企业总览：它是六组里的「首页」。
-  // （Boss 2026-11 定稿：手机首屏从运行看板换成企业总览。）
+  // 桌面端、网页版、手机端登录后都先看到聊天操作台：中间是与唯一助手的
+  // 对话区，底部输入框，工具箱在输入框上方；左边导航保留原来的全部入口。
   const [active, setActive] = useState<string>(() => readInitialPage())
   /** 设置页要自动展开的模型（来自深链或控制台里的「去填写 Key」）。 */
   const [focusModel, setFocusModel] = useState<string>(() =>
@@ -304,15 +325,27 @@ function App() {
   const [browserMode] = useState(readBrowserMode)
   const [browserNoticeClosed, setBrowserNoticeClosed] = useState(false)
 
-  // 浏览器模式下标题必须能一眼分清「这不是桌面应用」；卸载时还原。
+  // 浏览器标签标题只从工作台名字配置读（`lib/workspaceName.ts` 的 store，
+  // 出厂默认 Jarvis · 贾维斯；设置页改了名，这里跟着变）；静态 `index.html`
+  // 的标题由 G 组随改名统一改，这里不碰那个文件。必须在浏览器模式的后缀
+  // effect 之前跑，这样后者读到的 original 已经是新名字，标题变成
+  // "Jarvis · 贾维斯 · 浏览器模式"。挂载时向后端取一次当前名字。
+  const workspaceName = useWorkspaceName()
+  useEffect(() => {
+    void refreshWorkspaceName()
+  }, [])
+  useEffect(() => {
+    document.title = workspaceName.lockup
+  }, [workspaceName.lockup])
+
+  // 浏览器模式下标题必须能一眼分清「这不是桌面应用」；改名后后缀跟着新名字走。
   useEffect(() => {
     if (!browserMode) return
-    const original = document.title
-    document.title = `${original} · 浏览器模式`
+    document.title = `${workspaceName.lockup} · 浏览器模式`
     return () => {
-      document.title = original
+      document.title = workspaceName.lockup
     }
-  }, [browserMode])
+  }, [browserMode, workspaceName.lockup])
 
   /**
    * 图形化首启刚创建的恢复码。
@@ -517,6 +550,13 @@ function App() {
           scope: info.scope ?? prev.scope,
           expiresAt: info.expires_at ?? prev.expiresAt,
           isRoot: typeof info.is_root === 'boolean' ? info.is_root : prev.isRoot,
+          // 与登录一致：is_owner 为真，或 is_root 为真；后端没下发 is_owner
+          // 时保留登录时算好的值，不把 Owner 入口抖掉。
+          isOwner:
+            info.is_owner === true ||
+            (typeof info.is_root === 'boolean'
+              ? info.is_root
+              : (prev.isOwner ?? prev.isRoot)),
         }
         // 服务端复核结果通常与本地一致；返回同一个对象引用，避免 effect 依赖
         // 因对象身份变化而再次触发，把自己变成 30rps 的 /v1/auth/me 轮询。
@@ -525,7 +565,8 @@ function App() {
           next.displayName === prev.displayName &&
           next.scope === prev.scope &&
           next.expiresAt === prev.expiresAt &&
-          next.isRoot === prev.isRoot
+          next.isRoot === prev.isRoot &&
+          next.isOwner === prev.isOwner
         return unchanged ? prev : next
       })
     })()
@@ -577,7 +618,7 @@ function App() {
     setSession(null)
     setViewAs(null)
     setQuery('')
-    navigate(HOME_KEY)
+    navigate(OPERATOR_CONSOLE_PAGE.key)
   }, [navigate])
 
   const onTokenChange = useCallback((token: string) => {
@@ -728,7 +769,7 @@ function App() {
         id: 'auth-config-error',
         tone: 'warn',
         title: '无法读取登录配置',
-        detail: '鎏灏的本地服务没有运行。请打开鎏灏，然后刷新重试。',
+        detail: '贾维斯的本地服务没有运行。请打开贾维斯，然后刷新重试。',
       })
     }
 
@@ -768,7 +809,7 @@ function App() {
         id: 'ready-error',
         tone: 'warn',
         title: '就绪探针不可用',
-        detail: '暂时读不到各项依赖的状态，请确认鎏灏仍在运行，然后刷新重试。',
+        detail: '暂时读不到各项依赖的状态，请确认贾维斯仍在运行，然后刷新重试。',
       })
     }
 
@@ -904,7 +945,7 @@ function App() {
         data-testid="browser-mode-notice"
         style={{ justifyContent: 'space-between', alignItems: 'center' }}
       >
-        <span>当前为浏览器模式；桌面端请用托盘菜单「打开鎏灏窗口」。</span>
+        <span>当前为浏览器模式；桌面端请用托盘菜单「打开贾维斯窗口」。</span>
         <button
           type="button"
           className="os-btn os-btn-ghost"
@@ -1014,8 +1055,9 @@ function App() {
         </div>
       )}
 
-      {/* 企业总览自带页头，这里不再重复渲染同一组标题与副说明。 */}
-      {shown !== ENTERPRISE_OVERVIEW_PAGE.key && (
+      {/* 企业总览与操作台自带页头，这里不再重复渲染同一组标题与副说明。 */}
+      {shown !== ENTERPRISE_OVERVIEW_PAGE.key &&
+        shown !== OPERATOR_CONSOLE_PAGE.key && (
         <div className="os-page-head">
           <h1 className="os-page-title">{meta.title}</h1>
           <p className="os-page-sub">{meta.sub}</p>
@@ -1032,6 +1074,13 @@ function App() {
         </div>
       )}
 
+      {shown === OPERATOR_CONSOLE_PAGE.key && (
+        <OperatorConsole
+          provider={provider}
+          onConfigureModel={() => openModelSettings(provider.provider?.model)}
+          onOpenUsage={() => navigate('my-keys')}
+        />
+      )}
       {shown === 'overview' && (
         <Overview
           query={query}
@@ -1043,6 +1092,18 @@ function App() {
       {shown === ENTERPRISE_OVERVIEW_PAGE.key && (
         <EnterpriseOverview principal={session.principal} onNavigate={navigate} />
       )}
+      {shown === 'owner-overview' && <OwnerOverview onNavigate={navigate} />}
+      {shown === 'owner-members' && (
+        <Members
+          profile={profile}
+          caps={caps}
+          variant="root"
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+        />
+      )}
+      {shown === 'owner-tasks' && <OwnerTasks />}
+      {shown === 'owner-audit' && <Audit query={query} profile={profile} />}
       {shown === ORG_PAGE.key && <Org query={query} />}
       {shown === TASK_CENTER_PAGE.key && <TaskCenter query={query} />}
       {shown === WORKFLOW_CENTER_PAGE.key && <WorkflowCenter query={query} />}
