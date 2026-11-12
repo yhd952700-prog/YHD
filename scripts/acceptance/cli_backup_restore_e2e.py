@@ -29,7 +29,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 REPO = Path(__file__).resolve().parents[2]
 PY = REPO / ".venv" / "Scripts" / "python.exe"
