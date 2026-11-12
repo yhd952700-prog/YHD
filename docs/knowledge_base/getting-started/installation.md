@@ -1,6 +1,6 @@
 # 安装指南
 
-本指南将帮助你在不同环境下安装和配置 LiuHao AI OS（鎏灏智能中枢）。
+本指南将帮助你在不同环境下安装和配置 Jarvis（贾维斯）。
 
 ---
 
@@ -11,7 +11,7 @@
 | 组件 | 最低要求 | 推荐配置 |
 |------|---------|---------|
 | 操作系统 | Windows 10 / macOS 12 / Ubuntu 20.04 | Windows 11 / macOS 14 / Ubuntu 22.04 |
-| Python | 3.11+ | 3.12+ |
+| Python | 3.12 | 3.12 |
 | Node.js | 18+（仅驾驶舱需要） | 20+ |
 | 内存 | 8 GB RAM | 16 GB+ RAM |
 | 磁盘空间 | 5 GB | 20 GB+ SSD |
@@ -60,7 +60,7 @@ ollama pull nomic-embed-text
 启动器会等待健康探针通过后打印：
 
 ```
-鎏灏已就绪
+贾维斯已就绪
   驾驶舱    http://127.0.0.1:5173
   API       http://127.0.0.1:8080     文档 http://127.0.0.1:8080/docs
   健康探针  http://127.0.0.1:8080/v1/health
@@ -78,7 +78,7 @@ source .venv/bin/activate  # Linux/macOS
 # 或
 .venv\Scripts\activate    # Windows
 
-# 安装 LiuHao AI OS
+# 安装 Jarvis
 pip install liuhao-ai-os
 
 # 初始化配置（本仓库没有 `init` 子命令，首次设置走向导）
@@ -219,7 +219,7 @@ curl http://127.0.0.1:8080/v1/ready
 
 ### 4. 访问驾驶舱
 
-打开浏览器访问 `http://127.0.0.1:8080`，进入 LiuHao AI OS 控制台。
+打开浏览器访问 `http://127.0.0.1:8080`，进入 Jarvis 控制台。
 （源码模式控制台是 `http://127.0.0.1:5173`；Windows 安装版统一为 `8080`。）
 
 ### 5. 运行冒烟测试
@@ -325,5 +325,5 @@ docker-compose build --no-cache
 安装完成后，建议继续阅读：
 
 - [快速上手指南](quickstart.md) - 创建你的第一个智能体
-- [核心概念](../core-concepts/agents.md) - 了解 LiuHao AI OS 的核心概念
+- [核心概念](../core-concepts/agents.md) - 了解 Jarvis 的核心概念
 - [架构概览](../architecture/overview.md) - 深入了解系统架构
