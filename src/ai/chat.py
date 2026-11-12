@@ -1,4 +1,4 @@
-"""鎏灏命令行对话入口。
+"""贾维斯命令行对话入口。
 
 用法：
     # 真实 LLM（本机 ollama，默认模型 qwen2.5:3b）
@@ -40,7 +40,7 @@ def build_provider(provider_type: str, model: str):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="LiuHao AI OS · 鎏灏智能中枢 命令行对话")
+    parser = argparse.ArgumentParser(description="Jarvis · 贾维斯 命令行对话")
     parser.add_argument(
         "--provider",
         default=os.environ.get("AI_PROVIDER_TYPE", "ollama"),
@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
 @observe("chat.repl")
 def repl(assistant: LiuHaoAssistant) -> int:
     print("=" * 60)
-    print("  LiuHao AI OS · 鎏灏智能中枢 — AI 操作系统")
+    print("  Jarvis · 贾维斯 — AI 操作系统")
     st = assistant.stats()
     print(f"  服务商={st['provider']}  模型={st['model']}")
     print("  输入消息开始对话；/stats 状态 /reset 清史 /quit 退出")
