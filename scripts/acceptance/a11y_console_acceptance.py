@@ -30,7 +30,6 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.parse
@@ -44,7 +43,7 @@ DEFAULT_PORT = 18305
 
 #: 登录后的 6 个页面（侧栏文案）。覆盖新增的「目标与任务」与账户面。
 #: 注意根账号的 my-keys 会显示成「全部 Key」，这里用对身份稳定的「工作区文件」。
-PAGES = ["总览", "鎏灏管家", "我的员工", "目标与任务", "工作区文件", "系统设置"]
+PAGES = ["总览", "贾维斯", "我的员工", "目标与任务", "工作区文件", "系统设置"]
 
 EMPLOYEE_NAME = "验收员工"
 ASSIGN_INSTRUCTION = "把验收材料整理成一页"
