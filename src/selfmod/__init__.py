@@ -1,4 +1,4 @@
-"""鎏灏受控自改代码（设计 + 最小闭环）。
+"""贾维斯受控自改代码（设计 + 最小闭环）。
 
 The runtime never edits itself directly. See ``docs/self-upgrade.md`` for the
 full workflow, capability boundary and rollback procedure.
