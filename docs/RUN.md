@@ -10,7 +10,7 @@
 
 | 组件 | 版本 | 验证方式 |
 |---|---|---|
-| Python | 3.11 / 3.12（CI 矩阵双腿同值） | `.venv/Scripts/python.exe --version`（Windows）/ `python --version` |
+| Python | 3.12（CI 单一版本） | `.venv/Scripts/python.exe --version`（Windows）/ `python --version` |
 | Node | 22.x | `node --version`（已见于 `C:\Users\...\node\versions\22.22.2-3`） |
 | 后端虚拟环境 | `.venv/` 已存在 | 见仓库根 `.venv` |
 | 前端依赖 | `apps/console/console/node_modules/` 已装 | 见 `apps/console/console/node_modules/vite/bin/vite.js` |
@@ -195,7 +195,7 @@ curl --noproxy '*' -H "X-Liuhao-Token: Bearer $TOKEN" http://127.0.0.1:8080/v1/a
 - 同作业还跑 12 个 `scripts/verify_*.py`（Policy C-1..C-6、ORM/迁移、跨会话持久化、孤儿确认、许可证漂移等），每个退出非 0 即红。
 
 ### 门禁 4 — `Run Tests` 作业里的 flake8（代码质量）
-- 作业：`Run Tests`（ci.yml:11，矩阵 3.11 / 3.12 双腿）的 `Verify Code Quality` 步骤（ci.yml L44–L46）
+- 作业：`Run Tests`（ci.yml:11，矩阵 3.12 单腿）的 `Verify Code Quality` 步骤（ci.yml L44–L46）
 - 命令：`python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（exit 1 即失败，**不带 `|| true`**）
 - 2026-09-15 起转为真门禁：此前它**已连红 3 次** CI run，而本机 `pytest` 全绿，所以长时间没人发现 ⇒
   **本机绿 ≠ CI 绿**，推完必须 `gh run list --branch <branch> --limit 3` 看一眼。
