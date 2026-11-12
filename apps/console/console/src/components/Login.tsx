@@ -37,6 +37,7 @@ import {
   sessionFromToken,
 } from '../lib/auth'
 import { apiFetch } from '../lib/api'
+import { ReactorMark } from './ReactorMark'
 import { CLIENT_LABELS, detectClient, isDesktopShell } from '../lib/mode'
 import {
   clearLocalProof,
@@ -254,15 +255,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
       <aside className="os-login-aside">
         <div className="os-login-aside-brand">
           <div className="os-login-aside-mark">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M12 2.6l7.4 4.3v8.6L12 19.8 4.6 15.5V6.9z"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinejoin="round"
-              />
-              <circle cx="12" cy="12" r="2.6" fill="currentColor" />
-            </svg>
+            <ReactorMark size={44} />
           </div>
           <div>
             <div className="os-login-aside-title">{workspaceName.name_zh}</div>
@@ -316,15 +309,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
       <div className="os-login-card">
         <div className="os-login-brand">
           <div className="os-login-mark">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M12 2.6l7.4 4.3v8.6L12 19.8 4.6 15.5V6.9z"
-                stroke="#fff"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-              />
-              <circle cx="12" cy="12" r="2.6" fill="#fff" />
-            </svg>
+            <ReactorMark size={30} />
           </div>
           <div>
             <h1 className="os-login-title">{workspaceName.name_en}</h1>
