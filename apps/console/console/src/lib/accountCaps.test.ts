@@ -19,7 +19,7 @@ import {
   identityBarRole,
   keyAuthorizationLabel,
 } from './accountCaps'
-import { mobileNavKeysFor, navFor, visibleNavKeys } from './nav'
+import { mobileNavKeysFor, navFor, navGroupsFor, visibleNavKeys } from './nav'
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -208,6 +208,72 @@ describe('导航裁剪：不渲染而不是置灰', () => {
       '组织',
     ]) {
       expect(BANNED_ACCOUNT_TERMS).toContain(term)
+    }
+  })
+})
+
+describe('Owner 专属入口：只对 Owner 渲染', () => {
+  const ownerCaps = deriveCaps(buildProfile(makeSession(), PAYLOAD, 'live', null))
+  const memberCaps = deriveCaps(
+    buildProfile(
+      makeSession({ principal: 'member-a', isRoot: false }),
+      PAYLOAD,
+      'live',
+      null,
+    ),
+  )
+
+  test('Owner 由后端 is_owner 决定；旧会话没有该字段时回落到根账号', () => {
+    // makeSession 默认 isRoot:true 且无 isOwner → 根账号就是 Owner。
+    expect(ownerCaps.isOwner).toBe(true)
+    // 后端明确下发 is_owner=false 的非根账号 → 不是 Owner。
+    const member = deriveCaps(
+      buildProfile(
+        makeSession({ principal: 'member-a', isRoot: false, isOwner: false }),
+        PAYLOAD,
+        'live',
+        null,
+      ),
+    )
+    expect(member.isOwner).toBe(false)
+    // 后端明确下发 is_owner=true 的账号 → Owner（即使不是根）。
+    const flagged = deriveCaps(
+      buildProfile(
+        makeSession({ principal: 'member-a', isRoot: false, isOwner: true }),
+        PAYLOAD,
+        'live',
+        null,
+      ),
+    )
+    expect(flagged.isOwner).toBe(true)
+  })
+
+  test('Owner 多出全局总览、成员管理、全部任务、审计四项', () => {
+    const visible = visibleNavKeys(ownerCaps)
+    for (const key of ['owner-overview', 'owner-members', 'owner-tasks', 'owner-audit']) {
+      expect(visible.has(key)).toBe(true)
+    }
+    const ownerGroup = navGroupsFor(ownerCaps).find((group) => group.key === 'owner')
+    expect(ownerGroup?.label).toBe('Owner')
+    expect(ownerGroup?.items.map((item) => item.key)).toEqual([
+      'owner-overview',
+      'owner-members',
+      'owner-tasks',
+      'owner-audit',
+    ])
+    expect(ownerGroup?.defaultKey).toBe('owner-overview')
+  })
+
+  test('普通账号的导航里根本没有 Owner 组与四项（不是置灰）', () => {
+    expect(memberCaps.isOwner).toBe(false)
+    const visible = visibleNavKeys(memberCaps)
+    for (const key of ['owner-overview', 'owner-members', 'owner-tasks', 'owner-audit']) {
+      expect(visible.has(key)).toBe(false)
+    }
+    expect(navGroupsFor(memberCaps).some((group) => group.key === 'owner')).toBe(false)
+    // 普通账号原有入口不受影响：操作台、企业总览、任务中心、操作记录都在。
+    for (const key of ['console', 'enterprise-overview', 'task-center', 'audit']) {
+      expect(visible.has(key)).toBe(true)
     }
   })
 })
