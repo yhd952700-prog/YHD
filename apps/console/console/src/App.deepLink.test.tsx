@@ -62,7 +62,20 @@ function bodyFor(path: string): unknown {
       },
     }
   }
-  if (path === '/v1/policy/approvals') return { grants: [], enforcement: {} }
+  if (path === '/v1/policy/approvals') {
+    return {
+      grants: [],
+      enforcement: {
+        env_var: '',
+        spec: '',
+        enabled: false,
+        enforced_actions: [],
+        count: 0,
+        exempt_actions: [],
+        config_error: null,
+      },
+    }
+  }
   if (path === '/v1/policy/enforcement') return {}
   if (path === '/v1/ready') return { status: 'ready', checks: {} }
   if (path === '/v1/metrics') return {}
@@ -102,6 +115,8 @@ function bodyFor(path: string): unknown {
     }
   }
   if (path === '/v1/goals') return { goals: [] }
+  if (path === '/v1/memory/entries') return { entries: [], count: 0 }
+  if (path === '/v1/memory/custody') return { enabled: false }
   if (path === PREFLIGHT) {
     return {
       ok: true,
@@ -210,6 +225,59 @@ describe('深链门控：成员不挂载管理员页', () => {
 
     await waitFor(() => expect(pageTitle()).toBe('企业总览'))
     expect(screen.getByText('企业运行概况')).toBeTruthy()
+  })
+})
+
+describe('深链落到合并页标签（简约版）', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+    document.title = '贾维斯'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    window.history.replaceState(null, '', '/')
+  })
+
+  test('管理员 ?p=workflow：落到任务中心且工作流标签激活', async () => {
+    open('?p=workflow', true)
+
+    await waitFor(() => expect(pageTitle()).toBe('工作流'))
+    const tab = screen.getByRole('tab', { name: '工作流' })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('运行实例')).toBeTruthy()
+    // 任务中心自己的列表不在这个标签下，不应出现。
+    expect(screen.queryByText('任务列表')).toBeNull()
+  })
+
+  test('管理员 ?p=memory：落到知识中心且记忆标签激活', async () => {
+    open('?p=memory', true)
+
+    await waitFor(() => expect(pageTitle()).toBe('记忆'))
+    // Knowledge 是懒加载：页头（Suspense 外面）先变标题，chunk 到后标签才出现，
+    // 所以等标签出现再断言，而不是同步 getByRole。
+    const tab = await screen.findByRole('tab', { name: '记忆' })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByText('记忆代管')).toBeTruthy()
+    // 知识中心自己的文档账本不在这个标签下，不应出现。
+    expect(screen.queryByText('知识库状态')).toBeNull()
+  })
+
+  test('管理员 ?p=capability-center：渲染能力中心，默认技能标签激活', async () => {
+    open('?p=capability-center', true)
+
+    await waitFor(() => expect(pageTitle()).toBe('能力中心'))
+    // CapabilityCenter 是懒加载：同上，等 chunk 加载后再断言标签与内容。
+    const tab = await screen.findByRole('tab', { name: '技能中心' })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByText('技能列表')).toBeTruthy()
+  })
+
+  test('管理员 ?p=approval：标题为审批签发', async () => {
+    open('?p=approval', true)
+
+    await waitFor(() => expect(pageTitle()).toBe('审批签发'))
   })
 })
 
