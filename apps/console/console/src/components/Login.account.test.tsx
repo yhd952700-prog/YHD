@@ -153,7 +153,7 @@ describe('登录页状态机', () => {
     render(<Login mode="mobile" onSuccess={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: '忘记密码' }))
     const note = await screen.findByTestId('recovery-path')
-    expect(note.textContent).toContain('鎏灏桌面端')
+    expect(note.textContent).toContain('贾维斯桌面端')
     expect(note.textContent).not.toContain('手机访问')
     expect(note.textContent).not.toContain('LIUHAO_ALLOW_REMOTE_RECOVERY')
     // 真能走通的只有桌面端：恢复码表单与重置按钮都不该出现。
@@ -227,7 +227,7 @@ describe('登录页状态机', () => {
     try {
       render(<Login mode="mobile" onSuccess={vi.fn()} />)
       const guide = await screen.findByTestId('bootstrap-remote-guide')
-      expect(guide.textContent).toContain('鎏灏桌面端')
+      expect(guide.textContent).toContain('贾维斯桌面端')
       expect(screen.queryByLabelText('账号')).toBeNull()
       expect(screen.queryByRole('button', { name: '创建并进入系统' })).toBeNull()
     } finally {
@@ -251,7 +251,7 @@ describe('登录页状态机', () => {
       expect(fetchMock).toHaveBeenCalledWith('/v1/accounts/register', expect.anything()),
     )
     await waitFor(() =>
-      expect(document.body.textContent).toContain('首次初始化需要在这台电脑上的鎏灏桌面端完成'),
+      expect(document.body.textContent).toContain('首次初始化需要在这台电脑上的贾维斯桌面端完成'),
     )
     expect(document.body.textContent).not.toContain('命令行')
   })
@@ -447,7 +447,7 @@ describe('登录页状态机', () => {
     render(<Login mode="mobile" notice="expired" onSuccess={vi.fn()} />)
 
     const message = await screen.findByText(/无法读取登录配置（401）/)
-    expect(message.textContent).toContain('鎏灏桌面端')
+    expect(message.textContent).toContain('贾维斯桌面端')
     expect(message.textContent).not.toContain('配对')
     expect(message.textContent).not.toContain('手机访问')
     expect(message.textContent).not.toContain('LIUHAO_ALLOW_REMOTE_RECOVERY')
