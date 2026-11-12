@@ -36,6 +36,7 @@ import {
 } from '../lib/assistant'
 import { getAssistantName, useWorkspaceName } from '../lib/workspaceName'
 import { BudgetDenialActions, Failure } from './ui'
+import { ReactorMark } from './ReactorMark'
 
 /** 对话页只需要模型列表里可展示/可选的最小字段。 */
 interface ChatModel {
@@ -1045,21 +1046,44 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
   const jumpLabel =
     unreadChars > 0 ? `回到底部（新收到 ${unreadChars} 字）` : '回到底部'
 
+  /** 小铁状态条：干活中 = 正在发送/流式；待机 = 在呢；打盹 = 5 分钟没新消息。
+      只读已有的 sending / 消息数，不另造状态源。 */
+  const [xiaotieState, setXiaotieState] = useState<'idle' | 'working' | 'napping'>('idle')
+  useEffect(() => {
+    if (sending) {
+      setXiaotieState('working')
+      return
+    }
+    setXiaotieState('idle')
+    const timer = window.setTimeout(() => setXiaotieState('napping'), 5 * 60 * 1000)
+    return () => window.clearTimeout(timer)
+  }, [sending, messages.length])
+  const xiaotieStatusText =
+    xiaotieState === 'working'
+      ? '正在帮你干活呢，稍等一下'
+      : xiaotieState === 'napping'
+        ? '我先眯一会儿，有事叫我一声就醒'
+        : '我在呢，有事随时叫我'
+
   return (
     <section className="jarvis-zone">
       <div className="jarvis-panel">
         <div className="jarvis-left">
-          <div className="holo">
-            <div className="holo-figure">
-              <div className="holo-aura" />
-              <div className="holo-ring r1" />
-              <div className="holo-ring r2" />
-              <div className="holo-human">你</div>
-            </div>
+          <div className="xiaotie-figure">
+            <img
+              src="/xiaotie.webp"
+              alt={`${assistantDisplayName}·小铁`}
+              width={160}
+              height={160}
+            />
           </div>
 
           <div className="jarvis-intro">
             <div className="jarvis-name">{assistantDisplayName}</div>
+            {/* 身份标注与名字分开两个元素：名字本身必须保持精确文本
+                “贾维斯”（SingleAssistant 回归钉的是 getAllByText('贾维斯') 恰好 1 个），
+                “· 小铁”是同一身份的标注，不另造第二个助手身份。 */}
+            <div className="jarvis-identity">{assistantDisplayName} · 小铁</div>
             <div className="jarvis-sub">{ASSISTANT_TAGLINE}</div>
           </div>
         </div>
@@ -1068,6 +1092,15 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           <div className="jarvis-greeting">
             <span className="greet-main">{assistantGreeting(new Date().getHours(), assistantDisplayName)}</span>
             <span className="greet-sub">写邮件、总结、翻译、想点子、做清单——直接说就行。</span>
+          </div>
+
+          {/* 小铁状态条：头像 + 名字 + 状态，跟着贾维斯的真实状态变。 */}
+          <div className="xiaotie-status" data-status={xiaotieState} role="status">
+            <img src="/xiaotie.webp" alt="" width={32} height={32} />
+            <span className="xiaotie-status-name">{assistantDisplayName} · 小铁</span>
+            <span className="xiaotie-status-dot" aria-hidden="true" />
+            <span className="xiaotie-status-text">{xiaotieStatusText}</span>
+            <ReactorMark size={18} working={xiaotieState === 'working'} label="方舟反应堆" />
           </div>
 
           <div className="jarvis-chat">
@@ -1211,7 +1244,9 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                       className={`chat-row ${m.role}`}
                       data-streaming={m.streaming ? 'true' : undefined}
                     >
-                    <div className="chat-avatar">{m.role === 'user' ? '我' : '灏'}</div>
+                    <div className="chat-avatar">
+                      {m.role === 'user' ? '我' : <img src="/xiaotie.webp" alt="" />}
+                    </div>
                     <div className="chat-bubble">
                       {/* 建流前被拒（402/403）时正文为空：此时只显示下面的错误卡，
                           不能再落一个「…」空气泡，否则用户以为助手回了半个空回复。 */}
