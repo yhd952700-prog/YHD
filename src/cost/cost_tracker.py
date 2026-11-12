@@ -465,6 +465,22 @@ class CostTracker:
             result[record.provider] += record.amount
         return dict(result)
 
+    def by_model(self) -> Dict[str, float]:
+        """Return total cost broken down by model.
+
+        B组第二轮补，与 ``by_provider`` 对称。模型名取自记录
+        ``metadata["model"]``（``CostRecord`` 没有一等 model 字段；
+        模型是调用方写入 metadata 的约定，见 ``record_cost``）。
+        没有带 model 的记录不计入（不编一个 "unknown" 桶充数）。
+        """
+        result: Dict[str, float] = defaultdict(float)
+        for record in self.records:
+            model = (record.metadata or {}).get("model")
+            if not model:
+                continue
+            result[str(model)] += record.amount
+        return dict(result)
+
     # ------------------------------------------------------------------
     # Optimization suggestions
     # ------------------------------------------------------------------
