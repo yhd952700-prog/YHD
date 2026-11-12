@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-REPO_ROOT = Path(os.environ.get("LIUHAO_REPO_ROOT", r"D:\LiuHao-AI-OS"))
+# 包根：开发机是仓库根，装机后是安装树根（其下同样有 src/）；按文件位置推算，
+# 不写死任何盘符。LIUHAO_REPO_ROOT 仍然优先，语义不变。
+_DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(os.environ.get("LIUHAO_REPO_ROOT", _DEFAULT_REPO_ROOT))
 LOCK_DIR = REPO_ROOT / "release-lock"
 STATE_ROOT = Path(os.environ.get("LIUHAO_SELFUPGRADE_STATE", r"D:\LiuHaoSelfUpgrade"))
 
