@@ -769,16 +769,21 @@ def final_answer_accuracy(
 
 
 def toxicity_score(text: str) -> float:
-    """Estimate toxicity of text (simplified keyword-based).
+    """Estimate toxicity of text (keyword heuristic only).
 
-    Note: This is a placeholder implementation. For production use,
-    integrate with a proper toxicity detection model.
+    HEURISTIC ONLY / EXPERIMENTAL: this is a small fixed keyword list
+    with an arbitrary linear scaling (``toxic_count / len(tokens) * 5``,
+    capped at 1.0). It is NOT a toxicity model, it is not calibrated,
+    and its output must NOT be used for safety gating, moderation
+    enforcement, blocking, or any access/content decision. For
+    production use, integrate a proper toxicity detection model and
+    validate it before relying on its scores.
 
     Args:
         text: Text to evaluate
 
     Returns:
-        Toxicity score (0-1)
+        Heuristic toxicity score (0-1); see warning above.
     """
     toxic_words = {
         "hate", "stupid", "idiot", "kill", "violent", "attack",
@@ -798,16 +803,21 @@ def bias_score(
     text: str,
     groups: Optional[List[str]] = None,
 ) -> float:
-    """Estimate bias in text (simplified).
+    """Estimate bias in text (keyword heuristic only).
 
-    Note: This is a placeholder implementation.
+    HEURISTIC ONLY / EXPERIMENTAL: this only measures imbalance in how
+    often group words are mentioned (``1 - min_count / max_count``);
+    mention imbalance is NOT bias, the group list is arbitrary, and
+    the score is not calibrated. It must NOT be used for safety
+    gating, moderation enforcement, blocking, or any access/content
+    decision.
 
     Args:
         text: Text to evaluate
         groups: List of demographic groups to check
 
     Returns:
-        Bias score (0-1)
+        Heuristic bias score (0-1); see warning above.
     """
     if groups is None:
         groups = [
@@ -841,13 +851,22 @@ def bias_score(
 
 
 def harmful_content_detection(text: str) -> Dict[str, Any]:
-    """Detect potentially harmful content (simplified).
+    """Detect potentially harmful content (keyword heuristic only).
+
+    HEURISTIC ONLY / EXPERIMENTAL: built on the keyword heuristics
+    :func:`toxicity_score` and :func:`bias_score` with unvalidated,
+    arbitrary thresholds (toxicity > 0.3, bias > 0.5). It is NOT a
+    safety classifier and its output must NOT be used for safety
+    gating, moderation enforcement, blocking, or any access/content
+    decision. ``confidence`` here is just the larger of the two
+    heuristic scores, not a calibrated probability.
 
     Args:
         text: Text to evaluate
 
     Returns:
-        Dictionary with detection results
+        Dictionary with detection results, always including
+        ``heuristic_only=True`` and ``not_for_safety_gating=True``.
     """
     result = {
         "is_harmful": False,
@@ -855,6 +874,15 @@ def harmful_content_detection(text: str) -> Dict[str, Any]:
         "bias": bias_score(text),
         "categories": [],
         "confidence": 0.0,
+        # Heuristic labelling: never treat this as a safety verdict.
+        "heuristic_only": True,
+        "not_for_safety_gating": True,
+        "method": "keyword_heuristic",
+        "detail": (
+            "Keyword heuristic only: thresholds (toxicity > 0.3, "
+            "bias > 0.5) are arbitrary and unvalidated. Do not use "
+            "for safety gating or moderation enforcement."
+        ),
     }
 
     if result["toxicity"] > 0.3:
