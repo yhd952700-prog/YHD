@@ -48,7 +48,7 @@ def test_installer_default_version_matches():
     iss = _read(REPO / "installer" / "liuhao.iss")
     matches = re.findall(r'#define AppVersion "([^"]+)"', iss)
     assert matches == [APP_VERSION], matches
-    assert f"OutputBaseFilename=LiuHao-Setup-{{#AppVersion}}" in iss
+    assert f"OutputBaseFilename=Jarvis-Setup-{{#AppVersion}}" in iss
 
 
 def test_build_script_reads_version_from_src_version():
