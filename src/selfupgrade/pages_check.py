@@ -19,7 +19,7 @@ import argparse
 import os
 
 #: 与 ``scripts/acceptance/a11y_console_acceptance.py`` 保持同一份侧栏文案。
-PAGES = ["总览", "鎏灏管家", "我的员工", "目标与任务", "工作区文件", "系统设置"]
+PAGES = ["总览", "贾维斯", "我的员工", "目标与任务", "工作区文件", "系统设置"]
 
 NAV_SELECTOR = ".os-nav-item, .os-bottom-item"
 LOGIN_TIMEOUT = 60_000
