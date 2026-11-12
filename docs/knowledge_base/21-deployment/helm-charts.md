@@ -1,6 +1,6 @@
 # Helm Charts 部署
 
-Helm 是 Kubernetes 的包管理器。LiuHao AI OS 提供官方 Helm Chart，把 [Kubernetes 部署](kubernetes-deployment.md) 中的全部清单参数化为可复用、可版本化的 Chart。本文档覆盖 Chart 结构、values 配置、模板编写、发布与回滚、以及自建 Chart 仓库。
+Helm 是 Kubernetes 的包管理器。Jarvis 提供官方 Helm Chart，把 [Kubernetes 部署](kubernetes-deployment.md) 中的全部清单参数化为可复用、可版本化的 Chart。本文档覆盖 Chart 结构、values 配置、模板编写、发布与回滚、以及自建 Chart 仓库。
 
 ---
 
@@ -53,7 +53,7 @@ charts/liuhao-ai-os/
 ```yaml
 apiVersion: v2
 name: liuhao-ai-os
-description: LiuHao AI OS - Human-Sovereign Agent Operating System
+description: Jarvis - Human-Sovereign Agent Operating System
 type: application
 version: 1.4.2              # Chart 版本（模板变更递增）
 appVersion: "1.4.2"         # 应用版本（镜像 tag 默认值）
