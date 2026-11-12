@@ -1,4 +1,4 @@
-"""Agent Factory & Runtime Service for LiuHao AI OS (鎏灏).
+"""Agent Factory & Runtime Service for Jarvis (贾维斯).
 
 Implements MASTER-SPEC Phase 3 (Agent Runtime):
 
