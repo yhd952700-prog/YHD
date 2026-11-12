@@ -257,7 +257,7 @@ def _prompt(label: str, default: Optional[str] = None) -> str:
 
 def run_wizard(skip: bool = False) -> int:
     print("=" * 62)
-    print("鎏灏首次运行向导")
+    print("贾维斯首次运行向导")
     print("=" * 62)
 
     # 先补完整性密钥：没有它，注册表每一行在加载时都会被内核拒绝，
@@ -385,24 +385,61 @@ def _run_interactive_setup() -> int:
                       "解密密钥 data\\model_config.key 在同目录，仅当前 Windows 用户可读。")
                 print("       删除：系统设置 → 模型管理 → 删除该模型（Key 会一起删除）。")
                 print("       联网：对话内容会直接发送到你填写的 base_url，"
-                      "不经过鎏灏服务器。")
+                      "不经过贾维斯服务器。")
             except Exception as exc:  # noqa: BLE001
                 print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
     else:
         print("  [skip] 未配置模型；安装与启动不受影响，"
               "之后可在「系统设置 → 模型管理」添加。")
 
+    # ---- 3. 工作台名字（可改，不是写死）----
+    # 顶栏、登录页和助手都显示这个名字；默认贾维斯，别人用时自己起一个。
+    print()
+    print("给工作台起个名字（顶栏、登录页和助手都显示这个名字）。")
+    print("  直接回车就用默认「贾维斯」；以后随时在控制台「系统设置 → 工作台名字」里改。")
+    name_zh = _prompt("工作台名字（中文）", default="贾维斯")
+    name_en = _prompt("英文名（可空，留空则与中文名相同）")
+    from src.brand import BRAND_NAME_EN, BRAND_NAME_ZH, set_workspace_name
+
+    if name_zh.strip() and (
+        name_zh.strip() != BRAND_NAME_ZH
+        or (name_en.strip() and name_en.strip() != BRAND_NAME_EN)
+    ):
+        try:
+            # 名字存在本次数据目录的 workspace_settings.json 里：显式路径
+            # 未设置时就按向导本次的数据目录算，与身份/模型配置落点一致。
+            os.environ.setdefault(
+                "LIUHAO_WORKSPACE_SETTINGS_FILE",
+                str(Path(resolve_data_dir()) / "workspace_settings.json"),
+            )
+            result = set_workspace_name(name_zh, name_en or None)
+            print(f"  [ok] 工作台名字已设为 {result['lockup']}。")
+        except ValueError as exc:
+            print(
+                f"  [!!] 名字没保存（{exc}），仍用默认「贾维斯」；之后可在设置里改。",
+                file=sys.stderr,
+            )
+
     print()
     print("=" * 62)
     print("向导完成。接着会自动启动服务；服务真正就绪后才会打印可访问地址")
     print("并尝试打开浏览器。请以窗口里给出的地址为准（不要沿用旧书签）。")
     print("下一步：用刚创建的账号登录，聊天入口在左侧「自由对话」→「直接对话」。")
+    # 收尾显式检查（不新增向导步骤）：模型是可选项，但"没配"必须在完成时
+    # 说清楚 —— 未配置时聊天不会编造回答，只会返回"未配置模型，请先配置
+    # 模型密钥"；不要让用户在完成页以为"向导走完了 = 聊天就能用了"。
+    if not _has_enabled_model():
+        print()
+        print("[!!] 未配置模型：聊天目前不可用。")
+        print("     发送消息只会收到「未配置模型，请先配置模型密钥」的提示，")
+        print("     不会生成模拟回答。配好后无需重装：")
+        print("       在「系统设置 → 模型管理」填写密钥并测试连通，或重跑本向导。")
     print("=" * 62)
     return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="鎏灏首次运行向导")
+    parser = argparse.ArgumentParser(description="贾维斯首次运行向导")
     parser.add_argument("--skip", action="store_true", help="跳过向导，打印当前缺口后退出")
     args = parser.parse_args(argv)
     return run_wizard(skip=args.skip)
