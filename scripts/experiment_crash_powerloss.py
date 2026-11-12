@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -55,7 +54,6 @@ if _REPO_ROOT not in sys.path:
 import sqlite3  # noqa: E402
 
 from src.kernels.audit import (  # noqa: E402
-    AuditEvent,
     AuditEventType,
     AuditScope,
     AuditStore,
