@@ -136,7 +136,7 @@ export function UpgradePanel() {
       setStatus(result.status)
       setNotice({
         tone: 'ok',
-        message: `已安装 ${result.apply.to_version}（备份编号 ${result.apply.backup_id}）。请关闭并重新启动鎏灏，重启后版本才会变成新版本；如果新版本有问题，可在下面一键回滚。`,
+        message: `已安装 ${result.apply.to_version}（备份编号 ${result.apply.backup_id}）。请关闭并重新启动贾维斯，重启后版本才会变成新版本；如果新版本有问题，可在下面一键回滚。`,
       })
     } catch (err) {
       // 超时/断开不代表服务端没做完：重新取一次状态，按真实结果说话。
@@ -158,7 +158,7 @@ export function UpgradePanel() {
       setStatus(result.status)
       setNotice({
         tone: 'ok',
-        message: `已回滚到 ${result.rollback.to_version}。请关闭并重新启动鎏灏，重启后生效。`,
+        message: `已回滚到 ${result.rollback.to_version}。请关闭并重新启动贾维斯，重启后生效。`,
       })
     } catch (err) {
       await refresh()
@@ -175,7 +175,7 @@ export function UpgradePanel() {
   if (!status) {
     return (
       <div className="os-alert" role="alert">
-        没有读取到版本信息。请确认鎏灏仍在运行后刷新页面。
+        没有读取到版本信息。请确认贾维斯仍在运行后刷新页面。
       </div>
     )
   }
@@ -252,7 +252,7 @@ export function UpgradePanel() {
             安装者还没有为本机配置更新源，所以自动检查暂不可用；这里的「检查更新」按钮会保持禁用，不会出现点了没反应的情况。
           </div>
           <div style={{ marginTop: 8 }}>
-            <strong>手动更新（覆盖安装）</strong>：关闭鎏灏后运行新版本的安装包，按提示覆盖安装即可。程序文件会更新，数据目录（会话、知识库、记忆等）不会被覆盖。
+            <strong>手动更新（覆盖安装）</strong>：关闭贾维斯后运行新版本的安装包，按提示覆盖安装即可。程序文件会更新，数据目录（会话、知识库、记忆等）不会被覆盖。
           </div>
         </div>
       )}
@@ -302,7 +302,7 @@ export function UpgradePanel() {
 
       {sourceReady && (
         <div className="os-note" style={{ marginTop: 10 }}>
-          也可以手动更新（覆盖安装）：关闭鎏灏后运行新版本安装包；数据目录不受影响。
+          也可以手动更新（覆盖安装）：关闭贾维斯后运行新版本安装包；数据目录不受影响。
         </div>
       )}
 
