@@ -163,7 +163,7 @@ class EvalQuery:
 CORPUS: Tuple[EvalDocument, ...] = (
     EvalDocument(
         "kb-001",
-        "# 部署与安装\n\n鎏灏控制台通过局域网部署，默认端口 8700，"
+        "# 部署与安装\n\n贾维斯控制台通过局域网部署，默认端口 8700，"
         "启动脚本为 scripts/launch_gateway.py。\n\n"
         "安装完成后访问 /healthz 检查服务状态；升级前先停止旧进程。",
     ),
@@ -214,7 +214,7 @@ CORPUS: Tuple[EvalDocument, ...] = (
     ),
     EvalDocument(
         "kb-011",
-        "# 机器要求\n\n最低配置 4 核 8GB 内存，操作系统 Windows 10/11，Python 3.11。\n\n"
+        "# 机器要求\n\n最低配置 4 核 8GB 内存，操作系统 Windows 10/11，Python 3.12。\n\n"
         "推荐 8 核 16GB，磁盘至少 100GB。",
     ),
     EvalDocument(
