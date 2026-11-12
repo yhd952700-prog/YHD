@@ -1,17 +1,17 @@
 [project]
 name = "liuhao-ai-os"
 version = "0.3.0"
-description = "LiuHao AI OS · 鎏灏智能中枢 - Y1 Implementation"
+description = "Jarvis · 贾维斯 - Y1 Implementation"
 readme = "README.md"
 # 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
 license = { text = "Proprietary" }
 # 上界 <3.13 是**有意**的：numpy 1.26.4 / scipy 1.13.1（arize-phoenix 链路锁定）
 # 没有 cp313 轮子，3.13 下只能走 sdist，实测因无 C 编译器直接
-# metadata-generation-failed。CI 矩阵本来就是 3.11/3.12；发布 venv 固定 3.12
-# （见仓库根 .python-version）。要支持 3.13 需先升级 numpy/scipy 并重解整条
-# phoenix 依赖链，风险/成本远高于收窄解释器版本。详见
-# docs/audit/findings-deps-license.md（DEP-01）。
-requires-python = ">=3.11,<3.13"
+# metadata-generation-failed。下界 3.12 与 .python-version / Dockerfile /
+# CI 矩阵单腿 3.12 一致（B组第二轮统一：不再维护 3.11 腿）。要支持 3.13
+# 需先升级 numpy/scipy 并重解整条 phoenix 依赖链，风险/成本远高于收窄解释器
+# 版本。详见 docs/audit/findings-deps-license.md（DEP-01）。
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.25.0",
@@ -192,6 +192,11 @@ tests = [
     "fakeredis>=2.0.0",
     "lupa>=2.0",
     "pytest-timeout>=2.3.0",
+    # scripts/run_tests.py --coverage 需要 pytest-cov，--parallel 需要
+    # pytest-xdist：此前两者只在 [tool.uv] dev-dependencies，CI 的 test job
+    # 只装 `pip install -e .[tests]`，按文档跑这两个开关会直接报错。
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.0.0",
 ]
 # 第三个协调后端（etcd）：**不需要额外的 pip 包**。实现走 etcd v3 的 HTTP/JSON
 # gateway（src/distribution/coordination.py 的 _EtcdHttpAdapter，复用运行期已声明的
@@ -269,6 +274,34 @@ dbos = [
     "dbos>=3.4.0,<4.0",
 ]
 
+[project.scripts]
+# 安装后入口：`liuhao` 即网关（`python -m src.gateway` 的等价物）。
+# 注意包名用安装后的顶层名 `gateway` 而不是 `src.gateway`：wheel 按
+# src-layout 把 src/ 展平为顶层包（见下面 [tool.setuptools]），安装产物里
+# 没有 `src` 这个包，写 `src.gateway.__main__` 会在安装后 ImportError。
+# 仓库内直接跑仍用 `python -m src.gateway` / start-liuhao 脚本。
+#
+# ⚠ 已知限制（改动前就存在，非本次引入）：从安装好的 wheel 里跑 `liuhao`
+# 目前会在导入期失败 —— `gateway/main.py` 等模块用跨包相对导入
+# （`from ..security import ...`），只在 `src.gateway` 这种“src 是父包”
+# 的形态下成立；wheel 展平后 gateway 成了顶层包，相对导入越界。
+# 实测：改动前的 wheel 同样 `import gateway` 即 ImportError。支持的启动
+# 方式仍是仓库根 `python -m src.gateway`、start-liuhao 脚本与 Docker
+#（Docker 是 COPY src/ 后从 /app 跑 `python -m src.gateway`，不受影响）。
+# 要让 `liuhao` 真正可跑，需把 src/ 内跨包相对导入改成绝对导入，是另一轮
+# 的重构，不在本轮做。入口点先行声明，`pip install -e .` 已能识别并生成
+# `liuhao` 可执行文件。
+liuhao = "gateway.__main__:main"
+
+[tool.setuptools]
+# 显式声明 src-layout 包发现：与 setuptools 的自动探测结果一致（wheel
+# 内顶层包即 src/ 下的各子包），但不再依赖“碰巧探测到”。没有这一节时
+# `pip install -e .` 同样能装，区别是包发现规则写在明处、可被审计。
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -294,7 +327,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 select = ["E", "F", "I", "W", "UP", "B", "C4", "PT", "T20", "SIM", "PIE", "ICN"]
 ignore = ["E501", "SIM102", "SIM103", "SIM113", "SIM115", "T201", "T203", "B008", "B009", "C408", "ICN001"]
 
@@ -304,3 +337,43 @@ dev-dependencies = [
     "ruff>=0.5.0",
     "mypy>=1.10.0",
 ]
+
+# 覆盖率配置（pytest-cov 的真实生效处；tests/framework/coverage_config.py
+# 只是一个同名 Python dict，不会被 pytest-cov 读取，见该文件顶部注释）。
+# fail_under=80 与 scripts/run_tests.py --coverage 的 --cov-fail-under=80 一致。
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+    "*/env/*",
+    "*/.env/*",
+    "setup.py",
+    "setup.cfg",
+    "*/migrations/*",
+    "*/conftest.py",
+]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pragma: no branch",
+]
+
+# mypy 最小配置（mypy 已在 [tool.uv] dev-dependencies，但此前无任何配置）。
+# 未接入 CI；只给本地 `mypy src` 一个可用基线。
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+exclude = "(?x)^(apps/|frontend/|node_modules/|\\.venv/)"
