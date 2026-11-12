@@ -1643,6 +1643,40 @@ components:
           title: Name
       title: NodePatchRequest
       type: object
+    OwnerInviteRequest:
+      properties:
+        allow_key_sharing:
+          default: false
+          title: Allow Key Sharing
+          type: boolean
+        display_name:
+          anyOf:
+          - maxLength: 80
+            type: string
+          - type: 'null'
+          title: Display Name
+        permissions:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Permissions
+        principal:
+          maxLength: 64
+          minLength: 1
+          title: Principal
+          type: string
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 角色预设：viewer / operator / manager
+          title: Role
+      required:
+      - principal
+      title: OwnerInviteRequest
+      type: object
     PasswordResetRequest:
       description: '改密请求。
 
@@ -2472,6 +2506,23 @@ components:
       - type
       title: ValidationError
       type: object
+    WorkspaceNameUpdate:
+      properties:
+        name_en:
+          anyOf:
+          - maxLength: 80
+            type: string
+          - type: 'null'
+          title: Name En
+        name_zh:
+          maxLength: 40
+          minLength: 1
+          title: Name Zh
+          type: string
+      required:
+      - name_zh
+      title: WorkspaceNameUpdate
+      type: object
     src__api__routes__knowledge__SearchRequest:
       properties:
         query:
@@ -2584,7 +2635,7 @@ info:
     \ scripts/verify_openapi_contract.py`.\n  Drift is a FAIL, not a warning.\n* Auth is fail-closed:\
     \ most `/v1/*` paths require a human token.\n  A path's presence here does NOT mean it is safe to\
     \ call unauthenticated."
-  title: LiuHao AI OS · 鎏灏智能中枢 Gateway API
+  title: Jarvis · 贾维斯 Gateway API
   version: 0.3.0
 openapi: 3.1.0
 paths:
@@ -5333,7 +5384,18 @@ paths:
       - auth
   /v1/auth/login:
     post:
-      description: Exchange ``principal`` + ``secret`` for a bearer token.
+      description: 'Exchange ``principal`` + ``secret`` for a bearer <redacted>
+
+
+        ``authenticate()`` 是同步阻塞调用（PBKDF2 + SQLite + 审计写），这里用
+
+        ``asyncio.to_thread`` 把它移出事件循环，并用请求级预算
+
+        （``login_timeout_seconds()``，默认 30 秒）包住等待：满载时线程池排队
+
+        再久也不会无限挂起，超时回 504「登录超时，请重试」（可重试的错误，
+
+        不是让用户重启）。``AuthError`` 原样转 HTTPException。'
       operationId: auth_login_v1_auth_login_post
       requestBody:
         content:
@@ -12785,6 +12847,410 @@ paths:
       summary: Rollback Version
       tags:
       - org
+  /v1/owner/audit:
+    get:
+      description: 'Owner 查审计：整棵子树的事件（复用 ``gateway/audit.py`` 的只读查询）。
+
+
+        显式指定子树外的账号一律 404（与"不存在"不可区分，不暴露其存在与否）。'
+      operationId: owner_audit_v1_owner_audit_get
+      parameters:
+      - description: 只看某一成员（须在 Owner 子树内）
+        in: query
+        name: principal
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 只看某一成员（须在 Owner 子树内）
+          title: Principal
+      - description: 按内核动作名过滤
+        in: query
+        name: action
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按内核动作名过滤
+          title: Action
+      - description: 按结果过滤
+        in: query
+        name: outcome
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按结果过滤
+          title: Outcome
+      - description: 返回条数上限
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 100
+          description: 返回条数上限
+          maximum: 1000
+          minimum: 1
+          title: Limit
+          type: integer
+      - description: true = 最新的在前
+        in: query
+        name: reverse
+        required: false
+        schema:
+          default: true
+          description: true = 最新的在前
+          title: Reverse
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Audit V1 Owner Audit Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Audit
+      tags:
+      - owner
+  /v1/owner/me:
+    get:
+      description: 当前登录者是否为 Owner，以及 Owner 是谁、怎么来的。
+      operationId: owner_me_v1_owner_me_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Me V1 Owner Me Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Me
+      tags:
+      - owner
+  /v1/owner/members:
+    get:
+      description: 全部成员（整棵子树扁平列表，含 Owner 本人）；没有其他成员时为空列表。
+      operationId: owner_members_v1_owner_members_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Members V1 Owner Members Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Members
+      tags:
+      - owner
+    post:
+      description: 'Owner 邀请/创建普通用户：默认只有自己的最小权限，激活码一次性返回。
+
+
+        复用账号树的成员创建（``create_member_account``）：重名 409、越级授
+
+        权 403、防提权判定都在内核里，不在这里另写一份。'
+      operationId: owner_invite_v1_owner_members_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OwnerInviteRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Invite V1 Owner Members Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Invite
+      tags:
+      - owner
+  /v1/owner/members/{principal}/permissions:
+    patch:
+      description: Owner 改别人权限。目标是 Owner 本人时 403（防自降级/被改）。
+      operationId: owner_update_permissions_v1_owner_members__principal__permissions_patch
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionsRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Update Permissions V1 Owner Members  Principal  Permissions Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Update Permissions
+      tags:
+      - owner
+  /v1/owner/members/{principal}/status:
+    patch:
+      description: Owner 停用/恢复/删除别人。目标是 Owner 本人时 403（删 Owner 内核也拒）。
+      operationId: owner_update_status_v1_owner_members__principal__status_patch
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Update Status V1 Owner Members  Principal  Status Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Update Status
+      tags:
+      - owner
+  /v1/owner/overview:
+    get:
+      description: 'Owner 总览：成员、任务、用量、审计的真实计数（没有数据就是 0/空）。
+
+
+        用量读不到 / 任务库读不到时对应字段带 ``checked=false`` 与原因，
+
+        不把"查不到"报成 0。'
+      operationId: owner_overview_v1_owner_overview_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Overview V1 Owner Overview Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Overview
+      tags:
+      - owner
+  /v1/owner/tasks:
+    get:
+      description: 全部任务：Owner 子树内所有账号的目标与任务；没有任务时为空列表。
+      operationId: owner_tasks_v1_owner_tasks_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Owner Tasks V1 Owner Tasks Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Owner Tasks
+      tags:
+      - owner
   /v1/plugins:
     get:
       description: 'List every **loadable** registered plugin with its real status.
@@ -17195,6 +17661,64 @@ paths:
       summary: Get Workflow
       tags:
       - ai-management
+  /v1/workspace/name:
+    get:
+      operationId: get_workspace_name_v1_workspace_name_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Workspace Name V1 Workspace Name Get
+                type: object
+          description: Successful Response
+      summary: Get Workspace Name
+      tags:
+      - workspace
+    put:
+      operationId: update_workspace_name_v1_workspace_name_put
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceNameUpdate'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Workspace Name V1 Workspace Name Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Workspace Name
+      tags:
+      - workspace
 servers:
 - description: Local gateway. Each path below carries its own prefix (e.g. `/v1/...`); the server URL
     has no extra `/v1` suffix.
