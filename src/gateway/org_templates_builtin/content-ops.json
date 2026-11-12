@@ -1,0 +1,56 @@
+{
+  "kind": "liuhao.org.template",
+  "schema_version": 1,
+  "template": {
+    "key": "builtin.content-ops",
+    "name": "内容运营",
+    "industry": "媒体与内容",
+    "description": "围绕选题、生产、分发、增长的内容团队参考。仅作参考，不自动套用。",
+    "version": 1,
+    "sort": 20,
+    "root": {
+      "key": "content-center",
+      "name": "内容运营中心",
+      "kind": "department",
+      "description": "内容线的统一落点。",
+      "children": [
+        {
+          "key": "planning",
+          "name": "选题策划组",
+          "kind": "team",
+          "description": "负责选题池与内容日历。",
+          "children": [
+            { "key": "planner", "name": "内容策划", "kind": "position", "description": "负责选题与栏目规划。", "children": [] }
+          ]
+        },
+        {
+          "key": "editorial",
+          "name": "编辑组",
+          "kind": "team",
+          "description": "负责稿件生产与校对。",
+          "children": [
+            { "key": "editor", "name": "责任编辑", "kind": "position", "description": "负责稿件质量与事实核对。", "children": [] }
+          ]
+        },
+        {
+          "key": "video",
+          "name": "视频组",
+          "kind": "team",
+          "description": "负责脚本、拍摄与剪辑。",
+          "children": [
+            { "key": "videographer", "name": "视频编导", "kind": "position", "description": "负责视频成片。", "children": [] }
+          ]
+        },
+        {
+          "key": "growth",
+          "name": "增长组",
+          "kind": "team",
+          "description": "负责分发渠道与数据复盘。",
+          "children": [
+            { "key": "operator", "name": "渠道运营", "kind": "position", "description": "负责各平台发布与投放。", "children": [] }
+          ]
+        }
+      ]
+    }
+  }
+}

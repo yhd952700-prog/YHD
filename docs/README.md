@@ -1,197 +1,619 @@
-# LIUHAO X — 文档索引
+# LIUHAO — 文档索引
 
-> **最近整理**：2026-09-06 v3
-> **整理内容**：
-> 1. docs 下 11 个子目录精简为 5 个大类（合并 9 个单文件目录，统一命名）
-> 2. **新增 `ARCHITECTURE.md`**：架构总纲·导航入口（替代丢失的 `LIUHAO-X-V3.0-DEFINITION-LOCK.md`；宪法层单一入口见 `spec/UNIFIED-BLUEPRINT.md`）
-> 3. **新增 `decisions/OPEN-DECISIONS.md`** 登记入口
-> 4. `archive/drafts/` 3 个草稿标记 **⚠️ DEPRECATED**（已被正式版取代）
-> 5. 导航表补充 spec/、decisions/、ARCHITECTURE.md 条目
-> 6. 文档层级重构：增加「第 7 层 决策」
-> 7. **文档最终收敛**：16 个重复工程文档 → 先合并到 `LIUHAO-X-v3.0-FINAL-ENGINEERING-MASTER-PLAN.md`，再于 2026-09-06 **并入 `spec/UNIFIED-BLUEPRINT.md`**（原文已删除，其 14 章映射见该文件 §6.1）
-> **全量备份**：`D:\WorkBuddyFiles\LiuHao-docs-backup-20260906-140435`
-> **文档整合**：`LIUHAO-X-v3.0-FINAL-ENGINEERING-MASTER-PLAN.md` 已并入 `spec/UNIFIED-BLUEPRINT.md` 并删除；宪法层单一入口即 UNIFIED-BLUEPRINT
-
----
-
-## 按目的快速导航
-
-| 我要… | 看这里 |
-|---|---|
-| **我是 Codex / AI，要写代码** | **[`CODEX-CONTRACT.md`](CODEX-CONTRACT.md)** ← 必读入口 |
-| **统一蓝图（宪法层单一入口）** | **[`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md)** ← 所有架构/规格/裁决的唯一入口 |
-| 查 Kernel 权威清单（14 个） | [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) |
-| 查能力注册与真实状态 | [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md) |
-| 查从现状到目标的迁移路径 | [`spec/GAP-MIGRATION-MATRIX.md`](spec/GAP-MIGRATION-MATRIX.md) |
-| 查目标规格（221 节原文） | [`spec/MASTER-SPEC-v3.0.md`](spec/MASTER-SPEC-v3.0.md) |
-| 查 Definition Lock 缺失声明 | [`spec/DEFINITION-LOCK-STATUS.md`](spec/DEFINITION-LOCK-STATUS.md) |
-| 查悬而未决决策 | [`decisions/OPEN-DECISIONS.md`](decisions/OPEN-DECISIONS.md) |
-| 了解系统整体架构 | [`ARCHITECTURE.md`](ARCHITECTURE.md)（架构总纲，导航入口） |
-| 查 14 Kernel 的权威清单 | [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) |
-| 查 14 Kernel 接口定义 | [`architecture/kernels-interface.md`](architecture/kernels-interface.md) |
-| 查 14 Kernel 生命周期/错误处理/权限边界规范 | [`kernel-spec/README.md`](kernel-spec/README.md)（**设计意图/目标态契约**，非现状规范） |
-| 查全球开源生态吸收计划（能力账单 / 雷达 / 候选库） | [`../oss-ecosystem/README.md`](../oss-ecosystem/README.md)（S1–S5 已完成，含源健康实测与四条红线） |
-| 看现有代码到底有什么 | [`architecture/existing-codebase-audit.md`](architecture/existing-codebase-audit.md)（780 行全量审计） |
-| 查权限系统怎么工作 | [`ARCHITECTURE.md`](ARCHITECTURE.md) §权限系统 |
-| 看产品需求 / UI 设计 | [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md)、[`product/Designer-UIUX-v3.0.md`](product/Designer-UIUX-v3.0.md) |
-| 查能力追溯矩阵 | [`product/capability-traceability.md`](product/capability-traceability.md) |
-| 上线部署 / 故障处理 | [`operations/production-runbook.md`](operations/production-runbook.md) |
-| 查健康检查规范 | [`operations/health-check-spec.md`](operations/health-check-spec.md) |
-| 了解 L10K 基准 | [`l10k/test-design.md`](l10k/test-design.md) |
-| 第一次接触这个项目 | [`quickstart.md`](quickstart.md) |
-| 找历史记录 / 验收报告 | [`archive/`](archive/)（4 个合集，含 60 份原文） |
+> **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
+> **每篇文档是"现状"还是"目标态/历史"**。
+>
+> **覆盖状态（2026-11-08 实测）**：活跃文档 **281** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 281 篇**。该数字由
+> [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
+> 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
+>
+> **⚠️ 阅读前必读**：本项目里有三类文档，混读会得出相反结论。**先看下面的
+> 「文档类别」一节**，再开始读。
 
 ---
 
-## 目录结构
+## 0. 先认清三类文档（最重要的一节）
 
-```
-docs/
-├── README.md              ← 本文件（索引）
-├── CODEX-CONTRACT.md      Codex 执行契约（AI 编码代理必读入口）
-├── quickstart.md          快速上手
-├── architecture/          架构（7 篇）
-├── product/               产品与设计（3 篇）
-├── operations/            运维与场景（3 篇）
-├── l10k/                  L10K 基准（1 篇）
-├── kernel-spec/           14 内核规范（生命周期/错误处理/权限边界，15 文件）
-├── spec/                  V3.0 目标规格（5 篇，2026-09-06 新增）
-├── kernel-spec/           14 内核规范（生命周期/错误处理/权限边界，2026-09-14 新增）
-└── archive/               历史归档
-    ├── Y1_AUDIT_REPORTS.md
-    ├── PHASE_ACCEPTANCE_REPORTS.md
-    ├── EXECUTION_AND_DECISIONS.md
-    ├── PLANS_ROADMAP.md
-    └── drafts/            已被正式版取代的草稿（3 篇）
-```
+本仓库的文档不是同质的。把「目标态契约」当成「现状」，或把「历史快照」当成
+「当前事实」，会得到与代码相反的结论 —— 这类误读本项目已反复发生。
+
+| 类别 | 标记 | 是什么 | 能不能当作现状引用 |
+|---|---|---|---|
+| **现状规格** |无标记 | 与代码逐条核对过，含诚实状态头 | ✅ 可以，但要看它的证据日期 |
+| **目标态契约** | 文首「设计意图 / 目标态」 | 规定应该是什么，**不是**现在是什么 | ❌ 不能。缺口清单才是现状 |
+| **历史快照** | ⚠️ 快照 / 已过时 / DEPRECATED | 某一时刻的观测，保留作演进对照 | ❌ 不能。文首通常已自我否定 |
+| **治理/登记册** | LIVING / 持续维护 | 活文档，随项目滚动更新 | ✅ 可以，但要认它的更新时间 |
+
+**判定纪律（项目宪法，仲裁优先级）**：
+**代码事实 > KERNEL-CANON > 其余一切**。docstring、同名方法、registry 字段
+都**不是**证据。文档与代码冲突时，以代码为准，并回去修文档。
 
 ---
 
-## 一、架构 `architecture/`
+## 1. 按角色与目的的阅读顺序
 
-| 文件 | 行数 | 说明 |
-|---|---|---|
-| [`Architect-Architecture-v3.0.md`](architecture/Architect-Architecture-v3.0.md) | 591 | **架构总纲**。8 Workstreams、14 Kernel 映射、数据流、NFR、风险、§13 权限系统附录 |
-| [`kernels-interface.md`](architecture/kernels-interface.md) | 364 | 12 Kernel 接口定义 + 并行 Workstream 规则 + 汇合点（原 `liuhao-x-kernels-interface.md`） |
-| [`existing-codebase-audit.md`](architecture/existing-codebase-audit.md) | 780 | 现有代码库 19 节全量审计，138 个 .py 文件的实测证据 |
-| [`dependency-map.md`](architecture/dependency-map.md) | 183 | 模块依赖图、Kernel ↔ Workstream 映射 |
-| [`gap-analysis.md`](architecture/gap-analysis.md) | 188 | 当前代码 ↔ Definition Lock 的差距分析（原 `architecture-gap-analysis.md`） |
-| [`p7-baseline.md`](architecture/p7-baseline.md) | 122 | P7 架构基线，10 项要求自动验证（原 `P7-architecture-baseline.md`） |
-| [`migration-matrix.md`](architecture/migration-matrix.md) | 161 | LiuHao-X 迁移矩阵（原 `migrations/liuhao-x-migration-matrix.md`） |
+### 我是 AI 编码代理 / 要改这个仓库的
 
-## 二、产品与设计 `product/`
+1. **[`CODEX-CONTRACT.md`](CODEX-CONTRACT.md)** — 执行契约，**必读第一站**（25 条硬规则）
+2. **[`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md)** — 宪法层单一入口（冲突裁决 C1–C12）
+3. **[`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md)** — Kernel 唯一权威清单
+   ⚠️ 计数必须用运行时 `len(KERNEL_ENTRIES)`，**不能数目录**（`retention/` 是非注册子系统）
+4. **[`autonomous/GOVERNANCE.md`](autonomous/GOVERNANCE.md)** — 授权范围、硬边界、人类保留项
+5. 按需查 [`spec/`](spec/) 下的权威规格与DoD 审计
 
-| 文件 | 行数 | 说明 |
-|---|---|---|
-| [`PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md) | 191 | 产品需求文档 v3.0（原 `requirements/`） |
-| [`Designer-UIUX-v3.0.md`](product/Designer-UIUX-v3.0.md) | 543 | UI/UX 设计文档 v3.0（原 `design/`） |
-| [`capability-traceability.md`](product/capability-traceability.md) | 109 | 12 Kernel × 10 DNA × 22 Phase 追溯矩阵（原 `capabilities/capability-traceability-matrix.md`） |
+> ⚠️ `lint_audit_claims.py` **只扫 markdown**，看不见 `.py` docstring。
+> 本项目最严重的一类文档缺陷恰恰在 docstring 里（「描述了一个从未存在的功能」）。
 
-## 三、运维与场景 `operations/`
+### 我是新成员 / 第一次接触
 
-| 文件 | 行数 | 说明 |
-|---|---|---|
-| [`production-runbook.md`](operations/production-runbook.md) | 312 | 生产运维手册（原 `runbooks/production_runbook.md`） |
-| [`health-check-spec.md`](operations/health-check-spec.md) | 42 | 健康检查规范（原 `infrastructure/`） |
-| [`scenario-chatbot.md`](operations/scenario-chatbot.md) | 266 | 场景案例（原 `scenarios/chatbot.md`） |
+1. **[`quickstart.md`](quickstart.md)** — 快速上手
+2. **[`RUN.md`](RUN.md)** — 把后端网关 + 前端驾驶舱真跑起来（**已实测跑通**，含必需环境变量）
+   · 5 分钟版：[`QUICKSTART-RUN.md`](QUICKSTART-RUN.md)
+3. **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — 架构导航门户
+4. **[`product/PRODUCT-READINESS.md`](product/PRODUCT-READINESS.md)** — 产品门禁 P1–P10 真实状态
+5. **[`MASTER_PROJECT_READINESS.md`](../MASTER_PROJECT_READINESS.md)**（仓库根）— 工程状态与已知风险全集
 
-## 四、L10K 基准 `l10k/`
+### 我是架构师
 
-| 文件 | 行数 | 说明 |
-|---|---|---|
-| [`test-design.md`](l10k/test-design.md) | 208 | L10K 测试设计（对应蓝图 §71-72）。基线数据在仓库根 `l10k-baseline.yaml` |
+1. [`ARCHITECTURE.md`](ARCHITECTURE.md) → [`architecture/Architect-Architecture-v3.0.md`](architecture/Architect-Architecture-v3.0.md)
+2. [`architecture/kernels-interface.md`](architecture/kernels-interface.md) · [`architecture/dependency-map.md`](architecture/dependency-map.md)
+3. [`architecture/gap-analysis.md`](architecture/gap-analysis.md) · [`architecture/existing-codebase-audit.md`](architecture/existing-codebase-audit.md)
+4. **现状规格**：[`kernel-spec/README.md`](kernel-spec/README.md) 及其 14 篇
+5. **目标态规格**：[`spec/MASTER-SPEC-v3.0.md`](spec/MASTER-SPEC-v3.0.md) · [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md)
+6. [`autonomous/ROADMAP.md`](autonomous/ROADMAP.md) — 演进方向（LIVING）
 
-## 五、统一蓝图与规格 `spec/`（2026-09-06 新增/整合）
+### 我要上线 / 运维
 
-| 文件 | 说明 |
-|---|---|
-| **[`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md)** | **🔥 宪法层单一入口**：索引+裁决+映射（文档分层 / 命名空间规则 / 冲突裁决 C1–C12 / 14 章主题导航）。原 `LIUHAO-X-v3.0-FINAL-ENGINEERING-MASTER-PLAN.md` 已于 2026-09-06 并入本文件，原文删除 |
-| [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) | **Kernel 唯一权威清单**：14 个（以 `src/kernels/` 代码为准），含与旧 K01–K12 / MS:§6 对照 |
-| [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md) | 能力注册表：LHX-C-xxx ID 体系、14 项真实状态（全部 PARTIALLY_IMPLEMENTED）、十源 DNA → 目标模块映射 |
-| [`spec/GAP-MIGRATION-MATRIX.md`](spec/GAP-MIGRATION-MATRIX.md) | As-Built → To-Be 桥梁：Kernel 命名对照 / `src/`→`packages/` 迁移 / 21 Phase 进度 |
-| [`spec/MASTER-SPEC-v3.0.md`](spec/MASTER-SPEC-v3.0.md) | 目标规格（To-Be）：第一部分工程提炼版速查 + 第二部分 221 节原文逐字收录 |
-| [`spec/DEFINITION-LOCK-STATUS.md`](spec/DEFINITION-LOCK-STATUS.md) | 宪法缺失声明、§112/§113/§115 条款还原（代码 docstring 佐证）、引用重定向表 |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | **架构总纲·导航入口**：14 Kernel × 8 Workstream × 十源 DNA 映射、硬规则摘要（宪法入口见 UNIFIED-BLUEPRINT） |
+1. **[`operations/LAUNCH-CRITERIA.md`](operations/LAUNCH-CRITERIA.md)** — **「上线」到底意味着什么**（先读这个，它专治「代码有了就算完成」）
+2. [`operations/production-runbook.md`](operations/production-runbook.md) · [`operations/runbook.md`](operations/runbook.md)
+3. [`operations/health-check-spec.md`](operations/health-check-spec.md) · [`operations/scenario-chatbot.md`](operations/scenario-chatbot.md)
+4. [`autonomous/G9-deployment-contract.md`](autonomous/G9-deployment-contract.md) · [`autonomous/G9-image-build-runbook.md`](autonomous/G9-image-build-runbook.md)
 
-## 六、历史归档 `archive/`
+### 我要做安全 / 审计 / 治理判断
 
-| 文件 | 行数 | 合并自 |
-|---|---|---|
-| `Y1_AUDIT_REPORTS.md` | 1505 | 3 份 Y1 审计报告 |
-| `PHASE_ACCEPTANCE_REPORTS.md` | 2766 | 29 份验收文档（Phase 0-9 + SEC 安全系列） |
-| `EXECUTION_AND_DECISIONS.md` | 3634 | 22 份执行报告与决策记录 |
-| `PLANS_ROADMAP.md` | 3000 | 6 份规划文档 |
-| `drafts/ARCHITECTURE-v3.0-draft.md` | 188 | v3.0 架构草稿 → 已被 `architecture/Architect-Architecture-v3.0.md` 取代 **⚠️ DEPRECATED** |
-| `drafts/UIUX-v3.0-draft.md` | 236 | v3.0 UIUX 草稿 → 已被 `product/Designer-UIUX-v3.0.md` 取代 **⚠️ DEPRECATED** |
-| `drafts/PRD-v3.0-draft.md` | 173 | v3.0 PRD 草稿 → 已被 `product/PM-PRD-v3.0.md` 取代 **⚠️ DEPRECATED** |
+1. **[`autonomous/GOVERNANCE.md`](autonomous/GOVERNANCE.md)** — 什么必须升给人
+2. **[`autonomous/HUMAN-DECISION-BACKLOG.md`](autonomous/HUMAN-DECISION-BACKLOG.md)** — 已隔离的人类主权项
+3. [`security/shell-adapter-threat-model.md`](security/shell-adapter-threat-model.md)
+4. **登记册**：[`autonomous/UNKNOWN-TO-OWNER.md`](autonomous/UNKNOWN-TO-OWNER.md)（盲点）·
+   [`autonomous/RISK-REGISTER.md`](autonomous/RISK-REGISTER.md)（风险）·
+   [`autonomous/IDENTIFIER-POLICY.md`](autonomous/IDENTIFIER-POLICY.md)（标识符，DRAFT）
+5. [`adr/`](adr/) 的架构决策记录 · [`autonomous/ADR-*`](autonomous/) 的审计存储 ADR
 
-> **归档原则**：`archive/` 内的历史文档**保持原貌**，正文中的文件路径为整理前的原始路径，不作改动。查现行路径请看本索引。
+### 我要评估「这项目到底能不能用」
+
+1. [`product/PRODUCT-READINESS.md`](product/PRODUCT-READINESS.md) — 产品门禁，「有代码」≠「可用」
+2. [`product/KERNEL-PRODUCT-CAPABILITY.md`](product/KERNEL-PRODUCT-CAPABILITY.md) — 14 内核逐个的产品成熟度
+3. [`product/capability-traceability.md`](product/capability-traceability.md) · [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md)
+4. [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md) · [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) · [`spec/AI-LAYER-DOD-AUDIT.md`](spec/AI-LAYER-DOD-AUDIT.md)
 
 ---
 
-## 七、决策 `decisions/`
-
-| 文件 | 说明 |
-|---|---|
-| `decisions/OPEN-DECISIONS.md` | 悬而未决登记（持续维护） |
-
----
-
-## 八、架构总纲 `ARCHITECTURE.md`
-
-| 文件 | 说明 |
-|---|---|
-| `ARCHITECTURE.md` | **架构导航入口**：14 Kernel × 8 Workstream × 十源 DNA 映射、硬规则摘要、文档层级 |
-
----
-
-## 九、内核规范 `kernel-spec/`（2026-09-14 新增）
-
-| 文件 | 说明 |
-|---|---|
-| [`kernel-spec/README.md`](kernel-spec/README.md) | **索引 + 诚实边界**：14 篇清单（真实实现类/行号、进程级入口、是否自动驱动）、可观测入口（`src/kernels/_registry.py`、`GET /v1/kernels`） |
-| `kernel-spec/{audit,capability,context,evaluation,event,execution,identity,memory,network,plugin,policy,resource,security,trust}.md` | 14 篇内核规范，各含统一「诚实状态头」 |
-
-> ⚠ **定位**：本目录整体是「**设计意图 / 目标态契约 + 已核对现状**」，**不是**现状规范。各篇
-> 文首「诚实状态头」中的类名与行号已逐条对代码验证通过；未标注行号的段落（尤其各篇缺口清单）
-> 须以代码实测为准。已清除原稿对仓库外 `ARCHITECTURE-AUDIT.md` 的全部引用（该文档不在仓库中，
-> 其结论已被项目纪律认定不准）。详见 [`kernel-spec/README.md`](kernel-spec/README.md) 第二节。
-
----
-
-## 文档层级
+## 2. 目录结构（30 个目录，实测）
 
 ```text
-第 0 层  宪法层单一入口  spec/UNIFIED-BLUEPRINT.md（索引 + 冲突裁决 C1–C12 + 命名空间 + 主题映射；一切文档冲突以它为唯一准绳）
-第 1 层  权威规格    spec/KERNEL-CANON.md · spec/CAPABILITY-REGISTRY.md · spec/MASTER-SPEC-v3.0.md
-第 2 层  架构导航    ARCHITECTURE.md（门户，非权威）
-第 3 层  正式文档    architecture/ · product/ · operations/
-第 4 层  支撑文档    spec/GAP-MIGRATION-MATRIX.md · architecture/gap-analysis.md
-第 5 层  草稿        archive/drafts/
-第 6 层  历史归档    archive/ 四个合集
-第 7 层  决策        decisions/OPEN-DECISIONS.md
+docs/
+├── README.md                    ← 本文件（索引）
+├── CODEX-CONTRACT.md            ← AI 编码代理执行契约（必读）
+├── quickstart.md / QUICKSTART-RUN.md / RUN.md / HUMAN-DECISIONS.md
+├── ARCHITECTURE.md              ← 架构导航门户
+├── GLOSSARY.md / SIDENAV.md     ← 术语表 / 站点导航
+├── *-DESIGN.md 等其余根级文档（设计/指南/清单，详见 §4.2）
+├── a11y-keyboard-audit-20261108/ (1)  键盘可达性审计报告 + 证据截图
+├── a11y-login-fix-20261108/     (—)    登录页无障碍修复前后截图
+├── a11y-sr-hc-keyboard-20261108/ (1)   读屏 / 高对比 / 键盘验收报告 + 截图
+├── acceptance/                  (—)    验收脚本的原始证据 JSON
+├── adr/                (3)     架构决策记录
+├── architecture/       (8)     架构
+├── audit-30min-real-work-20261108/ (—) 30 分钟办公走查证据截图
+├── audit-first-journey-20261108/ (—)   首次使用走查证据（截图 + 网关日志）
+├── audit/              (7)     独立只读深度体检（架构 / 运维 / 依赖与许可 / 工具与自动化 / 记忆与知识 / 产品完整度 / 测试与工程质量）
+├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
+├── best-practices/     (6)     编码/Agent/记忆/多 AI 员工/测试最佳实践
+├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
+├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
+├── compliance/         (—)     SBOM · 第三方许可证原文 · 通告
+├── decisions/          (1)     悬而未决决策登记
+├── dpi-evidence/       (—)     高 DPI 缩放验收证据（报告 JSON + 截图）
+├── evidence/           (9)     实测证据快照（可复现的基线/差量记录）
+├── governance/         (1)     控制声明裁决登记册（control-claim）
+├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
+├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
+├── l10k/               (1)     L10K 基准设计
+├── legal/              (1)     法务草稿（EULA，待法务确认，不随产品发布）
+├── operations/         (8)     运维与上线 · 两轮 soak 报告（11-07 / 11-08）
+├── oss-radar/          (8)     开源技术雷达（按路分工的选型与风险记录）
+├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
+├── roadmap/            (1)     百万行路线图
+├── security/           (3)     安全威胁模型 · 依赖漏洞报告 · 发布包签名
+├── spec/               (13)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
+│   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
+├── tutorials/          (7)     从零构建 Agent / 多 AI 员工 / 代码审查 / 数据流水线教程
+├── ui-audit-20261106/  (1)     控制台全页巡检与多账号验收报告
+└── archive/            (7)     ⚠️ 历史归档，**保持原貌**，路径为整理前原路径
 ```
+
+> 括号里是该目录的 markdown 篇数；`(—)` 表示该目录只有截图 / JSON 证据，没有
+> 独立 markdown（报告本体在根级，见 §4.19）。
 
 ---
 
-## ⚠️ 当前已知问题（2026-09-06 核查）
+## 3. 权威层级（冲突时从上往下）
 
-在读这些文档时，请注意以下四点，否则会被误导：
+```text
+第 0 层  宪法单一入口   spec/UNIFIED-BLUEPRINT.md（索引 + 冲突裁决 C1–C12）
+第 1 层  权威规格       spec/KERNEL-CANON.md · spec/CAPABILITY-REGISTRY.md · spec/MASTER-SPEC-v3.0.md
+第 2 层  治理与宪法位   autonomous/GOVERNANCE.md（授权与硬边界）· docs/HUMAN-DECISIONS.md
+第 3 层  架构导航       ARCHITECTURE.md（门户，非权威）
+第 4 层  现状规格       kernel-spec/ · product/PRODUCT-READINESS.md · 根级 MASTER_PROJECT_READINESS.md
+第 5 层  支撑文档       spec/GAP-MIGRATION-MATRIX.md · architecture/gap-analysis.md · spec/REMEDIATION-PLAN.md
+第 6 层  执行与决策     autonomous/ROADMAP.md · EXECUTION-QUEUE.md · adr/ · autonomous/ADR-* · decisions/
+第 7 层  登记册（LIVING）autonomous/UNKNOWN-TO-OWNER.md · RISK-REGISTER.md · HUMAN-DECISION-BACKLOG.md
+第 8 层  演进机制       blueprint-upgrades/（受 UNIFIED-BLUEPRINT §9.1 约束）
+第 9 层  历史归档       archive/（保持原貌）
+```
 
-**1. Definition Lock 本体缺失** ✅ **已结案（2026-09-12，R8 收口）** —— 原件判定为**永久不可考**，
-引用一律改走 [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md) 的锚点/带前缀节号；
-最后 4 处不可判定节号已留档重定向，见 [`spec/DEFINITION-LOCK-STATUS.md`](spec/DEFINITION-LOCK-STATUS.md)。
-`LIUHAO-X-V3.0-DEFINITION-LOCK.md` 不在仓库中，全库 16 处以上引用其 `§xx` 条款（capability-registry、implementation-status、gap-analysis 均引用）。
+> ⚠️ `docs/archive/` **不参与**冲突裁决。它按自身声明「保持原貌」，正文里的
+> 文件路径是整理前的原始路径，**不可**当作现行路径引用。
 
-**2. Kernel 清单多套并存（已收敛）**
-`src/kernels/` 实际有 **14 个** kernel（含 security、audit、plugin）。`capability-registry.yaml` 已于 2026-09-06 同步为 **14 项**（含 security/audit/plugin），状态统一为 `PARTIALLY_IMPLEMENTED`；`spec/KERNEL-CANON.md` 为**唯一权威清单**（旧 K01–K12 编号已废弃）。其余叙事文档若仍出现"12/13 个"旧口径，一律以 KERNEL-CANON 为准。
+---
 
-**3. ~~Kernel 层测试覆盖 7/14~~ ✅ 已解决（2026-09-11 实测更正）**
-14 个 kernel 共 6,391 行代码。曾记录为"仅 7 个 kernel 有测试"，**该陈述已过时**：`tests/kernels/` 现有 **14 个 kernel 测试目录全部齐全**（audit / capability / context / evaluation / event / execution / identity / memory / network / plugin / policy / resource / security / trust），14 项能力状态已全部为 `IMPLEMENTED`（DoD 七维 14/14，见 [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) 与 [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md)）。
-**当前 CI 真实基线（run `34699203720`，2026-09-12）：1396 passed / 14 skipped / 0 failed**（**Python 3.11.16 与 3.12.14 双腿同值**：test job 自 Round 72 起为 `['3.11','3.12']` 矩阵，见 `.github/workflows/ci.yml`）—— 此前"1173 / 1141 / 1281 passed"及 run #69-74 的"全绿"均不可信（ci.yml 曾用 `|| echo` 吞退出码所致）。
-> ✅ **版本分叉盲区已关闭（2026-09-12，Round 72）**：该基线由 CI 的 test job 矩阵 **Python 3.11.16 与 3.12.14 各自独立跑出，两条腿数值完全相同**（1396 / 14 / 0，21 warnings；1396 = Round 72 的 1343 + Round 73 新增 12 + Round 74 新增 31 + Round 75 新增 10）。本机 venv 为 3.12.14，与 CI 的 3.12 腿版本一致，故此前「只在 3.12 暴露的差异本地可见、CI 不可见」的盲区不再成立 —— 见 `.github/workflows/ci.yml`。
+## 4. 全量清单（281 篇，逐一列出）
 
-**4. 状态文件假数据已修正（2026-09-06）**
-`implementation-status.UNRELIABLE.yaml` 的 `tested: 14 / audited: 14` 与 `l10k-baseline.yaml` 的 `production_ready: true` 均为基于错误声明的判定，已分别修正为 `0 / 0` 与 `false`。修正前曾导致 L10K 虚报 28 个验证单元、3 个质量门禁误判 PASS。
+### 4.1 根级（6）
 
-详细诊断见：`D:\WorkBuddyFiles\LIUHAO-X-v3.0-状态核查诊断报告.md`
+| 文件 | 说明 |
+|---|---|
+| [`README.md`](README.md) | 本文件（索引） |
+| [`CODEX-CONTRACT.md`](CODEX-CONTRACT.md) | **AI 编码代理执行契约**：25 条硬规则 |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
+| [`quickstart.md`](quickstart.md) | 快速上手 |
+| [`faq.md`](faq.md) | 常见问题（面向用户，Windows 安装版 0.1.1 实测行为） |
+| [`test-isolation-gap.md`](test-isolation-gap.md) | 缺陷说明：`LIUHAO_DATA_DIR` 不足以隔离测试数据（待打包线处理） |
+
+### 4.2 根级设计与决策（55）
+
+| 文件 | 说明 |
+|---|---|
+| [`RUN.md`](RUN.md) | 把网关 + 驾驶舱真跑起来（实测跑通，含环境变量与 fail-closed 语义） |
+| [`QUICKSTART-RUN.md`](QUICKSTART-RUN.md) | 5 分钟快捷版（登录/门禁以 `RUN.md` 为准） |
+| [`HUMAN-DECISIONS.md`](HUMAN-DECISIONS.md) | 人类已作出的决策记录 |
+| [`GLOSSARY.md`](GLOSSARY.md) | 术语表：项目内高频但易混淆的术语 |
+| [`SIDENAV.md`](SIDENAV.md) | 站点导航（按主题聚合的入口清单） |
+| [`ORPHAN-AUDIT.md`](ORPHAN-AUDIT.md) | 孤儿资产审计 |
+| [`REPO-LINE-CLOSURE.md`](REPO-LINE-CLOSURE.md) | 仓库线索收敛 |
+| [`AGENT-RUNTIME-DESIGN.md`](AGENT-RUNTIME-DESIGN.md) | Agent 运行时设计 |
+| [`ACCESS-CONTROL-CONVERGENCE-DESIGN.md`](ACCESS-CONTROL-CONVERGENCE-DESIGN.md) | 访问控制收敛设计 |
+| [`CACHE-LAYER-DESIGN.md`](CACHE-LAYER-DESIGN.md) | 缓存层设计 |
+| [`EVALUATION-KERNEL-DESIGN.md`](EVALUATION-KERNEL-DESIGN.md) | 评估内核设计 |
+| [`MEMORY-SYSTEM-DESIGN.md`](MEMORY-SYSTEM-DESIGN.md) | 记忆系统设计 |
+| [`MESSAGE-BUS-BACKEND-DESIGN.md`](MESSAGE-BUS-BACKEND-DESIGN.md) | 消息总线后端设计 |
+| [`MODEL-ROUTER-DESIGN.md`](MODEL-ROUTER-DESIGN.md) | 模型路由设计 |
+| [`POLICY-RULE-OBSERVABILITY-DESIGN.md`](POLICY-RULE-OBSERVABILITY-DESIGN.md) | 策略规则可观测性设计 |
+| [`POSTGRES-BACKEND-DESIGN.md`](POSTGRES-BACKEND-DESIGN.md) | Postgres 后端设计 |
+| [`PRODUCTION-READINESS-DESIGN.md`](PRODUCTION-READINESS-DESIGN.md) | 生产就绪探测设计 |
+| [`QUOTA-ACCOUNTING-DESIGN.md`](QUOTA-ACCOUNTING-DESIGN.md) | 配额计费设计 |
+| [`artifact-index-design.md`](artifact-index-design.md) | 产物索引与执行回溯 —— 设计说明 |
+| [`automation-design.md`](automation-design.md) | 贾维斯自动化设计稿 |
+| [`capability-map.md`](capability-map.md) | 能力地图（2026-11-06 复核） |
+| [`startup-profile.md`](startup-profile.md) | 网关冷启动：测量、优化与前端契约 |
+| [`self-upgrade.md`](self-upgrade.md) | 贾维斯自我升级与受控自改代码 |
+| [`upgrade-api-contract.md`](upgrade-api-contract.md) | 升级 HTTP 接口契约（前端对接） |
+| [`first-run-e2e.md`](first-run-e2e.md) | 首次安装端到端自检（可复现步骤记录） |
+| [`hc01-status.md`](hc01-status.md) | HC-01 审计链状态（事实与缺口） |
+| [`known-gaps.md`](known-gaps.md) | 已知缺口登记（Known gaps） |
+| [`requirements-traceability.md`](requirements-traceability.md) | 需求追溯表（Requirements Traceability） |
+| [`strategy-30-directions.md`](strategy-30-directions.md) | 30 个方向 × 五大中心的战略架构研究 |
+| [`strategy-priority-matrix.md`](strategy-priority-matrix.md) | 30 个方向 × 落地优先级矩阵（可排期） |
+| [`DELIVERY-CHECKLIST.md`](DELIVERY-CHECKLIST.md) | 交付清单（实测版） |
+| [`END-USER-GUIDE.md`](END-USER-GUIDE.md) | Jarvis · 贾维斯 使用指南 |
+| [`USER-GUIDE.md`](USER-GUIDE.md) | 使用指南（Windows 安装版） |
+| [`INSTALL-WINDOWS.md`](INSTALL-WINDOWS.md) | Windows 安装与卸载 |
+| [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
+| [`MASTER-TASK-LEDGER.md`](MASTER-TASK-LEDGER.md) | 总任务台账：用户历次要求的逐条状态与证据（**唯一不漏项的真相源**） |
+| [`account-hierarchy.md`](account-hierarchy.md) | 账号层级体系规格（**规格已部分落地**：成员/权限矩阵/角色模板/Key 共享均已有接口与页面；以当前代码与 `/v1/accounts*` 接口为准，文档内状态行可能滞后） |
+| [`account-ui-ia.md`](account-ui-ia.md) | 多账号界面信息架构与页面清单（依据 account-hierarchy §9） |
+| [`ACCEPTANCE-BUTLER-REAL-MODEL.md`](ACCEPTANCE-BUTLER-REAL-MODEL.md) | 管家真实模型验收：一条命令跑完三类关键场景并给 PASS/FAIL/SKIP |
+| [`release-announcement.md`](release-announcement.md) | 发布文案草稿（官网/网盘分享说明） |
+| [`ui-scifi-direction.md`](ui-scifi-direction.md) | 控制台科幻未来风视觉规范（Y1.0） |
+| [`ui-reference-terse.md`](ui-reference-terse.md) | 竞品 UI 参考规格：Terse |
+| [`BRAND-CANON.md`](BRAND-CANON.md) | 品牌口径唯一来源（主名只认 `Jarvis · 贾维斯`；改名只改 `src/brand.json`） |
+| [`RELEASE-PAGE-CONTENT.md`](RELEASE-PAGE-CONTENT.md) | 发布页 / 下载页文案源（数值字段由出包脚本写入，不手抄） |
+| [`DIAGNOSTIC-BUNDLE-READING.md`](DIAGNOSTIC-BUNDLE-READING.md) | 诊断 zip 读包指南：30 秒说出结论（面向技术支持与用户） |
+| [`TROUBLESHOOTING-USER-20261108.md`](TROUBLESHOOTING-USER-20261108.md) | 用户故障处置手册 v0.1.1（按撞上概率排序；推演项已标注） |
+| [`SBOM-LICENSE-COMPLIANCE-REPORT.md`](SBOM-LICENSE-COMPLIANCE-REPORT.md) | SBOM 与许可证合规报告（0.1.1，附 `compliance/` 原始证据） |
+| [`WINDOWS-COMPAT-DPI-AUDIT-2026-11-08.md`](WINDOWS-COMPAT-DPI-AUDIT-2026-11-08.md) | Windows 兼容性与高 DPI 只读审计（证据见 `dpi-evidence/`） |
+| [`audit/findings-architecture.md`](audit/findings-architecture.md) | 架构域只读深度体检（2026-11-08；证据强度与边界见文首） |
+| [`audit/findings-ops.md`](audit/findings-ops.md) | 运维域只读深度体检（2026-11-08；含启动/停止/备份/升级链路核对） |
+| [`audit/findings-deps-license.md`](audit/findings-deps-license.md) | 依赖与许可域只读体检（2026-11-08） |
+| [`audit/findings-tools-automation.md`](audit/findings-tools-automation.md) | 工具与自动化域只读体检（2026-11-08） |
+| [`audit/findings-memory-knowledge.md`](audit/findings-memory-knowledge.md) | 记忆与知识系统域只读体检（2026-11-08；记忆读写一致性 / 知识库 RAG 全链路 / 检索准确度） |
+| [`audit/findings-product-completeness.md`](audit/findings-product-completeness.md) | 产品完整性审计（2026-11-08；隔离实例真跑 + UI 走查，只读） |
+| [`audit/findings-testing.md`](audit/findings-testing.md) | 测试与工程质量域只读体检（2026-11-08；29 条 QA 条目 + 12 章证据索引，含 SKIP/CI 盲区判定） |
+
+### 4.3 `adr/`（3）— 架构决策记录
+
+| 文件 | 说明 |
+|---|---|
+| [`adr/ADR-HOLD-SCOPE.md`](adr/ADR-HOLD-SCOPE.md) | D27：HOLD 范围决策 |
+| [`adr/ADR-root-of-trust-hd05.md`](adr/ADR-root-of-trust-hd05.md) | HD-05：预留根信任provider |
+| [`adr/ADR-HC01-baseline-binding.md`](adr/ADR-HC01-baseline-binding.md) | HC-01：基线绑定、保管处置与迁移路径裁决 |
+
+### 4.4 `architecture/`（8）— 架构
+
+| 文件 | 说明 |
+|---|---|
+| [`architecture/Architect-Architecture-v3.0.md`](architecture/Architect-Architecture-v3.0.md) | 架构总纲（⚠️ §4 用 K01–K12 旧编号，以 KERNEL-CANON 为准） |
+| [`architecture/kernels-interface.md`](architecture/kernels-interface.md) | 内核接口定义 |
+| [`architecture/dependency-map.md`](architecture/dependency-map.md) | 模块依赖图 |
+| [`architecture/existing-codebase-audit.md`](architecture/existing-codebase-audit.md) | 现有代码库全量审计 |
+| [`architecture/gap-analysis.md`](architecture/gap-analysis.md) | 现状 ↔ Definition Lock 差距 |
+| [`architecture/p7-baseline.md`](architecture/p7-baseline.md) | P7 架构基线 |
+| [`architecture/migration-matrix.md`](architecture/migration-matrix.md) | 迁移矩阵 |
+| [`architecture/phase-9-10-12-15-e2e-demo.md`](architecture/phase-9-10-12-15-e2e-demo.md) | Phase 9/10/12/15 端到端 demo |
+
+### 4.5 `autonomous/`（24）— 治理 · 决策 · 登记册 · 部署 · 基准
+
+> ⚠️ **本目录包含项目最高治理文件 [`GOVERNANCE.md`](autonomous/GOVERNANCE.md)
+> （自主开发授权、硬边界、人类主权保留项）。旧版索引完全遗漏本目录。**
+
+**治理与授权**
+
+| 文件 | 说明 |
+|---|---|
+| [`autonomous/GOVERNANCE.md`](autonomous/GOVERNANCE.md) | 🔴 **治理章程**：授权范围 · 硬边界 · 人类决策保留项 |
+| [`autonomous/HUMAN-DECISION-BACKLOG.md`](autonomous/HUMAN-DECISION-BACKLOG.md) | 已隔离的人类主权项（**是透明度，不是闸门**） |
+| [`autonomous/HUMAN-DECISION-HD06-U37.md`](autonomous/HUMAN-DECISION-HD06-U37.md) | HD-06 / U37 决策记录 |
+| [`autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md`](autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md) | 留存 / 删除义务 vs 证据保全冲突（分析已交付，**策略本身留给 HD-06 人类决策**，未自动实施） |
+
+**活登记册（LIVING）**
+
+| 文件 | 说明 |
+|---|---|
+| [`autonomous/UNKNOWN-TO-OWNER.md`](autonomous/UNKNOWN-TO-OWNER.md) | U-NNN 盲点登记册（只读发现） |
+| [`autonomous/RISK-REGISTER.md`](autonomous/RISK-REGISTER.md) | R-G2/G3-* 风险登记册 |
+| [`autonomous/ROADMAP.md`](autonomous/ROADMAP.md) | 演进路线图 |
+| [`autonomous/EXECUTION-QUEUE.md`](autonomous/EXECUTION-QUEUE.md) | 执行队列 |
+| [`autonomous/IDENTIFIER-POLICY.md`](autonomous/IDENTIFIER-POLICY.md) | 审计标识符策略（**DRAFT**） |
+
+**ADR（审计存储与证据）**
+
+| 文件 | 说明 |
+|---|---|
+| [`autonomous/ADR-audit-storage-generation-2.md`](autonomous/ADR-audit-storage-generation-2.md) | 审计存储 Gen2 |
+| [`autonomous/ADR-audit-storage-C3.md`](autonomous/ADR-audit-storage-C3.md) | 百万级存储架构（C3） |
+| [`autonomous/ADR-audit-single-writer-lease.md`](autonomous/ADR-audit-single-writer-lease.md) | 单写者租约 |
+| [`autonomous/ADR-audit-writer-lease-identity.md`](autonomous/ADR-audit-writer-lease-identity.md) | 写者租约身份模型 |
+| [`autonomous/ADR-audit-head-notary.md`](autonomous/ADR-audit-head-notary.md) | 链头公证 |
+| [`autonomous/ADR-audit-transparency-anchor.md`](autonomous/ADR-audit-transparency-anchor.md) | 透明日志锚定 |
+| [`autonomous/ADR-tsa-quorum-ha.md`](autonomous/ADR-tsa-quorum-ha.md) | TSA 多 quorum 高可用 |
+
+**部署 · 性能 · 实验**
+
+| 文件 | 说明 |
+|---|---|
+| [`autonomous/G9-deployment-contract.md`](autonomous/G9-deployment-contract.md) | G9 部署契约：证据表 + 诚实的缺口 + 人类决策清单 |
+| [`autonomous/G9-image-build-runbook.md`](autonomous/G9-image-build-runbook.md) | G9 镜像构建运行手册 |
+| [`autonomous/G7-perf-baseline-2026-10-01.md`](autonomous/G7-perf-baseline-2026-10-01.md) | G7 性能基线（实测 + 陈旧项标注） |
+| [`autonomous/SCALE-HARNESS-RESULTS.md`](autonomous/SCALE-HARNESS-RESULTS.md) | 规模台实测结果（1M 事件） |
+| [`autonomous/PERFORMANCE-BASELINE.md`](autonomous/PERFORMANCE-BASELINE.md) | 性能基线 |
+| [`autonomous/EXPERIMENT-MATRIX-crash-powerloss.md`](autonomous/EXPERIMENT-MATRIX-crash-powerloss.md) | 崩溃/掉电实验矩阵 |
+| [`autonomous/FIX-B-capability-register-exemption-design.md`](autonomous/FIX-B-capability-register-exemption-design.md) | 能力注册豁免设计 |
+
+**批判性复核**
+
+| 文件 | 说明 |
+|---|---|
+| [`autonomous/CRITIC-REVIEW-p36-honestization-2026-10-07.md`](autonomous/CRITIC-REVIEW-p36-honestization-2026-10-07.md) | 对 p36「诚实化」阶段的独立批判性复核（保留异议，不并入结论） |
+
+### 4.6 `blueprint-upgrades/`（29）— 蓝图自动升级机制（UBX）
+
+> 机制说明见 [`blueprint-upgrades/README.md`](blueprint-upgrades/README.md)。
+> 受 [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md) §9.1 约束，
+> 授权来源 [`autonomous/GOVERNANCE.md`](autonomous/GOVERNANCE.md) §4。
+> 每包四篇：`ADR.md` · `architecture-delta.md` · `migration-path.md` · `verification-plan.md`
+
+| 包 | 主题 | 四篇文档 |
+|---|---|---|
+| **UBX-001** | executor fence | [`ADR`](blueprint-upgrades/UBX-001-executor-fence/ADR.md) · [`delta`](blueprint-upgrades/UBX-001-executor-fence/architecture-delta.md) · [`migration`](blueprint-upgrades/UBX-001-executor-fence/migration-path.md) · [`verification`](blueprint-upgrades/UBX-001-executor-fence/verification-plan.md) |
+| **UBX-002** | sandbox fail-closed | [`ADR`](blueprint-upgrades/UBX-002-sandbox-fail-closed/ADR.md) · [`delta`](blueprint-upgrades/UBX-002-sandbox-fail-closed/architecture-delta.md) · [`migration`](blueprint-upgrades/UBX-002-sandbox-fail-closed/migration-path.md) · [`verification`](blueprint-upgrades/UBX-002-sandbox-fail-closed/verification-plan.md) |
+| **UBX-003** | secrets fail-closed | [`ADR`](blueprint-upgrades/UBX-003-secrets-fail-closed/ADR.md) · [`delta`](blueprint-upgrades/UBX-003-secrets-fail-closed/architecture-delta.md) · [`migration`](blueprint-upgrades/UBX-003-secrets-fail-closed/migration-path.md) · [`verification`](blueprint-upgrades/UBX-003-secrets-fail-closed/verification-plan.md) |
+| **UBX-004** | root-of-trust provider-neutral | [`ADR`](blueprint-upgrades/UBX-004-root-of-trust-provider-neutral/ADR.md) · [`delta`](blueprint-upgrades/UBX-004-root-of-trust-provider-neutral/architecture-delta.md) · [`migration`](blueprint-upgrades/UBX-004-root-of-trust-provider-neutral/migration-path.md) · [`verification`](blueprint-upgrades/UBX-004-root-of-trust-provider-neutral/verification-plan.md) |
+| **UBX-005** | distributed real coordination | [`ADR`](blueprint-upgrades/UBX-005-distributed-real-coordination/ADR.md) · [`delta`](blueprint-upgrades/UBX-005-distributed-real-coordination/architecture-delta.md) · [`migration`](blueprint-upgrades/UBX-005-distributed-real-coordination/migration-path.md) · [`verification`](blueprint-upgrades/UBX-005-distributed-real-coordination/verification-plan.md) |
+| **UBX-006** | perf gate normalization | [`ADR`](blueprint-upgrades/UBX-006-perf-gate-normalization/ADR.md) · [`delta`](blueprint-upgrades/UBX-006-perf-gate-normalization/architecture-delta.md) · [`migration`](blueprint-upgrades/UBX-006-perf-gate-normalization/migration-path.md) · [`verification`](blueprint-upgrades/UBX-006-perf-gate-normalization/verification-plan.md) |
+| **TEMPLATE** | 新包模板 | [`ADR`](blueprint-upgrades/TEMPLATE/ADR.md) · [`delta`](blueprint-upgrades/TEMPLATE/architecture-delta.md) · [`migration`](blueprint-upgrades/TEMPLATE/migration-path.md) · [`verification`](blueprint-upgrades/TEMPLATE/verification-plan.md) |
+
+### 4.7 `kernel-spec/`（15）— 14 内核规范
+
+| 文件 | 说明 |
+|---|---|
+| [`kernel-spec/README.md`](kernel-spec/README.md) | 索引 + **诚实边界**：14 篇清单（真实实现类/行号）· 可观测入口 |
+| [`kernel-spec/{audit,capability,context,evaluation,event,execution,identity,memory,network,plugin,policy,resource,security,trust}.md`](kernel-spec/) | 14 篇内核规范，各含统一「诚实状态头」 |
+
+> ⚠️ **定位**：本目录是「**设计意图 / 目标态契约 + 已核对现状**」，**不是**现状规范。
+> 各篇文首「诚实状态头」中的类名与行号已逐条对代码验证；未标注行号的段落
+> （尤其缺口清单）须以代码实测为准。
+
+### 4.8 `spec/`（13 + `incoming/` 6）— 权威规格
+
+| 文件 | 说明 |
+|---|---|
+| [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md) | 🔴 **宪法层单一入口**：索引 + 冲突裁决 C1–C12 |
+| [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) | 🔴 **Kernel 唯一权威清单**（计数用运行时注册表，非目录数） |
+| [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md) | 能力注册表：LHX-C-NNN 体系与真实状态 |
+| [`spec/MASTER-SPEC-v3.0.md`](spec/MASTER-SPEC-v3.0.md) | 目标规格（To-Be） |
+| [`spec/DEFINITION-LOCK-STATUS.md`](spec/DEFINITION-LOCK-STATUS.md) | 宪法缺失声明与引用重定向 |
+| [`spec/GAP-MIGRATION-MATRIX.md`](spec/GAP-MIGRATION-MATRIX.md) | As-Built → To-Be 对账 |
+| [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) | 内核 DoD 七维审计 |
+| [`spec/AI-LAYER-DOD-AUDIT.md`](spec/AI-LAYER-DOD-AUDIT.md) | 能力层 DoD 审计 |
+| [`spec/AI-LAYER-OBSERVABILITY.md`](spec/AI-LAYER-OBSERVABILITY.md) | 能力层可观测性 |
+| [`spec/POLICY-ENFORCEMENT-DESIGN.md`](spec/POLICY-ENFORCEMENT-DESIGN.md) | 策略执行设计 |
+| [`spec/REMEDIATION-PLAN.md`](spec/REMEDIATION-PLAN.md) | 修复计划 |
+| [`spec/REPO-LINE-CONVERGE.md`](spec/REPO-LINE-CONVERGE.md) | 仓库线索收敛计划 |
+| [`spec/SELF-EVOLUTION.md`](spec/SELF-EVOLUTION.md) | 自进化目标规格：T0–T3 分级、永久禁区、G0–G14 门禁矩阵、回滚与证据契约 |
+| [`spec/incoming/`](spec/incoming/) | ⚠️ **已被取代的合并草案**（6 篇，由同目录 `MERGE-LEDGER.md` 登记合并过程） |
+
+### 4.9 `operations/`（8）· `product/`（7）· `l10k/`（1）· `security/`（3）· `decisions/`（1）
+
+| 文件 | 说明 |
+|---|---|
+| [`operations/LAUNCH-CRITERIA.md`](operations/LAUNCH-CRITERIA.md) | 🔴 **「上线」的判据**（专治「代码有了就算完成」） |
+| [`operations/production-runbook.md`](operations/production-runbook.md) | 生产运维手册 |
+| [`operations/runbook.md`](operations/runbook.md) | 运行手册 |
+| [`operations/health-check-spec.md`](operations/health-check-spec.md) | 健康检查规范 |
+| [`operations/scenario-chatbot.md`](operations/scenario-chatbot.md) | 场景案例 |
+| [`operations/WINDOWS-DESKTOP.md`](operations/WINDOWS-DESKTOP.md) | Windows 桌面集成：托盘 / 自启 / 防火墙指引 / 诊断包 / 关于页数据源 |
+| [`operations/soak-report-2026-11-07.md`](operations/soak-report-2026-11-07.md) | 长稳与并发 2 小时 soak 报告（2026-11-07，隔离实例实测）：并发/审计/内存/DB 增长与修复清单 |
+| [`operations/soak-report-2026-11-08.md`](operations/soak-report-2026-11-08.md) | 长稳与恢复能力复测（2026-11-08，承接前一日；修复与证据见 §12） |
+| [`product/PRODUCT-READINESS.md`](product/PRODUCT-READINESS.md) | 🔴 **产品门禁 P1–P10**（有代码 ≠ 可用） |
+| [`product/KERNEL-PRODUCT-CAPABILITY.md`](product/KERNEL-PRODUCT-CAPABILITY.md) | 14 内核逐个产品成熟度 |
+| [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md) | 产品需求 v3.0 |
+| [`product/Designer-UIUX-v3.0.md`](product/Designer-UIUX-v3.0.md) | UI/UX 设计 v3.0 |
+| [`product/capability-traceability.md`](product/capability-traceability.md) | 能力追溯矩阵 |
+| [`product/LOCAL-RUN.md`](product/LOCAL-RUN.md) | 本地运行 |
+| [`product/console-clickthrough-spec.md`](product/console-clickthrough-spec.md) | 控制台点击贯通规格（7 字段可追溯，EAP 01 的判据单一真相） |
+| [`l10k/test-design.md`](l10k/test-design.md) | L10K 基准设计（基线数据在根 `l10k-baseline.yaml`） |
+| [`security/shell-adapter-threat-model.md`](security/shell-adapter-threat-model.md) | Shell 适配器威胁模型 |
+| [`security/dependency-vulnerability-report-2026-11-08.md`](security/dependency-vulnerability-report-2026-11-08.md) | 依赖漏洞扫描与升级建议（pip-audit + npm audit，只读） |
+| [`security/release-signing.md`](security/release-signing.md) | 发布包 Ed25519 签名维护者手册：签发工具、公钥配置、强制签名原因、公钥轮换 |
+| [`decisions/OPEN-DECISIONS.md`](decisions/OPEN-DECISIONS.md) | 悬而未决决策登记 |
+
+### 4.10 `ci/`（2）— CI 门禁豁免登记 · 执行记录
+
+| 文件 | 说明 |
+|---|---|
+| [`ci/gate-exemptions.md`](ci/gate-exemptions.md) | gate 豁免登记册：**为什么** 4 条 meta-guardrail 断言保持红色、各自归属、以及转绿条件（不伪装成"通过"） |
+| [`ci/2026-11-04-execution-record.md`](ci/2026-11-04-execution-record.md) | 2026-11-04 收口执行记录：实际命令、关键输出、CI run 结论与未闭合阻塞 |
+
+### 4.11 `governance/`（1）— 控制声明裁决登记
+
+| 文件 | 说明 |
+|---|---|
+| [`governance/CONTROL-CLAIM-LEDGER.md`](governance/CONTROL-CLAIM-LEDGER.md) | control-claim 裁决登记册（三态判据 FALSIFIED/NOT VERIFIED/PASS + 更正规则，ratcheted，由 `lint_control_claims.py` 接线 CI） |
+
+### 4.12 `archive/`（7）— ⚠️ 历史归档，**保持原貌**
+
+| 文件 | 说明 |
+|---|---|
+| [`archive/Y1_AUDIT_REPORTS.md`](archive/Y1_AUDIT_REPORTS.md) | Y1 审计报告合集 |
+| [`archive/PHASE_ACCEPTANCE_REPORTS.md`](archive/PHASE_ACCEPTANCE_REPORTS.md) | Phase 验收报告合集 |
+| [`archive/EXECUTION_AND_DECISIONS.md`](archive/EXECUTION_AND_DECISIONS.md) | 执行与决策记录合集 |
+| [`archive/PLANS_ROADMAP.md`](archive/PLANS_ROADMAP.md) | 规划与路线图合集 |
+| [`archive/drafts/`](archive/drafts/) | ⚠️ **DEPRECATED** 草稿 3 篇（已被正式版取代） |
+
+> **归档原则**（该目录自身声明）：`archive/` 内的历史文档**保持原貌**，正文中的
+> 文件路径为整理前的原始路径，**不作改动**。其中的 `file:///d:/...` 绝对链接是
+> "当时路径指向何处"的忠实记录 —— 为了让 linter 变绿而改写历史快照，是**更坏的谎**。
+> 查现行路径请看本索引。
+
+### 4.13 `best-practices/`（6）— 工程最佳实践
+
+| 文件 | 说明 |
+|---|---|
+| [`best-practices/agent-design-patterns.md`](best-practices/agent-design-patterns.md) | Agent 设计模式 |
+| [`best-practices/error-handling-patterns.md`](best-practices/error-handling-patterns.md) | 错误处理模式 |
+| [`best-practices/memory-management-best-practices.md`](best-practices/memory-management-best-practices.md) | 记忆管理最佳实践 |
+| [`best-practices/multi-agent-coordination.md`](best-practices/multi-agent-coordination.md) | 多 AI 员工协作 |
+| [`best-practices/test-subset-mapping.md`](best-practices/test-subset-mapping.md) | 改动路径 → 必跑测试子集与 slow 用例策略 |
+| [`best-practices/testing-strategies.md`](best-practices/testing-strategies.md) | 测试策略 |
+
+### 4.14 `tutorials/`（7）— 从零构建教程
+
+| 文件 | 说明 |
+|---|---|
+| [`tutorials/README.md`](tutorials/README.md) | 教程索引 |
+| [`tutorials/build_your_first_agent.md`](tutorials/build_your_first_agent.md) | 第一个 Agent |
+| [`tutorials/build_a_code_reviewer.md`](tutorials/build_a_code_reviewer.md) | 构建代码审查 Agent |
+| [`tutorials/build_a_data_pipeline.md`](tutorials/build_a_data_pipeline.md) | 构建数据流水线 |
+| [`tutorials/build_a_research_bot.md`](tutorials/build_a_research_bot.md) | 构建研究机器人 |
+| [`tutorials/build_multi_agent_system.md`](tutorials/build_multi_agent_system.md) | 构建多 AI 员工系统 |
+| [`tutorials/deploy_to_production.md`](tutorials/deploy_to_production.md) | 部署到生产 |
+
+### 4.15 `roadmap/`（1）— 长期路线图
+
+| 文件 | 说明 |
+|---|---|
+| [`roadmap/MILLION-CODE-ROADMAP.md`](roadmap/MILLION-CODE-ROADMAP.md) | 百万行规模路线图（目标态，不是现状） |
+
+### 4.16 `knowledge_base/`（45）— 知识库
+
+> ⚠️ 本目录是**面向使用者的知识库**（概念解释 · API 参考 · 部署 · 性能 · 安全 ·
+> 集成 · FAQ），与 `spec/`、`kernel-spec/` 的权威规格不是同一层级：发生冲突时
+> 仍以「代码事实 > KERNEL-CANON > 其余一切」裁决。入口见
+> [`knowledge_base/README.md`](knowledge_base/README.md)。
+
+**入门 · 概念**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/README.md`](knowledge_base/README.md) | 知识库索引 |
+| [`knowledge_base/getting-started/installation.md`](knowledge_base/getting-started/installation.md) | 安装指南 |
+| [`knowledge_base/getting-started/quickstart.md`](knowledge_base/getting-started/quickstart.md) | 快速上手 |
+| [`knowledge_base/core-concepts/agents.md`](knowledge_base/core-concepts/agents.md) | Agent 概念 |
+| [`knowledge_base/core-concepts/memory.md`](knowledge_base/core-concepts/memory.md) | 记忆概念 |
+| [`knowledge_base/core-concepts/multi_agent.md`](knowledge_base/core-concepts/multi_agent.md) | 多 AI 员工概念 |
+| [`knowledge_base/core-concepts/planning.md`](knowledge_base/core-concepts/planning.md) | 规划概念 |
+| [`knowledge_base/architecture/overview.md`](knowledge_base/architecture/overview.md) | 架构总览 |
+| [`knowledge_base/architecture/kernels.md`](knowledge_base/architecture/kernels.md) | 内核说明（与 KERNEL-CANON 冲突时以 KERNEL-CANON 为准） |
+| [`knowledge_base/architecture/security.md`](knowledge_base/architecture/security.md) | 架构安全 |
+
+**使用指南 · API 参考**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/user-guide/agent_guide.md`](knowledge_base/user-guide/agent_guide.md) | Agent 使用指南 |
+| [`knowledge_base/user-guide/memory_guide.md`](knowledge_base/user-guide/memory_guide.md) | 记忆使用指南 |
+| [`knowledge_base/user-guide/pipeline_guide.md`](knowledge_base/user-guide/pipeline_guide.md) | 流水线指南 |
+| [`knowledge_base/user-guide/plugins_guide.md`](knowledge_base/user-guide/plugins_guide.md) | 插件指南 |
+| [`knowledge_base/user-guide/sdk_guide.md`](knowledge_base/user-guide/sdk_guide.md) | SDK 指南 |
+| [`knowledge_base/api-reference/agents_api.md`](knowledge_base/api-reference/agents_api.md) | Agent API |
+| [`knowledge_base/api-reference/health_api.md`](knowledge_base/api-reference/health_api.md) | 健康检查 API |
+| [`knowledge_base/api-reference/knowledge_api.md`](knowledge_base/api-reference/knowledge_api.md) | 知识 API |
+| [`knowledge_base/api-reference/memory_api.md`](knowledge_base/api-reference/memory_api.md) | 记忆 API |
+| [`knowledge_base/api-reference/tasks_api.md`](knowledge_base/api-reference/tasks_api.md) | 任务 API |
+
+**进阶模式**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/20-advanced-patterns/bulkhead-advanced.md`](knowledge_base/20-advanced-patterns/bulkhead-advanced.md) | 舱壁隔离进阶 |
+| [`knowledge_base/20-advanced-patterns/circuit-breaker-advanced.md`](knowledge_base/20-advanced-patterns/circuit-breaker-advanced.md) | 熔断器进阶 |
+| [`knowledge_base/20-advanced-patterns/cqrs-pattern.md`](knowledge_base/20-advanced-patterns/cqrs-pattern.md) | CQRS 模式 |
+| [`knowledge_base/20-advanced-patterns/event-sourcing.md`](knowledge_base/20-advanced-patterns/event-sourcing.md) | 事件溯源 |
+| [`knowledge_base/20-advanced-patterns/saga-pattern.md`](knowledge_base/20-advanced-patterns/saga-pattern.md) | Saga 模式 |
+
+**部署 · 性能 · 安全**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/21-deployment/ci-cd-pipeline.md`](knowledge_base/21-deployment/ci-cd-pipeline.md) | CI/CD 流水线 |
+| [`knowledge_base/21-deployment/docker-compose-setup.md`](knowledge_base/21-deployment/docker-compose-setup.md) | Docker Compose 配置 |
+| [`knowledge_base/21-deployment/helm-charts.md`](knowledge_base/21-deployment/helm-charts.md) | Helm Charts |
+| [`knowledge_base/21-deployment/kubernetes-deployment.md`](knowledge_base/21-deployment/kubernetes-deployment.md) | Kubernetes 部署 |
+| [`knowledge_base/21-deployment/monitoring-stack.md`](knowledge_base/21-deployment/monitoring-stack.md) | 监控栈 |
+| [`knowledge_base/23-performance/api-rate-optimization.md`](knowledge_base/23-performance/api-rate-optimization.md) | API 吞吐优化 |
+| [`knowledge_base/23-performance/caching-strategies.md`](knowledge_base/23-performance/caching-strategies.md) | 缓存策略 |
+| [`knowledge_base/23-performance/database-optimization.md`](knowledge_base/23-performance/database-optimization.md) | 数据库优化 |
+| [`knowledge_base/23-performance/performance-tuning.md`](knowledge_base/23-performance/performance-tuning.md) | 性能调优 |
+| [`knowledge_base/24-security/audit-logging.md`](knowledge_base/24-security/audit-logging.md) | 审计日志 |
+| [`knowledge_base/24-security/gdpr-compliance-guide.md`](knowledge_base/24-security/gdpr-compliance-guide.md) | 欧盟数据保护（GDPR）相关资料（资料本身不构成合规结论） |
+| [`knowledge_base/24-security/secrets-management.md`](knowledge_base/24-security/secrets-management.md) | 密钥管理 |
+| [`knowledge_base/24-security/security-hardening.md`](knowledge_base/24-security/security-hardening.md) | 安全加固 |
+
+**集成 · 排障 · 变更**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/22-integrations/custom-integration-guide.md`](knowledge_base/22-integrations/custom-integration-guide.md) | 自定义集成 |
+| [`knowledge_base/22-integrations/github-integration-guide.md`](knowledge_base/22-integrations/github-integration-guide.md) | GitHub 集成 |
+| [`knowledge_base/22-integrations/jira-integration-guide.md`](knowledge_base/22-integrations/jira-integration-guide.md) | Jira 集成 |
+| [`knowledge_base/22-integrations/slack-integration-guide.md`](knowledge_base/22-integrations/slack-integration-guide.md) | Slack 集成 |
+| [`knowledge_base/troubleshooting/common_issues.md`](knowledge_base/troubleshooting/common_issues.md) | 常见问题 |
+| [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
+| [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
+
+### 4.17 `evidence/`（9）与 `oss-radar/`（8）— 实测证据与开源技术雷达
+
+| 文件 | 说明 |
+|---|---|
+| [`evidence/verify-full-416f7109-2026-11-08.md`](evidence/verify-full-416f7109-2026-11-08.md) | 新 tip `416f7109` 全量就绪判定（C1–C12 + C10，含 C7 并发干扰记录） |
+| [`evidence/regression-baseline-coverage-2026-11-06.md`](evidence/regression-baseline-coverage-2026-11-06.md) | 全量回归基线覆盖（2026-11-06） |
+| [`evidence/c7-performance-baseline-2026-11-06.md`](evidence/c7-performance-baseline-2026-11-06.md) | C7 性能基线：从「无基线只能 SKIP」到可判定 |
+| [`evidence/c9-console-payload-2026-11-06.md`](evidence/c9-console-payload-2026-11-06.md) | C9 缺陷修复：升级载荷缺前端 `console/` |
+| [`evidence/c9-installed-upgrade-2026-11-06.md`](evidence/c9-installed-upgrade-2026-11-06.md) | C9 部署/升级/回滚：两套口径并列的实测记录 |
+| [`evidence/cross-verify-3fa88be0.md`](evidence/cross-verify-3fa88be0.md) | 交叉验证过程凭证 @`3fa88be0`（含 31 条失败归因） |
+| [`evidence/fault-surfaces-2026-11-06.md`](evidence/fault-surfaces-2026-11-06.md) | 故障面实测：单实例/休眠断网/时间跳变/存储/并发 |
+| [`evidence/hc01-pending-decisions-2026-11-06.md`](evidence/hc01-pending-decisions-2026-11-06.md) | HC-01 待裁决 5 项（附建议答案） |
+| [`evidence/log-only-troubleshooting-drill.md`](evidence/log-only-troubleshooting-drill.md) | 只看日志能否排障：6 个真实故障演练（3 个可定位 / 2 个勉强 / 1 个看不出） |
+| [`oss-radar/agent-orchestration.md`](oss-radar/agent-orchestration.md) | 开源技术雷达 · 第 1 路：AI 员工与编排 |
+| [`oss-radar/memory-retrieval.md`](oss-radar/memory-retrieval.md) | 开源技术雷达 · 第 2 路：记忆与检索 |
+| [`oss-radar/security-compliance.md`](oss-radar/security-compliance.md) | 开源技术雷达 · 第 3 路：安全、合规与隔离 |
+| [`oss-radar/data-network.md`](oss-radar/data-network.md) | 开源技术雷达 · 第 4 路：数据、存储与网络 |
+| [`oss-radar/ui-interaction.md`](oss-radar/ui-interaction.md) | 开源技术雷达 · 第 5 路：界面、交互与多模态 |
+| [`oss-radar/engineering-quality.md`](oss-radar/engineering-quality.md) | 开源技术雷达 · 第 6 路：工程质量、成本与观测 |
+| [`oss-radar/compliance-supplychain.md`](oss-radar/compliance-supplychain.md) | 开源技术雷达 · 第 7 路：合规、供应链与内容安全 |
+| [`oss-radar/quality-cost.md`](oss-radar/quality-cost.md) | 开源技术雷达 · 第 8 路：质量、成本与可靠性 |
+
+### 4.18 `ui-audit-20261106/`（1）— 控制台巡检
+
+| 文件 | 说明 |
+|---|---|
+| [`ui-audit-20261106/report.md`](ui-audit-20261106/report.md) | 控制台全页巡检与多账号验收报告（2026-11-06） |
+
+### 4.19 2026-11-08 一次性审计与走查（26）— ⚠️ 全部是历史快照
+
+> ⚠️ **本批是 2026-11-08 同一天、对某个工作树快照的只读审计/走查记录，不是现状。**
+> 它们保留「当时看到了什么」，用于追溯缺陷与交接；引用前必须回到代码复核。
+> 其中多篇自述「工作区有并行未提交改动」，正文行号只对当时的快照成立。
+
+| 文件 | 说明 |
+|---|---|
+| [`audit-account-matrix-20261108.md`](audit-account-matrix-20261108.md) | 多账号体系八项硬要求：真实 HTTP 正反例实测 |
+| [`audit-api-contract-20261108.md`](audit-api-contract-20261108.md) | OpenAPI 契约 × 前端请求对账（只读快照） |
+| [`audit-copywriting-20261108.md`](audit-copywriting-20261108.md) | 中文文案与术语一致性审计（以 `brand.json` / BRAND-CANON 为基准） |
+| [`audit-data-egress-20261108.md`](audit-data-egress-20261108.md) | 数据出站审计：静态 + 隔离实例 + 日志代理 + 连接采样 |
+| [`audit-data-layout-20261108.md`](audit-data-layout-20261108.md) | 安装版数据目录只读审计（SQLite 只读打开） |
+| [`audit-docs-vs-ui-20261108.md`](audit-docs-vs-ui-20261108.md) | 文档 vs 控制台 UI 对账（14 项已收口，保留原文对照） |
+| [`audit-error-copy-20261108.md`](audit-error-copy-20261108.md) | 错误码 / 提示语 / 响应体全表核对 |
+| [`audit-first-journey-20261108.md`](audit-first-journey-20261108.md) | 首次使用走查（证据见 `audit-first-journey-20261108/`） |
+| [`audit-first-run-disclosure-20261108.md`](audit-first-run-disclosure-20261108.md) | 首次使用信息披露审计（含 0.1.0 交付物核对） |
+| [`audit-install-fallback-20261108.md`](audit-install-fallback-20261108.md) | 安装器 D 盘回退路径审计（临时目录探针，未编译安装包） |
+| [`audit-local-attack-surface-20261108.md`](audit-local-attack-surface-20261108.md) | 本机攻击面：监听面与浏览器侧安全属性 |
+| [`audit-log-leakage-20261108.md`](audit-log-leakage-20261108.md) | 日志与诊断包敏感信息泄漏审计 |
+| [`audit-package-content-20261108.md`](audit-package-content-20261108.md) | 安装包 / 升级包内容核对（静默安装到审计目录） |
+| [`audit-perf-baseline-20261108.md`](audit-perf-baseline-20261108.md) | 性能基线实测（已安装 0.1.0；冷启动中位 20.9s） |
+| [`audit-provider-drift-20261108.md`](audit-provider-drift-20261108.md) | 模型厂商接口漂移韧性审计（假成功 / 静默截断 / 假失败） |
+| [`audit-size-startup-20261108.md`](audit-size-startup-20261108.md) | 安装体积与启动耗时归因 |
+| [`audit-user-journey-20261108.md`](audit-user-journey-20261108.md) | 陌生人真实旅程审计（静默安装 → 对话 → 派活 → 重启） |
+| [`audit-windows-compat-20261108.md`](audit-windows-compat-20261108.md) | Windows 兼容性只读审计（换机安装/打开可行性） |
+| [`audit-30min-real-work-20261108.md`](audit-30min-real-work-20261108.md) | 30 分钟真实办公走查（证据见同名目录 `shots/`） |
+| [`build-freeze-readiness-20261108.md`](build-freeze-readiness-20261108.md) | 冻结前条件现况（未写 `dist\`、未构建、未打包） |
+| [`handoff-account-line-33-failures-20261108.md`](handoff-account-line-33-failures-20261108.md) | 交接单：`tests/gateway` 33 个失败给账号线 |
+| [`handoff-installer-data-loss-marker-20261108.md`](handoff-installer-data-loss-marker-20261108.md) | 交接单：区分「首次安装」与「数据目录被删」给安装器线 |
+| [`log-drill-20261108-rerun.md`](log-drill-20261108-rerun.md) | 「8 类故障只看日志」重演（补丁后重跑，真实造故障） |
+| [`openapi-7-paths-registration-20261108.md`](openapi-7-paths-registration-20261108.md) | `openapi.yaml` 增量补登清单（7 条运行时路径，只增不重排） |
+| [`packaging-slimming-spec-20261108.md`](packaging-slimming-spec-20261108.md) | 打包瘦身规格：零风险排除清单（交给打包线落地） |
+| [`requirements-reconciliation-20261108.md`](requirements-reconciliation-20261108.md) | 用户要求逐条对账（已做到 / 部分 / 未做到 + 证据版本） |
+
+### 4.20 `a11y-*` 无障碍审计（2）— 报告 + 截图证据
+
+| 文件 | 说明 |
+|---|---|
+| [`a11y-keyboard-audit-20261108/report.md`](a11y-keyboard-audit-20261108/report.md) | 键盘可达性审计报告（证据见同目录 `evidence/` `shots/`） |
+| [`a11y-sr-hc-keyboard-20261108/report.md`](a11y-sr-hc-keyboard-20261108/report.md) | 读屏 / 高对比 / 键盘验收报告（14 张验收截图） |
+
+### 4.21 `legal/`（1）— ⚠️ 法务草稿，不随产品发布
+
+| 文件 | 说明 |
+|---|---|
+| [`legal/EULA-DRAFT-pending-review.md`](legal/EULA-DRAFT-pending-review.md) | EULA 草稿（**AI 起草，未经法务确认，不得对外发布**；登记于 DELIVERY-CHECKLIST） |
+
+---
+
+## 5. 门禁：本文档的可核验性
+
+本索引不是"写得好看就算"。以下机械检查在 CI `guardrails` job 中运行，
+**任何一条变红都说明文档在骗读者**：
+
+| 门禁 | 保证什么 | 抓过的真实缺陷 |
+|---|---|---|
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 281 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
+| [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
+| [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |
+| `lint_audit_claims.py` | 审计/合规声明必须带 UNVERIFIED 等诚实限定 | HC-01/HC-09/HC-10 的无限定声明 |
+
+> ⚠️ **已知覆盖缺口（不掩饰）**：`lint_audit_claims.py` **只扫 markdown**，
+> **看不见 `.py` docstring**。本项目最严重的一类文档缺陷恰恰在 docstring 里
+> —— 「描述了一个从未存在的功能」。补上这个面是待办。
+
+---
+
+## 6. 本索引的诚实边界
+
+- **覆盖完整 ≠ 阅读顺序最优**。门禁保证「没有文档被遗漏、没有路径是虚构的」，
+  **不保证** §1 的阅读顺序是唯一正确的顺序，也不保证各篇摘要准确。
+- **本索引自身也可能过时**。它由门禁守的是「覆盖与链接」，不是「内容正确」。
+  若发现某篇摘要与该文实际内容不符，请以**该文本身**为准并回报。
+- **计数会漂移**。本索引中出现的数字只在标注了 commit / 日期时可复现。
+  引用任何数字前，请回到 §5 的门禁复核。

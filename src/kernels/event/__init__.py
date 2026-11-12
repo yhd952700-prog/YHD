@@ -12,7 +12,12 @@ IDs for end-to-end traceability.
 - Provide ordering guarantees per correlation ID
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import (
+    KernelLifecycle,
+    KernelNotServableError,
+    KernelStateError,
+    is_servable,
+)
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -142,18 +147,62 @@ class EventBus:
         self._subscriptions: Dict[str, List[Subscription]] = defaultdict(list)
         self._event_history: List[Event] = []
         self._max_history = 10000
+        # 长跑实测 RSS +24.5MB/h：`_event_history` 有上限，但它旁边的
+        # `_correlation_index` 没有——每条事件都按 correlation_id 再挂一份强引用，
+        # 历史被裁掉后旧 Event（含 payload）仍被索引钉住，等于"只增不删"。
+        # 这里让索引跟随历史窗口回收，并给死信一个上限（PAUSED 状态下每次发布
+        # 都会记一条死信，不设限同样会单调上涨）。
+        self._max_dead_letters = 1000
         self._dead_letters: List[DeadLetterEntry] = []
         self._lock = threading.RLock()
         self._correlation_index: Dict[str, List[Event]] = defaultdict(list)
 
+    def _append_dead_letter(self, entry: DeadLetterEntry) -> None:
+        """记录死信并保持有界（调用方已持有 ``self._lock``）。"""
+        self._dead_letters.append(entry)
+        overflow = len(self._dead_letters) - self._max_dead_letters
+        if overflow > 0:
+            del self._dead_letters[:overflow]
+
     @kernel_action("event.publish")
     def publish(self, event: Event) -> str:
-        """Publish an event to all matching subscribers."""
+        """Publish an event to all matching subscribers.
+
+        Lifecycle gate: a PAUSED / STOPPED bus refuses the publish and records
+        the event as a dead letter, so the refusal is visible in
+        ``stats()["dead_letters_total"]`` instead of vanishing. It previously
+        only flipped a flag and kept delivering to subscribers, so "paused" was
+        a label rather than a behaviour.
+        """
         with self._lock:
+            if not is_servable(self):
+                self._append_dead_letter(
+                    DeadLetterEntry(
+                        event,
+                        KernelNotServableError(
+                            f"event bus is {self.lifecycle.value}"
+                        ),
+                        "lifecycle-gate",
+                    )
+                )
+                raise KernelNotServableError(
+                    f"EventBus.publish refused: event bus is {self.lifecycle.value}"
+                )
+
             # Store in history
             self._event_history.append(event)
             if len(self._event_history) > self._max_history:
+                evicted = self._event_history[: len(self._event_history) - self._max_history]
                 self._event_history = self._event_history[-self._max_history:]
+                # 同步从相关性索引里摘掉被淘汰的事件；否则索引会永远钉住旧
+                # Event（payload 全在内存里），RSS 只增不降（长跑 +24.5MB/h）。
+                for old in evicted:
+                    bucket = self._correlation_index.get(old.correlation_id)
+                    if not bucket:
+                        continue
+                    bucket[:] = [kept for kept in bucket if kept is not old]
+                    if not bucket:
+                        self._correlation_index.pop(old.correlation_id, None)
 
             # Index by correlation ID
             self._correlation_index[event.correlation_id].append(event)
@@ -183,7 +232,7 @@ class EventBus:
                     except Exception as e:
                         # Dead letter handling
                         dl = DeadLetterEntry(event, e, sub.id)
-                        self._dead_letters.append(dl)
+                        self._append_dead_letter(dl)
 
             return event.correlation_id
 
@@ -270,18 +319,35 @@ class EventBus:
 
     @kernel_action("event.retry_dead_letter")
     def retry_dead_letter(self, index: int) -> bool:
-        """Retry a dead letter event."""
+        """Re-dispatch a dead-lettered handler, honestly reporting the outcome.
+
+        ``publish`` swallows handler exceptions and only appends a NEW dead
+        letter for the *same event object* when the handler fails again, so a
+        naive ``return True`` after ``publish`` would claim success while the
+        handler actually failed a second time. We compare the dead-letter count
+        before/after re-publish: if a fresh dead letter for this exact event
+        appeared, the re-dispatch failed and we must report ``False`` (and must
+        NOT mark it resolved). Only when no new failure was recorded do we
+        consider the re-dispatch successful.
+        """
         with self._lock:
             if 0 <= index < len(self._dead_letters):
                 dl = self._dead_letters[index]
                 dl.attempt += 1
+                before = len(self._dead_letters)
                 try:
-                    # Re-publish to same subscriptions
                     self.publish(dl.event)
-                    dl.resolved = True
-                    return True
                 except Exception:
+                    # publish itself raised (transport-level failure).
                     return False
+                re_failed = any(
+                    e.event is dl.event for e in self._dead_letters[before:]
+                )
+                if re_failed:
+                    # The handler raised again; a new dead letter proves it.
+                    return False
+                dl.resolved = True
+                return True
         return False
 
     @kernel_action("event.clear_history")

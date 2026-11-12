@@ -1,0 +1,61 @@
+name: First-Run End-to-End
+
+# 为什么是「定时 + 手动」而不是每次推送都跑：
+# `scripts/verify_first_run_e2e.py` 会起一个真实网关进程、用真实厂商 Key 走完
+# 「填 Key → 测连接 → 立即对话 → 杀进程重启再对话」的完整链路。它需要两样
+# 每次推送都拿不到的东西：一把真实 Key（`LIUHAO_E2E_API_KEY`）和已构建的
+# `console/dist`。因此登记为 scheduled-only 门禁（见
+# `tests/test_guardrail_scripts.py::SCHEDULED_ONLY_GATES`），
+# 不在每次提交上假装自己守住了什么。
+#
+# 缺 Key 时**不吞掉**：像 `verify_metrics_persist.yml` 缺 `STAGING_DATABASE_URL`
+# 一样直接 exit 1，让「没验证」以红点的形式留在看板上，而不是伪装成通过。
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '30 3 * * *'
+
+jobs:
+  first-run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Validate real-key secret
+        env:
+          E2E_API_KEY: ${{ secrets.LIUHAO_E2E_API_KEY }}
+        run: |
+          if [ -z "$E2E_API_KEY" ]; then
+            echo "LIUHAO_E2E_API_KEY is not configured. The real-key path is NOT verified; failing instead of faking green."
+            exit 1
+          fi
+      - name: Build console SPA
+        run: |
+          cd apps/console/console
+          npm ci
+          npm run build
+      - name: Run first-run end-to-end check
+        # exit 3 = NOT VERIFIED: some check (e.g. a revoked/quota-exhausted key)
+        # could not obtain evidence. The script lists each gap; it never claims
+        # PASS, and CI surfaces the gap instead of hiding it.
+        env:
+          LIUHAO_E2E_API_KEY: ${{ secrets.LIUHAO_E2E_API_KEY }}
+        run: |
+          set +e
+          python -u scripts/verify_first_run_e2e.py --api-key "$LIUHAO_E2E_API_KEY"
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): first-run e2e did not obtain evidence for every check; this is NOT a pass"
+            exit 0
+          fi
+          exit "$code"

@@ -25,7 +25,14 @@ Event Kernel 是 Human-Sovereign Agent OS 的**统一事件总线内核**，为�
 
 - `EventBus`（`src/kernels/event/__init__.py:137`）已实现 `lifecycle` 字段（:139）与四个方法（:292-303）。
 - **单例**：`get_event_bus()`（:314）为进程级惰性单例，构造后立刻 `initialize()`，不变量为「存在即 READY」。
-- **无后台驱动**：`shutdown`/`pause`/`resume` 仅由显式调用者触发；`pause`/`resume` 当前仅置位状态（PAUSED 语义「缓冲 publish」属目标态，见第 8 节）。
+- **无后台驱动**：`shutdown`/`pause`/`resume` 仅由显式调用者触发。
+- **PAUSED / STOPPED 真拒收（2026-10-05 起）**：`publish()` 取锁后立刻校验
+  `is_servable(self)`（`src/kernels/_base.py`），命中 PAUSED/STOPPED 则抛
+  `KernelNotServableError`，并把该事件记入 `_dead_letters`（可在
+  `stats()["dead_letters_total"]` 看到），**订阅者零调用**；`resume()` 后投递照常恢复。
+  修复前 `pause()` 只翻转字段、publish 照常投递（探针实测订阅者被调用），即
+  「已暂停」只是标签而非行为。门禁真源见 `scripts/verify_kernel_lifecycle_gate.py`
+  （含反证：摘掉门禁必须变红）。
 
 ## 4. 输入模型
 

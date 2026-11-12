@@ -11,8 +11,9 @@ Round 82 评审核实：``src/adapters/`` 整个目录在运行时不被任何 s
 
 这一组护栏保证：
 
-* MCP 适配器保持 ``not-wired`` 声明（真正接线需引入外部 MCP server 与沙箱，
-  超出本轮范围；详见 mcp_adapter.py 顶部安全前置条件）；
+* MCP 适配器保持 ``adapter-only`` 声明（适配层已就绪：stdio / streamable HTTP /
+  server 模式，但**未接入对话主链路**，运行时入口受 LIUHAO_MCP_ADAPTER_ENABLED
+  控制且默认关闭；真正接线需先满足 mcp_adapter.py 顶部安全前置条件）；
 * 网关装配处不得把被取代的 ``src/adapters/observability`` 接进去；
 * 被标为未接线的 src/adapters 模块不得被 ``src/gateway/`` 或 ``src/ai/``
   偷偷 import（防止"声明未接线、事实已漂移"）。
@@ -46,15 +47,21 @@ def _read(p: pathlib.Path) -> str:
 
 
 class TestMCPWiring:
-    def test_mcp_adapter_declares_not_wired(self):
-        """MCP 适配器必须保持 not-wired；一旦有人接线须同步改声明与测试。"""
+    def test_mcp_adapter_declares_adapter_only(self):
+        """MCP 适配器必须保持 adapter-only；一旦接线须同步改声明与测试。
+
+        2026-11-05（阶段 B1）：适配层已重写（FastMCP），但**没有**接进对话主链路，
+        因此状态从 ``not-wired`` 改为 ``adapter-only``；下面
+        ``TestAdaptersNotImportedByRuntime`` 仍机械保证 src/gateway 与 src/ai
+        不得 import 该适配器，防止"声明未接线、事实已漂移"。
+        """
         tree = ast.parse(_read(MCP_ADAPTER_PY))
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "MCP_WIRING_STATUS":
-                        assert node.value.value == "not-wired", (
-                            "MCP_WIRING_STATUS 不再是 'not-wired'；"
+                        assert node.value.value == "adapter-only", (
+                            "MCP_WIRING_STATUS 不再是 'adapter-only'；"
                             "若确实已接线，请同步更新本测试与模块 docstring"
                         )
                         return

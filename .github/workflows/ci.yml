@@ -12,11 +12,56 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
-      # 3.11 = declared floor (pyproject: requires-python >=3.11); 3.12 = local dev venv.
-      # Both legs run so a version-specific regression cannot hide in the gap.
+      # 3.12 = 唯一支持版本（pyproject: requires-python >=3.12,<3.13；
+      # .python-version / Dockerfile 同为 3.12）。3.11 腿已在 B组第二轮
+      # 移除：不再维护双腿矩阵。
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.12']
+
+    # 真 redis-server：让 TestRealRedisEndToEnd（real redis）在 CI 上**真正执行**，
+    # 不再 skip。TestRedisLuaScriptsActuallyExecute 走 fakeredis(+lupa)，两者互补：
+    # fakeredis 验证 Lua 语义，真 redis 验证真实服务上的行为。
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # 真 etcd：让 TestRealEtcdEndToEnd（real etcd）在 CI 上**真正执行**。客户端
+      # 走 etcd v3 的 HTTP/JSON gateway（_EtcdHttpAdapter），不需要任何额外 pip 包。
+      #
+      # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
+      # 服务容器在起容器阶段就失败 -> test job 根本没跑起来 -> 所有 needs: test 的
+      # 下游门禁（security / guardrails / guardrails-extended / lint / gate-check）
+      # 全部 skipped。一个起不来的服务容器不是"etcd 相关测试跳过"，而是**整条 CI
+      # 保护面静默归零**，这正是必须换掉而不是绕过去的理由。
+      #
+      # 2026-10-24 根因修复（run 40118666865 死于 Initialize containers）：
+      # quay.io/coreos/etcd:v3.5.34 是 scratch 镜像——registry config history 只有
+      # `ADD etcd / etcdctl / etcdutl /usr/local/bin/` 三条，镜像内没有 /bin/sh；
+      # 而 docker CLI 恒把 --health-cmd 包装为 CMD-SHELL，daemon 用 /bin/sh -c
+      # 执行探针 -> 探针进程根本起不来 -> 重试耗尽判 unhealthy。故换回带 shell
+      # 的 bitnamilegacy/etcd:3.5.9（bitnami 弃用冻结的同一 lineage），并显式
+      # ALLOW_NONE_AUTHENTICATION=yes；etcdctl 路径改为镜像内真实存在的
+      # /opt/bitnami/etcd/bin/etcdctl，退出码即健康判定。
+      etcd:
+        image: bitnamilegacy/etcd:3.5.9
+        ports:
+          - 2379:2379
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCDCTL_API: "3"
+        options: >-
+          --health-cmd "/opt/bitnami/etcd/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout Code
@@ -30,8 +75,38 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          # 装 [tests] extra 才会带上 fakeredis + lupa，让
+          # TestRedisLuaScriptsActuallyExecute 在 CI 上**真正执行**（不再 skip）。
+          # 缺 lupa 时该组在测试内优雅 skip（nodes fixture 的 eval 自检），不会把
+          # 收集搞挂；但 CI 显式装齐才能把"skip"变成"已验证"。
+          pip install -e .[tests]
           pip install flake8
+
+      # tests/test_console_single_port.py 的 console_dist fixture 在无构建产物时
+      # 直接 pytest.skip。CI 此前从不 build dist，5 个单端口/PWA 用例因此永久
+      # skip（据实测量）。在 pytest 之前真实构建 console，让它们跑起来；构建
+      # 本身失败会让本步骤红，而不是悄悄退回 skip。
+      - name: Set up Node (console build for single-port tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/console/console/package-lock.json
+
+      - name: Build console dist (required by single-port tests)
+        working-directory: apps/console/console
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify test collection is complete
+        # Runs BEFORE the unit tests on purpose. A collection-time ImportError
+        # aborts the whole pytest session, so the tests below would report a
+        # failure that reads like "some tests are red" when in fact thousands
+        # of them never ran. On 2026-10-04 exactly that happened (roster.py was
+        # rewritten, its test's import was not) and 3592 tests vanished while
+        # any subset run still looked green.
+        run: python scripts/verify_test_collection.py
 
       - name: Run Unit Tests
         run: |
@@ -40,6 +115,26 @@ jobs:
           else
             echo "No tests directory found - skipping"
           fi
+
+      # 门禁契约的「跳过必须显式可见」。刻意不改 tests/conftest.py（多线共享的
+      # 热点）：带 gate_contract 标记的用例本地允许 skip 并打印原因，CI 上 skip
+      # 就意味着某条门禁契约悄悄停止检查。这里单独跑一遍，直接断言 junitxml
+      # 里 skipped == 0，不依赖任何 hook。
+      - name: Gate contract tests must not skip
+        run: |
+          python -m pytest -m gate_contract -q --junitxml=gate-contract.junit.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse("gate-contract.junit.xml").getroot()
+          skipped = sum(1 for case in root.iter("testcase")
+                        if case.find("skipped") is not None)
+          if skipped:
+              print("::error::NOT VERIFIED: %d gate_contract test(s) skipped; "
+                    "a skipped contract is not checked" % skipped)
+              sys.exit(1)
+          print("gate_contract: 0 skipped")
+          PY
 
       - name: Verify Code Quality
         run: |
@@ -61,12 +156,22 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red test must not mask a green gate).
+    if: always()
     permissions:
       contents: read
       security-events: write
 
     steps:
       - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
 
       - name: Run Trivy vulnerability scan
         run: |
@@ -133,15 +238,22 @@ jobs:
     name: Observability Validation
     runs-on: ubuntu-latest
     needs: security
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致本作业声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
+    # CRITICAL-5: run even if an upstream job failed, so this gate FAILS loudly
+    # instead of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always()
 
     steps:
       - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'security' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (security)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: security
+          upstream-result: ${{ needs.security.result }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -154,40 +266,87 @@ jobs:
           pip install langfuse arize-phoenix
 
       - name: Run Observability Checks
-        run: python scripts/ci_observability_check.py
+        # exit 3 = NOT VERIFIED (a required export backend is missing). Report it
+        # as an explicit warning; never let a missing backend read as a pass.
+        run: |
+          set +e
+          python scripts/ci_observability_check.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): an observability export backend is unavailable; the export path was not exercised"
+            exit 0
+          fi
+          exit "$code"
 
   # Guardrails: every `scripts/verify_*.py` that carries a pass/fail contract.
   # These scripts protect the Policy route C invariants (C-1..C-5), the D8 risk
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # All thirteen `scripts/verify_*.py` are wired somewhere: twelve run here and
-  # `verify_metrics_persist.py` runs in verify_metrics_persist.yml.
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 79 (2026-11-10).
+  # GATE-COUNT-MARKER: 79 -- tests/test_guardrail_scripts.py parses this marker
+  # and fails when it disagrees with the real file count, so this number cannot
+  # silently rot the way "36" did.
+  # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
+  # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
+  # script without wiring it turns CI red, which is the point: a guard nobody runs
+  # protects nothing. Keep the count honest when you add one.
   guardrails:
-    name: Guardrails (Policy C-1..C-6, ORM, persistence)
+    name: Guardrails (Policy C-1..C-6, identity root, ORM, persistence)
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
+    if: always()
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
+      # 与 Guardrails Extended 同一做法：HIGH/CRITICAL 动作带强制审计证据
+      # （reraise=True），项目根 audit_store.db 是冻结的 HC-01 证据库，
+      # AuditStore 拒绝默认回落到它。本 job 没有证据通道时，C-3 的人工授权
+      # 窗口会在评估阶段 fail-closed 成 verdict=error（实测 run 41774999758：
+      # PolicyDeniedError verdict=error rule=human_sovereignty），看起来像策略
+      # 缺陷，实际是"没有审计库"。把根钉到 runner temp，后续每个 run 步骤继承。
+      - name: Pin workspace/audit/alerts roots to runner temp
+        run: |
+          echo "LIUHAO_WORKSPACE_ROOT=$RUNNER_TEMP/liuhao-ws" >> "$GITHUB_ENV"
+          echo "AUDIT_DB_PATH=$RUNNER_TEMP/liuhao-audit/audit.db" >> "$GITHUB_ENV"
+          echo "LIUHAO_ALERTS_STORE_PATH=$RUNNER_TEMP/liuhao-alerts.json" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/liuhao-ws" "$RUNNER_TEMP/liuhao-audit"
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install alembic sqlalchemy
+          # alembic 走**声明面**而不是裸 pip install：pyproject.toml 现已有
+          # [migrations] extra（alembic>=1.19.2）。此前这里是裸
+          # `pip install alembic sqlalchemy`（不钉版本），而 alembic 在任何声明面
+          # 里都不存在 —— 靠"记得手写这一行"活着的依赖，任何新 job 漏写就静默
+          # 降级。sqlalchemy 不再单独装：它已是运行期依赖。
+          pip install -e .[migrations]
 
       - name: Verify C-1 whitelist adjudication
         run: python scripts/verify_policy_c1.py
 
       - name: Verify D8 risk classification wiring
         run: python scripts/verify_d8_risk_classification.py
+
+      - name: Verify CRITICAL-5 watchdog coverage (no silent SKIP on red upstream)
+        run: python scripts/verify_critical5_watchdog.py
 
       - name: Verify C-2 enforcement switch is not armed by code
         run: python scripts/verify_c2_enforcement.py
@@ -203,7 +362,60 @@ jobs:
       # into "wait for a human", so this fails CI at the moment such a call
       # site is written instead of surfacing as a production incident.
       - name: Verify every armed action is inert on production paths (C-6)
-        run: python scripts/verify_armed_actions_are_inert.py
+        # exit 3 = NOT VERIFIED (TestClient / gateway app unavailable, so
+        # reachability was never measured). Warn loudly, never go green silently.
+        run: |
+          set +e
+          python scripts/verify_armed_actions_are_inert.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): armed-action reachability could not be measured (TestClient/gateway app unavailable)"
+            exit 0
+          fi
+          exit "$code"
+
+      # A4: decision / enforcement / evidence must be one event with one
+      # correlation_id. This gate used to be wired as "0 or 2 passes" because a
+      # probe was UNVERIFIED (known CRIT-1C gap). The gap is now closed: re-run
+      # on 2026-11-08 prints "ALL GREEN — A4 same-decision-point closure proven
+      # (9 probes)" and exits 0. The 2-tolerant branch was therefore stale and
+      # could hide a real closure regression, so it is tightened to require 0.
+      - name: Verify A4 same-decision-point closure (must be ALL GREEN)
+        run: |
+          set +e
+          python scripts/verify_same_decision_point_closure.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          echo "::error ::A4 closure gate must exit 0 (ALL GREEN); got $code. If 2, a probe is UNVERIFIED again -- prove the gap really reopened before re-widening this gate."
+          exit 1
+
+      # AGENT SCIENCE GATE (causal ablation): is the multi-agent / memory layer
+      # REAL or a LABEL? Wired deliberately even though it currently exits 2:
+      # exit 2 means KNOWN RED — the multi-agent layer is causally DECORATIVE
+      # (outcome is bit-identical with 0 / 3 real / 3 ghost agents; a planted
+      # memory directive changes nothing). This is a tracked known product gap,
+      # not a green pass. An unwired guard protects nothing, and hiding a known
+      # gap behind an unwired script is worse than showing it. So: 0 or 2 passes
+      # (2 = KNOWN RED, visible), 1 (a real harness regression — positive
+      # control / label separation / memory-write visibility failed) fails. When
+      # the product routes execution through the assigned agent (or feeds
+      # recall() into decisions), tighten this to require 0.
+      - name: Verify multi-agent / memory layer is causally real (not decorative)
+        run: |
+          set +e
+          python scripts/verify_agent_collaboration_causal.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; then
+            echo "agent-collaboration gate: no harness regression (exit $code; 2 = KNOWN RED decorative layer, tracked)"
+            exit 0
+          fi
+          echo "::error ::agent-collaboration gate harness BROKEN (exit $code)"
+          exit 1
 
       - name: Verify AI-layer audit delegation (probe self-validation)
         run: python scripts/verify_ai_layer_audit.py
@@ -216,8 +428,14 @@ jobs:
 
       # Licenses drift silently (Redis v8 -> AGPLv3, Elasticsearch -> SSPL).
       # A version pin never tells you that; this does.
+      #
+      # 输入必须显式写清楚：CI 这里只有 `pip install -e .[tests]` 的开发环境，
+      # 含 dev extras，**不等于随包集**，所以用 --env（许可证不一致/受限无
+      # acknowledged 仍判红；未登记项只告警）。发布门禁必须用
+      # `--dist-path dist/payload/app/runtime/Lib/site-packages`：那个模式下
+      # 「随包有、登记表无」直接 FAIL，这正是 2026-11-08 补记 68 个随包组件的原因。
       - name: Verify OSS component licenses against oss-registry.yaml
-        run: python scripts/verify_oss_licenses.py
+        run: python scripts/verify_oss_licenses.py --env
 
       # oss-ecosystem/capabilities/*.yaml 的字段契约。schema 从 2026-09-13 起就写着
       # 「让『每个发现的项目都必须分析』变成**可校验**的事」并指名了 pipeline/validate_entries.py，
@@ -232,8 +450,339 @@ jobs:
       # never called (msg_bus, MultiTierCache, BatchCache, Evaluator,
       # generate_metrics). An orphan is not automatically a bug, but an orphan
       # nobody decided about is. This makes the decision explicit and mechanical.
+      #
+      # ⚠️ Known limitation (PHASE 3.6, measured — see
+      # D:/WorkBuddyFiles/LIUHAO-Phase3.6-Evidence/p36_tm_orphan_guard_control.py):
+      # this guard's reachability test is a regex over raw file text, so it counts
+      # a DOCSTRING mention as a call site and conflates modules sharing a final
+      # path segment. src.identity (zero importers) is therefore classified as
+      # "referenced" and cannot be flagged by it. T-M's single-identity-root guard
+      # below is AST-based and does not have that hole; the two are complementary.
       - name: Verify every zero-reference module is acknowledged
         run: python scripts/verify_no_undocumented_orphans.py
+
+      # The published HTTP contract must equal what the code actually serves.
+      # openapi.yaml was found (2026-10-04) to declare 6 paths of which ZERO
+      # existed at runtime, while omitting all 58 real paths -- i.e. it described
+      # an API the gateway does not implement. A declared-but-absent endpoint is
+      # an *invented capability*, which is worse than a stale doc: it invites an
+      # integrator or an agent to build against a surface that was never there.
+      # This re-derives the spec from the in-process app and fails on any ghost,
+      # omission, or HTTP-method disagreement. Regenerate deliberately with
+      # `python scripts/verify_openapi_contract.py --write`; never by hand.
+      - name: Verify published OpenAPI contract matches the running gateway
+        run: python scripts/verify_openapi_contract.py
+
+      # Countable claims in the authoritative kernel list must be re-derivable.
+      # docs/spec/KERNEL-CANON.md calls itself "the single authoritative source",
+      # yet its v1.0 table had14/14 wrong line counts (audit claimed 423, actually
+      # 2,288 in __init__.py), and the total printed beneath it ("合计 6,391") did
+      # not match the sum of its own rows (6,581) -- a self-contradiction on one
+      # page of the file everything else defers to. A count nobody can recompute
+      # is indistinguishable from a guess. This re-derives every kernel row from
+      # `git show HEAD:` and fails on any drift or self-inconsistency.
+      - name: Verify countable claims in KERNEL-CANON against the committed code
+        run: python scripts/verify_doc_count_claims.py
+
+      # A relative markdown link is a claim that the thing it names is over
+      # there. docs/ARCHITECTURE.md linked `../CODEX-CONTRACT.md` twice -- that
+      # file lives in docs/, not the repo root -- and one of those links sat in
+      # the "reader should read this first" navigation table, so the entry point
+      # it recommended to an AI coding agent was dead. docs/archive/ is excluded
+      # BY ITS OWN declared policy ("preserve as-is"): its file:/// absolute
+      # links are a faithful record of the paths as they were, and rewriting
+      # history to satisfy a linter would be the worse lie.
+      - name: Verify no relative markdown link dangles
+        run: python scripts/verify_doc_links.py
+
+      # docs/README.md is the reader's map: it must actually index the docs
+      # tree. Measured 2026-10-04 it named only 38 of 135 markdown files and
+      # listed 9 of 15 directories in its structure block -- so a reader who
+      # trusts the index concludes the project has no governance charter, no
+      # blueprint-upgrade packages, and no ADR set. This makes every live doc's
+      # presence (and every path the index claims) mechanical, so a future edit
+      # that silently drops 70% of the tree turns CI red instead of misleading.
+      - name: Verify docs/README.md indexes the whole docs tree
+        run: python scripts/verify_docs_index_coverage.py
+
+      # PHASE 3.6 / T-M (F29 6 and F30 1): exactly one identity implementation may
+      # be imported. Two modules both described themselves as the "single Identity
+      # Authority" and neither said which one that was -- an undeclared second
+      # identity root is a trust-root ambiguity, not redundancy. This parses every
+      # .py file for real import statements, so a prose mention can neither
+      # satisfy nor violate it.
+      - name: Verify the single authoritative identity implementation
+        run: python scripts/verify_single_identity_root.py
+
+      # PHASE 3.6 / A1 + A3 (R-15b / F29): the identity trust root must be
+      # structurally incapable of the day-one deterministic privilege escalation
+      # (a human registry row taking an agent's slot), and -- when the integrity
+      # key is configured -- must refuse unauthenticated rows fail-closed. This
+      # drives the REAL IdentityManager against a REAL on-disk store (both the
+      # file and SQLite backends); it is not a unit test and it mocks nothing.
+      - name: Verify R-15b identity trust-root containment (runtime)
+        run: python scripts/verify_r15b_identity_trust_root.py
+
+      # PHASE 3.6 / P0-3 (boss decision 2026-09-22): the human registry integrity
+      # posture must be observable / auditable / deployment-gate aware. This
+      # surfaces it; it exits 0 by default (report only) so existing deployments
+      # without a key are not broken, but a strict gate can opt into hard-fail.
+      - name: Verify human registry integrity posture (deployment gate aware)
+        run: python scripts/verify_human_registry_integrity_state.py
+
+      # PHASE 3.6 / P0-4 (A2): the audit principal identity must not collapse --
+      # before the A2 fix every @kernel_action wrote the literal "kernel" as the
+      # subject, so a human approval and an agent action were indistinguishable
+      # in the only durable record. This drives the REAL @kernel_action execution
+      # path against a REAL on-disk (SQLite, hash-chained) audit store and
+      # re-reads the durable record independently. It mocks nothing.
+      - name: Verify A2 audit principal identity does not collapse (runtime)
+        run: python scripts/verify_a2_audit_principal_identity.py
+
+      # PHASE 3.6 / P0-5 (A2 + F33): the authorization source -- the actor
+      # _adjudicate returns as "who did / authorised this" -- must be the SAME
+      # subject written to the durable audit record, with no drift and no
+      # sovereignty-washing (a refused sovereignty claim must not read as a live
+      # human window). Drives the REAL CRITICAL @kernel_action capability.retire
+      # against a REAL on-disk (SQLite, hash-chained) audit store, opens REAL
+      # sovereignty windows, and re-reads the durable record independently.
+      - name: Verify P0-5 authorization source integrity (runtime)
+        run: python scripts/verify_p05_authorization_source_integrity.py
+
+      # PHASE 3.6 / P0-6 (F33 / D-2): a sovereignty window carries only a
+      # grant_id snapshot; the authorization it grants must be RE-RESOLVED from
+      # the grant registry at every adjudication. A grant revoked / expired /
+      # issued to a different principal after the window opened must fail-closed
+      # to the service actor (no stolen-human approval). Drives the REAL CRITICAL
+      # @kernel_action capability.retire against a REAL on-disk hash-chain store
+      # with REAL issued/revoked grants, and re-reads the record independently.
+      - name: Verify P0-6 revocable-grant read-path (F33) runtime
+        run: python scripts/verify_p06_revocable_grant_read_path.py
+
+      # PHASE 3.6 / U42 (authorization integrity): the autonomous actor must
+      # inherit the default-deny kernel, and every WorldInterface construction
+      # must set an explicit actor= so it cannot silently fall back to the human
+      # default-allow posture. Static enforcement of the U42 invariant; it also
+      # fails CI if the central autonomous execution-fence gate or the
+      # WorldInterface deny line is ever removed (a gate that vanished must be loud).
+      - name: Verify U42 autonomous-actor default-deny + explicit actor (static)
+        run: python scripts/verify_u42_autonomous_actor.py
+
+      # PHASE 3.6 / U53 (Root of Trust: no one signs the chain head). This gate is
+      # a self-test of the Root-of-Trust chain-head signing primitive
+      # (src/kernels/audit/root_of_trust.py): it proves the capability EXISTS and
+      # is fail-closed (round-trip, tamper rejected, wrong-key rejected, unknown
+      # sig_alg fail-closed, opt-in unconfigured refuses to sign). It does not
+      # assert the live HC-01 chain is signed in prod -- that integration is the
+      # next step, gated on HC-01 stabilisation.
+      - name: Verify U53 Root-of-Trust chain-head signing primitive (self-test)
+        # exit 3 = NOT VERIFIED (no openssl ts engine), not a pass.
+        run: |
+          set +e
+          python scripts/verify_u53_root_of_trust.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): U53 root-of-trust self-test needs an openssl ts engine; the RFC 3161 assertion was not obtained"
+            exit 0
+          fi
+          exit "$code"
+
+      # PHASE 3.6 / U53 HA (high availability): a single TSA is a SPOF. This gate
+      # is a self-test of the K-of-M quorum TSA (src/kernels/audit/trusted_timestamp.py):
+      # a 3-member / quorum-2 authority mints + verifies a bundle; below-threshold
+      # rejects; an unknown-TSA token is ignored; a tampered payload fails every
+      # member; a member outage is tolerated (unless require_full); and the quorum
+      # bundle composes with the U53 RoT attestation fail-closed. It does not
+      # assert the live HC-01 chain is quorum-timestamped in prod -- that
+      # integration is the next step, gated on HC-01 stabilisation.
+      - name: Verify U53 high-availability K-of-M quorum TSA (self-test)
+        # exit 3 = NOT VERIFIED (no openssl ts engine), not a pass.
+        run: |
+          set +e
+          python scripts/verify_u53_tsa_quorum.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): U53 quorum TSA self-test needs an openssl ts engine; quorum assertions were not obtained"
+            exit 0
+          fi
+          exit "$code"
+
+      # PHASE 3.6 / U51 (no single value commits its own history => cheap
+      # notarization/inclusion-proof infeasible): this gate is a self-test of the
+      # chain-head notary (src/kernels/audit/inclusion_proof.py): a Merkle
+      # accumulator over signed heads so any historical signed head carries a
+      # trustless inclusion proof into the canonical timeline. It proves the
+      # capability EXISTS and is fail-closed (round-trip, tamper rejected,
+      # uncheckpointed-head refused, tampered-persisted-file refused, forged root
+      # detected by self-consistency), and that the published root composes with
+      # the U53 RoT (the root is itself RoT-attested). Live HC-01 notarisation is
+      # the next step, gated on HC-01 stabilisation.
+      - name: Verify U51 chain-head notary / inclusion-proof primitive (self-test)
+        run: python scripts/verify_u51_inclusion_proof.py
+
+      # PHASE 3.6 / U51 external anchor: the notary's PUBLISHED ROOT -- and the
+      # notary file -- live under the operator's control, so an operator could
+      # rewrite the root itself. This gate is a self-test of the transparency-log
+      # anchor (src/kernels/audit/transparency_anchor.py): each published notary
+      # root is committed to an operator-INDEPENDENT, signed, append-only log, so
+      # an auditor can verify a root was anchored by a key the operator does not
+      # hold. Fail-closed (tampered root / forged signature / broken chain
+      # linkage / tampered persisted file rejected). Live HC-01 anchoring is the
+      # next step, gated on HC-01 stabilisation.
+      - name: Verify U51 transparency-log anchor of published notary roots (self-test)
+        run: python scripts/verify_u51_transparency_anchor.py
+
+      # PHASE 3.6 / U51 REAL external anchor: the local-key "operator-independent"
+      # log in transparency_anchor.py REGENERATES its key every run, so it is not
+      # a true external anchor. This gate is a self-test of the REAL external
+      # anchor (src/kernels/audit/external_anchor.py): the trust anchor is an
+      # EXTERNAL public key PINNED OUT-OF-BAND (never generated by the audit
+      # process), and the proof format is RFC 6962 (Merkle inclusion proof + signed
+      # tree head). An auditor verifies against the pinned external key WITHOUT
+      # trusting the operator. Fail-closed (tampered root / forged STH signature /
+      # missing external key rejected); a reference/CI log is reported honestly as
+      # SELF-ATTESTED, never as "independently verified". Live HC-01 external
+      # anchoring is the next step, gated on HC-01 stabilisation.
+      - name: Verify U51 REAL external transparency-log anchor (RFC 6962, out-of-band key) (self-test)
+        run: python scripts/verify_u51_external_anchor.py
+
+      # PHASE 3.6 / U51C (external anchor key ceremony): the U51X gate RUNTIME-
+      # GENERATES the reference key, so it does not prove the out-of-band
+      # provisioning workflow that external_anchor.py actually requires (the
+      # trust anchor must be PINNED OUT-OF-BAND, never generated by the audit
+      # process). This gate consumes the pinned, ceremony-issued external key and
+      # verifies anchored receipts against it using ONLY the public key (the
+      # production security property: the audit runtime never holds the external
+      # private key). Fail-closed: ceremony self-signature possession proof,
+      # anchored-log consistency, honest SELF-ATTESTED reporting (no false
+      # independence claim), tampered anchored log refused, missing external key
+      # refused. The committed public artifacts live in config/external_anchor/
+      # (the private key is gitignored).
+      - name: Verify U51 external anchor key ceremony (pinned out-of-band key) (self-test)
+        run: python scripts/verify_u51_external_anchor_ceremony.py
+
+      # PHASE 3.6 / FENCE (Q3.5 / #99): the single-writer fence is the most
+      # load-bearing audit-integrity invariant after the hash chain, but it was
+      # only covered by pytest -- NOT by a fail-closed CI gate and NOT by the
+      # unified verify_audit_integrity.py aggregate. So a regression of the
+      # append-path fence wiring would leave the canonical aggregate green. This
+      # gate drives the REAL AuditStore on a hermetic temp DB and proves both
+      # that normal writes succeed AND that a fenced/intruder writer is refused
+      # (StaleWriterError). Fail-closed: rc 2 on any violation. It is folded into
+      # the unified aggregate as gate FENCE.
+      - name: Verify audit single-writer fence on the live append path (self-test)
+        run: python scripts/verify_fence_single_writer.py
+
+      # PHASE 3.6 / F6 (RCA-1 recurrence guard, HC-01 team-owned engineering):
+      # the unified aggregate below drives HERMETIC temp stores or re-derives the
+      # seven JSON chains -- NONE of them open the actual DEPLOYED
+      # audit_store.db. So a re-fork of the live store (concurrent non-atomic
+      # seq assignment -> duplicate seq, broken hash-chain joins) would go
+      # UNNOTICED by CI. This gate reads the LIVE store READ-ONLY (it never
+      # writes/repairs/restores/migrates/rebuilds it -- those are frozen
+      # human-sovereign HC-01 decisions) and asserts verify_integrity() ok AND
+      # duplicate_seq_count() == 0. Exit 3 = SKIP (no deployed store here) --
+      # NOT a pass. CI prints an explicit warning for 3 and still fails on 2.
+      # The live check must run for real in the deployed soak / release
+      # environment, which actually has audit_store.db.
+      - name: Verify live audit_store.db is not forked (SKIP=3 without deployed store)
+        run: |
+          set +e
+          python scripts/verify_audit_chain_no_fork.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::live no-fork gate SKIPPED (exit 3 = NOT VERIFIED): no deployed audit_store.db in this hermetic CI. Run it in the deployed soak/release environment."
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error ::live no-fork gate FAILED (exit $code) -- RCA-1 fork/tamper signal"
+            exit 1
+          fi
+
+      # PHASE 3.6 / UNIFIED audit-integrity aggregate: a single fail-closed gate that
+      # re-derives ALL six P08/U51/U53 gates in separate subprocesses (builder-
+      # decoupled -- the builder cannot fake a gate it does not run) and fails the
+      # whole command if any one fails. Closes the gap that independent_verification.py
+      # (G10) does NOT compose the U51/U53 gates. Emits a tamper-evident record_hash.
+      # Exit 3 = at least one sub-gate NOT VERIFIED (openssl ts unavailable / no
+      # live store). CI must not render that as green: print an explicit warning.
+      # FAIL (2) still fails the job; PASS (0) stays strict.
+      - name: Verify unified audit-integrity aggregate (PASS/FAIL/SKIP explicit)
+        run: |
+          set +e
+          python scripts/verify_audit_integrity.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::audit-integrity aggregate SKIPPED some gates (exit 3 = NOT VERIFIED). Inspect the PASS/FAIL/SKIP summary above; do not read this as all-green."
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error ::audit-integrity aggregate FAILED (exit $code)"
+            exit 1
+          fi
+
+      # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
+      # sovereign override assertion and an independent verifier's confirmation --
+      # must explicitly record its signature algorithm (sig_alg) and verification
+      # must dispatch on it. Unknown algorithms fail-closed with NO default
+      # fallback. Generates REAL RSA-3072 signatures, persists them, re-reads from
+      # disk independently, and proves sig_alg == actual verification algorithm.
+      - name: Verify P0-7 B2 dual-signature evidence sig_alg (runtime)
+        run: python scripts/verify_p07_dual_signature_sig_alg.py
+
+      # PHASE 3.6 / P0-8b (D2): the HASH-CHAIN VERIFICATION MATRIX. Declares,
+      # for EVERY chain HC-01..HC-11, the five attributes the containment
+      # requires (hash_alg / canonicalization / prev_hash participation /
+      # verify path / fail-closed) and PROVES each at runtime against the real
+      # code. Unconfirmable facts are reported as UNVERIFIED and are never
+      # filled in by assumption; known defects are listed as GAPS.
+      - name: Verify P0-8b hash-chain matrix HC-01..HC-11 (runtime)
+        run: python scripts/verify_p08b_chain_matrix.py
+
+      # PHASE 3.6 / P0-8b + P0-8c (D2): every on-disk JSON hash chain
+      # (HC-02..HC-08) must declare its algorithm (hash_alg) explicitly and
+      # verify by dispatching on that declared name -- unknown algorithms fail
+      # closed with NO default fallback. The script performs a REAL filesystem
+      # round-trip per chain (independent reload + tamper + unknown-alg) and
+      # exits non-zero on any violation, so this is the bundle / deployment
+      # rebuild gate, not a no-op.
+      - name: Verify P0-8b/8c hash-chain sig_alg (runtime, deployment gate)
+        run: python scripts/verify_p08_hash_chain_sig_alg.py
+
+      # PHASE 3.6 / P0-8 technical closure: the FINAL STATUS MATRIX for every
+      # chain HC-01..HC-11, derived at runtime from eight dimensions
+      # (declaration / canonicalization / prev_hash rule / persistence /
+      # verification / tamper detection / unknown-algorithm behaviour /
+      # migration state). Status vocabulary is closed: COMPLIANT, LEGACY,
+      # UNVERIFIED, BLOCKED -- never a fuzzy "mostly done".
+      #
+      # Each chain also DECLARES the status it is expected to hold, so if
+      # runtime evidence derives something different the step goes red. That is
+      # what keeps this matrix from decaying into decoration.
+      - name: Verify P0-8 hash-chain final status matrix HC-01..HC-11 (runtime)
+        run: python scripts/verify_p08_final_status_matrix.py
+
+      # Compliance-liability claim linting (scripts/lint_audit_claims.py).
+      # Standalone, pytest-free verifier: proves the rule's hit/miss behaviour so
+      # the claim scanner cannot silently stop catching liability language.
+      # Wired here because an unwired gate protects nothing -- the guardrail
+      # meta-test (tests/test_guardrail_scripts.py) rejects any verify_*.py that
+      # no workflow invokes.
+      - name: Verify compliance-liability claim lint rules (standalone)
+        run: python scripts/verify_compliance_lint.py
+
+      # Alert-rules provenance (alertconfig-fix): every Prometheus alert must key
+      # on a metric that src/ actually increments/sets (or that a running exporter
+      # provides), else the alert can never fire and reads as coverage. This is the
+      # regression gate for configs/observability/{prometheus.yml,rules/*.yml}.
+      # AST-based, not a hardcoded allowlist, so a dead metric cannot be silently
+      # re-added. Must be wired here or test_guardrail_scripts.py fails it.
+      - name: Verify Prometheus alert rules only reference produced metrics
+        run: python scripts/verify_alert_rules.py
 
       - name: Migrate a scratch database
         run: |
@@ -250,15 +799,393 @@ jobs:
           DATABASE_URL: sqlite:///./ci_guardrail.db
         run: python scripts/verify_persistence.py
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # Guardrails, extended set: 28 more `scripts/verify_*.py` gates that were
+  # written, cited as evidence in PRODUCT-READINESS.md, and yet never invoked
+  # by any workflow -- i.e. protecting nothing. An unwired guardrail is decay.
+  #
+  # Split into its own job (not folded into `guardrails` above) because that job
+  # already carries 41 verify_* gates against a 15-minute budget; adding 28 more
+  # would turn a timeout into a false red.
+  #
+  # GUARDRAILS-GATE-COUNT: 41 / GUARDRAILS-EXTENDED-GATE-COUNT: 29 -- both are
+  # parsed by tests/test_guardrail_scripts.py and compared against counts
+  # DERIVED FROM THE PARSED YAML (not from a line range). The first version of
+  # this comment said 39, because it was measured with
+  # `sed -n '<line range>' | grep -c 'run: python scripts/verify_'`, which only
+  # sees single-line `run:` steps and silently misses every multi-line `run: |`
+  # block. 41 is the real number. Do not go back to line-range counting.
+  #
+  # HISTORY -- this job used to say 4 gates stayed unwired on purpose because a
+  # GitHub-hosted runner could not produce a valid verdict for them. That is
+  # still the reason they need help, but "cannot run here" is not a licence to
+  # run nowhere. All four are now invoked through a real `run:` field, and none
+  # hides behind DIAGNOSTIC_REPORTERS or `|| true`:
+  #
+  #   * verify_image_build              -> ci.yml `build` (docker build + boot)
+  #   * verify_deployment_gate_vars     -> this job's last step
+  #   * verify_observability_loop       -> deployed-stack-verification.yml
+  #   * verify_deployed_product_closure -> deployed-stack-verification.yml
+  #
+  # The last two need a live stack (Prometheus + Alertmanager; docker compose +
+  # a headless browser), so they run nightly and by hand, never per push. That
+  # trade-off is declared in tests/test_guardrail_scripts.py
+  # (SCHEDULED_ONLY_GATES) instead of being discovered later, and the ledger
+  # keeps them as blocked-by-host for the per-push path. The first two are
+  # invoked from jobs that run on every push, so their ledger entries were
+  # deleted rather than kept -- a stale entry is the mirror image of a false
+  # green.
+  #
+  # SEPARATE, NEWER CLASS -- "invoked but unreachable". A gate can be named in a
+  # workflow step and still run zero times for our work, when every job that
+  # invokes it sits behind triggers or an `if:` that exclude the working branch.
+  # `verify_go_readiness.py` is the live instance: it is invoked only from
+  # ci-cd.yml:build, and ci-cd.yml triggers on main/develop only, so it has
+  # never run on p36. Its blocker is a wiring/ownership decision, not a runner
+  # capability. Recorded under "What is NOT in this ledger" in
+  # docs/ci/gate-exemptions.md (pending-owner: g9-deploy, was entry 5).
+  #
+  # `verify_deploy_readiness` was on this list until it was wired at the
+  # `guardrails-extended` step below, after its alembic-invocation portability
+  # defect was fixed. Kept out of the list deliberately: a stale entry here
+  # reads as "known broken" when the gate is in fact running.
+  #
+  # NOTE ON FORMATTING: the names above are written WITHOUT the `.py` suffix.
+  # Comments are not read by the meta-guardrail at all (it reads only
+  # command-bearing fields), so the suffix-less form can no longer manufacture
+  # a false green -- that came from the older raw-text grep, which is gone.
+  # The form is kept because it marks these four as "wired with extra
+  # conditions", unlike an ordinary per-push gate.
+  #
+  # WHAT verify_deployment_gate_vars REPORTS HERE: now a per-push gate, and its
+  # exit 1 is a TRUE verdict, not a host gap. Measured 2026-10-07: 11 findings --
+  # unclassified gate-variable candidates (LIUHAO_CONSOLE_DIST,
+  # LIUHAO_WORKSPACE_ROOT) plus unarmed seed gates. They are open human
+  # decisions about that script's SEED_GATES/ALLOWLIST tables; moving them there
+  # is the fix, not loosening this job. Gitignored local artifacts (.env,
+  # LiuHao-O/docker-compose.yml) are surfaced as INFO, not findings, so the
+  # verdict does not depend on the machine that runs it.
+  #
+  guardrails-extended:
+    name: Guardrails Extended (audit/identity/execution/employee/user-surface)
+    runs-on: ubuntu-latest
+    needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
+    if: always()
+    # Budget headroom: this job now runs 27 verify_* gates. The four added when
+    # closing the meta-guard gap measure ~223s together on this box (the
+    # dependency-declaration surface gate alone is ~206s), on top of 23 existing
+    # steps. 25 min left too little margin, and a timeout here reads as a FALSE
+    # RED -- the exact failure this job's own comment warns about ("adding 16
+    # more would turn a timeout into a false red"). Raised to 40 to keep the
+    # gate trustworthy; a real CI timing run should retune this with data.
+    timeout-minutes: 40
+
+    # Isolation, belt-and-braces. These gates redirect persistence themselves,
+    # but a gate that ever forgets must not land artifacts in a real workspace
+    # or a real audit DB: verify_p6_e2e_file_creation.py once wrote test
+    # artifacts into the production workspace because the workspace root and
+    # the assertion target diverged. Pinning the roots here makes that class of
+    # mistake impossible for this job.
+    #
+    # NOTE: ${{ runner.temp }} is NOT available in a job-level `env:` block
+    # (only github/inputs/matrix/needs/secrets/strategy/vars contexts are).
+    # The first step below writes the three paths into $GITHUB_ENV using the
+    # shell's $RUNNER_TEMP, so every subsequent `run:` step inherits them.
+    # This is the only portable way to pin runner-scoped paths job-wide.
+
+    steps:
+      - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Pin workspace / audit / alerts roots to runner temp before any gate
+      # runs. $GITHUB_ENV propagates to all later steps in this job.
+      - name: Pin workspace/audit/alerts roots to runner temp
+        run: |
+          echo "LIUHAO_WORKSPACE_ROOT=$RUNNER_TEMP/liuhao-ws" >> "$GITHUB_ENV"
+          echo "AUDIT_DB_PATH=$RUNNER_TEMP/liuhao-audit/audit.db" >> "$GITHUB_ENV"
+          echo "LIUHAO_ALERTS_STORE_PATH=$RUNNER_TEMP/liuhao-alerts.json" >> "$GITHUB_ENV"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          # 同上：alembic 走声明面的 [migrations] extra，不再裸装。
+          pip install -e .[migrations]
+
+      - name: Create the isolated workspace / audit roots
+        run: |
+          mkdir -p "$LIUHAO_WORKSPACE_ROOT"
+          mkdir -p "$(dirname "$AUDIT_DB_PATH")"
+          echo "workspace root: $LIUHAO_WORKSPACE_ROOT"
+          echo "audit db path:  $AUDIT_DB_PATH"
+
+      # ── Audit truthfulness & traceability ──────────────────────────────
+      # A policy verdict of deny must never be written to the durable record as
+      # outcome=success. This is the defect class that hid refusals behind a
+      # green audit trail; it drives the real @kernel_action decorator against
+      # the real policy engine and a real hash-chained store.
+      - name: Verify a policy DENY is never recorded as outcome=success
+        run: python scripts/verify_audit_truthfulness.py
+
+      # The same lie, one layer up: identity.grant/revoke report a refusal by
+      # `return False`, which the decorator cannot distinguish from success.
+      - name: Verify identity grant/revoke refusals are audited as refusals
+        run: python scripts/verify_identity_denial_audit.py
+
+      # Traceability: the audit chain could prove "an action executed" but not
+      # "this goal executed it". Proves kernel-action events carry the GOAL's
+      # correlation id, not a fresh random one.
+      - name: Verify goal -> action audit correlation id propagation
+        run: python scripts/verify_audit_goal_correlation.py
+
+      # The planner's task loop must run through the audited @kernel_action path
+      # (ai.execute_planner_task) and its durable state must round-trip.
+      - name: Verify the planner loop is audited and its state round-trips
+        run: python scripts/verify_planner_audit_loop.py
+
+      # ── Real execution honesty ─────────────────────────────────────────
+      # Planner -> Execution -> Verify -> Audit, with a real file_write and a
+      # real python_compute: proves the artifact and the audit record are real,
+      # and that with no executor injected the kernel does NOT claim a run.
+      - name: Verify planner->execution->verify->audit closes end-to-end honestly
+        run: python scripts/verify_e2e_real_execution.py
+
+      # Verifier.verify must re-check the filesystem itself, not trust the
+      # executor's `{"written": path}` claim -- the anti-self-proving fix.
+      - name: Verify the Verifier does not trust the executor's self-report
+        run: python scripts/verify_execution_independent_verification.py
+
+      # Production wiring path: the same capability executor the gateway
+      # injects, plus P4 workspace-containment refusal on an escaping write.
+      - name: Verify P6 real artifact creation and P4 workspace containment
+        run: python scripts/verify_p6_e2e_file_creation.py
+
+      # Real execution vs fail-closed, plus policy/resource denial truthfulness
+      # and the mark_action_denied three-state mechanism.
+      - name: Verify P6 real execution vs fail-closed honesty
+        run: python scripts/verify_p6_real_execution.py
+
+      # Full user-facing chain with no simulated-execution opt-in: a real
+      # side effect, a real compute result, and an honest failure (never a
+      # silent success) for a capability the system cannot serve.
+      - name: Verify real-execution E2E honesty with no simulated opt-in
+        run: python scripts/verify_real_execution_e2e.py
+
+      # The single-writer fence must be armed without killing boot: it has to
+      # survive in-process startup calls AND stay fail-closed for rogue
+      # executors. Previously arming it made the gateway die on boot.
+      - name: Verify the executor fence survives boot and stays fail-closed
+        run: python scripts/verify_fence_boot_survival.py
+
+      # What "armed" actually means, as executable fact rather than prose.
+      # _fence_enabled_for() checks the env var BEFORE the allow-list, so an
+      # empty _FENCE_ACTIONS does NOT mean "nothing is armed" -- that misreading
+      # already produced one false claim. Conversely the fence provides
+      # identity + audit + deny-without-context, and NOT mutual exclusion:
+      # without LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS a second executor is
+      # admitted. This gate pins both halves so neither claim can drift.
+      - name: Verify executor-fence arming semantics and the exclusion boundary
+        run: python scripts/verify_executor_fence_armed.py
+
+      # ── User-facing surfaces ───────────────────────────────────────────
+      # The audit mechanism was always real but no human could reach it.
+      # Proves /v1/audit/* is served over real HTTP, filters by correlation_id,
+      # reports ok=false on a tampered throwaway copy (not a stub that always
+      # answers True), 401s without a token, and mounts no mutation route.
+      - name: Verify the user-facing audit surface (query + tamper detection + 401)
+        run: python scripts/verify_audit_user_surface.py
+
+      # Same for identity: real principals surfaced honestly, empty-vs-unknown
+      # distinguished (503 / warnings instead of a clean-looking empty list),
+      # 401 without a token, and no mutation route under /v1/identity.
+      - name: Verify the user-facing identity/permission surface
+        run: python scripts/verify_identity_user_surface.py
+
+      # Operational closure: a real user hands real work over real HTTP (real
+      # uvicorn socket, real ASGI stack, real httpx client) and gets a real
+      # result -- not an in-process shortcut.
+      - name: Verify a real user gets a real result over real HTTP
+        run: python scripts/verify_http_full_closure.py
+
+      # ── AI Employee ────────────────────────────────────────────────────
+      # The employee is a real worker bound to the loop: goal ownership, BUSY
+      # -> IDLE, and a real cancellation (never faked as a success).
+      - name: Verify AI Employee goal binding and real cancellation
+        run: python scripts/verify_employee_goal_binding.py
+
+      # EmployeeStore must survive a process restart (employees / agents /
+      # tasks), with no network call.
+      - name: Verify EmployeeStore survives a restart
+        run: python scripts/verify_employee_persistence.py
+
+      # ── Meta-guard closure: gates that existed but ran nowhere ──────────
+      # These four carry a real pass/fail contract and can exit non-zero, but
+      # no workflow invoked them, so they protected nothing (they were only
+      # named in comments, which the meta-guard deliberately does not count as
+      # wiring). Wired here so tests/test_guardrail_scripts.py::
+      # test_every_gate_script_is_wired_into_ci can go green honestly.
+
+      # Report-only by design (exit 0 regardless) but it DOES have an opt-in
+      # failure path, so it is wired rather than allowlisted: an unwired probe
+      # nobody ever runs is a comment, not a measurement.
+      - name: Inventory public zero-caller decision functions (report-only probe)
+        run: python scripts/verify_zero_caller_decision_functions.py
+
+      # Report-only by default; --strict is the gate. Wired without --strict so
+      # the default probe runs every commit; the FP-rate contract is documented
+      # in the script and enforced by its own tests.
+      - name: Prove the employee layer cannot silently self-improve (report-only probe)
+        run: python scripts/verify_employee_no_learning.py
+
+      # Causal ablation across the decomposer's recognised goal shapes: are the
+      # uncovered shapes honestly reported rather than hidden. Exits 0 today.
+      - name: Verify agent causality coverage across goal shapes
+        run: python scripts/verify_agent_causality_coverage.py
+
+      # The declaration-surface gate: every third-party import in src/ is
+      # declared, and every pytest job installs what it needs. ~3.5 min (measured
+      # 206s), so it sits at the end of this 25-minute-budget job.
+      - name: Verify dependency declaration surface (src imports declared + CI installs them)
+        run: python scripts/verify_dependency_declaration_surface.py
+
+      # The dashboard roster must surface persisted employees, not kernel /
+      # layer modules dressed up as employees -- the "modules as staff" lie.
+      - name: Verify the roster surfaces real employees, not modules
+        run: python scripts/verify_roster_real_employees.py
+
+      # ── Invisible-gate closure (autonomous patrol) ──────────────────────
+      # These five `scripts/verify_*.py` gates carried a real pass/fail contract
+      # but were never invoked by any workflow -- invisible gates that "passed"
+      # only because nobody ran them. Each was run locally on this build and
+      # exits 0; see the commit message for the run evidence. The 3 remaining
+      # unwired verify_* scripts are intentionally NOT gates (one is report-only
+      # by design, one is a coverage probe, one is a genuine RED that surfaces a
+      # real product finding and is reported separately, not hidden).
+      - name: Verify gateway-app instantiation hygiene (SA-2; no frozen-audit-db leak)
+        run: python scripts/verify_app_instantiation_hygiene.py
+
+      - name: Verify authorization grants are enumerable + target-bound (C-3/C-4)
+        # exit 3 = Part B NOT VERIFIED (target binding not enforced / not
+        # introspectable). Part A still runs and its failure stays exit 1.
+        run: |
+          set +e
+          python scripts/verify_authorization_enumerable.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): authorization target binding is not enforced; Part A (decided mechanism) still passed"
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Verify HC-11 identity-chain mechanism is fail-closed in both postures
+        run: python scripts/verify_hc11_identity_chain_integrity.py
+
+      - name: Verify kernel lifecycle PAUSED/STOPPED really refuse work
+        run: python scripts/verify_kernel_lifecycle_gate.py
+
+      - name: Verify planner contract refuses capabilities with no executor
+        env:
+          CODEBUDDY_SAFE_DELETE_ENABLED: 0
+        run: python scripts/verify_open_domain_contract.py
+
+      # Migration / rollback path. Wired only after it was proven to actually
+      # run: with an interpreter that has alembic, this reaches revision 005,
+      # downgrades to base leaving only alembic_version, and re-checks
+      # persistence. It fails LOUDLY (never skips) when no alembic entry point
+      # is resolvable, so a missing dependency reads as a missing dependency
+      # instead of an alembic build defect. Needs the `alembic` installed above.
+      - name: Verify schema upgrade and rollback really run
+        # exit 3 = NOT VERIFIED (a check could not obtain evidence here). Warn,
+        # never silently pass; a real FAIL stays exit 1.
+        run: |
+          set +e
+          python scripts/verify_deploy_readiness.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): deploy readiness has NOT_VERIFIED gaps; no hard failure, but not a pass"
+            exit 0
+          fi
+          exit "$code"
+
+      # Deployment gate variables: every control gated on an env var that no
+      # deployable artifact actually sets. Needs no docker and no browser, so it
+      # runs on every push; its non-zero exit is a verdict about the repository,
+      # not about the runner. Wiring it is also what removed its pending-owner
+      # ledger entry -- see the count/comment block above this job.
+      - name: Verify deployment gate variables are set by some artifact
+        run: python scripts/verify_deployment_gate_vars.py
+
+      # 发布页数值住在另一个静态 HTML 仓库里，按推送跑的 job 没有真页面可判。
+      # 这里能钉住的是核对器自己的通过/失败契约：合成页面与记录一致必须退出 0，
+      # 同一页面换成旧版本号必须退出 1。没有后者，这一步只证明「它总能返回 0」。
+      # 真页面仍在打包时由 scripts/release/package-frozen.ps1 -ReleasePageFile
+      # 核对，不一致时它拒绝打印成功横幅。
+      - name: Verify the release-page number checker rejects stale values (self-test)
+        run: |
+          set +e
+          tmp="$(mktemp -d)"
+          sha="a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718"
+          cat > "$tmp/FREEZE-RECORD.json" <<JSON
+          {"installer": {"version": "0.1.2", "filename": "LiuHao-Setup-0.1.2.exe", "sha256": "$sha", "size": 29567136}}
+          JSON
+          cat > "$tmp/good.html" <<HTML
+          <!doctype html><html><body>
+          <a href="LiuHao-Setup-0.1.2.exe">下载 0.1.2</a>
+          <span data-copy="LiuHao-Setup-0.1.2.exe">0.1.2</span>
+          <span data-copy="$sha">sha256</span>
+          <span>29,567,136 字节</span><span>29567136</span>
+          </body></html>
+          HTML
+          cat > "$tmp/stale.html" <<HTML
+          <!doctype html><html><body>
+          <a href="LiuHao-Setup-0.1.1.exe">下载 0.1.1</a>
+          <span data-copy="LiuHao-Setup-0.1.1.exe">0.1.1</span>
+          <span data-copy="$sha">sha256</span>
+          <span>29,567,136 字节</span><span>29567136</span>
+          </body></html>
+          HTML
+          fail=0
+          for pair in "good:0" "stale:1"; do
+            name="${pair%%:*}"; want="${pair##*:}"
+            python scripts/verify_release_page_values.py --page "$tmp/$name.html" --record "$tmp/FREEZE-RECORD.json"
+            got=$?
+            echo "$name page -> exit $got (expected $want)"
+            [ "$got" -eq "$want" ] || { echo "::error ::release-page value checker self-test failed on the $name page"; fail=1; }
+          done
+          exit "$fail"
+
   # Linting job
   lint:
     name: Linting
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
+    if: always()
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -272,6 +1199,27 @@ jobs:
 
       - name: Run Flake8
         run: python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503
+
+      # Audit append performance / invariants gate.
+      #
+      # BLOCKING part: --invariants-only checks properties that hold on ANY
+      # machine (no lost appends under concurrency, contiguous seq, chain
+      # intact after a hard kill, chain verifies). Those are correctness, so
+      # they must never regress regardless of hardware.
+      #
+      # NUMERIC gate (--gate against the profile-keyed baseline in
+      # scripts/bench_baseline.json): events/sec is a property of the machine,
+      # so the baseline is keyed by a machine/profile fingerprint (OS, Python
+      # version, CPU, quick flag). When the current runner's profile does NOT
+      # match the baseline, the numeric gate SKIPs -- it does not fail and does
+      # not pretend to pass, it just asks for a re-baseline. When the profile
+      # DOES match, a real regression blocks the build. This keeps CI numbers
+      # honest instead of comparing a shared runner against a workstation.
+      - name: Audit append invariants gate (blocking)
+        run: python scripts/bench_audit_append.py --quick --invariants-only
+
+      - name: Audit append throughput vs profile baseline (skip on mismatch)
+        run: python scripts/bench_audit_append.py --quick --gate scripts/bench_baseline.json --tolerance 0.5
 
       # ⚠️ 采集用，非门禁：真正会阻断 CI 的 Bandit 门禁在 security job
       # （--severity-level high，命中即失败）。此处保留全量扫描 + artifact，
@@ -302,16 +1250,23 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: build
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致本作业声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
+    # CRITICAL-5: run even if 'build' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always()
     timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'build' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (build)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: build
+          upstream-result: ${{ needs.build.result }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -336,16 +1291,23 @@ jobs:
     name: Smoke Test
     runs-on: ubuntu-latest
     needs: integration
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致本作业声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
+    # CRITICAL-5: run even if 'integration' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always()
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'integration' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (integration)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: integration
+          upstream-result: ${{ needs.integration.result }}
 
       - uses: actions/setup-python@v5
         with:
@@ -404,6 +1366,33 @@ jobs:
         working-directory: apps/console/console
         run: npm run lint
 
+      # `npm run test` was declared in package.json but never invoked by CI, so
+      # console logic/regression tests could break without any pipeline signal.
+      # Measured before wiring: 52 files / 566 tests pass (npm test).
+      - name: Test the console (vitest)
+        working-directory: apps/console/console
+        run: npm test
+
+      # The Dockerfile was never executed by a build engine in CI, so a broken
+      # image could reach a deployment with every other gate green. This job
+      # already has a Docker daemon and the Python env, so G9b runs here for
+      # real: build the staging image, boot a container, wait for healthy, and
+      # probe /v1/health + /v1/ready + /v1/metrics/prometheus. The script
+      # self-reports exit 3 (NOT_VERIFIED) if the daemon is missing, so a vanished
+      # daemon can never read as a pass (it is surfaced as an explicit warning).
+      - name: Verify the staging image builds and boots
+        # exit 3 = NOT VERIFIED (docker CLI/daemon unavailable), 1 = real FAIL.
+        run: |
+          set +e
+          python scripts/verify_image_build.py --build-timeout 1200
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): the staging image could not be built/booted here (docker CLI or daemon unavailable)"
+            exit 0
+          fi
+          exit "$code"
+
   # Architecture gate (Semgrep) —— 本仓库**唯一会阻断**的静态检查作业。
   #
   # 为什么需要它：上面 Security Scan 里的 Trivy / Bandit / pip-audit 全都是
@@ -435,7 +1424,12 @@ jobs:
       - name: Install Semgrep
         run: |
           python -m pip install --upgrade pip
-          python -m pip install semgrep
+          # 必须同时钉 mcp<2：semgrep 运行时要 import mcp.server.fastmcp，而 pip
+          # 默认会拉 mcp 2.x ⇒ ImportError 让作业在**扫描开始前**就崩。
+          # 实测（2026-11-06）：只装 semgrep 时作业 install 后立刻退出，日志里
+          # 一条 finding 都没有，却被 CRITICAL-5 判成"架构门禁失败"——那是假红。
+          # 钉 mcp<2 后本仓实测 5 rules / 593 files / 0 findings。
+          python -m pip install semgrep "mcp<2"
 
       # 关键：必须带 --error，否则 semgrep 在命中时仍 exit 0，门禁形同虚设。
       # 实测：默认 exit 0（即便 4 条 blocking findings），加 --error 后命中即 exit 1。
@@ -529,6 +1523,11 @@ jobs:
         # are written to $RUNNER_TEMP (never committed) using the public demo
         # secret the audit script expects. The script self-verifies a real login.
         env:
+          # With the fail-closed registry (HC-11 / U6) an unauthenticated row is
+          # refused, so without this key the seeded CEO would be silently
+          # dropped and the real login below would 401. It is a throwaway CI
+          # value: nothing outside this job is protected by it.
+          LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY: ci-ephemeral-integrity-key
           LIUHAO_HUMAN_IDENTITIES_FILE: ${{ runner.temp }}/liuhao/human_identities.json
           LIUHAO_AUTH_SECRETS_FILE: ${{ runner.temp }}/liuhao/ci_auth_secrets.json
         run: |
@@ -542,6 +1541,7 @@ jobs:
 
       - name: Start gateway (loopback only — serves built SPA + auth API)
         env:
+          LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY: ci-ephemeral-integrity-key
           LIUHAO_HUMAN_IDENTITIES_FILE: ${{ runner.temp }}/liuhao/human_identities.json
           LIUHAO_AUTH_SECRETS_FILE: ${{ runner.temp }}/liuhao/ci_auth_secrets.json
           LIUHAO_CONSOLE_DIST: apps/console/console/dist
@@ -594,13 +1594,34 @@ jobs:
     name: P0 Gate Check
     runs-on: ubuntu-latest
     needs: [test, security, observability]
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致这道 P0 Go/No-Go 聚合门禁声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
+    # CRITICAL-5: run even if an upstream job failed, so a red 'test'/'security'/
+    # 'observability' cannot silently SKIP this final gate.
+    if: always()
     steps:
+      - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if any required upstream did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
+      - name: CRITICAL-5 gate watchdog (security)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: security
+          upstream-result: ${{ needs.security.result }}
+
+      - name: CRITICAL-5 gate watchdog (observability)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: observability
+          upstream-result: ${{ needs.observability.result }}
+
       - name: Check STAGING_DATABASE_URL
         run: |
           if [ -z "${{ secrets.STAGING_DATABASE_URL }}" ]; then

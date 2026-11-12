@@ -34,6 +34,16 @@ from src.kernels.execution import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_simulated_execution(monkeypatch):
+    # These unit tests exercise the **simulated** capability fallback. The
+    # production gateway injects a real capability executor, so an unwired
+    # kernel fails closed instead of masquerading as success. Simulation is
+    # opt-in (SIMULATION_OPT_IN_ENV); unit tests of the fallback opt in
+    # explicitly rather than relying on the (now removed) silent default.
+    monkeypatch.setenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", "1")
+
+
 @pytest.fixture
 def decomposer():
     return GoalDecomposer()
@@ -137,6 +147,63 @@ class TestGoalDecomposer:
         chain = get_event_bus().get_correlation_chain(goal.correlation_id)
         types = [e.type for e in chain]
         assert "goal_decomposed" in types
+
+    # -- intent preservation: a filename is an argument, not an instruction --
+
+    def test_keyword_inside_a_word_does_not_create_a_task(self, decomposer):
+        """A word that merely CONTAINS a keyword must not trigger that keyword.
+
+        Regression test for intent drift. ``replan``/``airplane`` contain the
+        substring "plan", so the old ``kw in text`` test appended a phantom
+        ``Plan`` task (``execution_pipeline``) to a pure file-write goal. The
+        system then did something the user never asked for.
+        """
+        for text in ("write a file named replan.txt containing done",
+                     "write a file named airplane.txt containing x"):
+            tasks = decomposer.decompose(Goal(id="g", natural_language=text))
+            caps = {t.capability_id for t in tasks}
+            assert "execution_pipeline" not in caps, (
+                f"{text!r} produced a phantom Plan task: "
+                f"{[t.name for t in tasks]}"
+            )
+            assert caps == {"file_write"}, (text, [t.name for t in tasks])
+
+    def test_keyword_as_the_filename_itself_is_not_an_instruction(self, decomposer):
+        """``plan.txt`` is the file being written, not a request to plan."""
+        tasks = decomposer.decompose(
+            Goal(id="g", natural_language="write a file named plan.txt containing x")
+        )
+        assert {t.capability_id for t in tasks} == {"file_write"}, \
+            [t.name for t in tasks]
+
+    def test_real_instruction_still_triggers_the_capability(self, decomposer):
+        """The guard must not over-correct: a real request still routes.
+
+        Without this, a decomposer that matched nothing would pass both tests
+        above. Each keyword family is checked so the word-boundary rule cannot
+        quietly stop routing real work.
+        """
+        cases = {
+            "plan the schedule": "execution_pipeline",
+            "organize my files": "execution_pipeline",
+            "search for hotels": "network_bus",
+            "find the missing key": "network_bus",
+            "remember this fact": "multi_tier_memory",
+            "compute the sum of 1 to 10": "python_compute",
+            "计算总和": "python_compute",  # CJK has no word boundaries
+        }
+        for text, cap in cases.items():
+            tasks = decomposer.decompose(Goal(id="g", natural_language=text))
+            assert cap in {t.capability_id for t in tasks}, (text, [t.name for t in tasks])
+
+    def test_filename_masking_does_not_hide_a_later_real_instruction(self, decomposer):
+        """Masking the path must not suppress an instruction stated after it."""
+        tasks = decomposer.decompose(
+            Goal(id="g", natural_language="write a file named plan.txt then plan the rollout")
+        )
+        caps = {t.capability_id for t in tasks}
+        assert "file_write" in caps and "execution_pipeline" in caps, \
+            [t.name for t in tasks]
 
 
 # =====================================================================
@@ -249,6 +316,19 @@ class TestActionExecutor:
         chain = get_event_bus().get_correlation_chain(action.correlation_id)
         assert "action_failed" in [e.type for e in chain]
 
+    def test_unwired_executor_fails_closed(self, executor, monkeypatch):
+        # Production gateway injects a real capability executor. When nothing is
+        # wired and simulation is NOT explicitly opted in, the kernel MUST fail
+        # closed: it must not report success for work it never performed. The
+        # autouse fixture opts these tests into the simulated fallback, so we
+        # deliberately turn it off here to assert the safety net holds.
+        monkeypatch.delenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", raising=False)
+        action = make_action()
+        result = executor.execute(action)
+        assert not result.success
+        assert result.output.get("status") == "unwired"
+        assert "no capability executor wired" in (result.error or "")
+
 
 # =====================================================================
 # Verification
@@ -264,12 +344,20 @@ class TestVerifier:
         assert v.replan_required
         assert "boom" in v.feedback
 
-    def test_no_criteria_means_success(self, verifier):
+    def test_no_criteria_is_unverified_not_success(self, verifier):
+        """HONESTY: with no criteria there is nothing to verify against.
+
+        This previously asserted SUCCESS/1.0 ("no criteria -> assume success"),
+        which graded an executor that merely claimed success as a fully
+        verified pass. Absence of evidence is not evidence of success: the
+        honest verdict is UNVERIFIED with score 0.0.
+        """
         task = make_task("T1")  # empty expected_outputs
         v = verifier.verify(task, make_result(output={"anything": 1}))
-        assert v.result is VerifyResult.SUCCESS
-        assert v.score == 1.0
+        assert v.result is VerifyResult.UNVERIFIED
+        assert v.score == 0.0
         assert not v.replan_required
+        assert "UNVERIFIED" in v.feedback
 
     def test_full_match_is_success(self, verifier):
         task = make_task("T1", expected_outputs={"status": "ok"})
@@ -343,7 +431,11 @@ class TestExecutionEngine:
         assert not ctx.failed_tasks
         for t in ctx.plan.tasks:
             assert t.status is TaskStatus.COMPLETED
-            assert ctx.verification_results[t.id].result is VerifyResult.SUCCESS
+            # These decomposed tasks define no expected_outputs, so the verifier
+            # reports UNVERIFIED (nothing was disproved, but nothing was proven
+            # either) -- not a verified SUCCESS. The task still COMPLETES; the
+            # honesty fix deliberately does not turn "unprovable" into "failed".
+            assert ctx.verification_results[t.id].result is VerifyResult.UNVERIFIED
 
     def test_happy_path_publishes_lifecycle_events(self):
         engine = create_execution_engine(scope="L1")

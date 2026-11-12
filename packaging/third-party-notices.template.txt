@@ -1,0 +1,191 @@
+Jarvis · 贾维斯 —— 第三方软件许可声明（THIRD-PARTY-NOTICES）
+================================================================
+
+本文件随安装包分发，用于列明本产品随包使用的第三方软件、其许可证
+类型与许可证文本所在位置。
+
+本文件由构建过程自动生成：包名、版本、许可证与文本位置取自本安装包内
+runtime/Lib/site-packages 下各包的 *.dist-info/METADATA 与随包文本，
+因此与实装内容一致；手工维护的只有本模板里的说明性文字。第 3 节运行时
+组件（OpenSSL、libffi、SQLite、Tcl/Tk、MSVC）的版本为人工核对 PE
+VersionInfo 后填写，不随包清单自动变化。
+
+第三方名称与商标（如 Python、OpenSSL、SQLite、Tcl/Tk、Ollama、DeepSeek 等）
+仅用于说明来源或兼容性，相关商标归其各自所有者所有，本产品与这些厂商无隶属
+或背书关系。
+
+## 1. 汇总
+
+- Python 第三方包：{{PACKAGE_COUNT}} 个（现算自本包 runtime/Lib/site-packages）。
+- 运行时/内嵌组件：{{RUNTIME_COMPONENT_COUNT}} 项（CPython、OpenSSL、libffi、SQLite、
+  Tcl/Tk、Tix、MSVC、expat、zlib、libmpdec、Unicode、bzip2、liblzma、adodbapi、
+  iconv、libxml2、libxslt 等）。本节按随包文件/DLL 逐项列示；审计脚本按逻辑
+  组件归并计数，两者条目一一对应。
+- 前端 bundle 依赖：3 个（react 19.2.8、react-dom 19.2.8、scheduler 0.27.0，均 MIT）。
+- 限制性许可证筛查：{{RESTRICTIVE_STATEMENT}}
+- 许可证文本随包情况：MIT/BSD/Apache 等包的全文在
+  runtime/Lib/site-packages/*.dist-info/licenses/ 内；运行时二进制、静态链接
+  组件（expat / zlib / libmpdec / Unicode / bzip2 / libxml2 / libxslt）、
+  LGPL 组件（adodbapi / iconv）与前端 React 的全文在本目录 licenses/ 下。
+- 不在允许清单但属宽松许可：email-validator 为 Unlicense（非 copyleft）。
+
+## 2. Python 第三方包清单
+
+{{PACKAGE_TABLE}}
+
+> `许可证文本随包位置` 相对于安装目录 runtime/Lib/site-packages/。
+> 正式发布时不要删除这些 *.dist-info/licenses/ 目录。
+
+## 3. 运行时组件（runtime/ 下的二进制与数据）
+
+| # | 组件 | 版本 | 许可证 | 文本位置 | 来源链接 |
+|---|---|---|---|---|---|
+| 1 | CPython（python.exe / pythonw.exe / python312.dll / python3.dll） | 3.12.14 | PSF-2.0（PSF License v2，含历史条款） | runtime/LICENSE.txt | https://docs.python.org/3/license.html |
+| 2 | OpenSSL libcrypto-3-x64.dll | 3.5.8 | Apache-2.0 | licenses/Apache-2.0.txt | https://www.openssl.org/source/license.html |
+| 3 | OpenSSL libssl-3-x64.dll | 3.5.8 | Apache-2.0 | licenses/Apache-2.0.txt | https://www.openssl.org/source/license.html |
+| 4 | libffi libffi-8.dll | 未知（无版本资源，仅 ABI 8） | MIT | licenses/libffi-MIT.txt | https://github.com/libffi/libffi/blob/master/LICENSE |
+| 5 | SQLite sqlite3.dll | 3.53.1.0 | Public Domain | licenses/SQLite-Public-Domain.txt | https://www.sqlite.org/copyright.html |
+| 6 | Tcl tcl86t.dll | 8.6.12 | Tcl/Tk License（BSD 风格） | licenses/Tcl-Tk-license.terms、runtime/tcl/tk8.6/license.terms | https://www.tcl.tk/software/tcltk/license.html |
+| 7 | Tk tk86t.dll | 8.6.12 | Tcl/Tk License（BSD 风格） | runtime/tcl/tk8.6/license.terms | https://www.tcl.tk/software/tcltk/license.html |
+| 8 | MSVC 运行库 vcruntime140.dll | 14.44.35211.0 | Microsoft Visual Studio 2022 可分发代码条款 | licenses/Microsoft-VC-Runtime.txt | https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution |
+| 9 | MSVC 运行库 vcruntime140_1.dll | 14.44.35211.0 | 同上 | licenses/Microsoft-VC-Runtime.txt | https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution |
+| 10 | Tix tix84.dll | 8.4.3（上游 Tix 8.4.3） | Tix License（BSD 风格） | licenses/Tix-License.txt | https://sourceforge.net/projects/tix/files/Tix/8.4.3/ |
+| 11 | Tcl 扩展 tcldde14.dll / tclreg13.dll | 未标注 | 随 Tcl 发行版，适用 Tcl/Tk License | licenses/Tcl-Tk-license.terms | https://www.tcl.tk/software/tcltk/license.html |
+| 12 | libexpat（pyexpat.pyd 静态链接） | 2.8.3 | MIT | licenses/expat-MIT.txt | https://libexpat.github.io/ |
+| 13 | zlib（CPython 静态链接） | 1.3.2 | Zlib | licenses/zlib-License.txt | https://www.zlib.net/zlib_license.html |
+| 14 | libmpdec（_decimal.pyd） | 2.5.1 | BSD-2-Clause | licenses/libmpdec-BSD-2-Clause.txt | https://www.bytereef.org/mpdecimal/ |
+| 15 | Unicode 数据（unicodedata.pyd） | 15.0.0 | Unicode License v3 | licenses/Unicode-License.txt | https://www.unicode.org/license.txt |
+| 16 | liblzma / XZ Utils（_lzma.pyd） | 未标注（随 CPython 3.12.14） | Public Domain | 无（公版不强制署名） | https://tukaani.org/xz/ |
+| 17 | bzip2 / libbzip2（_bz2.pyd） | 1.0.8 | bzip2-1.0.8 | runtime/LICENSE.txt（第 326 行起含全文） | https://sourceware.org/bzip2/ |
+| 18 | adodbapi（pywin32 311 内置） | 2.6.2.0 | LGPL-2.1（纯 Python，源码随包） | licenses/adodbapi-LGPL-2.1.txt、runtime/Lib/site-packages/adodbapi/license.txt | https://github.com/mhammond/pywin32/tree/main/adodbapi |
+| 19 | iconv（lxml 6.1.3 内置，静态链接） | 未标注（参考上游 libiconv 1.17） | LGPL-2.1 | licenses/LGPL-2.1.txt、licenses/libiconv-NOTICE.txt、licenses/LGPL-SOURCE-OFFER.txt | https://www.gnu.org/software/libiconv/ |
+| 20 | libxml2（lxml 内置） | 2.11.9 | MIT | runtime/Lib/site-packages/lxml-6.1.3.dist-info/licenses/LICENSES.txt | https://gitlab.gnome.org/GNOME/libxml2 |
+| 21 | libxslt / libexslt（lxml 内置） | 1.1.45 | MIT | runtime/Lib/site-packages/lxml-6.1.3.dist-info/licenses/LICENSES.txt | https://gitlab.gnome.org/GNOME/libxslt |
+| 22 | zlib（lxml 内置） | 未标注 | Zlib | licenses/zlib-License.txt | https://www.zlib.net/zlib_license.html |
+| 23 | httpx-aiohttp（openai 3.13.0 内置） | 0.2.0 | BSD-3-Clause | runtime/Lib/site-packages/openai/_vendor/httpx_aiohttp/LICENSE | https://github.com/karpetrosyan/httpx-aiohttp |
+| 24 | httpx-aiohttp（anthropic 1.3.0 内置） | 0.2.0 | BSD-3-Clause | runtime/Lib/site-packages/anthropic/_vendor/httpx_aiohttp/LICENSE | https://github.com/karpetrosyan/httpx-aiohttp |
+| 25 | llhttp（aiohttp 3.14.4 内置） | 未标注 | MIT | runtime/Lib/site-packages/aiohttp-3.14.4.dist-info/licenses/vendor/llhttp/LICENSE | https://github.com/nodejs/llhttp |
+
+### 3.1 LGPL-2.1 内嵌组件专项说明（adodbapi / iconv）
+
+顶层 Python 发行包的许可证声明中**没有** GPL/AGPL/LGPL 类许可证；下面两项是
+**嵌入在其它发行包内部**的 LGPL-2.1 组件，单独列示并说明义务处置。
+
+#### 3.1.1 adodbapi 2.6.2.0（pywin32 311 内置）
+
+- **来源**：pywin32 311 的 wheel 内置 `adodbapi` 子包，上游为
+  https://github.com/mhammond/pywin32/tree/main/adodbapi 。
+- **版本**：2.6.2.0（`adodbapi/adodbapi.py` 中 `__version__ = "2.6.2.0"`）。
+- **许可证**：GNU Lesser General Public License v2.1（`adodbapi/license.txt`
+  首行即 LGPL v2.1；`setup.py` 声明 `LICENSE='LGPL'`）。
+- **随包位置**：`runtime/Lib/site-packages/adodbapi/`，含 19 个 `.py` 源文件、
+  `license.txt` 与 `setup.py`。
+- **链接形态**：**纯 Python，无二进制，不存在静态链接**。分发内容本身就是
+  上游源码（未修改）。
+- **合规处置**：LGPL 的“源码可得”义务由随包源码直接满足；完整 LGPL 全文见
+  `licenses/adodbapi-LGPL-2.1.txt` 与 `licenses/LGPL-2.1.txt`。本产品未修改
+  adodbapi；若接收方修改，直接用随包 `.py` 源码替换即可，无需重链接。
+  pywin32 顶层包的 BSD-3-Clause 声明仅覆盖 pywin32 自身，不覆盖本子包。
+
+#### 3.1.2 iconv（lxml 6.1.3 内置，静态链接）
+
+- **来源**：lxml 6.1.3 官方 Windows wheel 内置的 GNU libiconv；上游为
+  https://www.gnu.org/software/libiconv/ 。
+- **版本**：二进制未标注版本资源。lxml 的 `LICENSES.txt` 只声明
+  “**iconv**: LGPL 2.1”。本清单以 **libiconv 1.17** 官方源码包作为对应
+  源码基线（SHA256 见 `licenses/LGPL-SOURCE-OFFER.txt`）。
+- **许可证**：GNU Lesser General Public License v2.1。
+- **随包位置**：静态链接进
+  `runtime/Lib/site-packages/lxml/etree.cp312-win_amd64.pyd`；
+  随包**不存在** `libiconv-2.dll`。
+- **“静态链接”这一事实与证据**：`etree.cp312-win_amd64.pyd` 内含 `libiconv`
+  字符串；lxml `LICENSES.txt` 明确声明 wheel 内置 `zlib/iconv/libxml2/libxslt/libexslt`；
+  全包检索无 `libiconv*.dll`。据此判定为静态链接。
+- **合规处置（可执行方案）**：
+  1. 随包 `licenses/LGPL-2.1.txt` 与 `licenses/libiconv-NOTICE.txt`
+     （完整 LGPL 全文 + 版权声明）。
+  2. 随包 `licenses/LGPL-SOURCE-OFFER.txt`（书面源码要约）：列明
+     **lxml 6.1.3 完整源码**与 **libiconv 1.17 完整源码**、官方 URL、
+     SHA256、重链接步骤，并承诺自二进制分发之日起至少 3 年提供。
+     源码包本体保存在发布侧 `dist/release-gate/lgpl-sources/`
+     （`lxml-6.1.3.tar.gz`、`libiconv-1.17.tar.gz`），可随发布交付物一并分发。
+  3. **重链接手段**：接收方可按 `LGPL-SOURCE-OFFER.txt` 步骤，用修改后的
+     libiconv 重建 `etree.cp312-win_amd64.pyd`；或改用动态链接，把
+     `libiconv-2.dll` 放入 `runtime/Lib/site-packages/lxml/` 并替换重建后的
+     `etree.pyd`，此后用户可直接替换该 DLL。
+  4. 本产品未修改 lxml 或 libiconv 的源码。
+
+> 结论：两项 LGPL-2.1 组件的“许可证全文、源码、可重链接手段”均已随包或
+> 以书面要约提供，材料层面已闭环；静态链接方案是否满足 LGPL 第 6 条，
+> 最终属法务判断（见合规报告第 8 节）。
+
+## 4. 前端 bundle 依赖（console/）
+
+| # | 名称 | 版本 | 许可证 | 文本位置 | 来源链接 |
+|---|---|---|---|---|---|
+| 1 | react | 19.2.8 | MIT（Copyright (c) Meta Platforms, Inc. and affiliates.） | licenses/React-MIT.txt | https://github.com/facebook/react |
+| 2 | react-dom | 19.2.8 | MIT（同上） | licenses/React-MIT.txt | https://github.com/facebook/react |
+| 3 | scheduler | 0.27.0 | MIT（同上，React 传递依赖） | licenses/React-MIT.txt | https://github.com/facebook/react/tree/main/packages/scheduler |
+
+devDependencies（vite、vitest、typescript 等）不进入浏览器产物，不在本清单。
+console/ 内的图标与 CSS 为自有资源，未检出第三方字体或 @font-face。
+
+## 5. 特别说明与口径
+
+1. pywin32 许可证口径（已复核）：安装包内 pywin32-311.dist-info/METADATA
+   的 Classifier 写 “Python Software Foundation License”，但同一个包随附的
+   win32/license.txt 实际是 BSD-3-Clause 风格文本（Copyright (c) 1994-2008,
+   Mark Hammond; 含 “Neither name of Mark Hammond…” 条款）。两者口径不一致。
+   本清单按**随包文本**列示为 BSD-3-Clause，并把该文本复制到
+   licenses/pywin32-BSD-3-Clause.txt。若后续版本升级 pywin32 后元数据变更，
+   以新版本的随包文本为准。
+2. OpenSSL 3.5.8：先前只随包二进制、无许可证全文；现在
+   licenses/Apache-2.0.txt 随包，版权声明为
+   “Copyright 1998-2026 The OpenSSL Authors. All rights reserved.”
+3. libffi：libffi-8.dll 无版本资源，只有 ABI 8 可判；按上游 MIT 文本随包，
+   实际构建版本未标注。
+4. SQLite 3.53.1：按公版（Public Domain）声明随包。
+5. Tcl 8.6.12：Tcl 与 Tk 共用 Tcl/Tk License；license.terms 现在同时出现在
+   licenses/ 与 runtime/tcl/tk8.6/。
+6. Tix 8.4.3：Tix 为独立第三方 Tcl 扩展，采用 Tix License（BSD 风格）。
+   全文已随包 licenses/Tix-License.txt（取自上游 Tix 8.4.3 源码包
+   license.terms；CPython 安装树本身不带该文本）。随包二进制位于
+   runtime/tcl/tix8.4.3/tix84.dll，产品运行时不加载 Tix。
+7. {{VERSION_NOTE}}
+8. ws 8.21.3 在控制台 package.json 中声明为运行时依赖，但源码与浏览器产物
+   均未检出引用，判断为“声明但未随包”，因此不列入前端清单。
+9. 本清单未覆盖 Windows 系统 DLL 与安装器工具（Inno Setup）本身的许可证。
+10. mcp / fastmcp-slim：pyproject.toml 里有声明、构建虚环境里也装了，但网关与
+    桌面壳的运行路径不 import `src/adapters/mcp/mcp_adapter.py`（该模块是全仓
+    唯一引用者，且没有任何调用方），因此它们不按“真实 import 图”进入 payload，
+    本清单也不列它们。若将来启用 MCP 适配器，需要同时把它加入随包依赖。
+11. 第 3 节第 12–25 项为 CPython / lxml / aiohttp / openai / anthropic 内置或
+    静态链接的库，其许可证全文已补齐到 licenses/（expat-MIT.txt、
+    zlib-License.txt、libmpdec-BSD-2-Clause.txt、Unicode-License.txt、
+    Tix-License.txt）；bzip2 与 libxml2/libxslt 的全文分别位于
+    runtime/LICENSE.txt 与 lxml 的 LICENSES.txt。liblzma/XZ Utils 为公版，
+    不强制署名。
+12. LGPL-2.1 组件：adodbapi（pywin32 311 内置）与 iconv（lxml 6.1.3 内置，
+    静态链接）是顶层“限制性许可证 0 个”结论的唯一例外；两者已附全文、源码与
+    可重链接方案，详见第 3.1 节。构建门禁会校验这些文本与条目存在，缺失即失败。
+
+## 6. 许可证文本索引
+
+- licenses/Apache-2.0.txt           Apache License 2.0 全文（OpenSSL 及清单内 Apache-2.0 包）
+- licenses/libffi-MIT.txt           libffi MIT
+- licenses/SQLite-Public-Domain.txt SQLite 公版声明
+- licenses/Tcl-Tk-license.terms     Tcl/Tk License
+- licenses/Microsoft-VC-Runtime.txt MSVC 可再发行组件声明
+- licenses/React-MIT.txt            React / ReactDOM / Scheduler MIT
+- licenses/pywin32-BSD-3-Clause.txt pywin32 随包 BSD-3-Clause 文本
+- licenses/expat-MIT.txt            libexpat（pyexpat.pyd）MIT
+- licenses/zlib-License.txt         zlib（CPython 与 lxml 内置）Zlib
+- licenses/libmpdec-BSD-2-Clause.txt libmpdec（_decimal.pyd）BSD-2-Clause
+- licenses/Unicode-License.txt      Unicode 数据（unicodedata.pyd）Unicode License v3
+- licenses/Tix-License.txt          Tix 8.4.3 Tix License（BSD 风格）
+- licenses/LGPL-2.1.txt             GNU LGPL-2.1 全文（iconv）
+- licenses/adodbapi-LGPL-2.1.txt    adodbapi 随包 LGPL-2.1 全文
+- licenses/libiconv-NOTICE.txt      libiconv 版权与静态链接说明
+- licenses/LGPL-SOURCE-OFFER.txt    LGPL 源码提供清单（lxml/libiconv 源码与重链接步骤）
+- runtime/LICENSE.txt               CPython PSF License v2（含 bzip2 全文）
+- runtime/Lib/site-packages/*.dist-info/licenses/  各 Python 包自带全文（含 lxml 的 LICENSES.txt）

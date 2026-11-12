@@ -106,22 +106,32 @@ class TestPrometheusExposure:
 # ============================================================
 
 
+def _kernels_on_disk() -> set:
+    """Ground truth: the kernel packages actually present under ``src/kernels/``.
+
+    Every count assertion below is derived from this instead of a literal, so
+    adding a kernel cannot silently rot the suite (which is exactly what a
+    hardcoded ``14`` did the moment the retention kernel landed).
+    """
+    return {
+        d.name
+        for d in KERNELS_DIR.iterdir()
+        if d.is_dir() and not d.name.startswith("_") and d.name != "__pycache__"
+    }
+
+
 class TestSubsystemProbes:
     def test_probe_registry_covers_every_kernel_on_disk(self):
         """防漂移：磁盘上的内核目录必须与探针注册表一一对应。"""
-        on_disk = {
-            d.name
-            for d in KERNELS_DIR.iterdir()
-            if d.is_dir() and not d.name.startswith("_") and d.name != "__pycache__"
-        }
+        on_disk = _kernels_on_disk()
         probed = {name for name, _mod, _getter in production.SUBSYSTEM_PROBES}
         assert probed == on_disk, (
             f"探针注册表与磁盘内核不一致。缺少探针: {on_disk - probed}；"
             f"多余探针: {probed - on_disk}"
         )
 
-    def test_registry_has_fourteen_probes(self):
-        assert len(production.SUBSYSTEM_PROBES) == 14
+    def test_registry_has_one_probe_per_kernel(self):
+        assert len(production.SUBSYSTEM_PROBES) == len(_kernels_on_disk())
 
     def test_probe_names_are_unique(self):
         names = [n for n, _m, _g in production.SUBSYSTEM_PROBES]
@@ -130,14 +140,14 @@ class TestSubsystemProbes:
     def test_real_kernels_are_all_healthy(self):
         report = check_subsystems()
         assert report.ready is True
-        assert report.counts[STATUS_HEALTHY] == 14, report.to_dict()
+        assert report.counts[STATUS_HEALTHY] == len(_kernels_on_disk()), report.to_dict()
         assert report.counts[STATUS_UNAVAILABLE] == 0
 
     def test_report_is_serialisable(self):
         payload = check_subsystems().to_dict()
         json.dumps(payload)  # 不抛即通过
         assert payload["status"] == "ready"
-        assert payload["total"] == 14
+        assert payload["total"] == len(_kernels_on_disk())
 
     def test_broken_module_is_unavailable_and_does_not_raise(self):
         report = check_subsystems(
@@ -272,6 +282,26 @@ class TestPreflight:
         assert report.ok is True, "warning 不应让预检失败"
         assert report.warning_count == 3
 
+    def test_liuhao_env_production_detected_without_app_env(self):
+        # Regression for the P0 posture bypass: production posture is resolved
+        # via the unified resolver (LIUHAO_ENV wins), NOT by reading APP_ENV
+        # alone. A deployment that sets LIUHAO_ENV=production but not APP_ENV
+        # must still trigger the production-only warnings (sqlite/debug/policy),
+        # otherwise a real production box would be silently preflighted as dev.
+        report = validate_production_config(env={
+            "LIUHAO_ENV": "production",
+            "SECRET_KEY": "a-real-long-random-value",
+            "LIUHAO_JWT_SECRET": "another-real-long-random-value",
+            "DATABASE_URL": "sqlite:///liuhao.db",
+            "LOG_LEVEL": "DEBUG",
+        })
+        codes = {f.code for f in report.findings}
+        assert {
+            "sqlite_in_production",
+            "debug_logging_in_production",
+            "policy_enforcement_off",
+        } <= codes
+
     def test_sqlite_only_warns_in_production(self):
         report = validate_production_config(env={
             "APP_ENV": "staging",
@@ -344,6 +374,23 @@ def client():
 
 
 class TestHttpEndpoints:
+    @pytest.fixture
+    def scrape_headers(self, monkeypatch):
+        """Metrics now need a token or an internal source; TestClient looks public."""
+        from src.gateway import observability as gateway_observability
+
+        monkeypatch.setenv(gateway_observability.METRICS_TOKEN_ENV, "test-scrape-token")
+        return {"Authorization": "Bearer test-scrape-token"}
+
+    @pytest.fixture
+    def human_headers(self):
+        from src.security import get_jwt_handler
+
+        token, _ = get_jwt_handler().create_token(
+            subject="ops", roles=["admin"], metadata={"kind": "human", "scope": "L0"}
+        )
+        return {"Authorization": f"Bearer {token}"}
+
     def test_gateway_exposes_the_three_new_routes(self, client):
         """防孤儿：函数写好了不代表被接线。检查真实路由表。
 
@@ -360,39 +407,77 @@ class TestHttpEndpoints:
         assert "/v1/health" in paths
         assert "/v1/metrics" in paths
 
-    def test_prometheus_endpoint_serves_text_format(self, client):
-        response = client.get("/v1/metrics/prometheus")
+    def test_prometheus_endpoint_serves_text_format(self, client, scrape_headers):
+        response = client.get("/v1/metrics/prometheus", headers=scrape_headers)
         assert response.status_code == 200, response.text
         assert "text/plain" in response.headers["content-type"]
         assert "version=0.0.4" in response.headers["content-type"]
         assert "# HELP http_requests_total" in response.text
 
-    def test_prometheus_endpoint_can_be_disabled(self, client, monkeypatch):
+    def test_prometheus_endpoint_can_be_disabled(self, client, monkeypatch, scrape_headers):
         monkeypatch.setenv(production.PROMETHEUS_ENV, "0")
-        assert client.get("/v1/metrics/prometheus").status_code == 404
+        assert client.get(
+            "/v1/metrics/prometheus", headers=scrape_headers
+        ).status_code == 404
 
-    def test_subsystem_readiness_reports_all_kernels(self, client):
-        response = client.get("/v1/ready/subsystems")
+    def test_subsystem_readiness_reports_all_kernels(self, client, human_headers):
+        response = client.get("/v1/ready/subsystems", headers=human_headers)
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["total"] == 14
-        assert body["counts"]["healthy"] == 14
+        assert body["total"] == len(_kernels_on_disk())
+        assert body["counts"]["healthy"] == len(_kernels_on_disk())
         assert body["status"] == "ready"
 
-    def test_subsystem_readiness_503_when_a_kernel_is_unavailable(self, client, monkeypatch):
+    def test_subsystem_readiness_503_when_a_kernel_is_unavailable(
+        self, client, monkeypatch, human_headers
+    ):
         from src.observability import production as mod
 
         monkeypatch.setattr(
             mod, "SUBSYSTEM_PROBES",
             (("ghost", "src.kernels.nope", "get_x"),),
         )
-        response = client.get("/v1/ready/subsystems")
+        response = client.get("/v1/ready/subsystems", headers=human_headers)
         assert response.status_code == 503
         assert response.json()["status"] == "not_ready"
+
+    def test_subsystem_readiness_requires_a_human_principal(self, client):
+        assert client.get("/v1/ready/subsystems").status_code == 401
 
     def test_preflight_requires_a_human_principal(self, client):
         response = client.get("/v1/production/preflight")
         assert response.status_code == 401, response.text
+
+    @pytest.mark.parametrize("path,kind", [
+        ("/v1/ready/subsystems", "子系统就绪检查"),
+        ("/v1/production/preflight", "生产配置预检"),
+    ])
+    def test_probe_timeout_503_uses_four_fields(
+        self, client, monkeypatch, human_headers, path, kind
+    ):
+        """探针超时 503 全产品共用一套四字段，不再回旧的 ``status:"busy"``。
+
+        旧形状只有 ``user_message``，前端不读它 —— 中文提示会整句丢失。
+        """
+        from src.gateway import observability as gateway_observability
+        from src.gateway.health import ProbeTimeout
+
+        async def _timeout(*_args, **_kwargs):
+            raise ProbeTimeout("probe exceeded 10.0s")
+
+        monkeypatch.setattr(gateway_observability, "_run_probe", _timeout)
+        headers = dict(human_headers, **{"X-Trace-ID": "trace-busy-42"})
+        response = client.get(path, headers=headers)
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert set(body) == {"code", "message", "correlation_id", "retry_after"}
+        assert body["code"] == "PROBE_BUSY"
+        assert body["correlation_id"] == "trace-busy-42"
+        assert body["retry_after"] == 1
+        assert body["message"].startswith(kind)
+        assert "繁忙" in body["message"]
+        assert response.headers["Retry-After"] == "1"
+        assert response.headers["X-Correlation-ID"] == "trace-busy-42"
 
     def test_legacy_metrics_and_ready_are_untouched(self, client):
         """新增端点不得影响既有 health.py 三个端点。"""

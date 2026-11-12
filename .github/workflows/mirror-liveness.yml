@@ -1,0 +1,93 @@
+name: Mirror liveness
+
+# SCHEDULE + MANUAL ONLY.
+#
+# Registered in tests/test_guardrail_scripts.py::SCHEDULED_ONLY_GATES. That
+# declaration is what makes "this protects nothing on the next push" a written
+# trade-off instead of a silent one; removing it turns the guardrail suite red.
+#
+# Why not per-push: this gate makes real HTTPS requests to container registries
+# (auth.docker.io and /v2/<repo>/manifests/<ref>). A busy day gets HTTP 429 from
+# Docker Hub's anonymous pull path, and a per-push gate would turn that rate
+# limit into a red check. A red check nobody believes trains people to ignore
+# red -- as costly as a missed failure. So a rate limit is reported as
+# PROBE_INCONCLUSIVE (NOT_VERIFIED), and ONLY a registry's definitive "this
+# manifest does not exist" fails the run.
+#
+# What it catches is the invisible failure: a removed image manifest
+# (bitnami/etcd, 2026-09-30) kills a service container, every `needs:` job
+# behind it SKIPs, and the whole protection surface goes to zero with no red
+# check anywhere.
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 04:17 UTC daily -- off the top of the hour, when registries are busiest.
+    - cron: '17 4 * * *'
+
+jobs:
+  mirror-liveness:
+    name: Every pinned image still resolves
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Optional. Lifts Docker Hub's anonymous pull rate limit when set; the
+      # probe works anonymously without it (a 429 becomes PROBE_INCONCLUSIVE,
+      # never a false "gone").
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # No dependency install: the probe is stdlib-only (urllib + json).
+      - name: Probe every pinned image manifest
+        id: probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          python -u scripts/verify_image_mirrors.py --json > mirror-liveness.json
+          rc=$?
+          cat mirror-liveness.json || true
+
+          echo "## Mirror liveness" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| state | count |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+          import json
+          d = json.load(open("mirror-liveness.json", encoding="utf-8"))
+          counts = d.get("counts", {})
+          for key in ("ALIVE", "CONFIRMED_GONE", "PROBE_INCONCLUSIVE", "LOCAL_BUILD"):
+              print("| %s | %d |" % (key, counts.get(key, 0)))
+          gone = [i for i in d.get("images", []) if i.get("state") == "CONFIRMED_GONE"]
+          print("")
+          if gone:
+              print("**CONFIRMED_GONE** (re-pin these):")
+              for item in gone:
+                  print("- `%s` -- %s" % (item.get("raw"), item.get("detail")))
+          else:
+              print("No image is confirmed gone.")
+          PY
+
+          # exit 1 -- a registry said "this manifest does not exist". Real
+          # finding; fail the run.
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::image(s) CONFIRMED_GONE -- a dead image reference silently zeroes every job behind it"
+            exit 1
+          fi
+          # exit 2 -- nothing could be verified (offline, or every registry
+          # rate-limited). NOT a claim that any image is gone, so it is surfaced
+          # loudly but does not fail the scheduled run.
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::mirror liveness NOT_VERIFIED (blind probe: offline or rate-limited) -- this is not a claim that any image is gone"
+          fi
+          exit 0
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-liveness
+          path: mirror-liveness.json
+          if-no-files-found: ignore

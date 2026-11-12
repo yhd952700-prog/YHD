@@ -241,9 +241,68 @@ def verify_round_trip_many(store, principals: List[Any]) -> set:
         _restore_env(previous)
 
 
-# ---------------------------------------------------------------------------
-# credential helpers
-# ---------------------------------------------------------------------------
+def issue_root_recovery_code(store, principal: str) -> Optional[str]:
+    """为新任根账号生成一次性恢复码；明文只交给本次调用方展示。
+
+    只在「该主体就是根账号」且「根账号还没有 recovery_hash」时生成：
+    已有恢复码时静默不轮换，避免把用户手里那张码悄悄作废；
+    非根成员没有恢复码（他们走邀请/激活流程）。
+    内核只落 hash，明文不写磁盘、不入日志。
+    """
+    previous = _point_kernel_at(store)
+    try:
+        manager = IdentityManager()
+        root = manager.account_root()
+        if root is None or str(getattr(root, "principal", "") or "") != principal:
+            return None
+        if str(getattr(root, "recovery_hash", "") or ""):
+            return None
+        return manager.rotate_recovery_code(principal)
+    # nosemgrep: liuhao-swallow-exception-return-success -- 账号已创建成功，
+    # 恢复码生成失败不该回滚注册；降级为 stderr 警告，本机自救入口仍可用。
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warning: could not issue a recovery code for {principal!r}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    finally:
+        _restore_env(previous)
+
+
+def emit_recovery_code(code: str) -> bool:
+    """把恢复码写到当前 stdout；不可写时返回 False。
+
+    被脚本调用但 stdout 重定向到文件时，码会留在调用方指定的文件里，
+    仍然可复制；只有 stdout 根本不存在（如 pythonw）才会失败。
+    """
+    stream = sys.stdout
+    if stream is None:
+        return False
+    try:
+        print()
+        print("recovery code (shown ONCE only -- copy or write it down now):")
+        print(f"  {code}")
+        print("Only a hash is stored, so it cannot be shown again. Use it on")
+        print("another machine, or if you forget the password.")
+        stream.flush()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def discard_root_recovery_code(store, principal: str) -> None:
+    """撤销刚生成但无法交付给用户的恢复码，避免用户拿不到码却被锁死。"""
+    previous = _point_kernel_at(store)
+    try:
+        IdentityManager().clear_recovery_code(principal, reason="delivery_failed")
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"warning: could not revoke undelivered recovery code for {principal!r}: {exc}",
+            file=sys.stderr,
+        )
+    finally:
+        _restore_env(previous)
 
 
 def credential_summary(secret_store, principal: str) -> str:
@@ -325,7 +384,8 @@ def cmd_list(store, secret_store, args: argparse.Namespace) -> int:
 
 def cmd_register(store, secret_store, args: argparse.Namespace, principal: str,
                  display_name: Optional[str], permissions: List[str],
-                 password: Optional[str]) -> int:
+                 password: Optional[str],
+                 recovery_out: Optional[List[str]] = None) -> int:
     principal = principal.strip()
     if not principal:
         print("--principal is required", file=sys.stderr)
@@ -402,6 +462,25 @@ def cmd_register(store, secret_store, args: argparse.Namespace, principal: str,
             return 1
         print("verified  : an actual sign-in with this credential succeeded.")
 
+        # 管理员账号创建成功后立刻发一次性恢复码：换机/忘密时靠它回到账号，
+        # 否则根账号的 recovery_hash 会一直为空，自救入口也查不到码。
+        recovery_code = issue_root_recovery_code(store, principal)
+        if recovery_code:
+            if recovery_out is not None:
+                # 图形向导弹窗展示；把展示责任交给调用方。
+                recovery_out.append(recovery_code)
+            elif not emit_recovery_code(recovery_code):
+                # 码已生成但没有任何可写终端：明确失败并撤销，绝不静默成功。
+                discard_root_recovery_code(store, principal)
+                print(
+                    "ERROR: recovery code was generated but could not be printed "
+                    "(no writable stdout). The code was revoked; re-run this "
+                    "command from a terminal (or with stdout redirected to a file) "
+                    "to receive a new one.",
+                    file=sys.stderr,
+                )
+                return 1
+
     print()
     print("To make it live, set these in the service environment:")
     print(f"  {env_hint(args)}")
@@ -442,16 +521,68 @@ def cmd_revoke(store, secret_store, principal: str) -> int:
         print(f"{principal!r} was not registered in "
               f"{store.backend_name} @ {store.location} -- nothing to revoke.")
         return 1
-    print(f"revoked        : {principal}")
+
+    # Recall the LIVE half, not just the stored half.
+    #
+    # Removing the row only stops this principal being re-admitted on the next
+    # boot. The running process still held the identity ACTIVE, so an approval
+    # the operator just revoked kept authorising HIGH/CRITICAL actions until a
+    # restart. That made "revoke" a promise about the future, not an action in
+    # the present -- which is not what the word means when sovereignty is at
+    # stake (e.g. an employee leaving, or a compromised account).
+    #
+    # suspend_identity() sets SUSPENDED (which is_human_identity() refuses) and
+    # recalls every outstanding grant held by this principal.
+    from src.kernels.identity import get_identity_manager, is_human_identity
+    manager = get_identity_manager()
+    suspended = manager.suspend_identity(principal, reason="revoked by operator")
+
+    # Honesty gate: never print "revoked" unless the live state agrees.
+    # A revoke that only touched the store while the identity is still a live
+    # human is a PARTIAL revoke, and reporting success here is exactly the
+    # "silent no-op reported as success" failure mode this repo keeps
+    # rooting out. The caller gets a non-zero exit and a stated remedy.
+    identity = manager.get_identity_by_principal(principal)
+    still_human = identity is not None and is_human_identity(identity)
+    # Three distinct outcomes, each reported on its own terms. Collapsing them
+    # into one "revoked" line is how a partial revoke ends up reading as a
+    # complete one -- in particular, "this process never held that identity" is
+    # NOT the same success as "we suspended it and recalled its grants", and
+    # must not be reported as if grants had been recalled here.
+    was_live = identity is not None
+
     print(f"identity store : {store.backend_name} @ {store.location} "
           f"({'removed' if removed_identity else 'not present'})")
     print(f"credential     : {secret_store.path} "
           f"({'removed' if removed_credential else 'not present'})")
+    if not was_live:
+        live_state = "not present in this process (nothing live to suspend)"
+    elif suspended and not still_human:
+        live_state = "suspended - no longer counts as human"
+    else:
+        live_state = "NOT suspended - STILL A HUMAN"
+    print(f"running process: {live_state}")
+
+    if still_human:
+        print()
+        print("REVOCATION INCOMPLETE: the store row is gone but this principal is")
+        print("still an ACTIVE human in the running process, so it can still")
+        print("approve HIGH/CRITICAL actions until the next restart.")
+        print("Restart the process, or suspend it via the Identity Kernel.")
+        return 1
+
+    print(f"revoked        : {principal}")
     print()
-    print("Revoking here stops FUTURE approvals and sign-ins by this principal.")
-    print("It does not recall grants already issued -- revoke those with")
-    print("DELETE /v1/policy/approvals/{grant_id}. Tokens already issued remain")
-    print("valid until they expire; POST /v1/auth/logout revokes one early.")
+    if was_live and suspended:
+        print("This principal can no longer approve any HIGH/CRITICAL action in")
+        print("this process, and its outstanding sovereignty grants were recalled.")
+    else:
+        print("No live identity for this principal existed in this process, so")
+        print("nothing needed to be suspended here and no grants were held by it")
+        print("here. NOTE: a process that already has this principal loaded is NOT")
+        print("affected by this command -- suspend it there too, or restart it.")
+    print("Tokens already issued remain valid until they expire; "
+          "POST /v1/auth/logout revokes one early.")
     return 0
 
 

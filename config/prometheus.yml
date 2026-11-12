@@ -1,0 +1,176 @@
+# =============================================================================
+# LiuHao AI OS — Prometheus 监控配置 (prometheus.yml)
+# =============================================================================
+# 用途：
+#   Prometheus 主配置：定义抓取目标、采集间隔、告警规则加载与 Alertmanager
+#   路由。配合 config/alert-rules.yaml 与 docker-compose.observability.yml
+#   使用。
+#
+# 核心抓取目标：
+#   - liuhao-app      应用指标（默认 :9090/metrics，METRICS_PORT 可改）
+#   - node-exporter   宿主机 CPU/内存/磁盘/网络
+#   - postgres-exp.   PostgreSQL 连接数/慢查询/复制延迟
+#   - redis-exporter  Redis 内存/命中率/慢日志
+#   - cadvisor        容器资源用量
+#   - prometheus 自身 / alertmanager 自身
+#
+# 重要参数：
+#   - evaluation_interval   告警规则评估周期
+#   - scrape_timeout        必须 < scrape_interval
+#   - external_labels       多集群/多环境联邦时的身份标签
+# =============================================================================
+
+global:
+  scrape_interval: 15s              # 默认抓取周期
+  scrape_timeout: 10s
+  evaluation_interval: 15s          # 告警规则评估周期
+  external_labels:
+    cluster: liuhao-prod
+    environment: production
+    monitor: liuhao-prometheus
+
+# -----------------------------------------------------------------------------
+# 告警规则与 Alertmanager
+# -----------------------------------------------------------------------------
+rule_files:
+  - /etc/prometheus/rules/alert-rules.yaml   # 挂载自 config/alert-rules.yaml
+
+alerting:
+  alertmanagers:
+    - scheme: http
+      static_configs:
+        - targets:
+            - alertmanager:9093
+      timeout: 10s
+      api_version: v2
+
+# -----------------------------------------------------------------------------
+# 抓取任务
+# -----------------------------------------------------------------------------
+scrape_configs:
+
+  # --- 应用主服务：业务指标（请求延迟、LLM 调用、成本、agent 运行） ---
+  - job_name: liuhao-app
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - app:9090                # docker-compose 服务名:METRICS_PORT
+        labels:
+          service: liuhao-app
+          tier: backend
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  # --- Prometheus 自监控 ---
+  - job_name: prometheus
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          service: prometheus
+
+  # --- Alertmanager 自监控 ---
+  - job_name: alertmanager
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - alertmanager:9093
+        labels:
+          service: alertmanager
+
+  # --- 宿主机指标 ---
+  - job_name: node-exporter
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - node-exporter:9100
+        labels:
+          service: node
+          tier: infra
+
+  # --- PostgreSQL ---
+  - job_name: postgres-exporter
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - postgres-exporter:9187
+        labels:
+          service: postgres
+          tier: database
+
+  # --- Redis ---
+  - job_name: redis-exporter
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - redis-exporter:9121
+        labels:
+          service: redis
+          tier: cache
+
+  # --- 容器资源 ---
+  - job_name: cadvisor
+    scrape_interval: 30s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - cadvisor:8080
+        labels:
+          service: cadvisor
+          tier: infra
+
+  # --- Nginx（经 nginx-prometheus-exporter） ---
+  - job_name: nginx
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - nginx-exporter:9113
+        labels:
+          service: nginx
+          tier: edge
+
+  # --- 黑盒探测：对关键端点做主动可用性检查 ---
+  - job_name: blackbox-http
+    scrape_interval: 60s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://ai.liuhao.example.com/healthz
+          - https://ai.liuhao.example.com/readyz
+          - https://ai.liuhao.example.com/
+        labels:
+          service: blackbox
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+# -----------------------------------------------------------------------------
+# 远程存储（可选）：长期保留指标到 VictoriaMetrics / Mimir / Thanos
+# -----------------------------------------------------------------------------
+# remote_write:
+#   - url: http://victoriametrics:8428/api/v1/write
+#     queue_config:
+#       max_samples_per_send: 10000
+#       capacity: 20000
+#       max_shards: 30
+
+# remote_read:
+#   - url: http://victoriametrics:8428/api/v1/read
+#     read_recent: true
+
+# -----------------------------------------------------------------------------
+# 存储参数（命令行覆盖亦可，这里作文档化说明）
+#   --storage.tsdb.retention.time=30d     本地保留 30 天
+#   --storage.tsdb.retention.size=20GB    本地最多 20 GB
+#   --web.enable-lifecycle                允许 POST /-/reload 热加载本配置
+# =============================================================================

@@ -13,6 +13,8 @@ Spec items 181-182: Model Registry supports:
 from __future__ import annotations
 
 import json
+import os
+import threading
 from datetime import datetime, timezone
 from typing import (
     Any,
@@ -22,7 +24,16 @@ from typing import (
     Set,
 )
 
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
+
 from .provider_adapter import ProviderCapabilities
+
+#: 同进程内多个 registry 实例（以及多 worker 进程）的写入串行锁。
+_PROCESS_WRITE_LOCK = threading.Lock()
 
 
 class RegisteredModel:
@@ -144,6 +155,9 @@ class ModelRegistry:
         self._by_status: Dict[str, Set[str]] = {}  # status -> set of model_ids
         self._storage_path = storage_path
         self._dirty = False
+        # 已删除但尚未落盘的 model_id：合并写回时必须排除，否则会被磁盘
+        # 旧快照复活。
+        self._deleted_ids: Set[str] = set()
 
     def register(self, model: RegisteredModel) -> None:
         """Register a new model."""
@@ -167,6 +181,7 @@ class ModelRegistry:
         self._by_status[model.status].discard(model_id)
         if not self._by_status[model.status]:
             del self._by_status[model.status]
+        self._deleted_ids.add(model_id)
         self._dirty = True
         return model
 
@@ -274,13 +289,16 @@ class ModelRegistry:
         return {
             "model_ids": [m.model_id for m in self._models.values()],
             "models": {m.model_id: m.to_dict() for m in self._models.values()},
+            # ``_by_provider`` / ``_by_status`` hold model-id strings, not
+            # RegisteredModel objects (this used to raise AttributeError on
+            # every persist() with a non-empty registry).
             "by_provider": {
-                provider: [m.model_id for m in models]
-                for provider, models in self._by_provider.items()
+                provider: sorted(model_ids)
+                for provider, model_ids in self._by_provider.items()
             },
             "by_status": {
-                status: [m.model_id for m in models]
-                for status, models in self._by_status.items()
+                (status.value if hasattr(status, "value") else status): sorted(model_ids)
+                for status, model_ids in self._by_status.items()
             },
         }
 
@@ -289,7 +307,10 @@ class ModelRegistry:
         """Create registry from dictionary."""
         registry = ModelRegistry()
 
-        for md in data.get("models", []):
+        raw_models = data.get("models") or {}
+        if isinstance(raw_models, dict):
+            raw_models = list(raw_models.values())
+        for md in raw_models:
             model = RegisteredModel.from_dict(md)
             registry._models[model.model_id] = model
             if model.provider not in registry._by_provider:
@@ -303,18 +324,62 @@ class ModelRegistry:
         return registry
 
     def persist(self) -> None:
-        """Persist registry to disk if storage_path is set."""
-        if self._storage_path and self._dirty:
-            with open(self._storage_path, "w") as f:
-                json.dump(self.to_dict(), f, indent=2)
-            self._dirty = False
+        """Persist registry to disk if storage_path is set.
+
+        读-改-写事务：进程锁 → OS 文件锁 → 锁内重读磁盘 → 按 model_id 合并
+        （同 id 以内存为准，磁盘上其它进程刚注册的模型保留）→ 原子替换。
+        写成功后清除 ``_dirty``；失败向上抛，不谎报"已持久化"。
+        """
+        if not (self._storage_path and self._dirty):
+            return
+        path = str(self._storage_path)
+        with _PROCESS_WRITE_LOCK:
+            with exclusive_file_lock(f"{path}.lock", description="模型注册表"):
+                payload = self.to_dict()
+                merged = self._merge_disk_models(payload)
+                atomic_write_text(path, json.dumps(merged, indent=2))
+                self._deleted_ids.clear()
+                self._dirty = False
+
+    def _merge_disk_models(self, memory_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """锁内重读磁盘模型字典；同 model_id 以内存为准。"""
+        by_id: Dict[str, Any] = {}
+        if os.path.exists(str(self._storage_path)):
+            disk = json.loads(read_text_with_retry(str(self._storage_path)))
+            if isinstance(disk, dict):
+                disk_models = disk.get("models") or {}
+                if isinstance(disk_models, dict):
+                    by_id.update(disk_models)
+                else:  # 兼容历史列表格式
+                    for item in disk_models:
+                        if isinstance(item, dict) and item.get("model_id"):
+                            by_id[item["model_id"]] = item
+        for model_id in self._deleted_ids:
+            by_id.pop(model_id, None)
+        for model_id, item in (memory_payload.get("models") or {}).items():
+            by_id[model_id] = item
+
+        by_provider: Dict[str, List[str]] = {}
+        by_status: Dict[str, List[str]] = {}
+        for model_id, item in by_id.items():
+            provider = item.get("provider")
+            status = item.get("status")
+            if provider:
+                by_provider.setdefault(provider, []).append(model_id)
+            if status:
+                by_status.setdefault(status, []).append(model_id)
+        return dict(
+            memory_payload,
+            model_ids=list(by_id),
+            models=by_id,
+            by_provider=by_provider,
+            by_status=by_status,
+        )
 
     @classmethod
     def load(cls, storage_path: str) -> ModelRegistry:
         """Load registry from disk."""
-        import json
-        with open(storage_path, "r") as f:
-            data = json.load(f)
+        data = json.loads(read_text_with_retry(storage_path))
         return cls.from_dict(data)
 
     def __len__(self) -> int:

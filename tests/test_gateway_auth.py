@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+
 import json
 
 import pytest
@@ -29,6 +30,12 @@ PASSWORD = "correct horse battery staple"
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
+
+
+# Mandatory target for /v1/policy/approvals (governance ruling
+# 2026-10-05). A single concrete target is enough here; target-binding
+# semantics are covered in tests/kernels/test_sovereignty_target_binding.py.
+_T = "kernel-target:demo"
 
 
 @pytest.fixture
@@ -185,6 +192,22 @@ class TestSecretStore:
         assert set(document) == {"version", "credentials"}
         assert "a.b" in document["credentials"]
 
+    def test_new_file_is_created_with_current_user_only_acl(self, tmp_path):
+        """新建凭据库之后立刻断言 ACL 受保护（**不允许 skip**）。
+
+        0.1.1 装出来的 ``auth_secrets.json`` 继承了 ``CodexSandboxUsers`` /
+        ``Administrators``：根因是创建点没有收紧 DACL。这里读回真实 DACL，
+        而不是相信“收紧函数没报错”。
+        """
+        from src.common.windows_acl import acl_is_current_user_only
+
+        path = tmp_path / "auth.json"
+        assert SecretStore(str(path)).set_credential(
+            "a.b", PASSWORD, iterations=1000
+        )
+        assert path.exists()
+        assert acl_is_current_user_only(path) is True
+
     def test_non_object_document_is_refused(self, tmp_path):
         path = tmp_path / "auth.json"
         path.write_text("[1, 2, 3]", encoding="utf-8")
@@ -208,7 +231,7 @@ class TestAuthenticate:
         assert caught.value.status_code == 401
         # Same wording as a wrong password: a distinct message would make this
         # endpoint an oracle for which principals exist.
-        assert caught.value.detail == "凭据无效"
+        assert caught.value.detail == "账号或密码不正确"
 
     def test_wrong_password_is_401(self, auth_env):
         _register_human("xin.hongda")
@@ -242,7 +265,9 @@ class TestAuthenticate:
 
         assert result["principal"] == "xin.hongda"
         assert result["display_name"] == "张三"
-        assert result["scope"] == "L0"
+        # 新注册人类默认最低权限：内核给人形身份写的是 L0（人类主权），但
+        # 网关只在显式授予 owner 时才允许令牌携带 L0。没有权限 → L7。
+        assert result["scope"] == "L7"
         assert result["client"] == "mobile"
         assert result["token_type"] == "bearer"
         assert result["expires_in"] > 0
@@ -253,6 +278,11 @@ class TestAuthenticate:
         assert payload.sub == "xin.hongda"
         assert payload.metadata.get("kind") == "human"
         assert payload.metadata.get("client") == "mobile"
+
+    def test_explicit_owner_permission_keeps_l0(self, auth_env):
+        _register_human("xin.hongda", permissions=["owner"])
+        result = authenticate("xin.hongda", PASSWORD)
+        assert result["scope"] == "L0"
 
     def test_blank_inputs_are_400(self, auth_env):
         for principal, secret in (("", PASSWORD), ("xin.hongda", ""), ("  ", PASSWORD)):
@@ -352,6 +382,33 @@ class TestAuthEndpoints:
         assert response.status_code == 401
         assert "application/json" in response.headers["content-type"]
 
+    def test_login_times_out_instead_of_hanging(self, client, auth_env, monkeypatch):
+        """P0 满载：凭据校验被拖住时登录必须在预算内回 504，而不是无限挂起。
+
+        用一个睡 3 秒的 ``authenticate`` 模拟满载下线程池排队/磁盘争用，
+        预算压到 1 秒：响应必须在远小于 3 秒时回来，且文案是可重试的
+        「登录超时，请重试」（不是让用户重启）。
+        """
+        import time
+
+        monkeypatch.setenv("LIUHAO_LOGIN_TIMEOUT_SECONDS", "1")
+        monkeypatch.setattr(
+            auth, "authenticate", lambda *args, **kwargs: time.sleep(3)
+        )
+        started = time.monotonic()
+        response = client.post(
+            "/v1/auth/login",
+            json={"principal": "xin.hongda", "secret": PASSWORD},
+        )
+        elapsed = time.monotonic() - started
+        assert response.status_code == 504, response.text
+        body = response.json()
+        # 网关把 {"code","message"} 的 detail 摊平成顶层错误体（见
+        # structured_error_body），前端 readError 读的也是顶层字段。
+        assert body.get("code") == "LOGIN_TIMEOUT"
+        assert body.get("message") == "登录超时，请重试"
+        assert elapsed < 2.5, f"login took {elapsed:.2f}s, budget was 1s"
+
     def test_me_without_a_token_is_401(self, client, auth_env):
         assert client.get("/v1/auth/me").status_code == 401
 
@@ -442,17 +499,27 @@ class TestTokenIsReal:
         # kernel at grant time, not by whoever minted the token.
         from src.security.jwt_handler import create_access_token
 
-        token, _ = create_access_token(subject="svc.forged", scopes=["console"])
+        token, _ = create_access_token(
+            subject="svc.forged",
+            scopes=["console"],
+            # Give the forgery the *strongest* claim a token can carry: it must
+            # still be refused by the identity kernel, not merely by the coarse
+            # role gate in front of it. ``kind=human`` is asserted so the
+            # refusal happens at the kernel (which knows the principal is
+            # unregistered), not at the gateway's human-kind check.
+            metadata={"kind": "human", "scope": "L0"},
+        )
         response = client.post(
             "/v1/policy/approvals",
             headers={"Authorization": f"Bearer {token}"},
-            json={"actions": [_enforced_action()], "reason": "should not work"},
+            json={"target": _T, "actions": [_enforced_action()], "reason": "should not work"},
         )
         assert response.status_code == 400, response.text
         detail = response.json()["detail"]
-        # The refusal must name the PRINCIPAL. If it named the action instead,
-        # this test would still pass while the real guard stayed open.
-        assert "svc.forged" in detail
+        # 产品已改为统一的中文拒绝文案：明确说"账号没有登记"，但不再点名令牌里
+        # 的主体。仍然必须证明拒绝原因是主体而不是动作 —— 若报文说的是动作，
+        # 这个测试就会在真正的守卫敞开时也通过。
+        assert "还没有登记" in detail
         assert _enforced_action() not in detail
 
     def test_a_real_human_does_obtain_a_grant_for_the_same_action(
@@ -460,15 +527,16 @@ class TestTokenIsReal:
     ):
         # Positive control for the test above: without it, "400" could just
         # mean the chosen action was not enforceable and the pair of tests
-        # would prove nothing.
-        _register_human("xin.hongda")
+        # would prove nothing. Granting approver status is an explicit owner
+        # act -- new humans default to the lowest scope (L7), not L0.
+        _register_human("xin.hongda", permissions={"owner"})
         token = client.post(
             "/v1/auth/login", json={"principal": "xin.hongda", "secret": PASSWORD}
         ).json()["access_token"]
         response = client.post(
             "/v1/policy/approvals",
             headers={"Authorization": f"Bearer {token}"},
-            json={"actions": [_enforced_action()], "reason": "positive control"},
+            json={"target": _T, "actions": [_enforced_action()], "reason": "positive control"},
         )
         assert response.status_code == 200, response.text
         assert response.json()["approved"] is True

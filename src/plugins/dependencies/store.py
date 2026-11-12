@@ -10,8 +10,8 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import (
@@ -40,6 +40,7 @@ class PluginDependenciesStore:
         self._dependencies: Dict[str, PluginDependency] = {}
         self._resolutions: Dict[str, DependencyResolution] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -55,9 +56,15 @@ class PluginDependenciesStore:
                     k: DependencyResolution.from_dict(v) for k, v in data.get("resolutions", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
-                if not self._hash_chain or len(self._hash_chain) != len(self._dependencies):
+                # P0-8c: NO default fallback. An envelope that declares
+                # no algorithm is UNVERIFIED, never silently read as sha256.
+                self._hash_alg = data.get("hash_alg")
+                if self._hash_alg and (
+                    not self._hash_chain or len(self._hash_chain) != len(self._dependencies)
+                ):
                     self._hash_chain = None
                     self._build_hash_chain()
+
             except Exception as e:
                 print(f"Warning: Failed to load dependencies store: {e}")
                 self._dependencies = {}
@@ -70,6 +77,14 @@ class PluginDependenciesStore:
 
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain from current dependencies."""
+        # P0-8c: refuse to (re)build a chain without a declared algorithm.
+        # Defaulting to sha256 is exactly what the containment forbids;
+        # the operator must stamp legacy data via the migration script.
+        if not self._hash_alg:
+            raise ValueError(
+                "cannot build a hash chain without a declared hash_alg; "
+                "run scripts/migrate_p08_hash_alg.py to stamp legacy data"
+            )
         chain: List[str] = []
         sorted_ids = sorted(self._dependencies.keys())
         prev_hash = "genesis"
@@ -78,7 +93,7 @@ class PluginDependenciesStore:
             dep_dict = dep.to_dict()
             dep_dict["prev_hash"] = prev_hash
             dep_data = json.dumps(dep_dict, sort_keys=True, separators=(",", ":"))
-            dep_hash = hashlib.sha256(dep_data.encode()).hexdigest()
+            dep_hash = compute_hash(self._hash_alg, dep_data.encode())
             chain.append(dep_hash)
             prev_hash = dep_hash
 
@@ -87,12 +102,13 @@ class PluginDependenciesStore:
 
     def _save(self) -> None:
         """Persist dependencies to storage."""
-        if self._hash_chain is None:
+        if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
 
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "dependencies": {k: v.to_dict() for k, v in self._dependencies.items()},
             "resolutions": {k: v.to_dict() for k, v in self._resolutions.items()},
@@ -186,8 +202,13 @@ class PluginDependenciesStore:
 
     def verify_integrity(self) -> bool:
         """Verify the hash chain integrity."""
-        if not self._dependencies or not self._hash_chain:
+        if not self._dependencies:
             return True
+        # P0-8c: data that declares no algorithm (or carries no chain) is
+        # UNVERIFIED -- fail closed, never a silent pass and never a
+        # silent fallback to sha256.
+        if not self._hash_alg or not self._hash_chain:
+            return False
 
         chain = self._hash_chain
         if len(chain) != len(self._dependencies):
@@ -200,12 +221,11 @@ class PluginDependenciesStore:
             dep_dict = dep.to_dict()
             dep_dict["prev_hash"] = prev_hash
             dep_data = json.dumps(dep_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(dep_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, dep_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 

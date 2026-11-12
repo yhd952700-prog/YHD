@@ -117,6 +117,17 @@ try:
 except Exception as exc:
     _fail("setup", exc, False)
 
+# 预载一批**纯计算**模块：它们没有文件 I/O、没有网络、没有进程、
+# 不接触属性协议的危险面。这不是给用户开 import 口子——
+# 用户代码里的 import 语句仍会在编译期被拒。这里只是把"确定安全"的
+# 模块名字放进命名空间，让 AI 生成的计算代码能跑起来。
+for _mod_name in ("math", "random", "json", "re", "datetime",
+                  "collections", "statistics", "itertools", "string"):
+    try:
+        globs[_mod_name] = __import__(_mod_name)
+    except Exception:
+        pass  # 缺某个模块不影响整体，照跑
+
 try:
     from RestrictedPython.Eval import default_guarded_getiter
     globs["_getiter_"] = default_guarded_getiter
@@ -147,10 +158,12 @@ try:
 except Exception:
     pass  # 缺这几个 guard 只影响部分语法（如 a, b = ...）；照跑，缺什么报什么
 
-printed = []
-def _collect_print(*args, **kwargs):
-    printed.append(" ".join(str(a) for a in args))
-globs["print"] = _collect_print
+# RestrictedPython 把 print(...) 编译成对 PrintCollector 实例的调用，
+# 实例被存放在 globs["_print"]。实例本身是可调用的（__call__ 返回已收集文本），
+# 所以执行完后调一下它就能拿到所有 print 输出。
+# 不要再手动覆写 globs["print"]——compile_restricted 生成的字节码
+# 走的是 _print_/_print 路径，手动设的 print 名字会被忽略。
+printed_output = ""
 
 restricted_hint = False
 try:
@@ -161,11 +174,18 @@ except Exception as exc:
     restricted_hint = isinstance(exc, (NameError, ImportError)) or "__import__" in name
     _fail("runtime", exc, restricted_hint)
 
+_print_inst = globs.get("_print")
+if _print_inst is not None and callable(_print_inst):
+    try:
+        printed_output = _print_inst() or ""
+    except Exception:
+        printed_output = ""
+
 value = globs.get("result")
 sys.stdout.write(json.dumps({
     "ok": True, "stage": "exec", "restricted": False,
     "error": None,
-    "stdout": "\n".join(printed),
+    "stdout": printed_output,
     "result": None if value is None else repr(value),
 }))
 sys.stdout.flush()

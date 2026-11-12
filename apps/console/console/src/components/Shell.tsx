@@ -6,13 +6,17 @@
  * 快捷键提示选择文案 —— 一旦在 JS 里做布局判断，三端就会开始各自漂移。
  */
 
-import { useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
-import { ALL_NAV, FOOTER_NAV, GOVERNANCE_NAV, MOBILE_NAV_KEYS, PRIMARY_NAV } from '../lib/nav'
+import { ALL_NAV, navGroupsFor, mobileNavKeysFor, SETTINGS_SECTIONS } from '../lib/nav'
+import { useWorkspaceName } from '../lib/workspaceName'
 import type { NavItem } from '../lib/nav'
+import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
+import { identityBarRole } from '../lib/accountCaps'
 import { IconActivity, IconBell, IconLogout, IconSearch, IconSparkle } from './icons'
+import { DesktopDownloadLink } from './DesktopDownloadLink'
 
 export interface OsNotification {
   id: string
@@ -25,7 +29,11 @@ export interface ShellProps {
   mode: DeviceMode
   theme: Theme
   session: Session
+  profile: AccountProfile
+  caps: AccountCaps
   active: string
+  /** 当前页的人类可读名称：用于切页时给读屏播报，而不是只换 DOM。 */
+  pageTitle?: string
   onNavigate: (key: string) => void
   onToggleTheme: () => void
   onLogout: () => void
@@ -39,7 +47,10 @@ export function Shell({
   mode,
   theme,
   session,
+  profile,
+  caps,
   active,
+  pageTitle,
   onNavigate,
   onToggleTheme,
   onLogout,
@@ -50,9 +61,57 @@ export function Shell({
 }: ShellProps) {
   const initial = (session.displayName || session.principal || '?').trim().charAt(0).toUpperCase()
   const displayName = session.displayName || session.principal
+  const navigation = navGroupsFor(caps)
+  const mobileKeys = mobileNavKeysFor(caps)
+  const roleLabel = identityBarRole(profile)
+  // 顶栏品牌与管家页入口只从工作台名字配置读（`lib/workspaceName.ts`）：
+  // 设置页改了名字，这里跟着变，不用等重建。
+  const workspaceName = useWorkspaceName()
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  // 页内切换没有真实导航，读屏用户不会自动知道内容换了。这里用礼貌播报
+  // 说明"已进入哪一页"，同时保留焦点在原导航项上（不抢焦点）。
+  const [routeAnnouncement, setRouteAnnouncement] = useState('')
+  useEffect(() => {
+    if (!pageTitle) return
+    setRouteAnnouncement(`已进入「${pageTitle}」`)
+  }, [pageTitle])
+
+  // 顶栏标注了 "/" 快捷键，就必须真的能用；在输入框/下拉内不劫持，保持正常输入。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.defaultPrevented) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return
+      }
+      event.preventDefault()
+      searchRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   return (
-    <div className="os-app">
+    <>
+      {/* 跳过导航：第一次 Tab 就能直达主内容或顶部搜索，不必先走完侧栏 29 项。 */}
+      <div className="os-skip-links">
+        <a className="os-skip-link" href="#os-main">
+          跳到主内容
+        </a>
+        <a className="os-skip-link" href="#os-search">
+          跳到搜索
+        </a>
+      </div>
+
+      {/* 切换页面时播报落点；空元素常驻，文字变化才会触发读屏。 */}
+      <p className="os-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        {routeAnnouncement}
+      </p>
+
+      <div className="os-app">
       <aside className="os-sidebar" aria-label="主导航">
         <div className="os-brand">
           <div className="os-brand-mark">
@@ -67,53 +126,60 @@ export function Shell({
             </svg>
           </div>
           <div>
-            <div className="os-brand-name">LiuHao AI OS</div>
-            <div className="os-brand-sub">LIVE · 鎏灏智能中枢</div>
+            <div className="os-brand-name">{workspaceName.name_en}</div>
+            <div className="os-brand-sub">LIVE · {workspaceName.name_zh}</div>
           </div>
         </div>
 
         <nav className="os-nav">
-          <div className="os-nav-label">业务</div>
-          {PRIMARY_NAV.map((item) => (
-            <NavButton
-              key={item.key}
-              item={item}
-              active={active === item.key}
-              onSelect={onNavigate}
-            />
-          ))}
-
-          <div className="os-nav-label">治理</div>
-          {GOVERNANCE_NAV.map((item) => (
-            <NavButton
-              key={item.key}
-              item={item}
-              active={active === item.key}
-              onSelect={onNavigate}
-            />
-          ))}
+          {navigation.map((group) => {
+            const GroupIcon = group.icon
+            const containsActive = group.items.some((item) => item.key === active)
+            return (
+              <div className="os-nav-group" key={group.key}>
+                <button
+                  type="button"
+                  className="os-nav-group-head"
+                  data-active={containsActive || undefined}
+                  title={group.label}
+                  onClick={() => onNavigate(containsActive ? active : group.defaultKey)}
+                >
+                  <span className="os-nav-icon">
+                    <GroupIcon size={17} />
+                  </span>
+                  <span className="os-nav-text">{group.label}</span>
+                </button>
+                <div className="os-nav-kids">
+                  {group.items.map((item) => {
+                    const section = SETTINGS_SECTIONS.find(
+                      (candidate) => group.key === 'settings' && candidate.startsAt === item.key,
+                    )
+                    return (
+                      <Fragment key={item.key}>
+                        {section && <div className="os-nav-sublabel">{section.label}</div>}
+                        <NavButton
+                          item={item}
+                          active={active === item.key}
+                          onSelect={onNavigate}
+                          compact
+                        />
+                      </Fragment>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
         </nav>
 
         <div className="os-sidebar-foot">
-          <nav className="os-nav" aria-label="设置">
-            {FOOTER_NAV.map((item) => (
-              <NavButton
-                key={item.key}
-                item={item}
-                active={active === item.key}
-                onSelect={onNavigate}
-              />
-            ))}
-          </nav>
           <div className="os-user">
             <div className="os-avatar" aria-hidden="true">
               {initial}
             </div>
             <div style={{ minWidth: 0 }}>
               <div className="os-user-name">{displayName}</div>
-              <div className="os-user-role">
-                {session.scope ? `${session.scope} · 人类主权` : '人类身份'}
-              </div>
+              <div className="os-user-role">{roleLabel}</div>
             </div>
             <button className="os-logout" onClick={onLogout} title="退出登录" aria-label="退出登录">
               <IconLogout size={16} />
@@ -128,8 +194,11 @@ export function Shell({
             <IconSearch size={16} />
             <span className="os-visually-hidden">搜索当前页面</span>
             <input
+              id="os-search"
+              ref={searchRef}
               type="search"
               placeholder="搜索任务 / 员工 / 数据…"
+              aria-keyshortcuts="/"
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
             />
@@ -137,6 +206,8 @@ export function Shell({
           </label>
 
           <div className="os-topbar-actions">
+            {/* 只在网页端显示；CSS 按 data-mode/data-client 控制，桌面壳/手机端不出现。 */}
+            <DesktopDownloadLink compact />
             <Clock />
             <button
               className="os-icon-btn"
@@ -150,29 +221,46 @@ export function Shell({
           </div>
         </header>
 
-        <main className="os-content">{children}</main>
+        <main className="os-content" id="os-main" tabIndex={-1}>
+          {children}
+        </main>
       </div>
 
       <nav className="os-bottom-nav" aria-label="底部导航">
-        {MOBILE_NAV_KEYS.map((key) => {
+        {mobileKeys.map((key) => {
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          const label = item.key === 'settings' ? '我的' : item.label.replace('我AI', '')
+          // 底栏用短标签：七项在 360px 下只有约 50px 一列，长名称会被截断。
+          // 管家页入口显示当前工作台名字（改了名跟着变）。
+          const short: Record<string, string> = {
+            'enterprise-overview': '企业总览',
+            butler: workspaceName.name_zh,
+            'my-employees': '办公室',
+            office: '办公室',
+            'task-center': '任务',
+            knowledge: '知识',
+            'skills-center': '能力',
+            settings: '设置',
+            me: '我的',
+          }
+          const label = short[item.key] ?? item.label
           return (
             <button
               key={item.key}
               className="os-bottom-item"
+              data-key={item.key}
               aria-current={active === item.key ? 'page' : undefined}
               onClick={() => onNavigate(item.key)}
             >
-              <Icon size={19} />
+              <Icon size={item.key === 'butler' ? 22 : 19} />
               <span>{label}</span>
             </button>
           )
         })}
       </nav>
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -180,23 +268,30 @@ function NavButton({
   item,
   active,
   onSelect,
+  compact,
 }: {
   item: NavItem
   active: boolean
   onSelect: (key: string) => void
+  /** 组内二级项：缩进、字号略小，不抢一级组名的视觉重量。 */
+  compact?: boolean
 }) {
   const Icon = item.icon
+  // 管家页入口显示当前工作台名字（改了名跟着变），其余入口用导航定义。
+  const workspaceName = useWorkspaceName()
+  const label = item.key === 'butler' ? workspaceName.name_zh : item.label
   const hasBadge = item.badge !== undefined && item.badge !== '' && item.badge !== 0
   return (
     <button
-      className="os-nav-item"
+      className={compact ? 'os-nav-item os-nav-item-kid' : 'os-nav-item'}
       aria-current={active ? 'page' : undefined}
+      title={item.hint}
       onClick={() => onSelect(item.key)}
     >
       <span className="os-nav-icon">
         <Icon size={17} />
       </span>
-      <span className="os-nav-text">{item.label}</span>
+      <span className="os-nav-text">{label}</span>
       {hasBadge && (
         <span className="os-nav-badge" data-tone={item.badgeTone ?? 'accent'}>
           {item.badge}
@@ -222,16 +317,45 @@ function Clock() {
 
 function Notifications({ items }: { items: OsNotification[] }) {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const urgent = items.filter((item) => item.tone === 'danger' || item.tone === 'warn').length
+
+  /** 关闭并把焦点还给触发按钮：键盘用户不会掉到 body。 */
+  const close = useCallback(() => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
+
+  // 打开后焦点进入弹层；Esc 关闭并归还焦点。弹层本身可聚焦，
+  // 这样"暂无通知"（内部没有可聚焦项）时焦点也有落点。
+  useEffect(() => {
+    if (!open) return
+    const panel = panelRef.current
+    const firstFocusable = panel?.querySelector<HTMLElement>(
+      'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    )
+    ;(firstFocusable ?? panel)?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      close()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open, close])
 
   return (
     <div style={{ position: 'relative' }}>
       <button
+        ref={triggerRef}
         className="os-icon-btn"
-        onClick={() => setOpen((value) => !value)}
-        title="系统通知"
-        aria-label={`系统通知，${items.length} 条`}
+        onClick={() => (open ? close() : setOpen(true))}
+        title="通知"
+        aria-label={`通知，${items.length} 条`}
         aria-expanded={open}
+        aria-controls="os-notifications-panel"
+        aria-haspopup="dialog"
       >
         <IconBell size={16} />
         {urgent > 0 && <span className="os-icon-btn-dot" />}
@@ -239,6 +363,11 @@ function Notifications({ items }: { items: OsNotification[] }) {
 
       {open && (
         <div
+          ref={panelRef}
+          id="os-notifications-panel"
+          role="dialog"
+          aria-label="通知"
+          tabIndex={-1}
           className="os-card"
           style={{
             position: 'absolute',
@@ -251,7 +380,7 @@ function Notifications({ items }: { items: OsNotification[] }) {
           }}
         >
           <div className="os-card-head">
-            <h3 className="os-card-title">系统通知</h3>
+            <h3 className="os-card-title">通知</h3>
             <span className="os-badge" data-tone="muted">
               {items.length}
             </span>

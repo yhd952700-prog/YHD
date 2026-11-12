@@ -1,4 +1,4 @@
-"""鎏灏命令行对话入口。
+"""贾维斯命令行对话入口。
 
 用法：
     # 真实 LLM（本机 ollama，默认模型 qwen2.5:3b）
@@ -40,11 +40,11 @@ def build_provider(provider_type: str, model: str):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="鎏灏（LIUHAO X）命令行对话")
+    parser = argparse.ArgumentParser(description="Jarvis · 贾维斯 命令行对话")
     parser.add_argument(
         "--provider",
         default=os.environ.get("AI_PROVIDER_TYPE", "ollama"),
-        help="provider 类型（ollama / mock / openai / deepseek / moonshot ...）",
+        help="服务商类型（ollama / mock / openai / deepseek / moonshot …）",
     )
     parser.add_argument(
         "--model",
@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--system-prompt",
         default=None,
-        help="自定义系统提示词（可选，覆盖默认鎏灏身份）",
+        help="自定义系统提示词（可选，覆盖默认贾维斯身份）",
     )
     return parser
 
@@ -62,9 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
 @observe("chat.repl")
 def repl(assistant: LiuHaoAssistant) -> int:
     print("=" * 60)
-    print("  鎏灏（LIUHAO X）— AI 操作系统")
+    print("  Jarvis · 贾维斯 — AI 操作系统")
     st = assistant.stats()
-    print(f"  provider={st['provider']}  model={st['model']}")
+    print(f"  服务商={st['provider']}  模型={st['model']}")
     print("  输入消息开始对话；/stats 状态 /reset 清史 /quit 退出")
     print("=" * 60)
 
@@ -88,7 +88,7 @@ def repl(assistant: LiuHaoAssistant) -> int:
             continue
 
         result = assistant.chat(line)
-        tag = "鎏灏" if result["status"] == "completed" else "鎏灏[错误]"
+        tag = "贾维斯" if result["status"] == "completed" else "贾维斯[错误]"
         print(f"{tag}> {result['reply']}")
 
     print("\n再见。")
@@ -101,7 +101,7 @@ def main() -> int:
     try:
         provider = build_provider(args.provider, args.model)
     except Exception as exc:
-        print(f"provider 初始化失败（{args.provider}/{args.model}）：{exc}")
+        print(f"服务商初始化失败（{args.provider}/{args.model}）：{exc}")
         print("提示：本机 ollama 需先 `ollama serve` 并拉取模型；或用 --provider mock 兜底。")
         return 1
 

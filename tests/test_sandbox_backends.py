@@ -71,7 +71,9 @@ class TestSubprocessBackend:
     def test_execute_with_timeout(self):
         result = self.backend.execute(
             execution_id="test-003",
-            command=["sleep", "10"],
+            # `sleep` is not an external command on Windows (no sleep.exe on PATH),
+            # so block inside the current interpreter instead; still a real 10s sleep.
+            command=[sys.executable, "-c", "import time; time.sleep(10)"],
             timeout=2,
         )
         assert result.success is False

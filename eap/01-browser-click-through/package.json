@@ -1,0 +1,13 @@
+{
+  "//": "Browsers are installed on the host, NOT in the authoring env: run `npx playwright install chromium` once on the Docker+Playwright host before `npx playwright test`.",
+  "name": "liuhao-eap-clickthrough",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LIUHAO AI OS External Acceptance Package (EAP) — browser click-through package (P1/P5/P9/P10).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

@@ -18,7 +18,8 @@ from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from src._time import utc_now
+# 时间回拨不能让已过期的记忆"复活"：TTL 判断走防跳变时钟。
+from src._time import stable_utc_now as utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
@@ -205,8 +206,8 @@ class MemoryKernel:
     """Complete Memory Kernel implementation.
 
     持久化：``db_path=None`` 时走默认落盘路径（env ``MEMORY_DB_PATH``，兜底
-    ``D:/LiuHao-AI-OS/memory_store.db``），跨进程重启保留记忆；传 ``":memory:"``
-    为纯内存（测试隔离用）。
+    ``data/memory_store.db``；安装版为 ``%LOCALAPPDATA%\\LiuHao\\data``），
+    跨进程重启保留记忆；传 ``":memory:"`` 为纯内存（测试隔离用）。
     """
 
     _entries: Dict[str, MemoryEntry] = field(default_factory=dict, init=False)
@@ -273,10 +274,19 @@ class MemoryKernel:
 
             # Store in appropriate tier
             key_hash = f"{tier.value}:{key}"
+            previous = self._entries.get(key_hash)
             self._entries[key_hash] = entry
 
-            # 写穿落盘（跨进程重启保留记忆）。
-            self._store.persist(_entry_to_row(entry, key_hash))
+            # 写穿落盘（跨进程重启保留记忆）。失败时把内存态回滚到写之前：
+            # 否则"调用方收到失败、但内存里却认为已记住"，重启前后行为不一致。
+            try:
+                self._store.persist(_entry_to_row(entry, key_hash))
+            except Exception:
+                if previous is None:
+                    self._entries.pop(key_hash, None)
+                else:
+                    self._entries[key_hash] = previous
+                raise
 
             return entry
 
@@ -502,14 +512,30 @@ class MemoryKernel:
 
             # Store the target, then remove the compressed-away sources.
             target_key_hash = f"{target_tier.value}:{key}"
+            previous_target = self._entries.get(target_key_hash)
+            removed = {
+                f"{e.tier.value}:{e.key}": self._entries.pop(
+                    f"{e.tier.value}:{e.key}", None
+                )
+                for e in candidates
+            }
             self._entries[target_key_hash] = entry
-            for e in candidates:
-                self._entries.pop(f"{e.tier.value}:{e.key}", None)
 
-            # 落盘：写入合并后的 target，删除被合并的 source。
-            self._store.persist(_entry_to_row(entry, target_key_hash))
-            for e in candidates:
-                self._store.delete(f"{e.tier.value}:{e.key}")
+            # 落盘：写入合并后的 target，删除被合并的 source。失败时整体回滚，
+            # 绝不出现"内存里已合并、库里还是旧的分条记忆"的撕裂状态。
+            try:
+                self._store.persist(_entry_to_row(entry, target_key_hash))
+                for e in candidates:
+                    self._store.delete(f"{e.tier.value}:{e.key}")
+            except Exception:
+                if previous_target is None:
+                    self._entries.pop(target_key_hash, None)
+                else:
+                    self._entries[target_key_hash] = previous_target
+                for key_hash, old in removed.items():
+                    if old is not None:
+                        self._entries[key_hash] = old
+                raise
 
             return MemoryCompression(
                 source_ids=source_ids,
@@ -521,7 +547,70 @@ class MemoryKernel:
                 value=value,
             )
 
-    @kernel_action("memory.auto_cleanup")
+    @kernel_action("memory.delete_by_key_prefix", system_actor=True)
+    def delete_by_key_prefix(self, prefix: str) -> int:
+        """按 key 前缀删除条目（内存 + 持久化同事务语义），返回删除条数。
+
+        用于「删除画像 / 纠正记忆」的删穿：画像 SQLite 清空后，PERSISTENT
+        副本也必须一起消失，否则 ``search_memory`` 仍能检索到已删除事实。
+        """
+        prefix = str(prefix or "")
+        if not prefix:
+            return 0
+        with self._lock:
+            targets = [
+                key_hash
+                for key_hash, entry in self._entries.items()
+                if str(entry.key).startswith(prefix)
+            ]
+            if not targets:
+                return 0
+            removed = {
+                key_hash: self._entries.pop(key_hash)
+                for key_hash in targets
+                if key_hash in self._entries
+            }
+            try:
+                for key_hash in targets:
+                    self._store.delete(key_hash)
+            except Exception:
+                # 与 auto_cleanup 一致：删库失败就还原内存，绝不假成功。
+                self._entries.update(removed)
+                raise
+            return len(removed)
+
+    @kernel_action("memory.delete_by_key", system_actor=True)
+    def delete_by_key(self, key: str) -> int:
+        """精确删除单个 key（内存 + 持久化同事务语义），返回 0/1。
+
+        与 ``delete_by_key_prefix`` 的区别是**不做前缀匹配**：
+        ``profile:u:fact:city`` 与 ``profile:u:fact:city_code`` 必须互不影响。
+        画像里「删除单条事实/偏好」走这里，「清空整份画像」才走前缀删。
+        """
+        key = str(key or "")
+        if not key:
+            return 0
+        with self._lock:
+            target = next(
+                (
+                    key_hash
+                    for key_hash, entry in self._entries.items()
+                    if str(entry.key) == key
+                ),
+                None,
+            )
+            if target is None:
+                return 0
+            entry = self._entries.pop(target)
+            try:
+                self._store.delete(target)
+            except Exception:
+                # 与 auto_cleanup / 前缀删一致：删库失败就还原，绝不假成功。
+                self._entries[target] = entry
+                raise
+            return 1
+
+    @kernel_action("memory.auto_cleanup", system_actor=True)
     def auto_cleanup(self) -> Dict[str, int]:
         """Evict expired entries from every tier (memory and persistence).
 
@@ -538,9 +627,16 @@ class MemoryKernel:
                 if entry.expires_at is not None and entry.expires_at <= now:
                     dead.append(key_hash)
                     per_tier[entry.tier.value] += 1
-            for key_hash in dead:
-                self._entries.pop(key_hash, None)
-                self._store.delete(key_hash)
+            removed = {key_hash: self._entries.pop(key_hash, None) for key_hash in dead}
+            try:
+                for key_hash in dead:
+                    self._store.delete(key_hash)
+            except Exception:
+                # 清理失败：把内存态还原，避免"内存里已删、库里还在"。
+                for key_hash, old in removed.items():
+                    if old is not None:
+                        self._entries[key_hash] = old
+                raise
             return per_tier
 
     def clear(self) -> None:
@@ -549,8 +645,14 @@ class MemoryKernel:
         供「重置会话」与测试隔离使用；身份/审计等其它 kernel 不受影响。
         """
         with self._lock:
+            snapshot = dict(self._entries)
             self._entries.clear()
-            self._store.clear()
+            try:
+                self._store.clear()
+            except Exception:
+                # 清库失败：内存态还原，内存与库保持一致。
+                self._entries.update(snapshot)
+                raise
 
     def initialize(self) -> None:
         self.lifecycle = KernelLifecycle.READY
@@ -571,6 +673,9 @@ class MemoryKernel:
 
 # Global memory kernel instance
 _global_kernel: Optional[MemoryKernel] = None
+#: 冷会话构造并发化后可能多线程同时首次取内核；不加锁会各自开一个 sqlite
+#: 内核实例（多份连接、互相覆盖初始化）。
+_global_kernel_lock = threading.Lock()
 
 
 def get_memory_kernel(db_path: Optional[str] = None) -> MemoryKernel:
@@ -581,8 +686,10 @@ def get_memory_kernel(db_path: Optional[str] = None) -> MemoryKernel:
     """
     global _global_kernel
     if _global_kernel is None:
-        _global_kernel = MemoryKernel(db_path=db_path)
-        _global_kernel.initialize()  # 存在即 READY：构造完成即视为就绪
+        with _global_kernel_lock:
+            if _global_kernel is None:
+                _global_kernel = MemoryKernel(db_path=db_path)
+                _global_kernel.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_kernel
 
 

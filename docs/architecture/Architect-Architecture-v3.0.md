@@ -224,7 +224,7 @@ Trigger → LangGraph StateGraph (FRIDAY) →
 | Security | TLS 1.3 enforced | End-to-end | Cert verification |
 | Security | Vault keys | Never in DB | Vault audit |
 | Audit | Operation traceability | 100% | Audit log coverage |
-| Audit | Tamper-proof | Hash chain | Chain verification |
+| Audit | Tamper-evident (target; runtime integrity UNVERIFIED — forked chain) | Hash chain | Chain verification (pending F1–F6 + independent verification) |
 | Observability | Trace completeness | Full chain | OTel span coverage |
 | Observability | Metrics completeness | RED + USE | Prometheus rules |
 | Disaster Recovery | RPO | < 5min | Backup verification |
@@ -310,7 +310,7 @@ Promoted from Draft based on:
 
 ### 概述
 
-鎏灏 AI OS 的权限系统采用 **RBAC + ABAC 混合模型**，支持主/子账号分离、业务角色分工、数据范围控制和细粒度权限覆盖。
+LiuHao AI OS · 鎏灏智能中枢 的权限系统采用 **RBAC + ABAC 混合模型**，支持主/子账号分离、业务角色分工、数据范围控制和细粒度权限覆盖。
 
 核心原则：
 - **主账号 = 老板 / 总指挥**，拥有租户内全部权限和数据

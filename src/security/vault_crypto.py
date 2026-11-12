@@ -13,9 +13,10 @@ Author: LiuHao OS Security Module
 import hashlib
 import hmac
 import logging
-from typing import Optional, Dict, Any
+from typing import TYPE_CHECKING, Optional, Dict, Any
 
-from ..integrations.vault.client import VaultClient
+if TYPE_CHECKING:  # 仅类型检查期导入；运行期在 __init__ 内按需导入
+    from ..integrations.vault.client import VaultClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,15 @@ class VaultTransitCrypto:
     When Vault is unavailable, falls back to EncryptionManager.
     """
 
-    def __init__(self, vault_client: Optional[VaultClient] = None):
+    def __init__(self, vault_client: Optional["VaultClient"] = None):
         try:
-            self._vault = vault_client or VaultClient.get_instance()
+            # 延迟导入：Vault 是可选的离线降级能力，启动期不加载 hvac/requests
+            # （实测约 0.9–2.0s）。只有真正构造 Transit 客户端时才付这个成本。
+            if vault_client is None:
+                from ..integrations.vault.client import VaultClient
+
+                vault_client = VaultClient.get_instance()
+            self._vault = vault_client
             self._vault.connect()
         except Exception as e:
             logger.debug(f"Vault client initialization failed: {e}")
@@ -243,10 +250,13 @@ class VaultTransitCrypto:
             Hex-encoded hash string
         """
         if self._offline:
-            # Offline fallback: SHA256 + pepper from EncryptionManager
+            # Offline fallback: SHA256 + pepper derived from the (now persisted)
+            # EncryptionManager master key. The pepper is stable across restarts
+            # because the master key is persisted, so stored hashes remain
+            # verifiable.
             from .encryption import get_encryption_manager
             mgr = get_encryption_manager()
-            pepper = mgr.master_key.hex()[:32] if hasattr(mgr, "master_key") else ""
+            pepper = mgr.master_key.hex()[:32]
             return hashlib.sha256(
                 (pepper + raw_key).encode()
             ).hexdigest()

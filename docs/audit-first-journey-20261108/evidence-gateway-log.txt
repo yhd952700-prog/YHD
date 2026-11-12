@@ -1,0 +1,23 @@
+鎏灏 AI OS 首次走查 — 网关日志摘录（隔离实例 D:\_audit\first-run，端口 19020）
+说明：日志时间戳为机器时钟 2026-11-07；Key 由产品自身脱敏为 ***REDACTED***。
+
+[1] 有 2 个可用模型时，聊天路由没有使用用户设为默认的 Ollama，而是选了坏 Key 的 gpt-4o-mini（并保留了 ollama 作为 fallback 却未使用）
+2026-11-07 14:59:36 | INFO | liuhao.ai.model_router | model routing decision: task=chat model_id=3c28dd4ec15a provider=openai vendor=openai model=gpt-4o-mini reason=Selected gpt-4o-mini (openai) ... | From 2 eligible models fallbacks=0fa7a664c615
+
+[2] 粘贴带前后空格的 Key 原样入库，请求头非法
+httpcore.LocalProtocolError: Illegal header value b'Bearer   sk-***REDACTED***  '
+httpx.LocalProtocolError: Illegal header value b'Bearer   sk-***REDACTED***  '
+
+[3] 模型探活分类（three cases）
+2026-11-07 14:53:11 | model probe failed provider=openai model=gpt-4o-mini reason=unreachable detail=APIConnectionError: Connection error.
+2026-11-07 14:53:16 | model probe failed provider=ollama model=llama3.1:8b reason=model_not_found detail=ProviderHTTPError: Ollama 服务返回 HTTP 404
+2026-11-07 15:08:04 | model probe failed provider=openai model=gpt-4o-mini reason=invalid_key detail=ProviderHTTPError: 模型服务返回 HTTP 401
+
+[4] 只剩一个测试通过的本机 Ollama 后，首条消息仍在 30 秒读超时处失败
+2026-11-07 15:25:58 | INFO | liuhao.ai.model_router | model routing decision: task=chat ... provider=ollama model=qwen2.5:3b reason=Selected qwen2.5:3b (ollama)
+2026-11-07 15:26:31 | WARNING | liuhao.liuhao | chat_stream generation failed turn=1 ... provider=OllamaProvider: HTTPConnectionPool(host='127.0.0.1', port=11434): Read timed out. (read timeout=30.0)
+（同一问题重试一次即成功：界面回复“2”，等待约 36 秒）
+
+[5] 管家目标：LLM 拆解失败后静默降级为关键词拆解，随后执行成功
+2026-11-07 15:02:14 | WARNING | liuhao.ai.llm_decomposer | LLM decomposition unavailable (ValueError: 任务 周报摘要 缺少能力 execution_pipeline 的必需输入); falling back to keyword planner
+2026-11-07 15:02:41 | INFO | liuhao.kernel.crosscutting | kernel_action=execution.execute outcome=success policy=allow risk=LOW duration_ms=27148.914

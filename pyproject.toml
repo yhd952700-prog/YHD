@@ -1,9 +1,17 @@
 [project]
 name = "liuhao-ai-os"
-version = "0.1.0"
-description = "LiuHao AI OS (镭灏) - Y1 Implementation"
+version = "0.3.0"
+description = "Jarvis · 贾维斯 - Y1 Implementation"
 readme = "README.md"
-requires-python = ">=3.11"
+# 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
+license = { text = "Proprietary" }
+# 上界 <3.13 是**有意**的：numpy 1.26.4 / scipy 1.13.1（arize-phoenix 链路锁定）
+# 没有 cp313 轮子，3.13 下只能走 sdist，实测因无 C 编译器直接
+# metadata-generation-failed。下界 3.12 与 .python-version / Dockerfile /
+# CI 矩阵单腿 3.12 一致（B组第二轮统一：不再维护 3.11 腿）。要支持 3.13
+# 需先升级 numpy/scipy 并重解整条 phoenix 依赖链，风险/成本远高于收窄解释器
+# 版本。详见 docs/audit/findings-deps-license.md（DEP-01）。
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.25.0",
@@ -12,13 +20,23 @@ dependencies = [
     "pydantic-settings>=2.3.0",
     "structlog>=24.1.0",
     "python-json-logger>=2.0.7",
+    # 启动器 scripts/start_liuhao.py 用它把仓库根 .env 载入进程环境
+    # （SECRET_KEY / APP_ENV 对网关可见），失败时回退到已导出的环境变量。
+    # requirements.txt 早已锁进该包，这里补齐声明，避免"能 import 却未声明"。
+    "python-dotenv>=1.0.0",
     "prometheus-client>=0.19.0",
-    "opentelemetry-api>=1.22.0",
-    "opentelemetry-sdk>=1.22.0",
-    "opentelemetry-exporter-otlp>=1.22.0",
-    "opentelemetry-instrumentation-fastapi>=0.43b0",
+    # 1.45.1 是安全基线：opentelemetry-api <1.45.1 命中 CVE-2026-114603
+    # （TraceState.from_header ReDoS）。三个包必须同档：sdk 1.45.1 硬依赖
+    # api==1.45.1 与 semantic-conventions==0.66b1，instrumentation 同步 0.66b1。
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp>=1.45.1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
+    # Windows 桌面集成（系统托盘）使用 pywin32 直接调用 Win32；
+    # 仅 Windows 安装（Linux CI/Docker 不拉取），由 src/desktop/tray.py 平台限定加载。
+    "pywin32>=306; sys_platform == 'win32'",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     # hypothesis 驱动 Policy 执法链的属性测试（tests/test_policy_properties.py）。
@@ -33,14 +51,25 @@ dependencies = [
     "langchain-community>=0.3.0",
     "langfuse>=4.0.0",
     "arize-phoenix>=3.0.0",
-    # MCP SDK：src/adapters/mcp/mcp_adapter.py 在**模块顶层**
-    # `from mcp import ClientSession, StdioServerParameters, stdio_client`，
+    # MCP SDK：src/adapters/mcp/mcp_adapter.py 顶层 `from mcp.types import ...`，
     # 因此它是硬依赖，不是可选依赖。此前未在此声明，只靠
     # arize-phoenix → fastmcp-slim[client,server] → mcp 这条**受 extras 控制**的
-    # 传递链"碰巧"带进来：上游一旦取消该 extra，或解析结果换档
-    # （本机实测 1.29.1，而 requirements.txt 锁到 2.1.1），模块就会 ImportError。
-    # 下界 1.24.0 取自 fastmcp-slim 对 mcp 的声明；不设上界，与锁文件解析结果兼容。
-    "mcp>=1.24.0",
+    # 传递链"碰巧"带进来：上游一旦取消该 extra，或解析结果换档，模块就会 ImportError。
+    #
+    # 2026-11-05（阶段 B1）上界收到 2.x：适配层已改用 FastMCP，而
+    # `fastmcp-slim[client,server]==4.0.3` 明确要求 `mcp>=2.0,<3.0`；requirements.txt
+    # 锁定的也正是 mcp==2.1.1。⚠️ 本机 .venv 原为 mcp 1.29.0（由 CI 用的独立扫描器
+    # semgrep 1.183.0 的 `mcp==1.29.0` 硬钉造成漂移），升级后 semgrep CLI 在本机
+    # .venv 内会因 `import mcp.server.fastmcp` 失败；semgrep 不是本项目的声明依赖
+    # （CI 的 architecture-gate 在**独立 job 独立环境**里 `pip install semgrep`），
+    # 故不影响门禁。本地要用 semgrep 请装到独立环境（如 pipx）。
+    "mcp>=2.0.0,<3.0.0",
+    # FastMCP：MCP 适配层的客户端（stdio / streamable HTTP）与服务端实现。
+    # Apache-2.0，已登记 oss-registry.yaml。必须显式声明：mcp_adapter.py 顶层
+    # `from fastmcp import Client` / `from fastmcp.server import FastMCP`。
+    # 版本钉死与 requirements.txt（fastmcp-slim==4.0.3）一致 —— 不钉会随 phoenix
+    # 的 `<5,>=4` 约束漂到其它 4.x；也不能降到 3.x（phoenix 要求 >=4）。
+    "fastmcp-slim[client,server]==4.0.3",
     "hvac>=2.0.0",
     "cryptography>=42.0.0",
     # kernel foundation（LiuHao-O/packages/kernel）显式依赖：
@@ -57,7 +86,221 @@ dependencies = [
     # 成本可接受：189KiB 纯 Python，运行期零传递依赖。
     # 许可证 ZPL-2.1（OSI 批准、BSD 同类、无 copyleft 传染），已登记 oss-registry.yaml。
     "RestrictedPython>=8.0",
+    # ---- 以下 4 个是 src/ 的**直接 import**，此前只靠上游传递依赖"碰巧可 import"。
+    # 由 scripts/verify_dependency_declaration_surface.py 机械化守住：任何 src/ 里
+    # 直接 import（含函数内 lazy import）却没在下面声明的第三方包，都会让该门禁变红。
+    # 此前 mcp / qdrant-client / aiosqlite 已按同样理由补过；这 4 个是同一批漏网的。
+    # 全部只设下界、不设上界，与 requirements.txt 现有锁定解析结果相容。
+    #
+    # requests：生产 webhook 告警投递面 src/observability/alerts/sinks.py 的
+    #   `requests.post`，以及 src/ai/providers.py 的 5 处 provider 调用。此前只在
+    #   requirements.txt 里被 hvac / langsmith / opentelemetry 传递带入 —— 生产
+    #   投递面靠传递依赖是运气，不是声明。
+    "requests>=2.28.0",
+    # sqlalchemy：src/integrations/{orm_models,storage}.py 与 src/knowledge/db.py
+    #   在**模块顶层** from sqlalchemy import ...（含 ext.asyncio / orm）。
+    "sqlalchemy>=2.0.0",
+    # starlette：src/gateway/console_static.py 顶层 from starlette.staticfiles /
+    #   exceptions。它是 fastapi 的传递依赖，但本仓直接用其符号，应显式声明。
+    "starlette>=0.36.3",
+    # packaging：src/kernels/plugin/__init__.py 顶层 from packaging.version import
+    #   Version/InvalidVersion（插件版本解析）。
+    "packaging>=23.0",
+    #
+    # ---- 以下 4 个同样是直接 import，但**藏在函数体里**（含 try: 内的缩进块），
+    # 所以初版扫描没看到。补上后 verify_dependency_declaration_surface.py 才会安静。
+    #
+    # pyjwt（import jwt）：src/security/jwt_handler.py —— 令牌签发/校验面。
+    #   此前只靠 mcp → pyjwt 传递带入：一个安全边界依赖上游 SDK 的传递链，
+    #   是这 4 个里最不该靠运气的一个。
+    "pyjwt>=2.15.0",
+    # langchain-core：src/ai/langgraph_workflow.py（messages / runnables）。
+    #   已声明了 langchain / langchain-openai / langchain-community，但
+    #   langchain-core 是本仓**直接 import** 的那个包。
+    "langchain-core>=0.3.0",
+    # psutil：src/observability/metrics.py（主机指标采集）。
+    "psutil>=5.9.0",
+    # pydantic-monty-client（import pydantic_monty）：
+    #   src/plugins/sandbox/backends/monty_backend.py —— 受限执行后端。
+    "pydantic-monty-client>=0.0.20",
+    # taskiq：src/tasks/{broker,sqlite_broker,registry}.py 与 src/workers/*
+    #   顶层 import（AsyncBroker / Receiver / LabelScheduleSource）。supervisor
+    #   默认拉起 worker + scheduler，缺它队列整段不工作 => 运行期硬依赖。
+    #   MIT，已登记 oss-registry.yaml；requirements.txt 锁定 0.13.0。
+    #   只设下界：本仓用到的 AsyncBroker/kick/listen + AckableMessage 在 0.11+
+    #   已稳定；上界留给上游（若未来破坏这些原语，测试会先红）。
+    "taskiq>=0.11.0",
+    # ---- 知识库文件导入（src/knowledge/extractors.py）----
+    # pypdf：PDF 文本层提取 + 逐页页码。BSD-3-Clause（PyPI 元数据实测
+    #   License-Expression，无 copyleft）。选择它而不是 pymupdf（AGPL，本项目
+    #   明确禁止）、pdfminer.six / pdfplumber（MIT 但更低层/额外拉影像依赖）：
+    #   纯 Python、无需系统 poppler 二进制、逐页 API 稳定、有 is_encrypted /
+    #   decrypt 与可映射的类型化错误。
+    # python-docx：DOCX 正文与段落 **样式名**（Heading 1..6），正好是结构化
+    #   分块需要的标题层级。MIT（包元数据实测 License）。docx2txt 会丢层级，
+    #   mammoth 转 HTML 并引入额外依赖。其传递依赖 lxml 为 BSD-3-Clause。
+    # HTML 走标准库 html.parser，不新增第三方依赖，因此不增加许可证面。
+    # 三者均已登记 oss-registry.yaml；requirements.txt 已锁定实测版本。
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+    # ---- 2026-11-08 依赖门禁实测漏网的两个直接 import（先报后批后补声明）----
+    #
+    # anyio：src/gateway/main.py:1432 在启动预热里直接 ``import anyio``
+    #   （函数体 lazy import，初版扫描没看到）。它是 starlette/fastapi 的传递依赖，
+    #   但本仓直接调用 ``anyio.to_thread.run_sync``，必须显式声明。
+    "anyio>=4.0.0",
+    # pywebview（模块名 webview）：src/desktop/native_window.py:243 的原生窗口后端
+    #   （函数体 lazy import）。桌面端是产品的默认使用形态，缺它会直接 ImportError，
+    #   因此放运行期依赖而不是 extras。
+    # 版本钉死 6.2.1 与本次安装包实测一致：5.x 的 WinForms 后端在缺 WebView2 时
+    # 会静默回退到 IE，6.2 的 API（create_window/start/evaluate_js）才是桌面壳
+    # 实际调用的那一套。
+    "pywebview==6.2.1",
+    # ---- pywebview 6.2.1 在 Windows 上真正拉起窗口所需的运行栈（必须进 payload）----
+    # pythonnet / clr_loader：pywebview 的 WinForms 后端经 pythonnet 调 .NET，
+    #   clr_loader 负责定位并加载 CLR。二者仅 Windows 需要，用 marker 限定，
+    #   避免 Linux CI（只装 requirements.txt）去解析 .NET 绑定。
+    "pythonnet==3.2.1; sys_platform == 'win32'",
+    "clr_loader==0.3.1; sys_platform == 'win32'",
+    # bottle：pywebview 的本地 HTTP 服务端（窗口内容与 pywebview.api 桥）。
+    # proxy_tools：上述 bridge 的 JS 侧代理实现。
+    #   两者都是 pywebview 的传递依赖，但安装包必须带上它们才能开窗，
+    #   故显式声明并锁版本，避免上游改依赖树时随包内容漂移。
+    #   proxy_tools 在 PyPI 只发 sdist（无 wheel），构建环境需能现场构建；
+    #   本机 .venv 已实测装出 0.1.0。
+    "bottle==0.13.4",
+    "proxy_tools==0.1.0",
+    # typing_extensions：桌面壳/桥接代码在运行期用到 4.16 的类型特性，
+    #   锁死版本保证离线运行时与构建环境一致。
+    "typing_extensions==4.16.0",
 ]
+
+# 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮
+# 生产安装）。CI 必须 `pip install -e .[tests]` 才会装上它们，从而让
+# tests/distribution/test_coordination.py 里的 `TestRedisLuaScriptsActuallyExecute`
+# （fakeredis + lupa 真跑 Lua）从"skip"变成"真验证"。缺 lupa 时该组在测试内优雅
+# skip（nodes fixture 的 eval 自检），不会把安装/收集搞挂。
+#
+# pytest-timeout 同理进 [tests]（不进运行期依赖）：scripts/verify_readiness.py 的
+# C3(--full：`pytest tests/ --timeout=60`) 与 C6(`--timeout=120`) 靠它给单测/混沌
+# 套件加挂起保护。它是 release-readiness CI 的运行期门禁依赖 —— 该 job 跑
+# `verify_readiness.py --full` 前先 `pip install -e .[tests]`，缺它时 pytest 报
+# `error: unrecognized arguments: --timeout` ⇒ rc=4 ⇒ C3/C6 根本无法执行。此前本机
+# 恰好装了、却从未出现在任何声明面，属依赖声明面缺失（见 #383）。
+[project.optional-dependencies]
+tests = [
+    "fakeredis>=2.0.0",
+    "lupa>=2.0",
+    "pytest-timeout>=2.3.0",
+    # scripts/run_tests.py --coverage 需要 pytest-cov，--parallel 需要
+    # pytest-xdist：此前两者只在 [tool.uv] dev-dependencies，CI 的 test job
+    # 只装 `pip install -e .[tests]`，按文档跑这两个开关会直接报错。
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.0.0",
+]
+# 第三个协调后端（etcd）：**不需要额外的 pip 包**。实现走 etcd v3 的 HTTP/JSON
+# gateway（src/distribution/coordination.py 的 _EtcdHttpAdapter，复用运行期已声明的
+# requests），所以这里刻意**不设 [etcd] extra**。原先声明的 etcd3>=0.12.0 已移除：
+# 它自带 protoc 3.x 生成的 _pb2.py，在 protobuf>=4（CI 解析到 6.x）上一 import 就抛
+# "TypeError: Descriptors cannot be created directly"；降级 protobuf 或改用纯 Python
+# 实现都会伤到其它依赖，因此从客户端这一侧彻底去掉 protobuf 依赖。
+# scripts/verify_deployed_product_closure.py 的浏览器后端。**可选**，且不进运行期
+# 依赖：这个门禁跑在**宿主/CI runner** 上（它驱动浏览器去访问已部署的栈），
+# 进运行期依赖会把生产镜像和每个 CI job 的安装都拖垮。此前 playwright/selenium
+# 完全没出现在任何声明面 —— 门禁 :193 `from playwright.sync_api import ...`
+# 只能靠"碰巧装了"才跑得起来，属于依赖声明面缺失（见 UNVERIFIED #4-a）。
+# 装上后仍需一个浏览器二进制：playwright 自带 chromium（`playwright install
+# chromium`），或用 --browser-binary / $LIUHAO_BROWSER_BINARY 指定系统 chromium。
+deploy-closure = [
+    "playwright>=1.44",
+    "selenium>=4.20",
+]
+# scripts/ops/audit_console_readability.py 的 WebSocket 客户端（读审计控制台
+# 实时事件流）。**可选**：这条运维脚本把 websockets 当可选导入（缺了就打印
+# 安装提示），此前只在 requirements.txt 里被 uvicorn/fastapi 传递带进来
+# （"装了但没声明"），属于依赖声明面缺失（任务①「装了但没声明」一类）。
+ops = [
+    "websockets>=12.0",
+]
+# 密码散列与 TOTP 的强实现。**可选**（惰性 import + 优雅降级）：
+# src/security/encryption.py 的 argon2/bcrypt 主路径缺失时退到 PBKDF2-SHA256，
+# src/security/authentication.py 的 pyotp 缺失时退到手写 HMAC-SHA1 TOTP。
+# 兜底让开发机不装也能跑，但"装没装"必须是声明过的选择而不是环境运气 ——
+# 生产部署想要 argon2id / RFC 6238 真实现时显式 `pip install -e .[security]`。
+security = [
+    "argon2-cffi>=23.1.0",
+    "bcrypt>=4.1.0",
+    "pyotp>=2.9.0",
+]
+# src/ai/providers.py `GoogleProvider.generate()` 惰性导入 `google.genai`
+# （google-genai 新 SDK）。旧版 `google-generativeai` 已从依赖面移除：它把
+# `protobuf<6` 钉死，与随包实装的 protobuf 6.x（googleapis-common-protos 要求）
+# 直接冲突，安装期即 ResolutionImpossible。google-genai 自身不依赖 protobuf。
+google = [
+    "google-genai>=2.22.0",
+]
+# 数据库迁移工具 alembic。**可选**，且不进运行期依赖：全仓唯一消费者是
+# scripts/verify_deploy_readiness.py（迁移入口探测），src/ 下**没有任何模块**
+# import alembic（实测 grep：只有两处注释提到 migration），把它塞进运行期依赖
+# 会白白加重生产镜像和每个 CI job。
+#
+# 此前它**只**出现在 requirements.txt:15（alembic==1.19.2），而 CI 走
+# `pip install -e .[tests]` 根本不读 requirements.txt，于是 ci.yml 里有两处
+# 裸 `pip install alembic sqlalchemy` 兜底（不钉版本）。这是一个**脆弱契约**：
+# 声明面说没有这个依赖，真正在用它的人靠"记得手写一行 pip install"活着 ——
+# 任何新增需要 alembic 的 job 漏写那一行就会静默降级或失败，且报出来的错
+# （"No module named alembic.__main__"）看起来像 alembic 本身坏了，见
+# scripts/verify_deploy_readiness.py:111-137 那段探测注释。
+#
+# 版本：只设下界 1.19.2（与 requirements.txt 已锁定的解析结果相容；本机 .venv
+# 实测 1.20.0 同样满足）。刻意不钉上界 —— 钉死会在上游发新版时制造假红。
+# sqlalchemy 不需要在这里重复声明：它已是运行期依赖。
+migrations = [
+    "alembic>=1.19.2",
+]
+# Redis 任务队列后端（**可选，默认关闭**）：默认 broker 是本地 SQLite
+# （src/tasks/sqlite_broker.py，不需要 Redis/Postgres）。只有显式设置
+# LIUHAO_TASK_BROKER=redis 时才需要此 extra；未安装时 build_broker() 抛
+# 明确错误而不是静默降级。taskiq-redis 1.1.0 要求 redis>=6,<7。
+taskiq-redis = [
+    "taskiq-redis>=1.1.0",
+]
+# DBOS pilot（**可选，默认关闭**）：只做「杀进程重启续跑」验证
+# （src/resilience/dbos_pilot.py，见其模块文档）。dbos 3.4.0 的
+# psycopg[binary] 是硬 pip 依赖，但 SQLite system database 模式不需要
+# Postgres 服务，App 有 aiosqlite，本地可跑通。不放进运行期依赖：
+# 不为一个试点拖慢生产安装。
+dbos = [
+    "dbos>=3.4.0,<4.0",
+]
+
+[project.scripts]
+# 安装后入口：`liuhao` 即网关（`python -m src.gateway` 的等价物）。
+# 注意包名用安装后的顶层名 `gateway` 而不是 `src.gateway`：wheel 按
+# src-layout 把 src/ 展平为顶层包（见下面 [tool.setuptools]），安装产物里
+# 没有 `src` 这个包，写 `src.gateway.__main__` 会在安装后 ImportError。
+# 仓库内直接跑仍用 `python -m src.gateway` / start-liuhao 脚本。
+#
+# ⚠ 已知限制（改动前就存在，非本次引入）：从安装好的 wheel 里跑 `liuhao`
+# 目前会在导入期失败 —— `gateway/main.py` 等模块用跨包相对导入
+# （`from ..security import ...`），只在 `src.gateway` 这种“src 是父包”
+# 的形态下成立；wheel 展平后 gateway 成了顶层包，相对导入越界。
+# 实测：改动前的 wheel 同样 `import gateway` 即 ImportError。支持的启动
+# 方式仍是仓库根 `python -m src.gateway`、start-liuhao 脚本与 Docker
+#（Docker 是 COPY src/ 后从 /app 跑 `python -m src.gateway`，不受影响）。
+# 要让 `liuhao` 真正可跑，需把 src/ 内跨包相对导入改成绝对导入，是另一轮
+# 的重构，不在本轮做。入口点先行声明，`pip install -e .` 已能识别并生成
+# `liuhao` 可执行文件。
+liuhao = "gateway.__main__:main"
+
+[tool.setuptools]
+# 显式声明 src-layout 包发现：与 setuptools 的自动探测结果一致（wheel
+# 内顶层包即 src/ 下的各子包），但不再依赖“碰巧探测到”。没有这一节时
+# `pip install -e .` 同样能装，区别是包发现规则写在明处、可被审计。
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -78,11 +321,13 @@ markers = [
     "integration: integration tests (require external services)",
     "e2e: end-to-end tests",
     "security: security-focused tests",
+    "slow: 单次 10 分钟级以上的贵用例，默认由 tests/conftest.py 的 --run-slow 跳过，只在发版门禁加 --run-slow 跑",
+    "gate_contract: 门禁契约用例——本地允许 skip 并写明原因，CI 单独跑 -m gate_contract 且断言 skipped == 0",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 select = ["E", "F", "I", "W", "UP", "B", "C4", "PT", "T20", "SIM", "PIE", "ICN"]
 ignore = ["E501", "SIM102", "SIM103", "SIM113", "SIM115", "T201", "T203", "B008", "B009", "C408", "ICN001"]
 
@@ -92,3 +337,43 @@ dev-dependencies = [
     "ruff>=0.5.0",
     "mypy>=1.10.0",
 ]
+
+# 覆盖率配置（pytest-cov 的真实生效处；tests/framework/coverage_config.py
+# 只是一个同名 Python dict，不会被 pytest-cov 读取，见该文件顶部注释）。
+# fail_under=80 与 scripts/run_tests.py --coverage 的 --cov-fail-under=80 一致。
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+    "*/env/*",
+    "*/.env/*",
+    "setup.py",
+    "setup.cfg",
+    "*/migrations/*",
+    "*/conftest.py",
+]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pragma: no branch",
+]
+
+# mypy 最小配置（mypy 已在 [tool.uv] dev-dependencies，但此前无任何配置）。
+# 未接入 CI；只给本地 `mypy src` 一个可用基线。
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+exclude = "(?x)^(apps/|frontend/|node_modules/|\\.venv/)"

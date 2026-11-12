@@ -1,17 +1,34 @@
-"""Mint a console approval token for a verified human principal.
+r"""Mint a console approval token for a verified human principal.
 
-Run:  .venv/Scripts/python.exe scripts/issue_console_token.py --list
-      .venv/Scripts/python.exe scripts/issue_console_token.py --principal <id>
+Run:  python scripts/issue_console_token.py --list
+      python scripts/issue_console_token.py --principal <id>
 
-Why a local script and not a login endpoint
--------------------------------------------
-The gateway deliberately has no ``/v1/auth/login``. Adding one would create a
-new, unauthenticated, internet-reachable credential-minting surface (brute
-force, lockout, rate limiting, its own audit trail) -- a security review in its
-own right, well beyond "wire the console panel". Until that review happens,
-the honest position is that the token's trust anchor is **access to this
-machine's filesystem**: whoever can run this script can already read the JWT
-signing key, so a login form would add ceremony, not security.
+安装版请用随包解释器（``runtime\python.exe``）；这里不写具体路径，
+避免把开发机的虚拟环境目录写进随包脚本。
+
+Why this script still exists now that ``POST /v1/auth/login`` is real
+--------------------------------------------------------------------
+**Historical note (corrected 2026-10-02):** this docstring used to claim the
+gateway "deliberately has no ``/v1/auth/login``". That is **stale**. The
+endpoint exists and is real -- ``src/gateway/auth.py``, ``POST /v1/auth/login``
+-- and compares the submitted password with PBKDF2-HMAC-SHA256 against the
+credential record, rate-limits failures, and issues a JWT on success. Real
+humans sign in to the console with it; they do not mint tokens by hand.
+
+So this script is no longer the only way in. It remains for the cases a login
+form is the wrong shape for:
+
+  * **headless / non-interactive operators** (CI, runbooks, break-glass
+    automation) that need a short-lived approval token without a browser;
+  * **breaking the chicken-and-egg**: it can mint for a principal whose
+    credential has not been set yet, which is exactly the state a fresh
+    deployment is in before ``register_human_identity.py --password`` runs.
+
+It is **not** a bypass. It cannot mint for an unregistered or non-human
+principal -- see the C-7 section below -- and the token it produces is subject
+to the same sovereignty gate as a token obtained by logging in. The trust
+anchor is still *access to this machine's filesystem*: whoever can run this
+can already read the JWT signing key.
 
 C-7 is fixed: only a *registered human* may approve (since 2026-09-12)
 --------------------------------------------------------------------
@@ -148,7 +165,23 @@ def main() -> int:
 
     from src.security.jwt_handler import create_access_token
 
-    token, payload = create_access_token(ident.id, ttl=args.ttl)
+    # 令牌声明必须与身份记录一致：脚本头部一直打印 scope=identity.scope，
+    # 但旧实现签发的是"空权限、空 metadata"令牌 —— 接口侧（/v1/auth/me、
+    # 管理员写操作）读不到 scope，于是"提示一套、读取一套"。这里与登录路径
+    # (src/gateway/auth.py::_issue_token) 保持同源，声明直接取自身份记录。
+    token, payload = create_access_token(
+        subject=ident.id,
+        scopes=["console"],
+        roles=sorted(ident.permissions),
+        permissions=sorted(ident.permissions),
+        ttl=args.ttl,
+        metadata={
+            "kind": "human",
+            "client": "console-token-script",
+            "scope": ident.scope.value,
+        },
+        device_id="console-token-script",
+    )
 
     print("Console approval token")
     print("=" * 60)

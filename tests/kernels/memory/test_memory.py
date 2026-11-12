@@ -222,6 +222,42 @@ class TestAutoCleanup:
         assert mk.recall("p") is not None
 
 
+# =====================================================================
+# delete_by_key (single, exact) vs delete_by_key_prefix (batch)
+# =====================================================================
+
+class TestDeleteByKey:
+    def test_delete_by_key_leaves_sibling_with_shared_prefix(self, mk):
+        # 真实回归：画像里 city 与 city_code 共享前缀，删 city 不能带走 city_code。
+        mk.store("profile:u:fact:city", "Shanghai", tier=MemoryTier.PERSISTENT)
+        mk.store("profile:u:fact:city_code", "021", tier=MemoryTier.PERSISTENT)
+        assert mk.delete_by_key("profile:u:fact:city") == 1
+        assert mk.recall("profile:u:fact:city") is None
+        assert mk.recall("profile:u:fact:city_code").value == "021"
+        assert mk.stats()["total_entries"] == 1
+        # 持久化行也必须只剩一条（不是只删内存副本）。
+        assert mk._store.count() == 1
+
+    def test_delete_by_key_returns_zero_when_absent(self, mk):
+        mk.store("profile:u:fact:city_code", "021", tier=MemoryTier.PERSISTENT)
+        assert mk.delete_by_key("profile:u:fact:city") == 0
+        assert mk.recall("profile:u:fact:city_code") is not None
+        assert mk._store.count() == 1
+
+    def test_delete_by_key_rejects_empty_key(self, mk):
+        mk.store("k", "v")
+        assert mk.delete_by_key("") == 0
+        assert mk.stats()["total_entries"] == 1
+
+    def test_delete_by_key_prefix_still_deletes_all_matches(self, mk):
+        # clear() 的批量语义不能因为引入精确删而退化。
+        mk.store("profile:u:fact:city", "Shanghai", tier=MemoryTier.PERSISTENT)
+        mk.store("profile:u:fact:city_code", "021", tier=MemoryTier.PERSISTENT)
+        assert mk.delete_by_key_prefix("profile:u:") == 2
+        assert mk.stats()["total_entries"] == 0
+        assert mk._store.count() == 0
+
+
 class TestDeadCodeRemoval:
     def test_dead_tier_manager_symbols_are_gone(self):
         # Guards against re-introducing the disconnected MemoryTierManager

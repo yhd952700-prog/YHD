@@ -1,0 +1,1603 @@
+#!/usr/bin/env python3
+"""G8/G9 gate: no control may be keyed to an environment variable that no
+deployable artifact ever sets.
+
+Why this gate exists
+====================
+Four independent defects of the same shape were found in this repository
+(G8/G9 operational-readiness scan, 2026-09-30). In each one:
+
+  * ``src/`` read an environment variable and took the **permissive** branch when
+    it was absent;
+  * no deployable artifact (compose / Dockerfile / bundle builder / CI) ever set
+    that variable;
+  * the test-suite passed anyway, because tests set the variable directly;
+  * the readiness signal stayed green.
+
+The four were: ``LIUHAO_ENV`` (``is_production()`` was always False in the
+production container), ``LIUHAO_EXECUTOR_FENCE`` (the runtime default-deny gate
+never executes), ``LIUHAO_REQUIRE_EXECUTOR_FENCE`` (fence-install failure stays
+fail-open), and ``AUDIT_DB_BACKUP_PATH`` (corruption auto-restore is inert).
+Fixing the variable fixes one instance; this gate makes the *class* detectable.
+
+What it checks
+==============
+1. **Seed gates** (:data:`SEED_GATES`) — variables adjudicated by hand as gating
+   a permissive branch. Each must be SET in a deployable artifact (or one of its
+   declared aliases), or must be ABSENT when that is the safe state. A setter
+   that exists **only in a CI workflow** does not count as arming the deployment
+   and is reported as its own category (``seed-armed-only-in-ci``): a CI runner
+   is throwaway, so a value set there arms the test job, not production. Counting
+   it as "the deployment sets this" is the false green this gate exists to
+   prevent.
+2. **Scanned gates** (:func:`scan_gate_candidates`) — an AST scan of ``src/`` for
+   reads whose absence selects a branch: ``os.environ.get(NAME)`` /
+   ``os.getenv(NAME)`` with a falsy-or-absent default, read under a conditional
+   ancestor. These are the ones nobody has adjudicated yet; the gate refuses to
+   let them sit unclassified.
+3. **Anti-decay** — a seed or allowlist entry whose variable is no longer read
+   anywhere in ``src/`` is a FAIL, not a silent pass. A registry that rots is
+   the same decoration this gate exists to remove.
+4. **Evidence must be deterministic** — an artifact whose path VCS deliberately
+   ignores (``.gitignore``) is local state by the repository's *own declared
+   intent*, not deployment. It is still surfaced, but as an informational line,
+   and it does **not** affect the exit code; an untracked-but-not-ignored
+   artifact stays a real finding, because it may carry evidence that exists on
+   one machine and nowhere else. Before 2026-10-07 both were findings, which made
+   the exit code depend on which files a given machine happened to have -- the
+   "passes here, fails there" defect this gate exists to remove.
+
+Every scanned candidate must be resolved by exactly one of: being SET in an
+artifact, being in ``SEED_GATES``, or being in ``ALLOWLIST`` **with a written
+reason**. There is no implicit leniency and no "warn only" path to green.
+
+NOTE (2026-10-07, unresolved): the candidate loop below does **not** honour
+"being SET in an artifact" -- a scan-detected candidate is reported until it is
+in ``SEED_GATES`` or ``ALLOWLIST``, even when an artifact sets it (measured:
+``AUDIT_DB_PATH`` is set at ``docker-compose.prod.yml:69`` and is still
+reported). The two readings are both defensible: honouring the artifact would
+clear ``LIUHAO_WORKSPACE_ROOT`` / ``LIUHAO_CONSOLE_DIST`` that only the *CI*
+workflow sets (not the deployment), which could green-light a real gap; not
+honouring it demands an explicit adjudication the code cannot infer. Left as-is
+rather than silently picking a side -- see task #250.
+
+Scope, stated honestly
+======================
+The AST scan is a *necessary* detector, not a sufficient one. A variable whose
+absence selects a permissive branch but whose read is not syntactically nested
+under a conditional (for example ``is_production()``'s original
+``return env in (...)``) is **not** detectable by scanning — which is precisely
+why ``SEED_GATES`` exists and why entries there must carry a code reference.
+Adding a new control to ``src/`` therefore requires a human to decide whether it
+belongs in ``SEED_GATES``; the gate only enforces that the decision is recorded.
+
+Exit status
+===========
+  * ``0`` — every gate variable is resolved.
+  * ``1`` — at least one gate variable is unresolved (real finding).
+  * ``2`` — the gate could not run (missing repo layout, unparsable tree).
+
+Usage
+=====
+  python scripts/verify_deployment_gate_vars.py
+  python scripts/verify_deployment_gate_vars.py --json
+  python scripts/verify_deployment_gate_vars.py --extra-artifacts proposed.env
+
+``--extra-artifacts`` adds a file to the artifact set **without modifying the
+repository**. It exists so an owner can prove a proposed compose addition turns
+this gate green before asking for the deployment semantics to be changed; it is
+also how this gate's own negative control is demonstrated.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Set, Tuple
+
+# sys.path bootstrap: `import src...` and direct invocation from the repo root.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_ERROR = 2
+
+SRC_DIR = REPO_ROOT / "src"
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+
+#: Artifacts that actually ship. Anything that only exists on a developer laptop
+#: or inside a test does not count as "the deployment sets this".
+ARTIFACT_GLOBS = (
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.*.yml",
+    "docker-compose.*.yaml",
+    "Dockerfile",
+    "Dockerfile.*",
+    ".env",
+    ".env.example",
+)
+ARTIFACT_EXTRA_FILES = (
+    "scripts/build_cloud_bundle.py",
+)
+ARTIFACT_SKIP_PARTS = (".venv", "node_modules", ".git", "__pycache__")
+
+_GETTERS = frozenset({"os.environ.get", "os.getenv", "environ.get", "getenv"})
+_CONDITIONAL_NODES = (ast.If, ast.While, ast.IfExp, ast.BoolOp, ast.UnaryOp, ast.Compare)
+
+
+# --------------------------------------------------------------------------- #
+# Seed gates -- adjudicated by hand. Each entry MUST carry `why` and `refs`.
+#   expect="set"    -> the variable (or one of `aliases`) must appear in an
+#                      artifact; absence is the permissive branch.
+#   expect="absent" -> the variable must NOT appear in any artifact; presence is
+#                      the permissive branch (dev-only switches).
+# --------------------------------------------------------------------------- #
+SEED_GATES: Tuple[Dict[str, object], ...] = (
+    {
+        "var": "LIUHAO_EXECUTOR_FENCE",
+        "expect": "set",
+        "safe": "truthy",
+        "aliases": (),
+        "why": (
+            "the runtime default-deny autonomous-action gate is opt-in; unset "
+            "means the gate NEVER executes even though boot logs the fence as "
+            "installed, so every fenced action runs un-gated"
+        ),
+        "refs": (
+            "src/kernels/_crosscutting.py::_fence_enabled_for",
+            "src/kernels/execution/fence.py:1279",
+        ),
+    },
+    {
+        "var": "LIUHAO_REQUIRE_EXECUTOR_FENCE",
+        "expect": "set",
+        "safe": "truthy",
+        "aliases": (),
+        "why": (
+            "converts an executor-fence install failure from fail-open (boot "
+            "un-fenced, log ERROR, keep serving) to fail-closed (abort boot); "
+            "unset means the deployment keeps the fail-open default"
+        ),
+        "refs": ("docker-compose.prod.yml:106",),
+    },
+    {
+        "var": "LIUHAO_POSTURE_STRICT",
+        "expect": "set",
+        "safe": "truthy",
+        "aliases": (),
+        "why": (
+            "makes an undeterminable deployment posture a hard failure; unset "
+            "means posture silently resolves to non-production (fail-open by "
+            "compatibility) and every posture-gated branch takes the permissive path"
+        ),
+        "refs": ("src/security/posture.py:123", "src/security/posture.py:132"),
+    },
+    {
+        "var": "LIUHAO_ENV",
+        "expect": "set",
+        "safe": "production",
+        "aliases": ("ENVIRONMENT", "APP_ENV"),
+        "why": (
+            "production-posture primary alias; satisfied when ANY alias is set "
+            "because posture.py resolves LIUHAO_ENV > ENVIRONMENT > APP_ENV. "
+            "Recorded here because the original single-variable read made "
+            "is_production() permanently False in the production container"
+        ),
+        "refs": ("src/security/posture.py:58", "src/security/posture.py:64"),
+    },
+    {
+        "var": "AUDIT_DB_BACKUP_PATH",
+        "expect": "set",
+        "safe": "path_app_data",
+        "aliases": (),
+        "why": (
+            "transaction-consistent backup consumed by audit corruption "
+            "auto-restore; unset means the path defaults to <db>.backup, which no "
+            "production code ever writes, so the restore branch is inert and a "
+            "corruption event silently starts a new hash chain. Armed at "
+            "docker-compose.prod.yml:125 with the same volume lifecycle as the "
+            "audit DB itself"
+        ),
+        "refs": ("docker-compose.prod.yml:125",),
+    },
+    {
+        "var": "AUDIT_DB_PATH",
+        "expect": "set",
+        "safe": "path_app_data",
+        "aliases": (),
+        "why": (
+            "configured path of the persisted audit hash-chain. Absence selects "
+            "the permissive branch in two of its three readers: "
+            "src/gateway/main.py:419-427 logs 'AUDIT CHECKPOINTER SKIPPED' and "
+            "keeps serving (the background verifier never starts, so /v1/ready "
+            "evidence_status stays 'unverified' forever), and "
+            "src/gateway/health.py:280-298 calls unset a 'configuration state' "
+            "(healthy, note only) while it degrades when the var IS set but no "
+            "verifier runs. The third reader is deliberately fail-closed, not "
+            "permissive: src/kernels/audit/__init__.py:398-407 raises "
+            "RuntimeError rather than defaulting to the frozen project-root "
+            "store. Unset therefore does not stop the service -- it silently "
+            "leaves the audit chain uncheckpointed. It is also NOT a readiness "
+            "gate by design (src/gateway/main.py:416-418: 'unverified' must not "
+            "503 the deployment), which is exactly why the decision has to be "
+            "recorded here instead of inferred from a green signal. Armed at "
+            "docker-compose.prod.yml:72 and "
+            "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
+            ".github/workflows/ci.yml:806 also pins a temp path, but a CI-only "
+            "setter does NOT count as deployment arming (category "
+            "`seed-armed-only-in-ci`), so the two compose setters are what keep "
+            "this entry green -- removing both reddens it even while the CI pin "
+            "stands. Before that tightening a CI pin alone kept it green, which "
+            "is exactly the false green the tightening removes."
+        ),
+        "refs": (
+            "src/gateway/health.py:1054",
+            "docker-compose.prod.yml:72",
+            "infra/staging/docker-compose.yml:59",
+            # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
+            # and listed here so its line is drift-checked too: it shifted from
+            # :762 to :766 the moment the workflow's own comment grew, again
+            # to :768 when the etcd service block changed (2026-10-24), to
+            # :793 when the console-readability job was added (2026-11-04), and
+            # to :916 when the guardrails job grew its own pin-to-temp step in
+            # the same round (the same setter, now cited at both jobs).
+            ".github/workflows/ci.yml:326",
+            ".github/workflows/ci.yml:916",
+        ),
+    },
+    {
+        "var": "LIUHAO_EXECUTOR_FENCE_LEASE_DIR",
+        "expect": "set",
+        "safe": "path_app_data",
+        "aliases": (),
+        "why": (
+            "with backend=file and this unset, attach_default_executor_fence() "
+            "silently builds the single-node SqliteExecutorLease while the boot "
+            "log prints backend=file; operators read cross-process fencing and "
+            "get single-node"
+        ),
+        "refs": ("src/kernels/execution/fence.py:1180",),
+    },
+    {
+        "var": "LIUHAO_SANDBOX_ENFORCE",
+        "expect": "set",
+        "safe": "truthy",
+        "aliases": (),
+        "why": (
+            "arms genuine-isolation enforcement for HIGH/CRITICAL sandbox "
+            "actions; unset means enforcement is off"
+        ),
+        "refs": ("src/plugins/sandbox/assurance.py:72",),
+    },
+    {
+        "var": "LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS",
+        "expect": "set",
+        "safe": "positive_int_leq_4",
+        "aliases": (),
+        "why": (
+            "the N+1 concurrent-executor cap; unset means no cap"
+        ),
+        "refs": ("src/kernels/execution/fence.py:1152",),
+    },
+    {
+        "var": "LIUHAO_API_KEY_STORE",
+        "expect": "set",
+        "safe": "path_app_data",
+        "aliases": (),
+        "why": (
+            "persistent (hash-only) API-key registry path; unset means the "
+            "registry stays in memory, so every issued key is lost on restart "
+            "in a container deployment"
+        ),
+        "refs": ("src/security/api_keys.py:391",),
+    },
+    {
+        "var": "LIUHAO_ALLOW_SIMULATED_EXECUTION",
+        "expect": "set",
+        "safe": "falsy",
+        "aliases": (),
+        "why": (
+            "dev-only opt-in for simulated execution. Production must record the "
+            "REFUSAL explicitly (0) rather than leave it unset: both values "
+            "disable simulation in code, but an explicit 0 is the only auditable "
+            "proof that the deployment decided against it, and it prevents a "
+            "host-level default of 1 from silently enabling fake results in the "
+            "shipped system"
+        ),
+        "refs": (
+            "src/ai/providers.py:3612",
+            "src/kernels/execution/__init__.py:501",
+        ),
+    },
+    {
+        "var": "LIUHAO_CONSOLE_DIST",
+        "expect": "set",
+        "safe": "console_dist",
+        "aliases": (),
+        "why": (
+            "build output served by the single-port gateway. Unset falls back to "
+            "<repo>/apps/console/console/dist computed from __file__, which only "
+            "coincides with the image because Dockerfile:84 COPYs there; pinning "
+            "it makes the cockpit independent of source-tree layout (a moved "
+            "build would otherwise silently turn the single-port deployment into "
+            "API-only, with a 200-but-chromeless cockpit)"
+        ),
+        "refs": ("src/gateway/console_static.py:94",),
+    },
+    {
+        "var": "LIUHAO_WORKSPACE_ROOT",
+        "expect": "set",
+        "safe": "path_app_data",
+        "aliases": (),
+        "why": (
+            "the allowed root for goal artifacts, project metadata, the employee "
+            "store and every workspace-contained file write. Unset falls back to "
+            "a developer-chosen home/disk path (D:\\LiuHao-Workspace on Windows, "
+            "~/LiuHao-Workspace elsewhere), which inside a container is neither "
+            "persisted nor auditable -- all four stores would then live outside "
+            "the mounted volume and vanish on rebuild"
+        ),
+        "refs": (
+            "src/common/data_paths.py:30",
+            "src/gateway/accounts.py:388",
+        ),
+    },
+    {
+        "var": "LIUHAO_SECRET_DEV_EPHEMERAL",
+        "expect": "absent",
+        "aliases": (),
+        "why": (
+            "dev-only in-memory secret backend; it must NOT appear in any "
+            "deployment artifact (production refuses it via is_production(), but "
+            "any non-production deployment that sets it gets a non-durable, "
+            "non-audited secret store)"
+        ),
+        "refs": ("src/security/secret_store.py:727",),
+    },
+)
+
+
+# --------------------------------------------------------------------------- #
+# Allowlist -- scan-detected variables judged NOT to be gates.
+#
+# An entry here is a claim, so it must carry a reason and it is checked for
+# rot: if the variable stops being read in src/ the gate FAILS. The reason must
+# say what the unset branch does, not just "it is fine".
+# --------------------------------------------------------------------------- #
+ALLOWLIST: Dict[str, str] = {
+    "AUDIT_HWM_PATH": (
+        "path of the optional audit high-water-mark telemetry file; unset falls "
+        "back to ~/.liuhao/audit_hwm.json or disables HWM file writing. It "
+        "selects where optional telemetry is written, not whether a control "
+        "applies."
+    ),
+    "AUDIT_KERNEL_HWM_PATH": (
+        "same role as AUDIT_HWM_PATH for the kernel-side logger: an optional "
+        "telemetry file path with a resolved default, not a control gate."
+    ),
+    "HOST": (
+        "bind-address override for the dev entrypoint; unset falls back to a "
+        "loopback default. The published port (PORT) IS set in "
+        "docker-compose.prod.yml, so absence does not change reachability."
+    ),
+    "LIUHAO_EXECUTOR_FENCE_REDIS_URL": (
+        "only consulted when LIUHAO_DISTRIBUTED_LEASE_BACKEND=redis, which no "
+        "artifact sets today; unset yields a localhost default. Becomes a real "
+        "gate the moment redis is selected as the backend -- reclassify then."
+    ),
+    "LIUHAO_DBOS_PILOT": (
+        "explicit opt-in for the DBOS crash-recovery pilot. Unset means the "
+        "pilot is disabled and run_pilot() raises instead of running "
+        "(fail-closed); only '1'/'true'/'yes'/'on' enables it, and nothing "
+        "shipped selects it today."
+    ),
+    "LIUHAO_INTEL_ALLOW_NETWORK": (
+        "opt-in for outbound GitHub calls in the intel scanner. Unset means "
+        "network access is disabled (fail-closed); only an explicit '1' enables "
+        "it. The unset branch is the strict one."
+    ),
+    "LIUHAO_MCP_ADAPTER_ENABLED": (
+        "runtime switch for the MCP adapter layer. Unset means the adapter loads "
+        "configuration but establishes NO connection and exposes no server "
+        "(fail-closed); only an explicit truthy value starts connecting the "
+        "servers listed in configs/mcp/servers.json. The unset branch is the "
+        "strict one, so this switch cannot widen a safety control by omission."
+    ),
+    "LIUHAO_MODEL_ROUTER": (
+        "model-router strategy selection with a documented default strategy; "
+        "absence changes routing behaviour, not whether a safety control "
+        "applies."
+    ),
+    "LIUHAO_REDIS_URL": (
+        "connection string read only when LIUHAO_TASK_BROKER=redis. Unset then "
+        "raises an explicit configuration error instead of silently falling "
+        "back to an in-process broker (fail-closed); no artifact selects redis "
+        "today, so this is not a shipped gate."
+    ),
+    "LIUHAO_TASK_QUEUE": (
+        "queue name for the sqlite/memory task broker; unset falls back to the "
+        "literal 'default' queue. It labels a queue, not whether a control "
+        "applies."
+    ),
+    "LOCALAPPDATA": (
+        "Windows install-root hint for the upgrade data directory "
+        "(src/upgrade/manager.py:130). Absent falls back to Path.home(), i.e. "
+        "the unset branch only relocates the data directory; it never "
+        "enables or disables a safety control."
+    ),
+    "LIUHAO_STARTUP_PROFILE": (
+        "diagnostic-only switch for the startup stage profiler "
+        "(src/gateway/startup_profile.py:89). Unset means no stage table is "
+        "printed; only a truthy value enables timing logs. It changes what is "
+        "logged, not whether a safety control applies."
+    ),
+    "LIUHAO_SECRET_STORE_DIR": (
+        "directory override for the encrypted local secret store with a "
+        "documented default (~/.liuhao/secrets). Durability of the store is "
+        "governed by the fail-closed backend gate, which RAISES when no backend "
+        "is configured, so this override is not the permissive path."
+    ),
+    "LIUHAO_PARENT_PID": (
+        "runtime hint set by the desktop launcher (scripts/start_liuhao.py) so "
+        "the gateway can stop when the window that spawned it exits "
+        "(src/common/parent_watch.py:37). Unset means no parent watch -- "
+        "manual `python -m src.gateway`, tests and system services rely on "
+        "their own lifecycle, and no artifact sets it. The unset branch only "
+        "disables a convenience shutdown path; it never enables or disables a "
+        "safety control."
+    ),
+    "LIUHAO_DATA_DIR": (
+        "data-directory override for local state (identity registry, account "
+        "settings, upgrade data). Unset falls back to the platform default "
+        "(LOCALAPPDATA/LiuHao/data on Windows, XDG data home elsewhere) or the "
+        "repo-relative 'data' folder in dev. Relocating local state does not "
+        "enable or disable any safety control."
+    ),
+    "LIUHAO_HUMAN_IDENTITIES_BACKEND": (
+        "storage-backend selector for the human identity registry "
+        "(src/kernels/identity/_persistence.py). Unset selects the JSON-file "
+        "backend; 'sqlite' is only used when explicitly set. Both backends "
+        "enforce the same integrity-key check, so omission cannot widen trust."
+    ),
+    "LIUHAO_LLM_TIMEOUT_SECONDS": (
+        "global tool/prose timeout override (src/ai/llm_support.py:66). Unset "
+        "falls back to the documented DEFAULT_TOOL_TIMEOUT_SECONDS; only a "
+        "timing value, never a safety switch."
+    ),
+    "AI_PROVIDER_KEY": (
+        "fallback API key used only by the boot-report self-check when no "
+        "provider is configured (src/observability/boot_report.py:414). Unset "
+        "yields an empty key and the report records key_fp=''; it does not "
+        "enable any model call. A credential override, not a safety control."
+    ),
+    "AI_PROVIDER_MODEL": (
+        "fallback model name for the boot-report self-check "
+        "(src/observability/boot_report.py:413). Unset defaults to 'mock-model'. "
+        "It only labels the boot report; it never selects a real model or "
+        "widens a safety control."
+    ),
+    "AI_PROVIDER_TYPE": (
+        "fallback provider type for the boot-report self-check "
+        "(src/observability/boot_report.py:412). Unset defaults to 'mock'. "
+        "Diagnostic-only; it changes the reported provider label, not whether "
+        "a safety control applies."
+    ),
+    "CONVERSATION_DB_PATH": (
+        "path override for the conversation store sqlite "
+        "(src/gateway/main.py:1613). Unset falls back to the data-dir-resolved "
+        "default. Relocating a DB file does not enable or disable a safety "
+        "control."
+    ),
+    "DATABASE_URL": (
+        "connection-string override for the provider-metrics store "
+        "(src/api/app.py:22, src/api/providers_metrics.py:94). Unset falls back "
+        "to the data-dir default. A DB location override, not a safety switch."
+    ),
+    "LIUHAO_ALLOW_DATA_DOWNGRADE": (
+        "explicit opt-in for running an older binary against newer data "
+        "(src/upgrade/startup_guard.py:80). Unset means downgrade is refused "
+        "(fail-closed); only an explicit truthy value allows it. The unset "
+        "branch is the strict one."
+    ),
+    "LIUHAO_ALLOW_REMOTE_BACKUP_EXPORT": (
+        "explicit opt-in for exporting encrypted account backups to a remote "
+        "destination (src/gateway/account_backup.py:62). Unset means remote "
+        "export is disabled (fail-closed); only '1'/'true'/'yes'/'on' enables "
+        "it. The unset branch is the strict one."
+    ),
+    "LIUHAO_BACKUP_PASSWORD": (
+        "passphrase for AES-256-GCM encrypted backup bundles "
+        "(src/cli/backup_commands.py:479). When --encrypt is requested and "
+        "this is unset, backup_commands raises ValueError (fail-closed, no "
+        "plaintext fallback). A credential, not a safety-control switch."
+    ),
+    "LIUHAO_EMBEDDING_API_KEY": (
+        "API key for the embedding provider (src/knowledge/embedding.py:501). "
+        "Unset raises EmbeddingUnavailableError, so knowledge ingestion is "
+        "fail-closed without a key. A credential; absence never widens trust."
+    ),
+    "LIUHAO_HUMAN_IDENTITIES_FILE": (
+        "path override for the JSON-file human-identity store "
+        "(src/kernels/identity/_persistence.py:1440). Unset falls back to the "
+        "data-dir default. The integrity-key check applies regardless of path, "
+        "so relocation cannot widen trust."
+    ),
+    "LIUHAO_INSTANCE_DIR": (
+        "path override for the per-instance runtime dir "
+        "(src/gateway/__main__.py:225). Unset falls back to LIUHAO_DATA_DIR or "
+        "LOG_DIR. Relocates runtime scratch; never enables a safety control."
+    ),
+    "LIUHAO_MODEL_CONFIG_DB": (
+        "path override for the model-registry sqlite "
+        "(src/gateway/main.py:1616). Unset falls back to "
+        "<data_dir>/model_registry.sqlite3. A DB location override, not a "
+        "safety switch."
+    ),
+    "LIUHAO_SEARCH_INDEX_WARMUP": (
+        "performance toggle for the background full-text search index warmup "
+        "(src/gateway/chat.py:264). Unset defaults to '1' (warmup on); set to "
+        "0 to skip. It changes CPU usage at startup, not whether a safety "
+        "control applies."
+    ),
+    "MEMORY_DB_PATH": (
+        "path override for the kernel-memory sqlite "
+        "(src/gateway/account_memory.py:996). Unset falls back to the "
+        "module default. Relocating a DB file does not enable or disable a "
+        "safety control."
+    ),
+    "OLLAMA_BASE_URL": (
+        "default base URL for the Ollama provider when none is configured "
+        "(src/ai/liuhao.py:194). Unset defaults to http://127.0.0.1:11434. A "
+        "connectivity default, not a safety switch."
+    ),
+    "OPENAI_API_KEY": (
+        "fallback API key for OpenAI-compatible embedding when "
+        "LIUHAO_EMBEDDING_API_KEY is unset (src/knowledge/embedding.py:502). "
+        "Absence raises EmbeddingUnavailableError (fail-closed). A credential; "
+        "never widens trust."
+    ),
+    "OPENAI_BASE_URL": (
+        "default base URL for the OpenAI provider when none is configured "
+        "(src/ai/liuhao.py:196). Unset defaults to https://api.openai.com. A "
+        "connectivity default, not a safety switch."
+    ),
+    "PERSONAL_CONTEXT_DB_PATH": (
+        "path override for the personal-context/profile sqlite "
+        "(src/gateway/account_memory.py:997). Unset falls back to the module "
+        "default. Relocating a DB file does not enable or disable a safety "
+        "control."
+    ),
+    "PORT": (
+        "listen-port override (src/gateway/main.py:1625). Unset defaults to "
+        "8080. The bind HOST is separately defaulted to 127.0.0.1, so changing "
+        "the port does not widen reachability; it is a connectivity knob."
+    ),
+    "TZ": (
+        "timezone name override for reminder scheduling "
+        "(src/tasks/reminder_time.py:189). Unset defaults to Asia/Shanghai and "
+        "falls back to the system timezone. A clock/zone setting, never a "
+        "safety switch."
+    ),
+}
+
+
+# --------------------------------------------------------------------------- #
+# src/ scan
+# --------------------------------------------------------------------------- #
+def _dotted(node: ast.AST) -> str:
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted(node.value)
+        return "%s.%s" % (prefix, node.attr) if prefix else node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+
+def _ancestor_map(tree: ast.AST) -> Dict[int, List[ast.AST]]:
+    """Map id(child) -> list of ancestors, so a read can be tested for nesting
+    under a conditional without walking the tree once per candidate."""
+    out: Dict[int, List[ast.AST]] = {}
+
+    def walk(node: ast.AST, chain: List[ast.AST]) -> None:
+        for child in ast.iter_child_nodes(node):
+            out[id(child)] = chain
+            walk(child, chain + [node])
+
+    walk(tree, [])
+    return out
+
+
+def _module_string_constants(tree: ast.AST) -> Dict[str, str]:
+    """Module-level ``NAME = "VALUE"`` bindings.
+
+    Needed because a gate variable is often named by a constant rather than
+    spelled inline -- ``src/security/posture.py`` reads
+    ``source.get(STRICT_ENV)`` where ``STRICT_ENV = "LIUHAO_POSTURE_STRICT"``.
+    A scanner that only understood inline literals reported those gates as
+    "no longer read", which is exactly the kind of false negative that lets a
+    control disappear unnoticed.
+    """
+    out: Dict[str, str] = {}
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        value = node.value
+        if isinstance(target, ast.Name) and isinstance(value, ast.Constant):
+            if isinstance(value.value, str):
+                out[target.id] = value.value
+    return out
+
+
+def _resolve_name(node: ast.AST, consts: Dict[str, str]) -> Optional[str]:
+    """Literal string of a getter argument, resolving module constants."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    return None
+
+
+def _falsy_default(call: ast.Call) -> bool:
+    """True when the read yields a falsy value if the variable is absent."""
+    if len(call.args) >= 2:
+        default = call.args[1]
+        if isinstance(default, ast.Constant):
+            return not default.value
+        return False  # a non-constant default is an explicit, reviewed choice
+    for kw in call.keywords:
+        if kw.arg in ("default", "fallback") and isinstance(kw.value, ast.Constant):
+            return not kw.value.value
+    return True  # no default at all -> None
+
+
+def scan_env_reads(src_dir: Path = SRC_DIR) -> Dict[str, List[Tuple[str, int]]]:
+    """Every literal environment-variable read under ``src/``."""
+    reads: Dict[str, List[Tuple[str, int]]] = {}
+    if not src_dir.is_dir():
+        return reads
+    for path in sorted(src_dir.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        consts = _module_string_constants(tree)
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _dotted(node.func) not in _GETTERS:
+                continue
+            if not node.args:
+                continue
+            name = _resolve_name(node.args[0], consts)
+            if name:
+                reads.setdefault(name, []).append((rel, node.lineno))
+    return reads
+
+
+def scan_literal_mentions(names: Sequence[str],
+                          src_dir: Path = SRC_DIR) -> Dict[str, List[Tuple[str, int]]]:
+    """Where a variable is spelled as a string literal under ``src/``.
+
+    Secondary evidence for "this variable is still part of the code" when the
+    read goes through a constant (``src/security/posture.py`` iterates
+    ``POSTURE_ENV_VARS``, so no single ``os.environ.get("LIUHAO_ENV")`` call
+    exists). It is deliberately weaker than :func:`scan_env_reads` -- it proves
+    the name is present, not that it is read -- and is used only to keep a seed
+    entry from being misreported as stale.
+    """
+    wanted = set(names)
+    out: Dict[str, List[Tuple[str, int]]] = {}
+    if not src_dir.is_dir() or not wanted:
+        return out
+    for path in sorted(src_dir.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        seen: Dict[str, int] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value in wanted and node.value not in seen:
+                    seen[node.value] = node.lineno
+        for name, lineno in seen.items():
+            out.setdefault(name, []).append((rel, lineno))
+    return out
+
+
+def scan_gate_candidates(src_dir: Path = SRC_DIR) -> Dict[str, List[Tuple[str, int]]]:
+    """Reads whose absence selects a branch: falsy default AND a conditional
+    ancestor. See the module docstring for what this cannot see."""
+    candidates: Dict[str, List[Tuple[str, int]]] = {}
+    if not src_dir.is_dir():
+        return candidates
+    for path in sorted(src_dir.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        ancestors = _ancestor_map(tree)
+        consts = _module_string_constants(tree)
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _dotted(node.func) not in _GETTERS:
+                continue
+            if not node.args:
+                continue
+            if not _resolve_name(node.args[0], consts):
+                continue
+            name = _resolve_name(node.args[0], consts)
+            if not _falsy_default(node):
+                continue
+            chain = ancestors.get(id(node), [])
+            if not any(isinstance(a, _CONDITIONAL_NODES) for a in chain):
+                continue
+            # `name` is already the *resolved* variable name (a str) -- see
+            # `_resolve_name`. It used to be spelled `first.value` here, which is
+            # an undefined name, so this scanner died with NameError the first
+            # time it met a candidate. A gate that crashes on its own input is
+            # indistinguishable from a gate that passes: neither produces a
+            # finding. Fixed so the scan actually reports unclassified gates.
+            candidates.setdefault(name, []).append((rel, node.lineno))
+    return candidates
+
+
+# --------------------------------------------------------------------------- #
+# Deployable-artifact scan
+# --------------------------------------------------------------------------- #
+def _is_version_controlled(path: Path) -> Optional[bool]:
+    """True/False if git can answer, None if git is unavailable.
+
+    Used to keep unversioned files out of the evidence set. A file that no
+    commit contains is not a description of the deployment -- it is one
+    developer's leftovers. Measured on 2026-10-04: two of the 21 collected
+    artifacts were untracked, and one of them was ``.env``: gitignored, holding
+    SECRET_KEY and JWT_SECRET. Had a gate variable happened to be set only
+    there, this gate would report "set in the artifact" on the machine that
+    created the file and "never set" on every other machine and on CI. A
+    security gate whose verdict depends on unversioned local state is a false
+    green waiting to happen, so the file must not be evidence.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(path)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    # returncode 1 == not tracked; anything else (128 == not a repo, etc.)
+    return False if proc.returncode == 1 else None
+
+
+def collect_artifacts(extra: Sequence[str] = ()) -> List[Path]:
+    found: List[Path] = []
+    for pattern in ARTIFACT_GLOBS:
+        for path in REPO_ROOT.rglob(pattern):
+            if any(part in ARTIFACT_SKIP_PARTS for part in path.parts):
+                continue
+            if path.is_file():
+                found.append(path)
+    for rel in ARTIFACT_EXTRA_FILES:
+        path = REPO_ROOT / rel
+        if path.is_file():
+            found.append(path)
+    if WORKFLOWS_DIR.is_dir():
+        for suffix in (".yml", ".yaml"):
+            found.extend(sorted(WORKFLOWS_DIR.glob("*" + suffix)))
+    for raw in extra:
+        path = Path(raw)
+        if path.is_file():
+            found.append(path)
+    # stable, de-duplicated, repo-relative where possible
+    unique: List[Path] = []
+    seen: Set[str] = set()
+    for path in sorted(found, key=lambda p: str(p).lower()):
+        key = str(path.resolve()).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def untracked_artifacts(artifacts: Sequence[Path]) -> List[Path]:
+    """Artifacts that no commit contains -- excluded from the evidence set.
+
+    Kept as a separate list rather than silently filtered so the caller can
+    report it: a developer who drops a ``docker-compose.prod.yml`` in the repo
+    root and expects the gate to read it deserves to be told why it was
+    ignored, not left wondering which file the gate actually looked at.
+    """
+    out: List[Path] = []
+    for path in artifacts:
+        # An explicitly passed --extra-artifacts path is the caller vouching for
+        # it (that flag exists precisely to prove a proposed fix), so it is not
+        # second-guessed here.
+        if _is_version_controlled(path) is False:
+            out.append(path)
+    return out
+
+
+def _is_git_ignored(path: Path) -> Optional[bool]:
+    """True/False if git says the path is ignored, None if git cannot answer.
+
+    Distinct from :func:`_is_version_controlled` on purpose. "No commit
+    contains it" and "the repository deliberately ignores it" are different
+    facts, and they warrant different verdicts: an ignored path is local state
+    by the repo's own declared intent (so it must not move the exit code),
+    whereas an untracked-but-not-ignored path may hold evidence that exists on
+    this machine alone (so it must stay a finding). Collapsing the two made the
+    verdict depend on the local filesystem -- ``.env`` present here, absent on
+    CI -- which is the "passes on my box, fails on the runner" defect this gate
+    was built to remove.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--quiet", "--", str(path)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    return None  # 128 == not a repo / other git error
+
+
+def partition_untracked(untracked: Sequence[Path]) -> Tuple[List[Path], List[Path]]:
+    """Split untracked artifacts into (gitignored, genuinely-untracked).
+
+    The first list is informational; the second is a finding. See
+    :func:`_is_git_ignored` for why the two must not be conflated.
+    """
+    ignored: List[Path] = []
+    real: List[Path] = []
+    for path in untracked:
+        (ignored if _is_git_ignored(path) is True else real).append(path)
+    return ignored, real
+
+
+def _label(path: Path) -> str:
+    """Repo-relative label for an artifact, so findings are machine-independent."""
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+#: Repo-relative prefix of a CI workflow artifact (``.github/workflows/``). The
+#: workflows ARE in the artifact set (a control that no deployment sets but CI
+#: does would otherwise look armed), yet a CI runner is recreated for every run:
+#: a value set there arms the *test job*, not the shipped system.
+_WORKFLOWS_LABEL_PREFIX = WORKFLOWS_DIR.relative_to(REPO_ROOT).as_posix() + "/"
+
+
+def _is_ci_artifact(label: str) -> bool:
+    """True when a repo-relative artifact label is a GitHub Actions workflow.
+
+    Used so a seed gate cannot be satisfied by a CI-only setter: that is the
+    "looks armed, is not armed in the deployment" gap this gate exists to close,
+    and counting a throwaway CI runner as the deployment is a false green whose
+    cause is invisible in the run.
+    """
+    return label.startswith(_WORKFLOWS_LABEL_PREFIX)
+
+
+def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
+    """Variable names any artifact sets, mapped to the artifacts that set them."""
+    texts: List[Tuple[Path, str]] = []
+    for path in artifacts:
+        try:
+            texts.append((path, path.read_text(encoding="utf-8", errors="replace")))
+        except (UnicodeDecodeError, OSError):
+            continue
+    found: Dict[str, List[str]] = {}
+
+    label = _label
+
+    for path, text in texts:
+        names: Set[str] = set()
+        # `NAME=value` / `NAME: value` / `- NAME=value` (compose, Dockerfile ENV,
+        # workflow env:, .env). The Python-side setter forms the bundle builder
+        # actually uses are handled in the two scans below.
+        for match in re.finditer(r"(?m)^[ \t]*-?[ \t]*[\"']?([A-Z][A-Z0-9_]{1,})[\"']?[ \t]*(?:=|:)", text):
+            names.add(match.group(1))
+        # compose pass-through form: `- NAME` (value supplied by the host)
+        for match in re.finditer(r"(?m)^[ \t]*-[ \t]*([A-Z][A-Z0-9_]{1,})[ \t]*$", text):
+            names.add(match.group(1))
+        # shell one-liners that publish into $GITHUB_ENV:
+        #   echo "NAME=value" >> "$GITHUB_ENV"
+        # The quoted-name regex above requires a CLOSING quote right after the
+        # name (`"NAME":` / `"NAME"=`), so it never saw the form every workflow
+        # actually uses. Consequence: `_is_ci_artifact` had nothing to classify,
+        # and the "a CI-only setter must not arm a seed gate" rule silently did
+        # nothing (measured: AUDIT_DB_PATH appeared to have no CI setter at all).
+        for match in re.finditer(r"(?m)[\"']([A-Z][A-Z0-9_]{1,})[ \t]*=", text):
+            names.add(match.group(1))
+        # inline assignment forms inside python / yaml one-liners
+        for match in re.finditer(r"[\"']([A-Z][A-Z0-9_]{1,})[\"'][ \t]*[:=]", text):
+            names.add(match.group(1))
+        # Python-side deployment setters, which none of the regexes above can
+        # see because a "]" or "(" sits between the name and the "=":
+        #   os.environ["NAME"] = ...        (subscript assignment)
+        #   os.environ.setdefault("NAME", ...)
+        # ``scripts/build_cloud_bundle.py`` ships its whole deployment contract
+        # through the second form (LIUHAO_CONSOLE_DIST at :128,
+        # LIUHAO_HUMAN_IDENTITIES_FILE at :142, LIUHAO_AUTH_SECRETS_FILE at :146,
+        # LIUHAO_KERNEL_POLICY_ENFORCE at :163), and it is a declared artifact
+        # (``ARTIFACT_EXTRA_FILES``). Measured on 2026-10-07: without these two
+        # scans the bundle builder looked like it set *nothing*, so a variable it
+        # really sets would be reported "never set in a deployment artifact".
+        for match in re.finditer(
+                r"(?m)(?:os\.)?environ\[[ \t]*[\"']([A-Z][A-Z0-9_]{1,})[\"'][ \t]*\]"
+                r"[ \t]*[=:]",
+                text):
+            names.add(match.group(1))
+        for match in re.finditer(
+                r"(?m)(?:os\.)?environ\.setdefault\(\s*[\"']([A-Z][A-Z0-9_]{1,})[\"']",
+                text):
+            names.add(match.group(1))
+        for name in names:
+            found.setdefault(name, []).append(label(path))
+    return found
+
+
+# --------------------------------------------------------------------------- #
+# Safe-value lock
+#
+# "Set" is not the same as "set to the strict side". A deployment can arm
+# LIUHAO_ALLOW_SIMULATED_EXECUTION and still set it to 1, or set
+# LIUHAO_POSTURE_STRICT=0 -- both satisfy a presence-only check while
+# re-opening exactly the hole the variable was added to close. Each seed entry
+# that has a safe value carries a `safe` rule; anything a non-CI artifact sets
+# must satisfy that rule, so a future "just make CI green" edit to an unsafe
+# value turns the gate red instead of silently shipping.
+# --------------------------------------------------------------------------- #
+_TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
+_FALSY = frozenset({"0", "false", "no", "off", "disabled"})
+_PRODUCTION = frozenset({"production", "prod"})
+
+ValueEntry = Tuple[str, str]  # (artifact label, raw value)
+
+
+def _clean_value(raw: str) -> str:
+    value = raw.strip()
+    if value[:1] in ("'", '"') and value[-1:] == value[:1] and len(value) >= 2:
+        value = value[1:-1]
+    # compose/.env allow `NAME=value  # comment`
+    value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+    return value
+
+
+def scan_artifact_values(artifacts: Sequence[Path]) -> Dict[str, List[ValueEntry]]:
+    """Explicit ``NAME=value`` / ``NAME: value`` assignments, per artifact."""
+    out: Dict[str, List[ValueEntry]] = {}
+    for path in artifacts:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except (UnicodeDecodeError, OSError):
+            continue
+        label = _label(path)
+        for match in re.finditer(
+                r"(?m)^[ \t]*-?[ \t]*[\"']?([A-Z][A-Z0-9_]{1,})[\"']?[ \t]*=(.*)$",
+                text):
+            out.setdefault(match.group(1), []).append(
+                (label, _clean_value(match.group(2))))
+        for match in re.finditer(
+                r"(?m)^[ \t]*([A-Z][A-Z0-9_]{1,})[ \t]*:[ \t]*(.*)$", text):
+            out.setdefault(match.group(1), []).append(
+                (label, _clean_value(match.group(2))))
+    return out
+
+
+def _dockerfile_text() -> str:
+    path = REPO_ROOT / "Dockerfile"
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _dockerfile_creates_app_data() -> bool:
+    return "mkdir -p /app/data" in _dockerfile_text()
+
+
+def value_is_safe(rule: str, value: str) -> bool:
+    """Whether ``value`` is the strict side of ``rule``.
+
+    Every rule here is deliberately exact rather than "truthy-ish": a lock that
+    accepts anything loosely is not a lock. ``path_app_data`` additionally
+    requires the Dockerfile to actually create ``/app/data``, because a path
+    variable pointing at a directory the image never creates is armed on paper
+    only -- the very defect this gate exists to catch.
+    """
+    v = value.strip().lower()
+    if rule == "truthy":
+        return v in _TRUTHY
+    if rule == "falsy":
+        return v in _FALSY
+    if rule == "production":
+        return v in _PRODUCTION
+    if rule == "positive_int_leq_4":
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return False
+        # 4 is the conservative cap chosen in docker-compose.prod.yml. Raising
+        # it is a capacity decision, not a "make the gate pass" edit, so it
+        # must be made here with this comment and a new test.
+        return 1 <= n <= 4
+    if rule == "path_app_data":
+        return _dockerfile_creates_app_data() and (
+            value == "/app/data" or value.startswith("/app/data/"))
+    if rule == "console_dist":
+        return ("apps/console/console/dist" in value
+                and value.startswith("/app/")
+                and "apps/console/console/dist/" in _dockerfile_text())
+    return False
+
+
+# The safe-value lock is a *production* claim. docker-compose.yml and
+# infra/staging/docker-compose.yml are allowed to run on the laxer side (staging
+# sets LIUHAO_ENV=staging by design); checking them here would demand production
+# posture from a dev file and turn a correct staging setup into a red gate.
+_PRODUCTION_ARTIFACTS = ("docker-compose.prod.yml",)
+
+
+def _is_production_artifact(label: str) -> bool:
+    return any(name in label for name in _PRODUCTION_ARTIFACTS)
+
+
+def unsafe_deploy_values(var: str, aliases: Sequence[str], rule: str,
+                         values: Dict[str, List[ValueEntry]]) -> List[ValueEntry]:
+    """Production-set values that do not satisfy ``rule``.
+
+    Only the production bundle is judged: a throwaway CI runner proves nothing
+    about what ships, and staging is deliberately allowed a laxer posture. The
+    check still fires on the production file itself, which is the only place
+    where "shipped default" has a meaning.
+    """
+    bad: List[ValueEntry] = []
+    for name in (var,) + tuple(aliases):
+        for label, value in values.get(name, []):
+            if not _is_production_artifact(label):
+                continue
+            if not value_is_safe(rule, value):
+                bad.append((label, "%s=%s" % (name, value)))
+    return bad
+
+
+# --------------------------------------------------------------------------- #
+# Evaluation
+# --------------------------------------------------------------------------- #
+class Finding(object):
+    def __init__(self, var: str, kind: str, detail: str,
+                 refs: Sequence[str] = (), suggestion: str = "") -> None:
+        self.var = var
+        self.kind = kind
+        self.detail = detail
+        self.refs = list(refs)
+        self.suggestion = suggestion
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "var": self.var,
+            "kind": self.kind,
+            "detail": self.detail,
+            "refs": self.refs,
+            "suggestion": self.suggestion,
+        }
+
+
+def _symbol_line_span(path: Path, symbol: str) -> Optional[Tuple[int, int]]:
+    """Resolve a top-level function/class/assignment name to its 1-based lines.
+
+    ``file::symbol`` refs exist so a citation survives unrelated edits above it:
+    the gate resolves the symbol at run time instead of trusting a line number
+    that rots the next time someone inserts code. Only module-level symbols are
+    resolved -- a SEED citation points at a module-level read site, not at a
+    nested helper whose name can collide.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        else:
+            continue
+        if symbol in names:
+            return (node.lineno, getattr(node, "end_lineno", None) or node.lineno)
+    return None
+
+
+def drifted_refs(var: str, refs: Sequence[str],
+                 aliases: Sequence[str],
+                 const_names: Sequence[str] = ()) -> List[str]:
+    """Refs that no longer point at code mentioning ``var`` (or an alias).
+
+    A ``refs`` entry is the only thing that makes a finding checkable, so a
+    stale one is worse than no ref at all: it hands the reader a file:line that
+    looks like evidence and is not. On 2026-10-04 every SEED ref was checked
+    and 5 of them had drifted -- e.g. ``src/kernels/_crosscutting.py:676`` is
+    now ``if len(parts) == 3 and parts[0] == "RULE":`` and says nothing about
+    ``LIUHAO_EXECUTOR_FENCE``.
+
+    Line-level matching is deliberately loose (substring of the var name, any
+    alias, or any module-level CONSTANT that holds the var's name, anywhere on
+    the line). The check that matters is "is this still the code we meant", and a
+    ref that moved by a few lines but still names the variable is not drift. A
+    ref that names nothing is drift, and saying so is more useful than silently
+    printing a wrong pointer.
+
+    ``const_names`` exists because a table-driven read mentions neither the env
+    var nor a declared alias: ``posture.py:123`` reads ``source.get(STRICT_ENV)``
+    where ``STRICT_ENV`` is defined at :68. Without it that citation would be
+    reported as drifted, and a checker that cries wolf is one people stop running.
+
+    An entry may also be ``path::symbol``: the module-level symbol is resolved to
+    its current lines at run time and the needles must appear somewhere inside
+    that span. Use it for refs whose exact line keeps moving (function bodies);
+    a bare line number is still fine for a stable single-line read.
+    """
+    out: List[str] = []
+    needles = [var] + [str(a) for a in aliases] + [str(c) for c in const_names]
+    for raw in refs:
+        ref = str(raw)
+        if "::" in ref:
+            path, _, symbol = ref.partition("::")
+            p = REPO_ROOT / path
+            if not p.is_file():
+                out.append("%s (file missing)" % ref)
+                continue
+            span = _symbol_line_span(p, symbol)
+            if span is None:
+                out.append("%s (symbol not found)" % ref)
+                continue
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            start, end = span
+            if not any(needle in text
+                       for text in lines[start - 1:end]
+                       for needle in needles):
+                out.append("%s (symbol mentions none of the needles)" % ref)
+            continue
+        path, sep, line = ref.rpartition(":")
+        if not sep or not line.isdigit():
+            out.append("%s (no file:line)" % ref)
+            continue
+        p = REPO_ROOT / path
+        if not p.is_file():
+            out.append("%s (file missing)" % ref)
+            continue
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        n = int(line)
+        if n < 1 or n > len(lines):
+            out.append("%s (beyond EOF, file has %d lines)" % (ref, len(lines)))
+            continue
+        if not any(needle in lines[n - 1] for needle in needles):
+            out.append("%s (line reads: %s)"
+                       % (ref, lines[n - 1].strip()[:60]))
+    return out
+
+
+def constant_aliases(names: Sequence[str], src_dir: Path = SRC_DIR) -> Dict[str, List[str]]:
+    """Module-level CONSTANTS whose value is one of ``names``.
+
+    A variable read through a constant is still a real read site: posture.py
+    defines ``STRICT_ENV = "LIUHAO_POSTURE_STRICT"`` and then calls
+    ``source.get(STRICT_ENV)``. The line doing the reading mentions neither the
+    env var's name nor any declared alias, so without this the ref check would
+    report a perfectly good citation as drifted -- and a checker that cries wolf
+    gets ignored, which is worse than having none.
+    """
+    wanted = set(names)
+    out: Dict[str, List[str]] = {}
+    if not src_dir.is_dir() or not wanted:
+        return out
+    for path in sorted(src_dir.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        for node in tree.body:
+            targets: List[str] = []
+            value: Optional[ast.AST] = None
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, str):
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None \
+                    and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, str) \
+                    and isinstance(node.target, ast.Name):
+                targets = [node.target.id]
+                value = node.value
+            if not targets or value is None or value.value not in wanted:
+                continue
+            for const in targets:
+                out.setdefault(str(value.value), []).append(const)
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
+def _ci_only_finding(var: str, why: str, refs: Sequence[str],
+                     reads: Dict[str, List[Tuple[str, int]]],
+                     ci_setters: Sequence[str]) -> Finding:
+    """The finding for an ``expect="set"`` entry armed only by CI workflows.
+
+    A distinct kind -- not ``gate-var-never-set`` -- so the reader is told what
+    is actually wrong: the entry *is* armed somewhere, just not anywhere the
+    deployment can see. Folding it into "never set" would hide that the arming
+    line exists but is in the wrong place.
+    """
+    return Finding(
+        var, "seed-armed-only-in-ci",
+        "the only artifact(s) that set %s are CI workflow(s): %s. A CI workflow "
+        "runs on a throwaway runner -- a value set there arms the test job, not "
+        "the deployment -- so counting it as 'the deployment sets this' is a "
+        "false green whose cause is invisible in the run. %s"
+        % (var, ", ".join(sorted(ci_setters)), why),
+        refs or ["%s:%d" % (r[0], r[1]) for r in reads.get(var, [])],
+        "set %s in docker-compose.prod.yml (or the bundle builder), not only in "
+        "a CI workflow" % var)
+
+
+def evaluate(artifact_vars: Dict[str, List[str]],
+             reads: Dict[str, List[Tuple[str, int]]],
+             candidates: Dict[str, List[Tuple[str, int]]],
+             mentions: Optional[Dict[str, List[Tuple[str, int]]]] = None,
+             artifact_values: Optional[Dict[str, List[ValueEntry]]] = None
+             ) -> List[Finding]:
+    findings: List[Finding] = []
+    seed_vars = {str(entry["var"]) for entry in SEED_GATES}
+    mentions = mentions or {}
+    artifact_values = artifact_values or {}
+    const_map = constant_aliases(sorted(
+        {str(e["var"]) for e in SEED_GATES}
+        | {str(a) for e in SEED_GATES for a in (e.get("aliases") or ())}
+    ))
+
+    # 1. seed gates
+    for entry in SEED_GATES:
+        var = str(entry["var"])
+        expect = str(entry.get("expect", "set"))
+        aliases: Sequence[str] = tuple(entry.get("aliases") or ())  # type: ignore[arg-type]
+        refs: Sequence[str] = tuple(entry.get("refs") or ())  # type: ignore[arg-type]
+        why = str(entry.get("why", "")).strip()
+
+        if not why:
+            findings.append(Finding(
+                var, "seed-entry-has-no-reason",
+                "SEED_GATES entry carries no `why`; an unexplained gate cannot "
+                "be reviewed."))
+        # Refs are the only thing that makes a finding checkable, so verify they
+        # still point at the variable. Reported independently of every other
+        # check below: a drifted ref must not hide a real gate finding, and it
+        # must not be silenced by one either.
+        bad_refs = drifted_refs(var, refs, aliases, const_map.get(var, ()))
+        if bad_refs:
+            # ``drifted_refs`` returns a *formatted* description of each bad ref
+            # ("<ref> (line reads: ...)"). The old filter compared that
+            # description against the raw ref, so it never matched and the
+            # finding re-listed -- under "read at:" -- the very pointer it had
+            # just called drifted, handing the reader evidence the gate knew was
+            # wrong. Recover the raw ref from the description prefix so only the
+            # *still-valid* evidence is shown; the bad ref is named in the
+            # detail above and is not silently dropped.
+            bad_raw = {str(b).split(" (", 1)[0] for b in bad_refs}
+            findings.append(Finding(
+                var, "seed-ref-drifted",
+                "cited evidence no longer points at this variable -- %s. A ref "
+                "that names unrelated code is worse than no ref: it looks "
+                "checkable and is not." % "; ".join(bad_refs),
+                [r for r in refs if str(r) not in bad_raw],
+                "re-point the entry at the line that reads %s" % var))
+        # Classify every artifact that satisfies this entry, because *where* a
+        # setter lives changes the verdict: a setter that exists only in a CI
+        # workflow arms a throwaway runner, not the deployment, so it must not
+        # count as "the deployment sets this" (see `_is_ci_artifact`).
+        set_in = artifact_vars.get(var, [])
+        alias_hits = [a for a in aliases if a in artifact_vars]
+        all_setters = list(set_in) + [
+            lbl for a in alias_hits for lbl in artifact_vars[a]]
+        deploy_setters = [lbl for lbl in all_setters if not _is_ci_artifact(lbl)]
+        ci_setters = [lbl for lbl in all_setters if _is_ci_artifact(lbl)]
+        # A var can be live while never appearing in a literal
+        # ``os.environ.get("LIUHAO_X")`` call -- ``src/security/posture.py``
+        # iterates a table of names, and ``fence.py`` builds some names. For
+        # those, ``scan_env_reads`` finds nothing and the entry would be
+        # misreported as stale. ``mentions`` (from ``scan_literal_mentions``)
+        # is the weaker but sufficient evidence that the name is still spelled
+        # in src/; the finding is downgraded to a note rather than suppressed,
+        # so a genuinely-rotted entry can still be argued about explicitly.
+        #
+        # This function existed but had ZERO callers until 2026-10-04: its
+        # docstring promised to keep a live seed entry from being misreported,
+        # and ``evaluate()`` never received its output -- so the promise was
+        # documentation of a behaviour that did not exist.
+        if var not in reads and not any(a in reads for a in aliases):
+            seen_at = mentions.get(var) or []
+            seen_alias = [a for a in aliases if mentions.get(a)]
+            if seen_at or seen_alias:
+                # Only worth saying when it changes what the reader should do.
+                #
+                # This finding was originally appended unconditionally, which
+                # made a false red out of a satisfied gate: `LIUHAO_ENV` is
+                # `expect="set"` and IS set -- `docker-compose.prod.yml:37` has
+                # `- LIUHAO_ENV=production` -- yet the entry was still reported
+                # as "cannot be verified automatically", because whether the
+                # artifact satisfies `expect` is decidable and had already been
+                # decided a few lines below. The note is about the READ being
+                # invisible to the scanner, not about `expect` being in doubt;
+                # if the artifact check passes, a human has nothing to confirm.
+                # A CI-only setter is still "not satisfied" for expect="set",
+                # but the reason differs and must be said plainly rather than
+                # folded into the indirect-read note.
+                satisfied = (expect != "set") or bool(deploy_setters)
+                if not satisfied:
+                    where = seen_at or mentions[seen_alias[0]]
+                    fallback_refs = refs or ["%s:%d" % (r[0], r[1]) for r in where]
+                    if expect == "set" and ci_setters:
+                        findings.append(_ci_only_finding(
+                            var, why, fallback_refs, reads, ci_setters))
+                    else:
+                        findings.append(Finding(
+                            var, "seed-entry-read-indirectly",
+                            "listed as a gate and the name is still spelled in "
+                            "src/ (e.g. %s:%d), but no literal env read was "
+                            "found -- it is most likely read through a table, so "
+                            "the automatic read-based checks cannot be trusted "
+                            "for this entry. Confirm the control really is armed "
+                            "at the site above." % (where[0][0], where[0][1]),
+                            fallback_refs,
+                            "confirm the control is still armed at the site above"))
+            else:
+                findings.append(Finding(
+                    var, "stale-seed-entry",
+                    "listed as a gate but `%s` (nor any alias %s) is read or "
+                    "even named anywhere under src/ -- either the control was "
+                    "removed or this entry rotted" % (var, list(aliases)),
+                    refs,
+                    "remove the entry or point it at the variable now in use"))
+            continue
+
+        if expect == "set":
+            if deploy_setters:
+                safe_rule = str(entry.get("safe") or "")
+                if safe_rule:
+                    unsafe = unsafe_deploy_values(
+                        var, aliases, safe_rule, artifact_values)
+                    if unsafe:
+                        findings.append(Finding(
+                            var, "gate-var-unsafe-value",
+                            "armed, but a deployment artefact sets the unsafe "
+                            "side of this control: %s. Presence alone is not "
+                            "safety -- the strict side is required." % "; ".join(
+                                "%s (%s)" % (v, label)
+                                for label, v in unsafe),
+                            refs,
+                            "set %s to its safe side (%s) in the same artefact"
+                            % (var, safe_rule)))
+                continue
+            if ci_setters:
+                # Armed, but only where a throwaway runner can see it: report
+                # the CI-only category, not "never set".
+                findings.append(_ci_only_finding(var, why, refs, reads, ci_setters))
+                continue
+            findings.append(Finding(
+                var, "gate-var-never-set",
+                "%s" % why,
+                refs or ["%s:%d" % (r[0], r[1]) for r in reads.get(var, [])],
+                "set %s in docker-compose.prod.yml (or the bundle builder), or "
+                "move it to ALLOWLIST with a written reason" % var))
+        elif expect == "absent":
+            # Aliases must be honoured here too. They already are for
+            # ``expect == "set"`` (see ``alias_hits`` above), so checking only
+            # ``set_in`` made the two branches disagree about what "set in an
+            # artifact" means -- and it failed OPEN, which is the dangerous
+            # direction: a dev-only control shipped under its alias name was
+            # reported as clean. Proven by probe (2026-10-04): with
+            # ``expect="absent"`` and only the alias present in
+            # ``artifact_vars``, this branch emitted no finding, while the same
+            # entry set under its canonical name correctly reported
+            # ``dev-only-var-set-in-artifact``.
+            if not set_in and not alias_hits:
+                continue
+            shipped = sorted(set(set_in) | {a for a in alias_hits})
+            which = " or its alias %s" % ", ".join(sorted(alias_hits)) if alias_hits and not set_in else ""
+            findings.append(Finding(
+                var, "dev-only-var-set-in-artifact",
+                "%s -- but it is set%s in %s"
+                % (why, which, ", ".join(shipped)),
+                refs,
+                "remove %s from %s" % (var, ", ".join(shipped))))
+        else:
+            findings.append(Finding(
+                var, "bad-seed-entry",
+                "expect must be 'set' or 'absent', got %r" % expect))
+
+    # 2. scan-detected candidates must be classified
+    for var in sorted(candidates):
+        if var in seed_vars:
+            continue
+        if var in ALLOWLIST:
+            reason = (ALLOWLIST[var] or "").strip()
+            if not reason:
+                findings.append(Finding(
+                    var, "allowlist-entry-has-no-reason",
+                    "ALLOWLIST entry has an empty reason; implicit leniency is "
+                    "not permitted."))
+            continue
+        findings.append(Finding(
+            var, "unclassified-gate-candidate",
+            "absence selects a branch at the site(s) below, and the variable is "
+            "in neither SEED_GATES nor ALLOWLIST, so nobody has decided what the "
+            "unset branch means in a deployment",
+            ["%s:%d" % (r[0], r[1]) for r in candidates[var]],
+            "add it to SEED_GATES (with why + refs) if absence is permissive, or "
+            "to ALLOWLIST with a reason stating what the unset branch does"))
+
+    # 3. allowlist rot
+    #
+    # An allowlist entry must be removed once the variable is gone, precisely so
+    # it cannot mask a future re-read. "No literal read" is not sufficient
+    # evidence of removal: a table-driven read (see ``mentions`` above) would
+    # make a LIVE variable look rotted, and acting on that report would delete
+    # a valid exemption -- the same class of error as reporting it as rot when
+    # it is merely indirect. So the name must be absent from BOTH scans before
+    # the entry is called stale.
+    for var in sorted(ALLOWLIST):
+        if var in reads:
+            continue
+        seen_at = mentions.get(var) or []
+        if seen_at:
+            findings.append(Finding(
+                var, "allowlist-entry-read-indirectly",
+                "allowlisted, and the name is still spelled in src/ (e.g. "
+                "%s:%d) but not via a literal env read -- verify by hand that "
+                "the exemption is still justified rather than deleting it"
+                % (seen_at[0][0], seen_at[0][1]),
+                ["%s:%d" % (r[0], r[1]) for r in seen_at],
+                "confirm the exemption still applies at the site above"))
+            continue
+        findings.append(Finding(
+            var, "stale-allowlist-entry",
+            "allowlisted, but `%s` is neither read nor named anywhere under "
+            "src/ -- the entry must be removed so it cannot mask a future "
+            "re-read" % var,
+            [], "remove from ALLOWLIST"))
+
+    return findings
+
+
+def render(findings: Sequence[Finding],
+           artifact_count: int,
+           reads_count: int,
+           candidate_count: int,
+           ignored_local: Sequence[str] = ()) -> str:
+    lines: List[str] = []
+    lines.append("=" * 78)
+    lines.append("Deployment gate-variable gate")
+    lines.append("=" * 78)
+    lines.append("  src/ env reads scanned : %d" % reads_count)
+    lines.append("  conditional candidates : %d" % candidate_count)
+    lines.append("  deployable artifacts   : %d" % artifact_count)
+    lines.append("")
+    if not findings:
+        lines.append("RESULT: PASS -- every gate variable is resolved by an "
+                     "artifact, a seed entry, or a reasoned allowlist entry.")
+    else:
+        lines.append("RESULT: FAIL -- %d unresolved gate variable(s):" % len(findings))
+        lines.append("")
+        for i, f in enumerate(findings, 1):
+            lines.append("[%d] %s  (%s)" % (i, f.var, f.kind))
+            lines.append("    %s" % f.detail)
+            if f.refs:
+                lines.append("    read at: %s" % ", ".join(f.refs))
+            if f.suggestion:
+                lines.append("    fix:     %s" % f.suggestion)
+            lines.append("")
+    # Informational, and deliberately OUTSIDE the finding count: a gitignored
+    # path is local state by the repo's own declared intent, not deployment, so
+    # surfacing it must not move the exit code (see `_is_git_ignored`).
+    if ignored_local:
+        lines.append("INFO -- gitignored untracked artifact(s): surfaced so "
+                     "nobody wonders what the gate read, but NOT counted as "
+                     "deployment evidence and NOT affecting the exit code:")
+        for label in ignored_local:
+            lines.append("  - %s" % label)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Fail when a control is gated on an env var no artifact sets.")
+    parser.add_argument("--json", action="store_true",
+                        help="emit machine-readable findings on stdout")
+    parser.add_argument("--extra-artifacts", action="append", default=[],
+                        metavar="PATH",
+                        help="add a file to the artifact set WITHOUT modifying "
+                             "the repo (for proving a proposed fix)")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if not SRC_DIR.is_dir():
+        print("ERROR: %s not found -- run from the repository root" % SRC_DIR,
+              file=sys.stderr)
+        return EXIT_ERROR
+
+    artifacts = collect_artifacts(args.extra_artifacts)
+    # Files no commit contains are not a description of the deployment. On
+    # 2026-10-04 this excluded .env (gitignored, holds SECRET_KEY/JWT_SECRET)
+    # and a stray LiuHao-O/docker-compose.yml -- 2 of 21.
+    #
+    # Since 2026-10-07 the untracked set is split by *why* it is untracked,
+    # because the two causes warrant different verdicts (see `_is_git_ignored`):
+    #   * gitignored -> local state by the repo's declared intent -> INFO only,
+    #     never a finding, never affecting the exit code;
+    #   * untracked and not ignored -> may be evidence that exists nowhere else
+    #     -> still a finding.
+    # The old code treated both as findings, so the exit code answered "does
+    # this machine happen to have a .env?" -- a locally-created file deciding a
+    # gate verdict, which is precisely the false green this gate removes.
+    untracked = untracked_artifacts(artifacts)
+    ignored_local, untracked_findings = partition_untracked(untracked)
+    if untracked:
+        artifacts = [p for p in artifacts if p not in untracked]
+    artifact_vars = scan_artifact_vars(artifacts)
+    artifact_values = scan_artifact_values(artifacts)
+    reads = scan_env_reads()
+    candidates = scan_gate_candidates()
+    # Every seed/allowlist name, so an entry whose variable is read through a
+    # table is not mistaken for a rotted one (see ``evaluate``).
+    tracked = sorted({str(e["var"]) for e in SEED_GATES}
+                     | {str(a) for e in SEED_GATES for a in (e.get("aliases") or ())}
+                     | set(ALLOWLIST))
+    mentions = scan_literal_mentions(tracked)
+    findings = evaluate(artifact_vars, reads, candidates, mentions,
+                        artifact_values)
+    for path in untracked_findings:
+        findings.append(Finding(
+            "ARTIFACT:%s" % path.name, "untracked-artifact-ignored",
+            "`%s` looks like a deployment artifact, no commit contains it, and "
+            "it is NOT gitignored -- so it may hold evidence that exists on this "
+            "machine and nowhere else. It was not read as evidence: a gate "
+            "variable satisfied only there would pass here and fail everywhere "
+            "else" % _label(path),
+            [_label(path)],
+            "commit it if it is part of the deployment, or gitignore it if it "
+            "is local state"))
+
+    ignored_labels = [_label(p) for p in ignored_local]
+    if args.json:
+        print(json.dumps({
+            "exit": EXIT_FAIL if findings else EXIT_OK,
+            "artifacts": [str(p) for p in artifacts],
+            "env_reads": len(reads),
+            "candidates": len(candidates),
+            "literal_mentions": len(mentions),
+            "ignored_local_artifacts": ignored_labels,
+            "findings": [f.as_dict() for f in findings],
+        }, indent=2))
+    else:
+        print(render(findings, len(artifacts), len(reads), len(candidates),
+                     ignored_labels))
+
+    return EXIT_FAIL if findings else EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

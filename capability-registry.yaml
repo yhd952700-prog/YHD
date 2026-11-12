@@ -1,4 +1,4 @@
-# LIUHAO X v3.0 — Capability Registry (machine-readable)
+# LiuHao AI OS · 鎏灏智能中枢 — Capability Registry (machine-readable)
 # 已与 docs/spec/CAPABILITY-REGISTRY.md 同步 (2026-09-06):
 #   14 项全含 security/audit/plugin; 状态统一 PARTIALLY_IMPLEMENTED;
 #   id 改为 LHX-C-NNN 并保留 legacy_id; 追溯用 UB-A1 锚点。
@@ -112,8 +112,10 @@ capability-registry:
     - Event with correlation_id, causation_id, scope, priority, tags
     - Dead letter handling with retry
     - Event history and correlation chain queries
+    - Read-only GET /v1/events surface (src/gateway/events.py, human-gated) exposes the kernel's get_event_history() in the shipping app (2026-10-20)
     - '2026-09-15 fix: publish() no longer mutates the stored subscription list in place (concatenates type + wildcard subs, de-dups by subscription id) — stops unbounded growth and duplicate delivery'
     test_coverage: '19/19 unit tests passing (tests/kernels/event/, 2026-09-15 verified)'
+    notes: HONESTY 2026-10-20 event kernel now has a real user-facing surface — read-only GET /v1/events (src/gateway/events.py, human-gated) backed by kernel get_event_history(); console events page polls it. Previously PRIMITIVE-ONLY (WS at src/api/events_ws.py was unmounted). Reachability now REACHABLE.
     implementation_completeness:
       code_exists: true
       executable: true
@@ -220,7 +222,7 @@ capability-registry:
     - Phase 2 Wave 2
     evidence:
     - src/kernels/network/__init__.py implemented
-    - NetworkBus with routing, protocol adapters (A2A, MCP, gRPC, HTTP, WS, Internal)
+    - NetworkBus with routing, protocol adapters: InternalAdapter (in-process), HTTPAdapter (httpx, lazy), WebSocketAdapter (registered honest-refusal); A2A/MCP/gRPC declared in ProtocolType but have NO transport adapter.
     - Message with correlation_id, causation_id, priority, status, headers
     - Route matching with wildcards, InternalAdapter for in-process delivery
     - Correlation chain tracking
@@ -239,6 +241,15 @@ capability-registry:
       audited: true
       tested: true
       documented: true
+    notes: >-
+      HONESTY 2026-10-04 network kernel now has a real user-facing surface — read-only
+      GET /v1/network/messages (src/gateway/networks.py, human-gated) backed by kernel
+      get_network_bus().stats() and get_message_history(); console Network page renders it.
+      Strictly read-only (no send/write endpoint): a real external send would be a security
+      risk and has no genuine path. Reachability now REACHABLE on the real INTERNAL/HTTP/WS
+      transports. A2A/MCP/gRPC adapters remain absent (get_adapter returns None for them;
+      only INTERNAL/HTTP/WEBSOCKET registered) and are still HONESTLY PRIMITIVE-ONLY —
+      status not overstated.
   - id: LHX-C-010
     legacy_id: trust_chain
     name: Trust Kernel — Trust scores + chain + revocation
@@ -266,6 +277,16 @@ capability-registry:
       audited: true
       tested: true
       documented: true
+    notes: >-
+      HONESTY UPDATE 2026-10-21: 此前长期 PRIMITIVE-ONLY —— 决策函数
+      (is_revoked / evaluate_trust / get_score) 只在孤儿模块 src/ai/governance.py 与
+      src/ai/network_gateway.py 里被调用（零 importer，信任从不进入真实用户决策）。
+      现已接上真实决策路径：新增只读读取面 GET /v1/trust/{entity_id}（真实状态：
+      撤销标记 / 各作用域分数 / 自信任链探针 / manager.stats()），并在真实挂载路由
+      POST /employees (hire_employee) 之前调用 get_trust_manager().is_revoked(name)
+      拦截被撤销主体的（重新）雇佣（403，带原因）。默认注册表为空，is_revoked 恒 False，
+      正常路径不受影响（fail-open-but-meaningful）。persistence 仍为内存态（跨进程不持久），
+      属跨切面阻塞项，未改 status: IMPLEMENTED。
   - id: LHX-C-011
     legacy_id: evaluation_engine
     name: Evaluation Kernel — Outcome evaluation + feedback loop
@@ -400,13 +421,14 @@ capability-registry:
     name: Plugin Kernel — Registration, hot-loading, version compatibility
     kind: kernel
     source: ZOON
-    status: IMPLEMENTED
+    status: PARTIAL
+    reachability: UNREACHABLE
     kernel: plugin
     traceability:
     - UB-A1
     - Phase 2 Wave 2
     evidence:
-    - src/kernels/plugin/__init__.py implemented (513 lines, 2026-09-15)
+    - src/kernels/plugin/__init__.py implemented (register/discover/activate/deactivate + 18 unit tests, 2026-09-15)
     - '2026-09-15 fixes: PEP 440 version comparison for min_version/max_version; import-time eager PluginRegistry() removed (no more cwd ./plugins side effect on import)'
     test_coverage: '18/18 unit tests passing (tests/kernels/plugin/, 2026-09-15 verified)'
     implementation_completeness:
@@ -419,6 +441,7 @@ capability-registry:
       audited: true
       tested: true
       documented: true
+    notes: HONESTY 2026-10-20 loader now REAL. src/kernels/plugin/__init__.py defines PluginInterface (aliased from src.plugins.base.Plugin), implements load_plugin() (importlib import + PluginInterface subclass instantiation) and activate_plugin(); gateway exposes GET/POST /v1/plugins and the console has an Apps page (apps key) — a real product surface. Built-in plugin builtin.example_capability is registered at bootstrap and activates end-to-end (tests/gateway/test_plugins_surface.py, 4/4). The OS-kernel self-registered colon-id entries (identity:..., memory:...) remain non-loadable (no PluginInterface subclass) and are intentionally not advertised. Reachability now REACHABLE (was UNREACHABLE at 2026-10-03).
   # =====================================================================
   # Phase 9-21 capability layers (src/ai/): the higher-level runtime that
   # composes the 14 kernels. All IMPLEMENTED with unit tests; honest
@@ -438,10 +461,11 @@ capability-registry:
     phase: Phase 10
     name: Multi-Agent Collaboration — team/peer protocols
     module: src/ai/collaboration.py
-    status: IMPLEMENTED
+    status: PARTIAL
+    reachability: UNREACHABLE
     tests: tests/test_collaboration.py
     test_count: 12
-    notes: MS:§68-69 network-mandatory chain reuse; no fake agents
+    notes: MS:§68-69 network-mandatory chain reuse; no fake agents; HONESTY 2026-10-02 module+12 tests exist but ZERO non-test src/ importers => no product path invokes it, reachability UNREACHABLE until wired (was falsely IMPLEMENTED)
   - id: LHX-L-003
     phase: Phase 11
     name: Perception — Observation + Perceiver + WorldModel
@@ -476,7 +500,7 @@ capability-registry:
     notes: MS:§58-60 mission loop; MissionStore JSON persistence survives restart
   - id: LHX-L-007
     phase: Phase 14
-    name: Network Gateway — A2A/MCP adapters + external-agent trust
+    name: Network Gateway — external-agent trust (A2A/MCP/gRPC adapters NOT implemented)
     module: src/ai/network_gateway.py
     status: IMPLEMENTED
     tests: tests/test_network_gateway.py
@@ -608,8 +632,8 @@ capability-registry:
   - id: OPEN-006
     title: C-2 策略执法生产开关
     detail: >-
-      代码默认 OFF（AST 护栏锁死默认值），但 docker-compose.prod.yml:59 已 arm
-      HIGH,CRITICAL。真问题不是「开不开」而是「身份表挂了没」：身份表未挂时
-      0 humans → HIGH/CRITICAL 全拒（fail-closed，刻意）。
-    impact: 生产 arm 前必须确认身份表已挂，否则全部高危动作被拒。
+      代码默认 OFF（AST 护栏锁死默认值），但 docker-compose.prod.yml:69 已 arm
+      CRITICAL（D24 由 HIGH,CRITICAL 收窄）。真问题不是「开不开」而是「身份表挂了没」：身份表未挂时
+      0 humans → CRITICAL 全拒（fail-closed，刻意）。
+    impact: 生产 arm 前必须确认身份表已挂，否则全部 CRITICAL 动作被拒。
     status: DEPLOY-DECISION

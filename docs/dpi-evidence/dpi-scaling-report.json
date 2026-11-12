@@ -1,0 +1,1838 @@
+{
+  "generated_at": "2026-11-07 15:54:05",
+  "screen": [
+    1920,
+    1080
+  ],
+  "passed": 10,
+  "total": 10,
+  "cases": [
+    {
+      "case": "wizard-100",
+      "kind": "wizard-scale",
+      "scale": 1.0,
+      "screen": [
+        1920,
+        1080
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "wizard-100 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=1.3333 期望 1.3333（DPI 96）"
+        },
+        {
+          "name": "wizard-100 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=28px 下限=19px（16pt @ 96 DPI）"
+        },
+        {
+          "name": "wizard-100 进程 DPI 感知",
+          "ok": true,
+          "detail": "GetProcessDpiAwareness=2（2=Per-Monitor）"
+        },
+        {
+          "name": "wizard-100 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(623, 303, 1251, 843) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "wizard-100 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(651, 789, 731, 819) mapped=True"
+        },
+        {
+          "name": "wizard-100 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(651, 789, 731, 819) client=(631, 334, 1243, 835)"
+        },
+        {
+          "name": "wizard-100 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(739, 789, 819, 819) mapped=True"
+        },
+        {
+          "name": "wizard-100 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(739, 789, 819, 819) client=(631, 334, 1243, 835)"
+        },
+        {
+          "name": "wizard-100 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1101, 789, 1223, 819) mapped=True"
+        },
+        {
+          "name": "wizard-100 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1101, 789, 1223, 819) client=(631, 334, 1243, 835)"
+        },
+        {
+          "name": "wizard-100 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=333 可视高=333 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 6292632,
+        "dpi": 96,
+        "tk_scaling": 1.3333,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          623,
+          303,
+          628,
+          540
+        ],
+        "client_rect": [
+          631,
+          334,
+          612,
+          501
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 651,
+            "y": 789,
+            "w": 80,
+            "h": 30,
+            "mapped": true
+          },
+          "取消": {
+            "x": 739,
+            "y": 789,
+            "w": 80,
+            "h": 30,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 1101,
+            "y": 789,
+            "w": 122,
+            "h": 30,
+            "mapped": true
+          }
+        },
+        "font_linespace": 28
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\wizard-100.png",
+          "window_rect": [
+            630,
+            303,
+            614,
+            533
+          ],
+          "captured": [
+            630,
+            303,
+            614,
+            533
+          ],
+          "bytes": 36417
+        }
+      ]
+    },
+    {
+      "case": "wizard-125",
+      "kind": "wizard-scale",
+      "scale": 1.25,
+      "screen": [
+        1920,
+        1080
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "wizard-125 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=1.6683 期望 1.6667（DPI 120）"
+        },
+        {
+          "name": "wizard-125 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=36px 下限=24px（16pt @ 120 DPI）"
+        },
+        {
+          "name": "wizard-125 进程 DPI 感知",
+          "ok": true,
+          "detail": "GetProcessDpiAwareness=2（2=Per-Monitor）"
+        },
+        {
+          "name": "wizard-125 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(548, 278, 1312, 882) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "wizard-125 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(576, 823, 676, 858) mapped=True"
+        },
+        {
+          "name": "wizard-125 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(576, 823, 676, 858) client=(556, 309, 1304, 874)"
+        },
+        {
+          "name": "wizard-125 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(684, 823, 784, 858) mapped=True"
+        },
+        {
+          "name": "wizard-125 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(684, 823, 784, 858) client=(556, 309, 1304, 874)"
+        },
+        {
+          "name": "wizard-125 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1130, 823, 1284, 858) mapped=True"
+        },
+        {
+          "name": "wizard-125 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1130, 823, 1284, 858) client=(556, 309, 1304, 874)"
+        },
+        {
+          "name": "wizard-125 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=378 可视高=378 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 1969392,
+        "dpi": 120,
+        "tk_scaling": 1.6683,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          548,
+          278,
+          764,
+          604
+        ],
+        "client_rect": [
+          556,
+          309,
+          748,
+          565
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 576,
+            "y": 823,
+            "w": 100,
+            "h": 35,
+            "mapped": true
+          },
+          "取消": {
+            "x": 684,
+            "y": 823,
+            "w": 100,
+            "h": 35,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 1130,
+            "y": 823,
+            "w": 154,
+            "h": 35,
+            "mapped": true
+          }
+        },
+        "font_linespace": 36
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\wizard-125.png",
+          "window_rect": [
+            555,
+            278,
+            750,
+            597
+          ],
+          "captured": [
+            555,
+            278,
+            750,
+            597
+          ],
+          "bytes": 47139
+        }
+      ]
+    },
+    {
+      "case": "wizard-150",
+      "kind": "wizard-scale",
+      "scale": 1.5,
+      "screen": [
+        1920,
+        1080
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "wizard-150 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=1.998 期望 2.0（DPI 144）"
+        },
+        {
+          "name": "wizard-150 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=42px 下限=28px（16pt @ 144 DPI）"
+        },
+        {
+          "name": "wizard-150 进程 DPI 感知",
+          "ok": true,
+          "detail": "GetProcessDpiAwareness=2（2=Per-Monitor）"
+        },
+        {
+          "name": "wizard-150 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(475, 247, 1372, 928) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "wizard-150 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(503, 862, 623, 904) mapped=True"
+        },
+        {
+          "name": "wizard-150 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(503, 862, 623, 904) client=(483, 278, 1364, 920)"
+        },
+        {
+          "name": "wizard-150 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(631, 862, 751, 904) mapped=True"
+        },
+        {
+          "name": "wizard-150 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(631, 862, 751, 904) client=(483, 278, 1364, 920)"
+        },
+        {
+          "name": "wizard-150 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1158, 862, 1344, 904) mapped=True"
+        },
+        {
+          "name": "wizard-150 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1158, 862, 1344, 904) client=(483, 278, 1364, 920)"
+        },
+        {
+          "name": "wizard-150 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=434 可视高=434 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 6423704,
+        "dpi": 144,
+        "tk_scaling": 1.998,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          475,
+          247,
+          897,
+          681
+        ],
+        "client_rect": [
+          483,
+          278,
+          881,
+          642
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 503,
+            "y": 862,
+            "w": 120,
+            "h": 42,
+            "mapped": true
+          },
+          "取消": {
+            "x": 631,
+            "y": 862,
+            "w": 120,
+            "h": 42,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 1158,
+            "y": 862,
+            "w": 186,
+            "h": 42,
+            "mapped": true
+          }
+        },
+        "font_linespace": 42
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\wizard-150.png",
+          "window_rect": [
+            482,
+            247,
+            883,
+            674
+          ],
+          "captured": [
+            482,
+            247,
+            883,
+            674
+          ],
+          "bytes": 57976
+        }
+      ]
+    },
+    {
+      "case": "wizard-175",
+      "kind": "wizard-scale",
+      "scale": 1.75,
+      "screen": [
+        1920,
+        1080
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "wizard-175 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=2.3356 期望 2.3333（DPI 168）"
+        },
+        {
+          "name": "wizard-175 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=50px 下限=33px（16pt @ 168 DPI）"
+        },
+        {
+          "name": "wizard-175 进程 DPI 感知",
+          "ok": true,
+          "detail": "GetProcessDpiAwareness=2（2=Per-Monitor）"
+        },
+        {
+          "name": "wizard-175 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(398, 216, 1432, 975) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "wizard-175 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(426, 902, 566, 951) mapped=True"
+        },
+        {
+          "name": "wizard-175 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(426, 902, 566, 951) client=(406, 247, 1424, 967)"
+        },
+        {
+          "name": "wizard-175 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(574, 902, 714, 951) mapped=True"
+        },
+        {
+          "name": "wizard-175 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(574, 902, 714, 951) client=(406, 247, 1424, 967)"
+        },
+        {
+          "name": "wizard-175 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1186, 902, 1404, 951) mapped=True"
+        },
+        {
+          "name": "wizard-175 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1186, 902, 1404, 951) client=(406, 247, 1424, 967)"
+        },
+        {
+          "name": "wizard-175 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=489 可视高=489 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 2493596,
+        "dpi": 168,
+        "tk_scaling": 2.3356,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          398,
+          216,
+          1034,
+          759
+        ],
+        "client_rect": [
+          406,
+          247,
+          1018,
+          720
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 426,
+            "y": 902,
+            "w": 140,
+            "h": 49,
+            "mapped": true
+          },
+          "取消": {
+            "x": 574,
+            "y": 902,
+            "w": 140,
+            "h": 49,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 1186,
+            "y": 902,
+            "w": 218,
+            "h": 49,
+            "mapped": true
+          }
+        },
+        "font_linespace": 50
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\wizard-175.png",
+          "window_rect": [
+            405,
+            216,
+            1020,
+            752
+          ],
+          "captured": [
+            405,
+            216,
+            1020,
+            752
+          ],
+          "bytes": 67485
+        }
+      ]
+    },
+    {
+      "case": "wizard-200",
+      "kind": "wizard-scale",
+      "scale": 2.0,
+      "screen": [
+        1920,
+        1080
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "wizard-200 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=2.6667 期望 2.6667（DPI 192）"
+        },
+        {
+          "name": "wizard-200 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=57px 下限=38px（16pt @ 192 DPI）"
+        },
+        {
+          "name": "wizard-200 进程 DPI 感知",
+          "ok": true,
+          "detail": "GetProcessDpiAwareness=2（2=Per-Monitor）"
+        },
+        {
+          "name": "wizard-200 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(322, 171, 1490, 992) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "wizard-200 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(350, 914, 510, 968) mapped=True"
+        },
+        {
+          "name": "wizard-200 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(350, 914, 510, 968) client=(330, 202, 1482, 984)"
+        },
+        {
+          "name": "wizard-200 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(518, 914, 678, 968) mapped=True"
+        },
+        {
+          "name": "wizard-200 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(518, 914, 678, 968) client=(330, 202, 1482, 984)"
+        },
+        {
+          "name": "wizard-200 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1212, 914, 1462, 968) mapped=True"
+        },
+        {
+          "name": "wizard-200 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1212, 914, 1462, 968) client=(330, 202, 1482, 984)"
+        },
+        {
+          "name": "wizard-200 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=533 可视高=533 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 2100312,
+        "dpi": 192,
+        "tk_scaling": 2.6667,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          322,
+          171,
+          1168,
+          821
+        ],
+        "client_rect": [
+          330,
+          202,
+          1152,
+          782
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 350,
+            "y": 914,
+            "w": 160,
+            "h": 54,
+            "mapped": true
+          },
+          "取消": {
+            "x": 518,
+            "y": 914,
+            "w": 160,
+            "h": 54,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 1212,
+            "y": 914,
+            "w": 250,
+            "h": 54,
+            "mapped": true
+          }
+        },
+        "font_linespace": 57
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\wizard-200.png",
+          "window_rect": [
+            329,
+            171,
+            1154,
+            814
+          ],
+          "captured": [
+            329,
+            171,
+            1154,
+            814
+          ],
+          "bytes": 96272
+        }
+      ]
+    },
+    {
+      "case": "dual-move-125to150",
+      "kind": "wizard-move",
+      "from": [
+        1.25,
+        [
+          1920,
+          1080
+        ]
+      ],
+      "to": [
+        1.5,
+        [
+          1366,
+          768
+        ]
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "dual-move-125to150 换屏后 tk scaling 跟随新 DPI",
+          "ok": true,
+          "detail": "1.6683 → 1.998（期望 2.0）"
+        },
+        {
+          "name": "dual-move-125to150 换屏后字体不缩小",
+          "ok": true,
+          "detail": "行高 36px → 42px（DPI 120 → 144）"
+        },
+        {
+          "name": "dual-move-125to150 字号随 DPI 成比例（未过度缩小）",
+          "ok": true,
+          "detail": "行高 36px → 42px，期望 ≥ 36px（比例 1.2000）"
+        },
+        {
+          "name": "dual-move-125to150 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=1.998 期望 2.0（DPI 144）"
+        },
+        {
+          "name": "dual-move-125to150 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=42px 下限=28px（16pt @ 144 DPI）"
+        },
+        {
+          "name": "dual-move-125to150 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(433, 36, 1330, 692) work=(0, 0, 1366, 728)"
+        },
+        {
+          "name": "dual-move-125to150 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(461, 626, 581, 668) mapped=True"
+        },
+        {
+          "name": "dual-move-125to150 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(461, 626, 581, 668) client=(441, 67, 1322, 684)"
+        },
+        {
+          "name": "dual-move-125to150 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(589, 626, 709, 668) mapped=True"
+        },
+        {
+          "name": "dual-move-125to150 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(589, 626, 709, 668) client=(441, 67, 1322, 684)"
+        },
+        {
+          "name": "dual-move-125to150 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1116, 626, 1302, 668) mapped=True"
+        },
+        {
+          "name": "dual-move-125to150 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1116, 626, 1302, 668) client=(441, 67, 1322, 684)"
+        },
+        {
+          "name": "dual-move-125to150 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=434 可视高=409 溢出=True 滚动条=True"
+        }
+      ],
+      "metrics": {
+        "hwnd": 2624668,
+        "dpi": 144,
+        "tk_scaling": 1.998,
+        "work_area": [
+          0,
+          0,
+          1366,
+          728
+        ],
+        "frame_rect": [
+          433,
+          36,
+          897,
+          656
+        ],
+        "client_rect": [
+          441,
+          67,
+          881,
+          617
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 461,
+            "y": 626,
+            "w": 120,
+            "h": 42,
+            "mapped": true
+          },
+          "取消": {
+            "x": 589,
+            "y": 626,
+            "w": 120,
+            "h": 42,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 1116,
+            "y": 626,
+            "w": 186,
+            "h": 42,
+            "mapped": true
+          }
+        },
+        "font_linespace": 42
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\dual-move-125to150.png",
+          "window_rect": [
+            440,
+            36,
+            883,
+            649
+          ],
+          "captured": [
+            440,
+            36,
+            883,
+            649
+          ],
+          "bytes": 49822
+        }
+      ]
+    },
+    {
+      "case": "dual-move-150to125",
+      "kind": "wizard-move",
+      "from": [
+        1.5,
+        [
+          1366,
+          768
+        ]
+      ],
+      "to": [
+        1.25,
+        [
+          1920,
+          1080
+        ]
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "dual-move-150to125 换屏后 tk scaling 跟随新 DPI",
+          "ok": true,
+          "detail": "1.998 → 1.6683（期望 1.6667）"
+        },
+        {
+          "name": "dual-move-150to125 字号随 DPI 成比例（未过度缩小）",
+          "ok": true,
+          "detail": "行高 42px → 36px，期望 ≥ 29px（比例 0.8333）"
+        },
+        {
+          "name": "dual-move-150to125 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=1.6683 期望 1.6667（DPI 120）"
+        },
+        {
+          "name": "dual-move-150to125 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=36px 下限=24px（16pt @ 120 DPI）"
+        },
+        {
+          "name": "dual-move-150to125 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(198, 36, 945, 640) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "dual-move-150to125 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(226, 581, 326, 616) mapped=True"
+        },
+        {
+          "name": "dual-move-150to125 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(226, 581, 326, 616) client=(206, 67, 937, 632)"
+        },
+        {
+          "name": "dual-move-150to125 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(334, 581, 434, 616) mapped=True"
+        },
+        {
+          "name": "dual-move-150to125 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(334, 581, 434, 616) client=(206, 67, 937, 632)"
+        },
+        {
+          "name": "dual-move-150to125 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(763, 581, 917, 616) mapped=True"
+        },
+        {
+          "name": "dual-move-150to125 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(763, 581, 917, 616) client=(206, 67, 937, 632)"
+        },
+        {
+          "name": "dual-move-150to125 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=378 可视高=378 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 25626562,
+        "dpi": 120,
+        "tk_scaling": 1.6683,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          198,
+          36,
+          747,
+          604
+        ],
+        "client_rect": [
+          206,
+          67,
+          731,
+          565
+        ],
+        "buttons": {
+          "上一步": {
+            "x": 226,
+            "y": 581,
+            "w": 100,
+            "h": 35,
+            "mapped": true
+          },
+          "取消": {
+            "x": 334,
+            "y": 581,
+            "w": 100,
+            "h": 35,
+            "mapped": true
+          },
+          "下一步": {
+            "x": 763,
+            "y": 581,
+            "w": 154,
+            "h": 35,
+            "mapped": true
+          }
+        },
+        "font_linespace": 36
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\dual-move-150to125.png",
+          "window_rect": [
+            205,
+            36,
+            733,
+            597
+          ],
+          "captured": [
+            205,
+            36,
+            733,
+            597
+          ],
+          "bytes": 45199
+        }
+      ]
+    },
+    {
+      "case": "resolution-sequence",
+      "kind": "wizard-resolution",
+      "passed": true,
+      "checks": [
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(475, 247, 1372, 928) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(503, 862, 623, 904) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(503, 862, 623, 904) client=(483, 278, 1364, 920)"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(631, 862, 751, 904) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(631, 862, 751, 904) client=(483, 278, 1364, 920)"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1158, 862, 1344, 904) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1158, 862, 1344, 904) client=(483, 278, 1364, 920)"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=434 可视高=434 溢出=False 滚动条=False"
+        },
+        {
+          "name": "resolution-sequence · 本机 1920×1080@150% 自愈到工作区内",
+          "ok": true,
+          "detail": "frame=(475, 247, 897, 681) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(719, 152, 1330, 692) work=(0, 0, 1366, 728)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(747, 638, 827, 668) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(747, 638, 827, 668) client=(727, 183, 1322, 684)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(835, 638, 915, 668) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(835, 638, 915, 668) client=(727, 183, 1322, 684)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1180, 638, 1302, 668) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1180, 638, 1302, 668) client=(727, 183, 1322, 684)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=333 可视高=333 溢出=False 滚动条=False"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 自愈到工作区内",
+          "ok": true,
+          "detail": "frame=(719, 152, 611, 540) work=(0, 0, 1366, 728)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1366×768@100% 字体未异常缩小",
+          "ok": true,
+          "detail": "行高 42px → 28px（DPI 144 → 96，下限 23px）"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(645, 116, 1256, 656) work=(0, 0, 1280, 680)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(673, 602, 753, 632) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(673, 602, 753, 632) client=(653, 147, 1248, 648)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(761, 602, 841, 632) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(761, 602, 841, 632) client=(653, 147, 1248, 648)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1106, 602, 1228, 632) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1106, 602, 1228, 632) client=(653, 147, 1248, 648)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=333 可视高=333 溢出=False 滚动条=False"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 自愈到工作区内",
+          "ok": true,
+          "detail": "frame=(645, 116, 611, 540) work=(0, 0, 1280, 680)"
+        },
+        {
+          "name": "resolution-sequence · 远程桌面 1280×720@100% 字体未异常缩小",
+          "ok": true,
+          "detail": "行高 28px → 28px（DPI 96 → 96，下限 23px）"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(700, 300, 1597, 981) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 按钮 上一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(728, 915, 848, 957) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 按钮 上一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(728, 915, 848, 957) client=(708, 331, 1589, 973)"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 按钮 取消 在工作区内",
+          "ok": true,
+          "detail": "rect=(856, 915, 976, 957) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 按钮 取消 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(856, 915, 976, 957) client=(708, 331, 1589, 973)"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 按钮 下一步 在工作区内",
+          "ok": true,
+          "detail": "rect=(1383, 915, 1569, 957) mapped=True"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 按钮 下一步 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(1383, 915, 1569, 957) client=(708, 331, 1589, 973)"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=434 可视高=434 溢出=False 滚动条=False"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 自愈到工作区内",
+          "ok": true,
+          "detail": "frame=(700, 300, 897, 681) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "resolution-sequence · 断开远程桌面 → 本机 1920×1080@150% 字体未异常缩小",
+          "ok": true,
+          "detail": "行高 28px → 42px（DPI 96 → 144，下限 35px）"
+        }
+      ],
+      "metrics": [
+        {
+          "step": "本机 1920×1080@150%",
+          "hwnd": 180946714,
+          "dpi": 144,
+          "tk_scaling": 1.998,
+          "work_area": [
+            0,
+            0,
+            1920,
+            1040
+          ],
+          "frame_rect": [
+            475,
+            247,
+            897,
+            681
+          ],
+          "client_rect": [
+            483,
+            278,
+            881,
+            642
+          ],
+          "buttons": {
+            "上一步": {
+              "x": 503,
+              "y": 862,
+              "w": 120,
+              "h": 42,
+              "mapped": true
+            },
+            "取消": {
+              "x": 631,
+              "y": 862,
+              "w": 120,
+              "h": 42,
+              "mapped": true
+            },
+            "下一步": {
+              "x": 1158,
+              "y": 862,
+              "w": 186,
+              "h": 42,
+              "mapped": true
+            }
+          },
+          "font_linespace": 42
+        },
+        {
+          "step": "远程桌面 1366×768@100%",
+          "hwnd": 180946714,
+          "dpi": 96,
+          "tk_scaling": 1.3333,
+          "work_area": [
+            0,
+            0,
+            1366,
+            728
+          ],
+          "frame_rect": [
+            719,
+            152,
+            611,
+            540
+          ],
+          "client_rect": [
+            727,
+            183,
+            595,
+            501
+          ],
+          "buttons": {
+            "上一步": {
+              "x": 747,
+              "y": 638,
+              "w": 80,
+              "h": 30,
+              "mapped": true
+            },
+            "取消": {
+              "x": 835,
+              "y": 638,
+              "w": 80,
+              "h": 30,
+              "mapped": true
+            },
+            "下一步": {
+              "x": 1180,
+              "y": 638,
+              "w": 122,
+              "h": 30,
+              "mapped": true
+            }
+          },
+          "font_linespace": 28
+        },
+        {
+          "step": "远程桌面 1280×720@100%",
+          "hwnd": 180946714,
+          "dpi": 96,
+          "tk_scaling": 1.3333,
+          "work_area": [
+            0,
+            0,
+            1280,
+            680
+          ],
+          "frame_rect": [
+            645,
+            116,
+            611,
+            540
+          ],
+          "client_rect": [
+            653,
+            147,
+            595,
+            501
+          ],
+          "buttons": {
+            "上一步": {
+              "x": 673,
+              "y": 602,
+              "w": 80,
+              "h": 30,
+              "mapped": true
+            },
+            "取消": {
+              "x": 761,
+              "y": 602,
+              "w": 80,
+              "h": 30,
+              "mapped": true
+            },
+            "下一步": {
+              "x": 1106,
+              "y": 602,
+              "w": 122,
+              "h": 30,
+              "mapped": true
+            }
+          },
+          "font_linespace": 28
+        },
+        {
+          "step": "断开远程桌面 → 本机 1920×1080@150%",
+          "hwnd": 180946714,
+          "dpi": 144,
+          "tk_scaling": 1.998,
+          "work_area": [
+            0,
+            0,
+            1920,
+            1040
+          ],
+          "frame_rect": [
+            700,
+            300,
+            897,
+            681
+          ],
+          "client_rect": [
+            708,
+            331,
+            881,
+            642
+          ],
+          "buttons": {
+            "上一步": {
+              "x": 728,
+              "y": 915,
+              "w": 120,
+              "h": 42,
+              "mapped": true
+            },
+            "取消": {
+              "x": 856,
+              "y": 915,
+              "w": 120,
+              "h": 42,
+              "mapped": true
+            },
+            "下一步": {
+              "x": 1383,
+              "y": 915,
+              "w": 186,
+              "h": 42,
+              "mapped": true
+            }
+          },
+          "font_linespace": 42
+        }
+      ],
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\res-1366x768.png",
+          "window_rect": [
+            726,
+            152,
+            597,
+            533
+          ],
+          "captured": [
+            726,
+            152,
+            597,
+            533
+          ],
+          "bytes": 27941
+        },
+        {
+          "path": "docs\\dpi-evidence\\res-1280x720.png",
+          "window_rect": [
+            652,
+            116,
+            597,
+            533
+          ],
+          "captured": [
+            652,
+            116,
+            597,
+            533
+          ],
+          "bytes": 30437
+        },
+        {
+          "path": "docs\\dpi-evidence\\res-back-local-150.png",
+          "window_rect": [
+            707,
+            300,
+            883,
+            674
+          ],
+          "captured": [
+            707,
+            300,
+            883,
+            674
+          ],
+          "bytes": 50577
+        }
+      ]
+    },
+    {
+      "case": "status-175",
+      "kind": "status-scale",
+      "scale": 1.75,
+      "screen": [
+        1920,
+        1080
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "status-175 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=2.3356 期望 2.3333（DPI 168）"
+        },
+        {
+          "name": "status-175 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=44px 下限=33px（16pt @ 168 DPI）"
+        },
+        {
+          "name": "status-175 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(534, 86, 1386, 953) work=(0, 0, 1920, 1040)"
+        },
+        {
+          "name": "status-175 按钮 复制路径 在工作区内",
+          "ok": true,
+          "detail": "rect=(691, 874, 795, 923) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 复制路径 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(691, 874, 795, 923) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 生成诊断包 在工作区内",
+          "ok": true,
+          "detail": "rect=(558, 874, 683, 923) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 生成诊断包 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(558, 874, 683, 923) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 退出（停止网关并关闭托盘） 在工作区内",
+          "ok": true,
+          "detail": "rect=(901, 817, 1194, 866) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 退出（停止网关并关闭托盘） 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(901, 817, 1194, 866) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 停止服务（仅停网关，托盘保留） 在工作区内",
+          "ok": true,
+          "detail": "rect=(558, 817, 893, 866) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 停止服务（仅停网关，托盘保留） 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(558, 817, 893, 866) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 隐藏到托盘 在工作区内",
+          "ok": true,
+          "detail": "rect=(999, 760, 1124, 809) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 隐藏到托盘 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(999, 760, 1124, 809) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 重新启动服务 在工作区内",
+          "ok": true,
+          "detail": "rect=(845, 760, 991, 809) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 重新启动服务 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(845, 760, 991, 809) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 打开日志目录 在工作区内",
+          "ok": true,
+          "detail": "rect=(691, 760, 837, 809) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 打开日志目录 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(691, 760, 837, 809) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 按钮 打开控制台 在工作区内",
+          "ok": true,
+          "detail": "rect=(558, 760, 683, 809) mapped=True"
+        },
+        {
+          "name": "status-175 按钮 打开控制台 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(558, 760, 683, 809) client=(542, 117, 1378, 945)"
+        },
+        {
+          "name": "status-175 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=567 可视高=567 溢出=False 滚动条=False"
+        }
+      ],
+      "metrics": {
+        "hwnd": 165806660,
+        "dpi": 168,
+        "tk_scaling": 2.3356,
+        "work_area": [
+          0,
+          0,
+          1920,
+          1040
+        ],
+        "frame_rect": [
+          534,
+          86,
+          852,
+          867
+        ],
+        "client_rect": [
+          542,
+          117,
+          836,
+          828
+        ],
+        "buttons": {
+          "复制路径": {
+            "x": 691,
+            "y": 874,
+            "w": 104,
+            "h": 49,
+            "mapped": true
+          },
+          "生成诊断包": {
+            "x": 558,
+            "y": 874,
+            "w": 125,
+            "h": 49,
+            "mapped": true
+          },
+          "退出（停止网关并关闭托盘）": {
+            "x": 901,
+            "y": 817,
+            "w": 293,
+            "h": 49,
+            "mapped": true
+          },
+          "停止服务（仅停网关，托盘保留）": {
+            "x": 558,
+            "y": 817,
+            "w": 335,
+            "h": 49,
+            "mapped": true
+          },
+          "隐藏到托盘": {
+            "x": 999,
+            "y": 760,
+            "w": 125,
+            "h": 49,
+            "mapped": true
+          },
+          "重新启动服务": {
+            "x": 845,
+            "y": 760,
+            "w": 146,
+            "h": 49,
+            "mapped": true
+          },
+          "打开日志目录": {
+            "x": 691,
+            "y": 760,
+            "w": 146,
+            "h": 49,
+            "mapped": true
+          },
+          "打开控制台": {
+            "x": 558,
+            "y": 760,
+            "w": 125,
+            "h": 49,
+            "mapped": true
+          }
+        },
+        "font_linespace": 44
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\status-175.png",
+          "window_rect": [
+            541,
+            86,
+            838,
+            860
+          ],
+          "captured": [
+            541,
+            86,
+            838,
+            860
+          ],
+          "bytes": 49284
+        }
+      ]
+    },
+    {
+      "case": "status-200-1280x720",
+      "kind": "status-scale",
+      "scale": 2.0,
+      "screen": [
+        1280,
+        720
+      ],
+      "passed": true,
+      "checks": [
+        {
+          "name": "status-200-1280x720 tk scaling = DPI/72",
+          "ok": true,
+          "detail": "tk_scaling=2.6667 期望 2.6667（DPI 192）"
+        },
+        {
+          "name": "status-200-1280x720 字号未按 96 DPI 渲染",
+          "ok": true,
+          "detail": "最大行高=50px 下限=38px（16pt @ 192 DPI）"
+        },
+        {
+          "name": "status-200-1280x720 窗口在工作区内",
+          "ok": true,
+          "detail": "frame=(157, 48, 1123, 632) work=(0, 0, 1280, 680)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 复制路径 在工作区内",
+          "ok": true,
+          "detail": "rect=(332, 548, 451, 602) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 复制路径 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(332, 548, 451, 602) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 生成诊断包 在工作区内",
+          "ok": true,
+          "detail": "rect=(181, 548, 324, 602) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 生成诊断包 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(181, 548, 324, 602) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 退出（停止网关并关闭托盘） 在工作区内",
+          "ok": true,
+          "detail": "rect=(572, 486, 907, 540) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 退出（停止网关并关闭托盘） 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(572, 486, 907, 540) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 停止服务（仅停网关，托盘保留） 在工作区内",
+          "ok": true,
+          "detail": "rect=(181, 486, 564, 540) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 停止服务（仅停网关，托盘保留） 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(181, 486, 564, 540) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 隐藏到托盘 在工作区内",
+          "ok": true,
+          "detail": "rect=(682, 424, 825, 478) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 隐藏到托盘 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(682, 424, 825, 478) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 重新启动服务 在工作区内",
+          "ok": true,
+          "detail": "rect=(507, 424, 674, 478) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 重新启动服务 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(507, 424, 674, 478) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 打开日志目录 在工作区内",
+          "ok": true,
+          "detail": "rect=(332, 424, 499, 478) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 打开日志目录 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(332, 424, 499, 478) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 按钮 打开控制台 在工作区内",
+          "ok": true,
+          "detail": "rect=(181, 424, 324, 478) mapped=True"
+        },
+        {
+          "name": "status-200-1280x720 按钮 打开控制台 未被窗口裁掉",
+          "ok": true,
+          "detail": "rect=(181, 424, 324, 478) client=(165, 79, 1115, 624)"
+        },
+        {
+          "name": "status-200-1280x720 内容超出时可滚动",
+          "ok": true,
+          "detail": "内容高=617 可视高=263 溢出=True 滚动条=True"
+        }
+      ],
+      "metrics": {
+        "hwnd": 9177946,
+        "dpi": 192,
+        "tk_scaling": 2.6667,
+        "work_area": [
+          0,
+          0,
+          1280,
+          680
+        ],
+        "frame_rect": [
+          157,
+          48,
+          966,
+          584
+        ],
+        "client_rect": [
+          165,
+          79,
+          950,
+          545
+        ],
+        "buttons": {
+          "复制路径": {
+            "x": 332,
+            "y": 548,
+            "w": 119,
+            "h": 54,
+            "mapped": true
+          },
+          "生成诊断包": {
+            "x": 181,
+            "y": 548,
+            "w": 143,
+            "h": 54,
+            "mapped": true
+          },
+          "退出（停止网关并关闭托盘）": {
+            "x": 572,
+            "y": 486,
+            "w": 335,
+            "h": 54,
+            "mapped": true
+          },
+          "停止服务（仅停网关，托盘保留）": {
+            "x": 181,
+            "y": 486,
+            "w": 383,
+            "h": 54,
+            "mapped": true
+          },
+          "隐藏到托盘": {
+            "x": 682,
+            "y": 424,
+            "w": 143,
+            "h": 54,
+            "mapped": true
+          },
+          "重新启动服务": {
+            "x": 507,
+            "y": 424,
+            "w": 167,
+            "h": 54,
+            "mapped": true
+          },
+          "打开日志目录": {
+            "x": 332,
+            "y": 424,
+            "w": 167,
+            "h": 54,
+            "mapped": true
+          },
+          "打开控制台": {
+            "x": 181,
+            "y": 424,
+            "w": 143,
+            "h": 54,
+            "mapped": true
+          }
+        },
+        "font_linespace": 50
+      },
+      "screenshots": [
+        {
+          "path": "docs\\dpi-evidence\\status-200-1280x720.png",
+          "window_rect": [
+            164,
+            48,
+            952,
+            577
+          ],
+          "captured": [
+            164,
+            48,
+            952,
+            577
+          ],
+          "bytes": 44810
+        }
+      ]
+    }
+  ]
+}

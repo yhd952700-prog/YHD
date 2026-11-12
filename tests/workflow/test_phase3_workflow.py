@@ -73,25 +73,52 @@ def test_workflow_instance():
 
 
 def test_execute_task():
-    """Test execute_task basic functionality."""
+    """Placeholder engine must not claim any control it did not run.
+
+    CORRECTION (not a weakening): ``WorkflowEngine`` executes NOTHING, writes
+    NO audit row and runs NO security check. The previous assertions pinned the
+    opposite -- a false success claim on a no-op. These assertions are strictly
+    STRONGER: they forbid the false claim, and every one of them FAILS against
+    the old (lying) implementation.
+    """
     task = WorkflowTask(title="Test Task")
     engine = WorkflowEngine()
     result = engine.execute_task(task)
-    
-    assert result.success == True
+
     assert result.output["task_id"] is not None
-    assert task.status == "completed"
+    # Nothing executed -> it must not report success, and must say so.
+    assert result.success is False
+    assert result.metadata["executed"] is False
+    # No audit row / no security check happened -> it must not claim either.
+    assert result.metadata["stub"] is True
+    assert result.metadata["audit_written"] is False
+    assert result.metadata["security_status"] != "passed"
+    assert result.metadata["security_status"] == "not_checked"
+    # The task must not be silently marked complete without executing.
+    assert task.status != "completed"
+    assert task.status == "pending"
 
 
 def test_execute_workflow():
-    """Test execute_workflow basic functionality."""
+    """Placeholder workflow run must not fake a passed security check.
+
+    CORRECTION (not a weakening): the old assertion
+    ``result["metadata"]["security_status"] == "passed"`` pinned a FALSE
+    security guarantee for a workflow that is never actually executed. We now
+    assert the honest, STRONGER property: no such guarantee is made.
+    """
     task = WorkflowTask(title="Test Workflow Task")
     workflow = {"steps": [{"name": "step1"}, {"name": "step2"}, {"name": "step3"}]}
-    
+
     result = WorkflowEngine().execute_workflow(workflow, task)
-    
-    assert result["task_status"] == "completed"
-    assert result["metadata"]["security_status"] == "passed"
+
+    assert result["metadata"]["stub"] is True
+    assert result["metadata"]["executed"] is False
+    assert result["metadata"]["security_status"] != "passed"
+    assert result["metadata"]["security_status"] == "not_checked"
+    # No execution -> the task must not be reported as completed.
+    assert result["task_status"] != "completed"
+    assert result["task_status"] == "pending"
 
 
 def test_get_workflow():

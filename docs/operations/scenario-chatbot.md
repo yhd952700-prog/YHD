@@ -4,7 +4,7 @@
 
 ### 案例概述
 
-利用 LiuHao AI OS 构建一个智能客服机器人，支持：
+利用 LIUHAO X 构建一个智能客服机器人，支持：
 - 自然语言理解 (NLU)
 - 多轮对话管理
 - 插件扩展 (知识库检索、情感分析)
@@ -76,12 +76,12 @@ store.register(knowledge_plugin)
 #### 2. 主要业务流程
 
 ```python
-# 权威审计实现：src.kernels.audit（SQLite + 哈希链，防篡改；是 L10K / dashboard
+# 权威审计实现：src.kernels.audit（SQLite + 哈希链，设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复+独立验证；是 L10K / dashboard
 # 的真实数据源）。旧路径 src.audit 仍可 import，但其事件写入 JSON 文件、不具防篡改链。
 from src.kernels.audit import AuditStore, AuditEventType, AuditScope, log_event
 from src.observability import Span, ObservabilityStore
 
-# 创建审计事件 - 用户咨询（写入防篡改链）
+# 创建审计事件 - 用户咨询（写入 kernels/audit 审计链；设计为防篡改，但运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复+独立验证）
 log_event(
     AuditEventType.ACCESS_CHECK,
     principal_id="gateway",
@@ -178,12 +178,12 @@ async def metrics():
 #### 日志分析
 
 ```python
-# 权威审计实现：src.kernels.audit（防篡改链）。旧路径 src.audit 仍可 import，
+# 权威审计实现：src.kernels.audit（设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉，待修复）。旧路径 src.audit 仍可 import，
 # 但不具防篡改链。
 from src.kernels.audit import AuditStore
 
 # 查询错误率（outcome=deny 视为失败/高危；链自带完整性）
-audit_store = AuditStore()  # 默认 audit_store.db（防篡改链）
+audit_store = AuditStore()  # 默认 audit_store.db（哈希链，设计为防篡改；但当前运行时完整性 UNVERIFIED，存在分叉，待修复）
 denied = audit_store.query_events(outcome="deny")
 stats = audit_store.get_stats()
 error_rate = len(denied) / max(1, stats["total_events"])

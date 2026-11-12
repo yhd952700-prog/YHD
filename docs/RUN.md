@@ -10,7 +10,7 @@
 
 | 组件 | 版本 | 验证方式 |
 |---|---|---|
-| Python | 3.11 / 3.12（CI 矩阵双腿同值） | `.venv/Scripts/python.exe --version`（Windows）/ `python --version` |
+| Python | 3.12（CI 单一版本） | `.venv/Scripts/python.exe --version`（Windows）/ `python --version` |
 | Node | 22.x | `node --version`（已见于 `C:\Users\...\node\versions\22.22.2-3`） |
 | 后端虚拟环境 | `.venv/` 已存在 | 见仓库根 `.venv` |
 | 前端依赖 | `apps/console/console/node_modules/` 已装 | 见 `apps/console/console/node_modules/vite/bin/vite.js` |
@@ -28,10 +28,23 @@
 | `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256） | **是** | 网关与令牌脚本**必须用同一把**。占位串（`replace-me`/`change-me`/`secret`/`password` 等）会被拒绝，等同没设 |
 | `LIUHAO_HUMAN_IDENTITIES_FILE` | 人类身份登记表路径 | 是* | 默认 `config/human_identities.json`；文件不存在时内核**加载 0 个人类**（无人能审批/登录） |
 | `LIUHAO_AUTH_SECRETS_FILE` | 登录凭据库（PBKDF2 哈希）路径 | 否† | 默认 `config/auth_secrets.json`；仅 `/v1/auth/login` 密码登录需要 |
+| `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` | 身份表行级校验密钥（HMAC‑SHA256） | **是**（只要启用身份登记表） | 见下方「身份表已 fail‑closed」 |
 | `LIUHAO_CONSOLE_DIST` | 构建产物目录 | 否 | 设了则网关同源托管驾驶舱（单端口模式）；开发期用独立 vite，可不设 |
 
 \* 不设置也能启动，但 `/v1/auth/me`、`/v1/chat` 等会 401，且无人能审批。
 † 仅当你走「密码登录」路径时才需要；走 `issue_console_token.py` 令牌路径不需要凭据库。
+
+身份表已 fail-closed（2026-09-25 起，HC-11 / U6）
+================================================
+行校验离不开密钥，所以**没有密钥时每一行都会被拒绝**——结果不是「降级运行」，而是
+**一个被承认的人类都没有：无人能登录、无人能审批**。
+
+- 新部署：先设 `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY`，再用 `scripts/register_human_identity.py`
+  逐人登记（脚本会用这把密钥给每行打标签）。
+- 存量升级：**旧行无法追溯补验**。设好密钥后必须**重新登记每一个人**，否则整表被拒。
+- 体检：`python scripts/verify_human_registry_integrity_state.py`。报告里 `refused_rows`
+  非空 = 有人类被挡在门外；这和「表里本来没人」不是一回事，别因为
+  `integrity_state: not_applicable` 就放行。
 
 生成一把真密钥（**不要**用占位串）：
 
@@ -182,7 +195,7 @@ curl --noproxy '*' -H "X-Liuhao-Token: Bearer $TOKEN" http://127.0.0.1:8080/v1/a
 - 同作业还跑 12 个 `scripts/verify_*.py`（Policy C-1..C-6、ORM/迁移、跨会话持久化、孤儿确认、许可证漂移等），每个退出非 0 即红。
 
 ### 门禁 4 — `Run Tests` 作业里的 flake8（代码质量）
-- 作业：`Run Tests`（ci.yml:11，矩阵 3.11 / 3.12 双腿）的 `Verify Code Quality` 步骤（ci.yml L44–L46）
+- 作业：`Run Tests`（ci.yml:11，矩阵 3.12 单腿）的 `Verify Code Quality` 步骤（ci.yml L44–L46）
 - 命令：`python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（exit 1 即失败，**不带 `|| true`**）
 - 2026-09-15 起转为真门禁：此前它**已连红 3 次** CI run，而本机 `pytest` 全绿，所以长时间没人发现 ⇒
   **本机绿 ≠ CI 绿**，推完必须 `gh run list --branch <branch> --limit 3` 看一眼。

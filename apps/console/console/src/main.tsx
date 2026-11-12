@@ -5,10 +5,32 @@ import './index.css'
 // index.css 引入，否则 :root 上的默认令牌会被基础样式覆盖。
 import './os.css'
 import App from './App.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { captureLocalProofFromHash } from './lib/localProof'
+import { installMobileRuntime } from './lib/mobileRuntime'
+
+// 桌面端通过 URL fragment 交接一次性证明（取恢复码 / 重置密码各一枚）。
+// 必须在首次渲染前收进 sessionStorage 并从地址栏抹掉。
+captureLocalProofFromHash()
+
+// 手机端兜底：iOS 键盘遮挡 + 断网中文提示。纯增量，不改变桌面端行为。
+installMobileRuntime()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {/*
+      最后一道边界：罩住整棵树。
+
+      在此之前，任何渲染异常都会让 React **卸载整棵树**，`#root` 里什么都不剩 ——
+      屏幕全白，而白屏里没有任何一句话能告诉人"出了什么事"。对一个把"人类主权"
+      写在首要位置的系统来说，最需要观测的时刻反而没有界面可看，这是最坏的失败形态。
+
+      `App` 内部另有分区级边界（见 components/ui.tsx 的 Card），所以这里兜住的
+      只会是外壳级故障；它的职责是"绝不让整个界面消失成一块空白"。
+    */}
+    <ErrorBoundary label="控制台整体">
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )
 
@@ -18,9 +40,22 @@ createRoot(document.getElementById('root')!).render(
 // 极难排查的问题，得到的便利远不及代价。
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((error) => {
-      // 注册失败不影响应用本身；把真实原因留在控制台，不静默吞掉。
-      console.warn('Service Worker 注册失败：', error)
+    // 新版本接管后刷新一次：否则会出现"外壳已是新版、页面里跑的仍是旧 JS"的混合
+    // 状态，比缓存旧外壳更难排查。只在原本就受控时才刷新，避免首装时抖动。
+    const hadController = Boolean(navigator.serviceWorker.controller)
+    let reloading = false
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return
+      reloading = true
+      window.location.reload()
     })
+    // `updateViaCache: 'none'`：检查 sw.js 更新时不走 HTTP 缓存，避免"新版本已经
+    // 上线、浏览器还在拿旧 SW"这一步悄悄卡住缓存清理。
+    navigator.serviceWorker
+      .register('/sw.js', { updateViaCache: 'none' })
+      .catch((error) => {
+        // 注册失败不影响应用本身；把真实原因留在控制台，不静默吞掉。
+        console.warn('Service Worker 注册失败：', error)
+      })
   })
 }

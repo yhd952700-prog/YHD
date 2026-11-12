@@ -1,0 +1,24 @@
+# adjudicated control-claim baseline (file:line).
+# Each line is a known assertive claim pending/refused adjudication in CONTROL-CLAIM-LEDGER.md.
+docs/adr/ADR-HOLD-SCOPE.md:191
+docs/adr/ADR-root-of-trust-hd05.md:115
+docs/autonomous/ADR-audit-head-notary.md:41
+docs/autonomous/ADR-audit-single-writer-lease.md:111
+docs/autonomous/ADR-audit-single-writer-lease.md:180
+docs/autonomous/ADR-audit-storage-C3.md:434
+docs/autonomous/ADR-audit-writer-lease-identity.md:128
+docs/autonomous/ADR-audit-writer-lease-identity.md:36
+docs/autonomous/ADR-audit-writer-lease-identity.md:638
+docs/autonomous/ADR-tsa-quorum-ha.md:19
+docs/autonomous/G9-image-build-runbook.md:194
+docs/autonomous/G9-image-build-runbook.md:202
+docs/autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md:114
+docs/autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md:122
+docs/autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md:25
+docs/autonomous/HUMAN-DECISION-BACKLOG.md:20
+docs/autonomous/HUMAN-DECISION-BACKLOG.md:25
+docs/autonomous/IDENTIFIER-POLICY.md:222
+docs/autonomous/IDENTIFIER-POLICY.md:230
+docs/autonomous/IDENTIFIER-POLICY.md:51
+docs/autonomous/PERFORMANCE-BASELINE.md:24
+docs/autonomous/RISK-REGISTER.md:31

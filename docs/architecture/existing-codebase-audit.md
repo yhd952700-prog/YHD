@@ -35,7 +35,7 @@
 | **Worktree** | 2 个 — main (43d46492) + agents/install-and-setup-complete (a1eb46d8) | 有 worktree 但未协调 |
 | **近 30 天提交数** | 28 | 活跃开发中 |
 | **工作区状态** | 14 个 modified + 15+ untracked 文件 | ⚠️ 大量未提交改动 — 进 Phase 1 前必须协调处理 |
-| **Python 版本** | 3.11+ (pyproject) | 与 Dockerfile 一致 |
+| **Python 版本** | 3.12 (pyproject) | 与 Dockerfile 一致 |
 | **包管理** | `uv` + `pyproject.toml` + `uv.lock` (415KB) | 现代 Python 工具链 |
 | **LICENSE** | 见 LICENSE（未审计） | — |
 

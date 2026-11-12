@@ -1,29 +1,35 @@
 # 5 分钟跑起来
 
-面向「我现在就想把鎏灏用起来」的人。Windows 口径，Git Bash / PowerShell 均可。
+面向「我现在就想把贾维斯用起来」的人。Windows 口径，Git Bash / PowerShell 均可。
 
 ## 最短路径
 
 **双击**仓库根目录的 `start-liuhao.bat` —— 完事。
 
+**第一次启动会先弹一个黑窗口**（命令行向导）问管理员账号和登录密码；模型可以选「跳过」。
+答完它才会继续启动；第二次起不再问。
+
 命令行等价：
 
 ```bash
-cd D:\LiuHao-AI-OS
+cd D:\Jarvis-AI-OS
 .venv\Scripts\python.exe scripts\start_liuhao.py
 ```
 
-浏览器会自动打开 `http://127.0.0.1:5173`。完成。
+浏览器会自动打开 `http://127.0.0.1:8080`。完成。
 
-## 分步（等价，便于排错）
+> 默认是**单端口模式**：网关直接服务已构建的 `apps/console/console/dist`。若仓库里还没有 `dist`，
+> 启动器会报 `[FAIL]` 并提示用 `--vite` 跑开发双进程（那时前端在 `5173`）。
+
+## 分步（开发双进程模式，仅前端调试需要）
 
 ```bash
 # 1. 网关
-cd D:\LiuHao-AI-OS
+cd D:\Jarvis-AI-OS
 .venv\Scripts\python.exe -m uvicorn src.gateway.main:app --host 127.0.0.1 --port 8080
 
-# 2. 驾驶舱（新开一个终端）
-cd D:\LiuHao-AI-OS\apps\console\console
+# 2. 控制台前端（新开一个终端）
+cd D:\Jarvis-AI-OS\apps\console\console
 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 ```
 
@@ -49,7 +55,7 @@ curl --noproxy '*' -X POST http://127.0.0.1:8080/v1/chat \
 期望（约 5 秒，走本机 Ollama `qwen2.5:3b` 真实推理）：
 
 ```json
-{"reply":"我是鎏灏，一个由十源DNA统一形成的AI操作系统人格…","status":"completed","turn":1,…}
+{"reply":"我是贾维斯，一个由十源DNA统一形成的AI操作系统人格…","status":"completed","turn":1,…}
 ```
 
 ## 跑一次端到端冒烟

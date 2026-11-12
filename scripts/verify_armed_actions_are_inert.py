@@ -44,7 +44,11 @@ run proves the whole set, because arming one action never affects another.
 A call site added on a path neither covers will still slip through. The honest
 claim is "no measured reachability", not "no reachability".
 
-Exit code 0 iff every armed action is inert.
+Exit codes: 0 = every armed action provably inert; 1 = a real violation
+(exempt action armed, an armed action reachable from production paths, or the
+hot paths could not be exercised even though TestClient was available);
+3 = NOT VERIFIED (TestClient / gateway app unavailable in this environment,
+so reachability could not be measured at all). 3 is never a pass.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ import pathlib
 import re
 import subprocess
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -115,8 +119,13 @@ def manifest_spec() -> str:
 # --------------------------------------------------------------------------- #
 # probe mode: arm ONE action in a fresh process, exercise the hot paths
 # --------------------------------------------------------------------------- #
-def _exercise_hot_paths() -> Tuple[List[str], int]:
-    """Run the production hot paths; return (failures, routes_touched)."""
+def _exercise_hot_paths() -> Tuple[List[str], Optional[int]]:
+    """Run the production hot paths; return (failures, routes_touched).
+
+    ``routes_touched`` is ``None`` when TestClient / the gateway app could not
+    be built at all: reachability was then NOT measured, which must surface as
+    NOT VERIFIED (exit 3), not as "inert" (a zero-mutation measurement).
+    """
     failures: List[str] = []
 
     def probe(name: str, fn) -> None:
@@ -136,9 +145,14 @@ def _exercise_hot_paths() -> Tuple[List[str], int]:
         ActionExecutor()
 
     def _app():
+        # Boot the gateway factory on the probe's hot path, then tear it
+        # down cleanly so its lifespan (audit/logging) stops -- a bare
+        # ``get_app()`` leaks the instance and leaves the lifecycle running.
+        from fastapi.testclient import TestClient
         from src.gateway.main import get_app
 
-        get_app()
+        with TestClient(get_app()):
+            pass
 
     def _plugin():
         from src.kernels.plugin import get_plugin_registry
@@ -192,15 +206,20 @@ def _exercise_hot_paths() -> Tuple[List[str], int]:
 
         from src.gateway.main import get_app
 
-        client = TestClient(get_app(), raise_server_exceptions=False)
-        for route in GET_ROUTES:
-            try:
-                client.get(route)
-                touched += 1
-            except Exception:  # noqa: BLE001 - never let a route error fail the probe
-                pass
-    except Exception:  # noqa: BLE001 - TestClient unavailable is not a failure
-        pass
+        # Wrap in `with` so the lifespan starts and stops and the app object is
+        # reclaimed -- a bare ``client = TestClient(...)`` leaks it and leaves
+        # the gateway's audit/logging lifecycle running.
+        with TestClient(get_app(), raise_server_exceptions=False) as client:
+            for route in GET_ROUTES:
+                try:
+                    client.get(route)
+                    touched += 1
+                except Exception:  # noqa: BLE001 - never let a route error fail the probe
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        # TestClient/app unavailable is NOT a pass: nothing was measured.
+        print("  hot paths NOT VERIFIED: %r" % (exc,))
+        return failures, None
 
     return failures, touched
 
@@ -235,7 +254,7 @@ def run_probe(action: str) -> int:
         config_error = str(exc)
 
     failures: List[str] = []
-    touched = 0
+    touched: Optional[int] = 0
     if config_error is None and armed != [action]:
         failures.append("arm(set) != {%s}: got %r" % (action, armed))
     if config_error is None and not failures:
@@ -248,13 +267,26 @@ def run_probe(action: str) -> int:
         "failures": failures,
         "blocks": blocks,
         "routes_touched": touched,
+        "hot_paths_verified": touched is not None,
         "config_error": config_error,
     }
     print(PROBE_PREFIX + json.dumps(payload, ensure_ascii=False))
     if config_error is not None:
         print("  config error: %s" % config_error)
         return 1
-    return 0 if not failures and not blocks else 1
+    # TestClient was available (import succeeded) but no route could be touched:
+    # the guard's measurement is broken -> a real failure (1), not a pass.
+    if failures or blocks:
+        return 1
+    if touched is None:
+        return 3
+    if touched == 0:
+        failures.append(
+            "TestClient was available but no hot-path route was touched -- "
+            "the reachability probe measured nothing"
+        )
+        return 1
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -312,6 +344,24 @@ def run_full_spec_subset(spec: str, failures: List[str]) -> Dict[str, int]:
 
 
 def main(argv: List[str]) -> int:
+    # Companion wiring (C-6 guard): give the guard and every subprocess it
+    # spawns a clean, isolated audit evidence channel. The mandatory-evidence
+    # gate at src/kernels/_crosscutting.py:878 is fail-closed and blocks any
+    # HIGH/CRITICAL action when the audit evidence channel is unavailable. The
+    # guard's fresh subprocesses (and the app-level suite it runs) do not inherit
+    # a test/CI audit backend, so without this the gate spuriously fires and the
+    # guard reports the armed actions as "not inert" (a false RED driven by
+    # audit-channel absence, not by arming). Pointing AUDIT_DB_PATH at a fresh
+    # temp sqlite gives the gate a real channel to write to -- the gate still
+    # requires evidence to be produced and still blocks if the channel is
+    # genuinely down. This does NOT weaken fail-closed; it only ensures the
+    # probe measures arming, not audit-channel absence.
+    if "AUDIT_DB_PATH" not in os.environ:
+        import tempfile
+
+        _audit_tmp = tempfile.mkdtemp(prefix="c6_guard_audit_")
+        os.environ["AUDIT_DB_PATH"] = os.path.join(_audit_tmp, "audit.db")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--probe",
@@ -374,6 +424,7 @@ def main(argv: List[str]) -> int:
 
     # --- 5. per-action inertness ------------------------------------------- #
     not_inert: List[Tuple[str, str]] = []
+    not_verified: List[Tuple[str, str]] = []
     for action in armed:
         proc = subprocess.run(
             [sys.executable, str(pathlib.Path(__file__).resolve()), "--probe", action],
@@ -391,6 +442,12 @@ def main(argv: List[str]) -> int:
                 except json.JSONDecodeError:
                     payload = {}
         detail = ""
+        if payload.get("hot_paths_verified") is False:
+            not_verified.append(
+                (action, "TestClient / gateway app unavailable; reachability not measured")
+            )
+            print("   NOT VERIFIED %-24s routes could not be measured" % action)
+            continue
         if payload.get("failures"):
             detail = "; ".join(str(f) for f in payload["failures"])  # type: ignore[union-attr]
         elif payload.get("blocks"):
@@ -422,6 +479,18 @@ def main(argv: List[str]) -> int:
             print("  X %s" % failure)
         print("=" * 70)
         return 1
+    if not_verified:
+        # Nothing is proven broken, but reachability was not measured for some
+        # actions: that is NOT VERIFIED, never "all green".
+        print("=" * 70)
+        print(
+            "NOT VERIFIED (%d checks passed) -- %d armed action(s) could not be exercised"
+            % (checks, len(not_verified))
+        )
+        for action, why in not_verified:
+            print("  ? %s: %s" % (action, why))
+        print("=" * 70)
+        return 3
     print("=" * 70)
     print("ALL GREEN (%d checks) -- every armed action is provably inert" % checks)
     print("=" * 70)

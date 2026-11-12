@@ -29,7 +29,23 @@ from .store import (
 
 
 def install_production_rules() -> None:
-    """Register production alert rules with tuned thresholds (OB-04 gap)."""
+    """Register production alert rules with tuned thresholds (OB-04 gap).
+
+    LIVE AS OF BLOCKER #3: the metric emitters now exist. ``MetricCollector``
+    (in ``src/observability/metrics.py``) produces REAL values for every one of
+    the seven referenced metrics (``error_rate_percent``, ``memory_usage_percent``,
+    ``cpu_usage_percent``, ``latency_p99_ms``, ``service_heartbeat_interval``,
+    ``audit_log_lag_seconds``, ``audit_write_failing``) from the live process /
+    OS / audit store — no value is invented. The gateway lifespan drives a 15s daemon loop that calls
+    ``collect_snapshot()`` then ``AlertManager.evaluate_all(snapshot)``. Because
+    each metric name is now present in the snapshot AND every rule below is
+    ``enabled=True``, a genuine breach produces a genuine stored alert. This is
+    the honest, working closed loop — not decorative.
+
+    The execution-failure alerts (see ``execution_binding``) remain the OTHER
+    REAL path: emitted directly on EventBus failure events and delivered via
+    ``AlertStore.emit_alert`` -> ``dispatch_alert``.
+    """
     # Service down alert: fire if service heartbeat missing for 5 minutes
     add_alert_rule(AlertRule(
         id="svc_heartbeat_missing",
@@ -45,6 +61,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=60.0,
         evaluation_count=3,
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Error rate alert: fire if error rate > 5% over 5-min window
@@ -62,6 +79,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Latency alert: fire if P99 latency > 2s
@@ -79,6 +97,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=10.0,
         evaluation_count=3,
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Memory usage alert: fire if memory > 85%
@@ -96,6 +115,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # CPU usage alert: fire if CPU > 80%
@@ -113,24 +133,75 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=15.0,
         evaluation_count=2,
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
-    # Audit log gap alert: fire if audit log sync lag > 60 seconds
+    # Audit write STALLED: an audit write request has been issued but has not
+    # landed for > 60s (writer blocked, DB write lock held, disk wedged).
+    # NOT "no events for 60s": an idle system issues no writes and must stay
+    # green. The metric is the age of the oldest UNCOMMITTED write request.
     add_alert_rule(AlertRule(
         id="audit_lag_high",
-        name="Audit Log Sync Lag",
-        description="Audit log writing lag exceeds acceptable threshold",
+        name="Audit Log Write Stalled",
+        description=(
+            "An audit write request has been waiting to commit for longer than "
+            "the threshold; the writer is blocked or the store is not accepting "
+            "commits (it is not merely an idle period with no new events)."
+        ),
         alert_type=AlertType.METRIC_THRESHOLD,
         metric_name="audit_log_lag_seconds",
         severity=AlertSeverity.HIGH,
         threshold=AlertThreshold(
             operator="gte",
-            value=60.0,  # 60 seconds
+            value=60.0,  # 60 seconds of a REAL write waiting to land
             duration=15.0,  # sustained for 15 seconds
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
+
+    # Audit write FAILING: at least one write failed and no later write has
+    # succeeded, so recovery is unproven and those events' evidence may be
+    # missing. Distinct from the stall rule above so the alert name tells the
+    # operator which failure mode they are looking at.
+    add_alert_rule(AlertRule(
+        id="audit_write_failing",
+        name="Audit Log Write Failing",
+        description=(
+            "An audit write failed and no subsequent write has succeeded yet; "
+            "evidence for the failed events may be missing (disk full, "
+            "corruption, or an exhausted lock/write retry budget)."
+        ),
+        alert_type=AlertType.METRIC_THRESHOLD,
+        metric_name="audit_write_failing",
+        severity=AlertSeverity.HIGH,
+        threshold=AlertThreshold(
+            operator="gte",
+            value=1.0,  # 1.0 == a failure streak with no proven recovery
+        ),
+        evaluation_interval=15.0,
+        evaluation_count=1,
+        enabled=True,  # LIVE: cleared only by a real successful append
+    ))
+
+    # 同步进 AlertStore，使读取面 GET /v1/alerts/rules 能如实返回规则状态。
+    # 不改动 enabled，也不发明指标发射器——只是把"已注册"这件事落盘成可读记录。
+    _persist_rules_to_store()
+
+
+def _persist_rules_to_store() -> None:
+    """把已注册的规则同步进 AlertStore，使其成为可被读取的 system-of-record。
+
+    诚实说明：install_production_rules() 把规则注册进 AlertManager（评估注册表），
+    但读取面 ``GET /v1/alerts/rules`` 读出的是 AlertStore（持久化记录）。两者必须
+    同步，否则规则"注册了却读不到"。本函数同步的 enabled 状态就是 install_production_rules()
+    里设定的真实值（7 条系统健康规则现已 enabled=True，因为真正的指标发射器已接线），
+    不发明、不美化成 False。
+    """
+    store = AlertStore()
+    for _rule in get_alert_manager().list_rules():
+        store.add_rule(_rule)
 
 
 __all__ = [

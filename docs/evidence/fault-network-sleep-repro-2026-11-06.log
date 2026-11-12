@@ -1,0 +1,36 @@
+﻿.\.venv\Scripts\python.exe : ----------------------------------------
+所在位置 行:15 字符: 1410
++ ... M = 'dumb'; .\.venv\Scripts\python.exe D:\cache\temp\repro_network_sl ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (----------------------------------------:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Exception occurred during processing of request from ('127.0.0.1', 52882)
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\socketserver.py", line 31
+8, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\socketserver.py", line 34
+9, in process_request
+    self.finish_request(request, client_address)
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\socketserver.py", line 36
+2, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\socketserver.py", line 76
+6, in __init__
+    self.handle()
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\http\server.py", line 440
+, in handle
+    self.handle_one_request()
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\http\server.py", line 428
+, in handle_one_request
+    method()
+  File "D:\cache\temp\repro_network_sleep.py", line 54, in do_POST
+    self.wfile.write(
+  File "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\socketserver.py", line 84
+5, in write
+    self._sock.sendall(b)
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+{"case": "provider-network", "first_call": {"content": "pong", "ms": 188}, "after_outage": {"error": "ConnectTimeout: HTTPConnectionPool(host='127.0.0.1', port=18150): Max retries exceeded with url: /v1/chat/completions (Caused by Connect", "ms": 2000}, "after_recovery": {"content": "pong", "ms": 16}, "half_open": {"error": "ReadTimeout: HTTPConnectionPool(host='127.0.0.1', port=18200): Read timed out. (read timeout=2.0)", "ms": 2030, "timeout_s": 2.0}}
+{"case": "sleep-wake", "port": 18160, "gateway_pid": 20408, "suspend_seconds": 8.0, "before": {"status": 200, "ms": 16}, "after_wake": {"status": 200, "ms": 0, "body": "{\"status\":\"ok\",\"service\":\"liuhao-gateway\",\"timestamp\":1793955271.3550718,\"trace_id\":\"unknown\",\"version\":\"1.0.0\",\"api_contract\":\"1\",\"ai_provider\":{\"type\":\"ollama\",\"mode\":\"real\",\"simulated\":false,\"sourc"}, "second_after_wake": {"status": 200, "ms": 0}}

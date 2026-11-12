@@ -38,6 +38,8 @@
 
 用法：
     .venv\\Scripts\\python.exe oss-ecosystem/pipeline/validate_entries.py
+    .venv\\Scripts\\python.exe oss-ecosystem/pipeline/validate_entries.py \
+        --capabilities-dir <语料副本目录>     # 校验副本，不动被 git 跟踪的语料.py
 
 退出码：0 = 无硬失败（警告仍可能打印）；1 = 存在契约违规。
 """
@@ -47,6 +49,14 @@ import json
 import re
 import sys
 from pathlib import Path
+
+# Keep validator diagnostics stable for callers that capture subprocess output.
+# In particular, Windows otherwise uses the active console code page even when
+# the parent process explicitly requests UTF-8.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OSS_ROOT = REPO_ROOT / "oss-ecosystem"
@@ -99,16 +109,36 @@ def _is_known_spdx(lic: str, spdx_ids: set[str]) -> bool:
     return len(parts) > 1 and all(p in spdx_ids for p in parts if p)
 
 
-def _tracked_files() -> set[str] | None:
-    """仓库里被 git 跟踪的文件（相对 REPO_ROOT 的 posix 路径）。取不到返回 None。"""
+def _tracked_files() -> set[str]:
+    """仓库里被 git 跟踪的文件（相对 REPO_ROOT 的 posix 路径）。
+
+    The validator is a repository gate, so inability to inspect the index must
+    fail closed rather than turn evidence validation into a warning.
+    """
     import subprocess
+
+    import os
+
+    env = os.environ.copy()
+    for key in list(env):
+        if key in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_PARAMETERS"}:
+            env.pop(key, None)
+        elif key.startswith("GIT_CONFIG_") and key not in {"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL"}:
+            env.pop(key, None)
 
     try:
         proc = subprocess.run(
-            ["git", "ls-files"], cwd=str(REPO_ROOT), capture_output=True, text=True, check=True
+            ["git", "-C", str(REPO_ROOT), "ls-files"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
         )
     except (OSError, subprocess.CalledProcessError):
-        return None
+        # Evidence provenance is a repository contract. If Git cannot inspect
+        # the index, fail closed rather than treating every local artifact as
+        # tracked and allowing generated reports through the gate.
+        return set()
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
@@ -117,15 +147,23 @@ def _evidence_source_resolves(token: str, tracked: set[str]) -> bool:
     return any(path == token or path.endswith("/" + token) for path in tracked)
 
 
-def collect_entries() -> dict[str, list[dict]]:
+def collect_entries(cap_dir: Path = None) -> dict[str, list[dict]]:
+    """Read `*.yaml` from ``cap_dir`` (defaults to the real corpus directory).
+
+    The directory is a parameter because a gate that can only ever be pointed
+    at the live tree forces its own tests to write probe files INTO that tree --
+    and a probe left behind by a failing run then breaks every test that counts
+    the corpus. Default keeps every existing caller (CI, docs) unchanged.
+    """
     out: dict[str, list[dict]] = {}
-    for path in sorted(CAP_DIR.glob("*.yaml")):
+    target = Path(cap_dir) if cap_dir is not None else CAP_DIR
+    for path in sorted(target.glob("*.yaml")):
         entries = _load_yaml(path).get("entries")
         out[path.name] = entries if isinstance(entries, list) else []
     return out
 
 
-def main() -> int:
+def main(cap_dir: Path = None) -> int:
     for path in (SCHEMA, SOURCES, SPDX_LIST):
         if not path.exists():
             print(f"[FAIL] 缺少判据文件 {path}")
@@ -143,7 +181,7 @@ def main() -> int:
         print(f"[FAIL] {SOURCES} 没有 sources，无法判定")
         return 1
 
-    files = collect_entries()
+    files = collect_entries(cap_dir)
     if not any(files.values()):
         print("[FAIL] capabilities/ 下没有任何记录")
         return 1
@@ -152,7 +190,6 @@ def main() -> int:
     warnings: list[str] = []
     seen_ids: dict[str, str] = {}
     total = 0
-    evidence_skipped = 0
     tracked_files = _tracked_files()
 
     for fname, entries in files.items():
@@ -214,17 +251,14 @@ def main() -> int:
 
             evidence = entry.get("evidence")
             if evidence is not None:
-                if tracked_files is None:
-                    evidence_skipped += 1
-                else:
-                    tokens = sorted(set(EVIDENCE_FILE_RE.findall(str(evidence))))
-                    if not tokens:
-                        failures.append(f"{where}: evidence 未引用任何 .json/.yaml 来源，不可回溯")
-                    elif not any(_evidence_source_resolves(t, tracked_files) for t in tokens):
-                        failures.append(
-                            f"{where}: evidence 引用的 {tokens} 均不是 git 跟踪的文件，"
-                            f"他人无法复核（本地产物 / 拼写错误？）"
-                        )
+                tokens = sorted(set(EVIDENCE_FILE_RE.findall(str(evidence))))
+                if not tokens:
+                    failures.append(f"{where}: evidence 未引用任何 .json/.yaml 来源，不可回溯")
+                elif not any(_evidence_source_resolves(t, tracked_files) for t in tokens):
+                    failures.append(
+                        f"{where}: evidence 引用的 {tokens} 均不是 git 跟踪的文件，"
+                        f"他人无法复核（本地产物 / 拼写错误？）"
+                    )
 
             blob = " ".join(str(v) for v in entry.values())
             for cliche in CLICHES:
@@ -240,10 +274,6 @@ def main() -> int:
             notes.append("verdict 用落地结果词表")
         suffix = f"（{'；'.join(notes)}）" if notes else ""
         print(f"  {fname}: {len(entries)} 条{suffix}")
-
-    if evidence_skipped:
-        print()
-        print(f"[WARN] 取不到 git 文件列表，跳过 {evidence_skipped} 条 evidence 复核（第 7 条）")
 
     if warnings:
         verbose = "--verbose" in sys.argv
@@ -273,5 +303,20 @@ def main() -> int:
     return 0
 
 
+def _capabilities_dir_from_argv(argv: list[str]) -> Path:
+    """``--capabilities-dir <path>`` for callers that validate a copy.
+
+    Documented deliberately: the point is that a test (or an operator
+    rehearsing a change) can validate a COPY instead of editing the tracked
+    corpus and hoping the cleanup runs.
+    """
+    for i, token in enumerate(argv):
+        if token == "--capabilities-dir" and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if token.startswith("--capabilities-dir="):
+            return Path(token.split("=", 1)[1])
+    return CAP_DIR
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(_capabilities_dir_from_argv(sys.argv[1:])))

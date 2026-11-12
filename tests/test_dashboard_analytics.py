@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,9 +39,14 @@ class TestTimeseries:
         assert len(set(dates)) == days, "each day appears exactly once"
 
         # Consecutive calendar days, not just sorted labels.
-        stamps = [time.mktime(time.strptime(d, "%Y-%m-%d")) for d in dates]
-        for earlier, later in zip(stamps, stamps[1:]):
-            assert later - earlier == pytest.approx(86400, abs=1)
+        #
+        # Compare DATES, not epoch seconds: in a DST zone one local day is 23 or
+        # 25 hours long, so ``later - earlier == 86400`` is a UTC-only claim --
+        # it reddens on any machine whose clock observes daylight saving while
+        # the axis itself (calendar days) is exactly right.
+        days_as_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d in dates]
+        for earlier, later in zip(days_as_dates, days_as_dates[1:]):
+            assert (later - earlier).days == 1, "axis must be consecutive calendar days"
 
     def test_last_point_is_today(self, client):
         rows = client.get("/v1/dashboard/analytics?days=3").json()["timeseries"]["days"]
@@ -76,8 +82,58 @@ class TestTimeseries:
         monkeypatch.setattr("src.kernels.audit.audit_query", boom)
         body = client.get("/v1/dashboard/analytics").json()["timeseries"]
         assert body["available"] is False
-        assert "audit store is down" in body["error"]
+        # 产品把异常翻译成面向用户的中文文案（原始异常只进日志，不进响应），
+        # 这里锁定"如实说读不到"，不要求把内部异常原文透给界面。
+        assert "这段时间的审计趋势暂时读不到" in body["error"]
         assert body["days"] == []
+
+
+class TestTruncation:
+    """内核把每次查询截在 1 万条：图表必须知道自己的样本代表多少条真实事件。
+
+    旧实现写死 ``_ANALYTICS_MAX_EVENTS = 200_000``，于是 ``truncated`` 永远
+    false，超过 1 万条时静默少计。这里锁定"用真实总数判定截断"的行为。
+    """
+
+    @staticmethod
+    def _fake_event() -> dict:
+        noon = datetime.combine(datetime.now().date(), datetime.min.time())
+        stamp = time.mktime(noon.timetuple()) + 12 * 3600
+        return {"timestamp": stamp, "event_type": "access_allowed", "outcome": "allow"}
+
+    def test_reports_actual_total_and_marks_truncated(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "src.kernels.audit.audit_query", lambda **kw: [self._fake_event()] * 3
+        )
+        monkeypatch.setattr("src.kernels.audit.audit_count", lambda **kw: 10_000)
+        body = client.get("/v1/dashboard/analytics").json()["timeseries"]
+        assert body["sampled_events"] == 3
+        assert body["actual_events"] == 10_000
+        assert body["truncated"] is True
+
+    def test_not_truncated_when_every_event_was_returned(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "src.kernels.audit.audit_query", lambda **kw: [self._fake_event()] * 3
+        )
+        monkeypatch.setattr("src.kernels.audit.audit_count", lambda **kw: 3)
+        body = client.get("/v1/dashboard/analytics").json()["timeseries"]
+        assert body["sampled_events"] == 3
+        assert body["actual_events"] == 3
+        assert body["truncated"] is False
+
+    def test_count_failure_degrades_honestly_to_the_sample(self, client, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("count unavailable")
+
+        monkeypatch.setattr(
+            "src.kernels.audit.audit_query", lambda **kw: [self._fake_event()] * 2
+        )
+        monkeypatch.setattr("src.kernels.audit.audit_count", boom)
+        body = client.get("/v1/dashboard/analytics").json()["timeseries"]
+        assert body["available"] is True
+        assert body["sampled_events"] == 2
+        # 不能谎报"没有截断"：计数失败时最多只能说"样本等于已知条数"。
+        assert body["actual_events"] == 2
 
 
 class TestBreakdown:
@@ -123,7 +179,8 @@ class TestBreakdown:
         body = client.get("/v1/dashboard/analytics").json()["breakdown"]
         assert body["available"] is False
         assert body["items"] == []
-        assert "stats unavailable" in body["error"]
+        # 同 timeseries：界面文案是产品口径，内部异常原文不上屏。
+        assert "事件分布暂时读不到" in body["error"]
 
     def test_an_empty_store_yields_an_empty_but_available_breakdown(self, client, monkeypatch):
         monkeypatch.setattr(

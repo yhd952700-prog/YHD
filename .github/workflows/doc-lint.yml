@@ -1,0 +1,104 @@
+name: doc-audit-claim-lint
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**/*.md'
+      - 'README.md'
+      - 'ACCEPTANCE.md'
+      - 'CONTRIBUTING.md'
+      # GOVERNANCE (法度明, 2026-10): these two root-level readiness documents
+      # assert audit-integrity status in their G10 / release-gate sections. They
+      # were absent from both this path filter AND the linter's
+      # OUTWARD_SURFACE_FILES tuple, so an un-caveated tamper/evidence claim in
+      # either file could not fail CI — proven: an explicit run against them
+      # reported 4 findings while a CI-mode run reported `targets: 0 ... PASS`.
+      - 'MASTER_PROJECT_READINESS.md'
+      - 'RELEASE-READINESS-CONTRACT.md'
+      - 'TUTORIAL.md'
+      - 'RELEASE-RUNBOOK.md'
+      - 'scripts/lint_audit_claims.py'
+      - 'scripts/lint_control_claims.py'
+      - 'scripts/control_claim_baseline.txt'
+      - 'scripts/check_docs_commands.py'
+      - 'installer/assets/BEFORE-INSTALL.txt'
+      - 'apps/**/*.md'
+      - 'libs/**/*.md'
+      - 'oss-ecosystem/**/*.md'
+      - 'skills/**/*.md'
+      - 'LiuHao-O/**/*.md'
+  push:
+    branches:
+      - p36
+      - main
+    paths:
+      - 'docs/**/*.md'
+      - 'README.md'
+      - 'ACCEPTANCE.md'
+      - 'CONTRIBUTING.md'
+      - 'MASTER_PROJECT_READINESS.md'
+      - 'RELEASE-READINESS-CONTRACT.md'
+      - 'TUTORIAL.md'
+      - 'RELEASE-RUNBOOK.md'
+      - 'apps/**/*.md'
+      - 'libs/**/*.md'
+      - 'oss-ecosystem/**/*.md'
+      - 'skills/**/*.md'
+      - 'LiuHao-O/**/*.md'
+      - 'scripts/lint_audit_claims.py'
+      - 'scripts/lint_control_claims.py'
+      - 'scripts/control_claim_baseline.txt'
+      - 'scripts/check_docs_commands.py'
+      - 'installer/assets/BEFORE-INSTALL.txt'
+
+jobs:
+  lint-audit-claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history for git diff against HEAD
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Lint HC-01 audit tamper / evidence-source / compliance claims
+        run: python scripts/lint_audit_claims.py --all
+        # `--all` scans the whole docs/ tree (+ the documented outward surfaces),
+        # NOT "changed vs HEAD". Rationale (governance-legal, 2026-10-07): a
+        # changed-vs-HEAD run is a NO-OP on a clean checkout -- `git diff HEAD`
+        # is empty after actions/checkout, so the step reported `targets: 0 ...
+        # PASS` and enforced nothing (a false green; observed on a clean
+        # worktree). `--all` mirrors the control-claim step below, and the two
+        # guards now agree that the claim-correction ledger is out of surface.
+        # Fails (exit 1) if any doc asserts HC-01 is tamper-proof / a verified
+        # true evidence source, HC-09/HC-10 are durable/authoritative, or makes a
+        # compliance/liability claim (GDPR/CCPA/PII/privacy/legal-accountability)
+        # WITHOUT the required caveat. This is a technical claim-guard, NOT a
+        # legal/compliance certification.
+      - name: Lint control claims (assertive control claims need a basis)
+        run: python scripts/lint_control_claims.py --all
+        # Scans docs/**/*.md for ASSERTIVE control claims ("is enforced",
+        # "guarantees", "will block/deny", "cannot be ...", "强制...") that carry
+        # NEITHER a verifiable basis pointer (path/commit/file:line) NOR an
+        # UNVERIFIED tag. Ratcheted: fails (exit 1) ONLY on a NEW
+        # un-dispositioned claim; the existing set is frozen in
+        # scripts/control_claim_baseline.txt and adjudicated in
+        # docs/governance/CONTROL-CLAIM-LEDGER.md. Three-state by design
+        # (FALSIFIED / NOT VERIFIED / PASS), never two-state. Known scope limit:
+        # it scans Markdown only -- code docstrings (src/, apps/) are OUT of
+        # surface, so a PASS here is NOT "no false guarantee exists in code".
+      - name: Check docs command blocks against real scripts / argparse options
+        run: python scripts/check_docs_commands.py
+        # Static only (never executes a documented command, no registry writes,
+        # no resident processes). Scans README / every docs/**/*.md /
+        # BEFORE-INSTALL.txt; 43 audit/archive/evidence files are exempt via an
+        # explicit whitelist with per-file reasons (EXEMPT_DOCS in the script).
+        # Fails (exit 1) if a command block references a script that is not in
+        # the repo, a subcommand / --flag that argparse does not define, a
+        # missing required=True option, a lookalike real key (sk-…) not marked
+        # as a placeholder, or an unquoted path containing a space / CJK
+        # characters. Data-mutating commands (backup create, memory clear,
+        # plugin install/enable/disable/uninstall/upgrade, agent create …)
+        # without a "会直接改动数据，执行前先备份" note are printed as [WARN]
+        # (yellow, non-blocking). Rationale: users copy-paste these blocks verbatim;
+        # a stale flag or a rename turns a copy-paste into a support ticket.

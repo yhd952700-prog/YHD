@@ -3,15 +3,23 @@
 Backup Script for LiuHao AI OS
 
 Performs automated backups of critical data with encryption and verification.
+
+SCOPE BOUNDARY (U33): this is the operational *portable archive* tool -- encrypted
+tar bundles of DB dumps / config, meant to be uploaded and restored as a unit. It
+is NOT the in-application DR record-integrity library
+(``src/sre/disaster/backup.py``), which verifies individual records. Different
+layers, intentionally coexist. Currently has a CLI but no production caller wired.
 """
 
 import os
 import sys
 import json
+import base64
 import shutil
 import tarfile
 import argparse
 import logging
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -22,6 +30,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from config.production.config import get_config, ProductionConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _reject_traversal(names: List[str], target_dir: Path) -> None:
+    """Refuse member names that reach outside ``target_dir`` (pre-3.12 builds).
+
+    ``extractall(filter="data")`` does this in the stdlib from 3.12 on; on an
+    older interpreter the check has to be ours, because "this archive wants to
+    write /etc/passwd" should never become a filesystem decision made by tar.
+    """
+    root = Path(target_dir).resolve()
+    for name in names:
+        candidate = Path(name.replace("\\", "/"))
+        resolved = (
+            candidate.resolve()
+            if candidate.is_absolute()
+            else (root / candidate).resolve()
+        )
+        if resolved != root and root not in resolved.parents:
+            raise ValueError(f"refusing member path outside target: {name}")
 
 
 class BackupManager:
@@ -51,10 +78,26 @@ class BackupManager:
         """
         if name is None:
             name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
+
+        # Never silently downgrade to an unencrypted archive. With encryption
+        # enabled but no key, the old code logged a warning and wrote PLAINTEXT
+        # -- while the config still claimed encryption=True -- and that archive
+        # then could not be opened by a restore using the same config. Refuse up
+        # front, before creating anything, so no restorable-looking artifact
+        # exists. (This is the shipped default: BackupConfig.encryption=True,
+        # encryption_key=None.)
+        if self.backup_config.encryption and not self.backup_config.encryption_key:
+            raise RuntimeError(
+                "Encryption is enabled (backup.encryption=True) but no "
+                "encryption_key is configured; refusing to write an unencrypted "
+                "backup. Set backup.encryption_key, or set encryption=False to "
+                "store plaintext archives deliberately."
+            )
+
         backup_path = self.backup_dir / f"{name}.tar.gz"
-        temp_dir = Path(f"/tmp/liuhao_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        # NOT /tmp: that path assumes POSIX and silently lands somewhere else
+        # on Windows, where this project actually runs.
+        temp_dir = Path(tempfile.mkdtemp(prefix="liuhao_backup_"))
         
         try:
             # Define paths to backup
@@ -97,15 +140,26 @@ class BackupManager:
             with tarfile.open(backup_path, "w:gz") as tar:
                 tar.add(temp_dir, arcname=name)
             
+            # Verify the ARCHIVE, then protect it. Verifying afterwards is a
+            # trap: once the bytes are encrypted, tarfile cannot open them, so
+            # every encrypted backup would report "verification failed" and
+            # create_backup would raise -- i.e. encryption and verification
+            # could never both be on.
+            if self.backup_config.verify_after_backup:
+                if not self._verify_backup(backup_path):
+                    # Do not leave a failed archive behind: list_backups() would
+                    # advertise it as a restorable backup, and a later restore
+                    # would be operating on a file we already know is bad.
+                    backup_path.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"Backup verification failed for {backup_path}; the "
+                        "unusable archive was removed. No backup was produced."
+                    )
+
             # Encrypt if enabled
             if self.backup_config.encryption:
                 self._encrypt_backup(backup_path)
-            
-            # Verify backup
-            if self.backup_config.verify_after_backup:
-                if not self._verify_backup(backup_path):
-                    raise Exception("Backup verification failed")
-            
+
             logger.info(f"Backup completed: {backup_path}")
             return backup_path
             
@@ -142,16 +196,36 @@ class BackupManager:
         """Verify backup integrity."""
         try:
             with tarfile.open(backup_path, "r:gz") as tar:
-                # Check if we can read all members
                 members = tar.getmembers()
                 logger.info(f"Backup contains {len(members)} files")
-                
-                # Check for metadata
-                has_metadata = any(m.name.endswith("metadata.json") for m in members)
+
+                # A tarfile that opens is only *readable*. Reading every member
+                # proves the payload survived compression; it is still not a
+                # proof of authenticity -- that needs a keyed tag or a stored
+                # digest, neither of which exists here yet (see the warning
+                # below), so this verification deliberately claims only what it
+                # actually checks.
+                for member in members:
+                    if member.isfile():
+                        extracted = tar.extractfile(member)
+                        if extracted is not None:
+                            while extracted.read(1024 * 1024):
+                                pass
+
+                has_metadata = any(
+                    m.name.endswith("metadata.json") for m in members
+                )
                 if not has_metadata:
                     logger.warning("Backup missing metadata.json")
                     return False
-                
+
+            if not self.backup_config.encryption:
+                logger.warning(
+                    "Backup integrity is UNVERIFIED beyond readability: with "
+                    "encryption disabled nothing detects a bit-flipped or "
+                    "hand-edited archive. Enable encryption, or store a digest "
+                    "out-of-band, before treating these backups as restorable."
+                )
             logger.info("Backup verification passed")
             return True
         except Exception as e:
@@ -184,25 +258,71 @@ class BackupManager:
         """
         if target_dir is None:
             target_dir = Path(".")
-        
+
         logger.info(f"Restoring from backup: {backup_path}")
-        
-        # Decrypt if needed
+
         temp_backup = backup_path
-        if self.backup_config.encryption:
-            temp_backup = self._decrypt_backup(backup_path)
-        
         try:
+            # Decrypt if needed. Decryption lives INSIDE the try on purpose: a
+            # wrong/missing key, or a corrupt ciphertext, makes Fernet raise
+            # InvalidToken -- and a method whose contract is "True if
+            # successful" must fail closed (return False with a reason), not
+            # propagate an exception the caller never planned for. Doing this
+            # outside the try also skipped temp cleanup entirely.
+            if self.backup_config.encryption:
+                try:
+                    temp_backup = self._decrypt_backup(backup_path)
+                except Exception as decrypt_error:
+                    logger.error(
+                        "Refusing to restore %s: decryption failed (%s). The "
+                        "backup is encrypted but the configured key cannot open "
+                        "it -- wrong key, or the archive is corrupt.",
+                        backup_path, decrypt_error,
+                    )
+                    return False
+
+            # Refuse to unpack an archive we cannot at least read end to end.
+            # "It extracted" has always been the honest bar here; with
+            # encryption off, nothing proves the bits are the bits we wrote.
+            if self.backup_config.verify_after_backup:
+                if not self._verify_backup(temp_backup):
+                    logger.error(
+                        "Refusing to restore %s: it does not pass verification, "
+                        "so what it contains is unknown.", backup_path,
+                    )
+                    return False
+
+            target_dir.mkdir(parents=True, exist_ok=True)
             with tarfile.open(temp_backup, "r:gz") as tar:
-                tar.extractall(target_dir)
-            
+                # filter="data" is the whole point: without it a member named
+                # ../../../../tmp/x (or an absolute path) writes OUTSIDE
+                # target_dir, turning "restore this backup" into "let whoever
+                # built the archive choose where we write".
+                try:
+                    tar.extractall(target_dir, filter="data")
+                except TypeError:  # Python < 3.12 has no extraction filters
+                    members = tar.getmembers()
+                    _reject_traversal([m.name for m in members], target_dir)
+                    # 名字合法不代表目标合法：符号链接/硬链接可以指向
+                    # target_dir 之外的任意路径，extractall 会把它写出来。
+                    # 3.11 的回退路径没有 data_filter 的链接检查，直接拒绝。
+                    for member in members:
+                        if member.issym() or member.islnk():
+                            raise ValueError(
+                                "archive contains a link member (refusing to "
+                                f"extract): {member.name}"
+                            )
+                    tar.extractall(target_dir)
+
             logger.info(f"Backup restored to: {target_dir}")
             return True
         except Exception as e:
             logger.error(f"Restore failed: {e}")
             return False
         finally:
-            if temp_backup != backup_path:
+            # Only the decrypted scratch copy is ours to remove; never unlink
+            # the operator's original archive.
+            if temp_backup != backup_path and temp_backup.exists():
                 os.unlink(temp_backup)
     
     def _decrypt_backup(self, backup_path: Path) -> Path:
@@ -244,7 +364,7 @@ class BackupManager:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backup management for LiuHao AI OS")
+    parser = argparse.ArgumentParser(description="Backup management for Jarvis")
     parser.add_argument("action", choices=["create", "list", "restore", "cleanup"])
     parser.add_argument("--name", help="Backup name (for create)")
     parser.add_argument("--backup", help="Backup file path (for restore)")
@@ -257,7 +377,12 @@ def main():
     manager = BackupManager(config)
     
     if args.action == "create":
-        path = manager.create_backup(args.name)
+        try:
+            path = manager.create_backup(args.name)
+        except Exception as error:
+            # e.g. encryption enabled without a key: report it, do not traceback.
+            print(f"Error: backup failed: {error}")
+            sys.exit(1)
         print(f"Backup created: {path}")
     
     elif args.action == "list":

@@ -24,6 +24,13 @@ from src.kernels._registry import (
 import src.kernels.security as _security_mod
 
 
+def _skip_or_fail(reason: str) -> None:
+    """本地可 skip 并写明原因；CI 上跳过等于生命周期端点没人验证，必须红。"""
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 @pytest.fixture
 def reset_kernel_globals():
     """把所有单例的私有全局变量确定性地重置回 None（前后都清，避免污染别的测试）。"""
@@ -83,7 +90,7 @@ def test_resume_illegal_transition_raises(reset_kernel_globals):
 # --------------------------------------------------------------------------- #
 
 def test_lifespan_drives_kernel_ready_on_startup_and_stopped_on_shutdown(
-    reset_kernel_globals,
+    reset_kernel_globals, monkeypatch,
 ):
     """绿色护栏：lifespan 启动调用 initialize_all() 把实例驱动到 READY；
     关闭调用 shutdown_all() 把它驱动到 STOPPED。
@@ -95,7 +102,9 @@ def test_lifespan_drives_kernel_ready_on_startup_and_stopped_on_shutdown(
     assert inst.lifecycle is KernelLifecycle.UNINITIALIZED
     _security_mod._global_security = inst
 
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-lifecycle-runtime")
+    # monkeypatch (not os.environ.setdefault) so the secret is reverted at
+    # teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-lifecycle-runtime", prepend=False)
     from fastapi.testclient import TestClient
     from src.gateway.main import get_app
 
@@ -133,7 +142,9 @@ def test_lifespan_counterproof_removing_init_call_leaves_kernel_uninitialized(
         "src.kernels._registry.initialize_all", lambda: noop_report
     )
 
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-lifecycle-counterproof")
+    # monkeypatch (not os.environ.setdefault) so the secret is reverted at
+    # teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-lifecycle-counterproof", prepend=False)
     from fastapi.testclient import TestClient
     from src.gateway.main import get_app
 
@@ -149,63 +160,107 @@ def test_lifespan_counterproof_removing_init_call_leaves_kernel_uninitialized(
 # 3. 主权驱动端点：init / shutdown / {name}/pause / {name}/resume + 诚实失败
 # --------------------------------------------------------------------------- #
 
-def test_kernel_management_endpoints_drive_and_fail_honestly(reset_kernel_globals):
+@pytest.mark.gate_contract
+def test_kernel_management_endpoints_drive_and_fail_honestly(
+    reset_kernel_globals, monkeypatch,
+):
     """端到端：受人类闸门保护的生命周期端点能真正驱动，并对非法/无实例/factory-only
     如实返回（绝不伪造成功）。
     """
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-kernel-endpoints")
+    # monkeypatch (not os.environ.setdefault) so the secret is reverted at
+    # teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-kernel-endpoints", prepend=False)
     try:
         from fastapi.testclient import TestClient
         from src.gateway.main import get_app
         from src.security.jwt_handler import create_access_token
         from src.kernels.security import get_security_engine
 
-        app = get_app()
-        with TestClient(app) as client:
-            token, _ = create_access_token("test-principal")
-            headers = {"X-Liuhao-Token": f"Bearer {token}"}
+        # 只有导入/构造客户端失败才算环境不足；下面的断言（含 401/403/409/404）
+        # 一律真红，不能被 skip 吞掉。
+        client_ctx = TestClient(get_app())
+    except Exception as exc:  # noqa: BLE001 - 环境/依赖缺失才跳过
+        _skip_or_fail(f"无法在当前环境构建完整网关客户端做端点测试: {exc!r}")
 
-            # 无令牌 -> 401（人类主权闸门）。
-            r = client.post("/v1/kernels/init")
-            assert r.status_code == 401, (
-                f"无令牌应被拒绝(401)，实际 {r.status_code}"
+    with client_ctx as client:
+        # scope L0 + kind=human = 管理员：init/shutdown/pause/resume 都要求它。
+        token, _ = create_access_token(
+            "test-principal", metadata={"kind": "human", "scope": "L0"}
+        )
+        headers = {"X-Liuhao-Token": f"Bearer {token}"}
+
+        # 无令牌 -> 401（人类主权闸门）。
+        r = client.post("/v1/kernels/init")
+        assert r.status_code == 401, (
+            f"无令牌应被拒绝(401)，实际 {r.status_code}"
+        )
+
+        # init 端点：返回真实报告。
+        r = client.post("/v1/kernels/init", headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert "initialized" in body
+        assert body["no_canonical_instance"] == ["context", "execution"]
+
+        # factory-only 内核 pause -> 409（诚实，不伪造成 PAUSED）。
+        r = client.post("/v1/kernels/context/pause", headers=headers)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "factory_only_no_canonical_instance"
+
+        # 未知内核 -> 404。
+        r = client.post("/v1/kernels/nope/pause", headers=headers)
+        assert r.status_code == 404
+
+        # 实例尚不存在的内核 -> 409 no_instance_present。
+        # （reset_kernel_globals 已把 security 全局置 None，且启动流程不触碰它。）
+        assert _security_mod._global_security is None
+        r = client.post("/v1/kernels/security/pause", headers=headers)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "no_instance_present"
+
+        # 构造一个真实 security 实例（READY），pause -> 200；再 pause -> 409 非法转换。
+        _security_mod._global_security = get_security_engine()
+        assert _security_mod._global_security.lifecycle is KernelLifecycle.READY
+        r = client.post("/v1/kernels/security/pause", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["lifecycle"] == "paused"
+        r = client.post("/v1/kernels/security/pause", headers=headers)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "illegal_state_transition"
+        # resume -> 200，回到 READY。
+        r = client.post("/v1/kernels/security/resume", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["lifecycle"] == "ready"
+
+
+def test_kernel_pause_and_resume_require_admin(reset_kernel_globals, monkeypatch):
+    """成员（L1）调 pause/resume 必须 403 + 中文原因；匿名 401；管理员在别处验证 200。"""
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-kernel-admin-only", prepend=False)
+    from fastapi.testclient import TestClient
+    from src.gateway.main import get_app
+    from src.security.jwt_handler import create_access_token
+
+    app = get_app()
+    with TestClient(app) as client:
+        member, _ = create_access_token(
+            "test-member", metadata={"kind": "human", "scope": "L1"}
+        )
+        headers = {"X-Liuhao-Token": f"Bearer {member}"}
+
+        for action in ("pause", "resume"):
+            response = client.post(f"/v1/kernels/security/{action}", headers=headers)
+            assert response.status_code == 403, (
+                f"成员调用 {action} 应 403，实际 {response.status_code}: {response.text}"
             )
+            detail = response.json()["detail"]
+            assert isinstance(detail, str), detail
+            assert "管理员权限" in detail
+            for leak in ("Traceback", "src/gateway", "src\\gateway", ".py", "C:\\", "/Users/"):
+                assert leak not in response.text, f"403 响应泄漏了内部信息：{leak!r}"
 
-            # init 端点：返回真实报告。
-            r = client.post("/v1/kernels/init", headers=headers)
-            assert r.status_code == 200
-            body = r.json()
-            assert "initialized" in body
-            assert body["no_canonical_instance"] == ["context", "execution"]
+        # 只读 status/list 不受影响：成员仍可读。
+        listing = client.get("/v1/kernels", headers=headers)
+        assert listing.status_code == 200, listing.text
 
-            # factory-only 内核 pause -> 409（诚实，不伪造成 PAUSED）。
-            r = client.post("/v1/kernels/context/pause", headers=headers)
-            assert r.status_code == 409
-            assert r.json()["detail"]["error"] == "factory_only_no_canonical_instance"
-
-            # 未知内核 -> 404。
-            r = client.post("/v1/kernels/nope/pause", headers=headers)
-            assert r.status_code == 404
-
-            # 实例尚不存在的内核 -> 409 no_instance_present。
-            # （reset_kernel_globals 已把 security 全局置 None，且启动流程不触碰它。）
-            assert _security_mod._global_security is None
-            r = client.post("/v1/kernels/security/pause", headers=headers)
-            assert r.status_code == 409
-            assert r.json()["detail"]["error"] == "no_instance_present"
-
-            # 构造一个真实 security 实例（READY），pause -> 200；再 pause -> 409 非法转换。
-            _security_mod._global_security = get_security_engine()
-            assert _security_mod._global_security.lifecycle is KernelLifecycle.READY
-            r = client.post("/v1/kernels/security/pause", headers=headers)
-            assert r.status_code == 200
-            assert r.json()["lifecycle"] == "paused"
-            r = client.post("/v1/kernels/security/pause", headers=headers)
-            assert r.status_code == 409
-            assert r.json()["detail"]["error"] == "illegal_state_transition"
-            # resume -> 200，回到 READY。
-            r = client.post("/v1/kernels/security/resume", headers=headers)
-            assert r.status_code == 200
-            assert r.json()["lifecycle"] == "ready"
-    except Exception as exc:  # 环境不足以构建完整网关客户端
-        pytest.skip(f"无法在当前环境构建完整网关客户端做端点测试: {exc!r}")
+        # 匿名仍是 401，不是 403。
+        assert client.post("/v1/kernels/security/pause").status_code == 401

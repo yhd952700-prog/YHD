@@ -1,0 +1,264 @@
+{
+  "schema": "liuhao.release-lock.files/1",
+  "description": "release-lock 盖章副本清单。mode=exact 逐字节；normalized 版本行规范化；derived 由源码派生（测试断言）；tool 可执行工具。",
+  "files": [
+    {
+      "target": "scripts/release/package-frozen.ps1",
+      "source": "scripts/release/package-frozen.ps1",
+      "mode": "exact",
+      "note": "唯一出包入口"
+    },
+    {
+      "target": "scripts/release/freeze_checks.py",
+      "source": "scripts/release/freeze_checks.py",
+      "mode": "exact",
+      "note": "环境/依赖/前端基线/攻击面"
+    },
+    {
+      "target": "scripts/release/preflight.py",
+      "source": "scripts/release/preflight.py",
+      "mode": "exact",
+      "note": "只读预检"
+    },
+    {
+      "target": "scripts/release/verify_publish_source.py",
+      "source": "scripts/release/verify_publish_source.py",
+      "mode": "exact",
+      "note": "发布源一致性"
+    },
+    {
+      "target": "scripts/release/release-pipeline.ps1",
+      "source": "scripts/release/release-pipeline.ps1",
+      "mode": "exact",
+      "note": "发布流水线（保留）"
+    },
+    {
+      "target": "scripts/verify_openapi_contract.py",
+      "source": "scripts/verify_openapi_contract.py",
+      "mode": "exact",
+      "note": "G5 契约"
+    },
+    {
+      "target": "scripts/verify_test_collection.py",
+      "source": "scripts/verify_test_collection.py",
+      "mode": "exact",
+      "note": "G2 收集数基线"
+    },
+    {
+      "target": "scripts/verify_release_page_values.py",
+      "source": "scripts/verify_release_page_values.py",
+      "mode": "exact",
+      "note": "发布页数值"
+    },
+    {
+      "target": "scripts/verify_orm_vs_db.py",
+      "source": "scripts/verify_orm_vs_db.py",
+      "mode": "exact",
+      "note": "G3 ORM/schema"
+    },
+    {
+      "target": "scripts/verify_dependency_declaration_surface.py",
+      "source": "scripts/verify_dependency_declaration_surface.py",
+      "mode": "exact",
+      "note": "G1 依赖面"
+    },
+    {
+      "target": "scripts/verify_app_instantiation_hygiene.py",
+      "source": "scripts/verify_app_instantiation_hygiene.py",
+      "mode": "exact",
+      "note": "G5 实例化"
+    },
+    {
+      "target": "scripts/verify_doc_links.py",
+      "source": "scripts/verify_doc_links.py",
+      "mode": "exact",
+      "note": "G4"
+    },
+    {
+      "target": "scripts/verify_docs_index_coverage.py",
+      "source": "scripts/verify_docs_index_coverage.py",
+      "mode": "exact",
+      "note": "G4"
+    },
+    {
+      "target": "scripts/verify_doc_count_claims.py",
+      "source": "scripts/verify_doc_count_claims.py",
+      "mode": "exact",
+      "note": "G4"
+    },
+    {
+      "target": "scripts/check_docs_commands.py",
+      "source": "scripts/check_docs_commands.py",
+      "mode": "exact",
+      "note": "G4"
+    },
+    {
+      "target": "scripts/lint_audit_claims.py",
+      "source": "scripts/lint_audit_claims.py",
+      "mode": "exact",
+      "note": "G4"
+    },
+    {
+      "target": "scripts/lint_control_claims.py",
+      "source": "scripts/lint_control_claims.py",
+      "mode": "exact",
+      "note": "G4"
+    },
+    {
+      "target": "scripts/acceptance/local_attack_surface_e2e.py",
+      "source": "scripts/acceptance/local_attack_surface_e2e.py",
+      "mode": "exact",
+      "note": "本机攻击面回归"
+    },
+    {
+      "target": "packaging/build_windows_installer.ps1",
+      "source": "packaging/build_windows_installer.ps1",
+      "mode": "exact",
+      "note": "打包总装"
+    },
+    {
+      "target": "packaging/build_console.py",
+      "source": "packaging/build_console.py",
+      "mode": "exact",
+      "note": "前端构建"
+    },
+    {
+      "target": "packaging/stage_payload.py",
+      "source": "packaging/stage_payload.py",
+      "mode": "exact",
+      "note": "payload 组装"
+    },
+    {
+      "target": "packaging/smoke_payload.py",
+      "source": "packaging/smoke_payload.py",
+      "mode": "exact",
+      "note": "payload 冒烟"
+    },
+    {
+      "target": "packaging/make_release.py",
+      "source": "packaging/make_release.py",
+      "mode": "exact",
+      "note": "升级 ZIP/清单"
+    },
+    {
+      "target": "packaging/brand_guard.py",
+      "source": "packaging/brand_guard.py",
+      "mode": "exact",
+      "note": "品牌检查"
+    },
+    {
+      "target": "packaging/env_guard.py",
+      "source": "packaging/env_guard.py",
+      "mode": "exact",
+      "note": "环境闸"
+    },
+    {
+      "target": "packaging/sign_installer.ps1",
+      "source": "packaging/sign_installer.ps1",
+      "mode": "exact",
+      "note": "Authenticode 签名"
+    },
+    {
+      "target": "packaging/console_provenance.py",
+      "source": "packaging/console_provenance.py",
+      "mode": "exact",
+      "note": "前端来源指纹"
+    },
+    {
+      "target": "packaging/third_party_notices.py",
+      "source": "packaging/third_party_notices.py",
+      "mode": "exact",
+      "note": "第三方声明"
+    },
+    {
+      "target": "packaging/verify_payload_clean.py",
+      "source": "packaging/verify_payload_clean.py",
+      "mode": "exact",
+      "note": "payload 清洁检查"
+    },
+    {
+      "target": "packaging/prepare_release_venv.ps1",
+      "source": "packaging/prepare_release_venv.ps1",
+      "mode": "exact",
+      "note": "发布 venv"
+    },
+    {
+      "target": "installer/liuhao.iss",
+      "source": "installer/liuhao.iss",
+      "mode": "normalized",
+      "note": "安装器定义；版本行规范化"
+    },
+    {
+      "target": "installer/ChineseSimplified.isl",
+      "source": "installer/ChineseSimplified.isl",
+      "mode": "exact",
+      "note": "安装器语言"
+    },
+    {
+      "target": "installer/assets/BEFORE-INSTALL.txt",
+      "source": "installer/assets/BEFORE-INSTALL.txt",
+      "mode": "exact",
+      "note": "安装前说明"
+    },
+    {
+      "target": "release-gate/verify_package_compliance.py",
+      "source": "dist/release-gate/verify_package_compliance.py",
+      "mode": "exact",
+      "note": "成品包合规"
+    },
+    {
+      "target": "release-gate/sbom_audit.py",
+      "source": "dist/release-gate/sbom_audit.py",
+      "mode": "exact",
+      "note": "SBOM 审计"
+    },
+    {
+      "target": "release-gate/pe_imports.py",
+      "source": "dist/release-gate/pe_imports.py",
+      "mode": "exact",
+      "note": "PE 导入表"
+    },
+    {
+      "target": "release-gate/verify_installed_compliance.py",
+      "source": "dist/release-gate/verify_installed_compliance.py",
+      "mode": "exact",
+      "note": "安装后合规"
+    },
+    {
+      "target": "release-gate/tools/innounp-2/innounp.exe",
+      "source": "dist/release-gate/tools/innounp-2/innounp.exe",
+      "mode": "tool",
+      "note": "安装包解包器"
+    },
+    {
+      "target": "release-gate/tools/innounp-2/innounp-cl.txt",
+      "source": "dist/release-gate/tools/innounp-2/innounp-cl.txt",
+      "mode": "exact",
+      "note": "解包器说明"
+    },
+    {
+      "target": "release-gate/tools/innounp-2/innounp.htm",
+      "source": "dist/release-gate/tools/innounp-2/innounp.htm",
+      "mode": "exact",
+      "note": "解包器文档"
+    },
+    {
+      "target": "release-gate/tools/innounp-2/innounp.css",
+      "source": "dist/release-gate/tools/innounp-2/innounp.css",
+      "mode": "exact",
+      "note": "解包器文档样式"
+    },
+    {
+      "target": "release-gate/tools/innounp-2/innounp.ico",
+      "source": "dist/release-gate/tools/innounp-2/innounp.ico",
+      "mode": "exact",
+      "note": "解包器图标"
+    },
+    {
+      "target": "tests/test_version_consistency.py",
+      "source": "tests/test_version_consistency.py",
+      "mode": "derived",
+      "note": "版本断言盖章副本：去掉硬编码字面量，补 console package 断言；仅在 staging 覆盖"
+    }
+  ]
+}

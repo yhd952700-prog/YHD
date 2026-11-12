@@ -5,9 +5,10 @@ from pydantic import BaseModel
 
 from .events_ws import router as events_router
 
+from ..brand import BRAND_LOCKUP
 from .app import MetricsApplication
 
-app = FastAPI(title="LiuHao AI OS Metrics API", version="0.1.0")
+app = FastAPI(title=f"{BRAND_LOCKUP} Metrics API", version="0.1.0")
 
 metrics_app = MetricsApplication()
 

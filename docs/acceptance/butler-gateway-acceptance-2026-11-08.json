@@ -1,0 +1,253 @@
+{
+  "verdict": "PASS",
+  "gateway": "http://127.0.0.1:62837",
+  "model": {
+    "provider": "ollama",
+    "name": "qwen2.5:3b",
+    "config_id": "99d44ec4fcf9"
+  },
+  "workdir": "D:\\cache\\temp\\liuhao-butler-gateway-08fe963_",
+  "scenarios": [
+    {
+      "key": "one_shot",
+      "title": "一句话派活（自动拆解 + 真执行）",
+      "input": "帮我查一下今天有什么值得关注的 AI 开源项目，并整理成一页摘要",
+      "status": "PASS",
+      "detail": "2 个任务全部完成，结论 723 字，引用 4 条真实来源，带抓取时间",
+      "elapsed_s": 216.47,
+      "evidence": {
+        "goal_id": "c4c63683",
+        "state": "completed",
+        "elapsed_s": 216.47,
+        "task_count": 2,
+        "tasks": [
+          {
+            "name": "调研 AI 开源项目",
+            "capability_id": "network_bus",
+            "status": "completed",
+            "assigned_agent": "liuhao-default-a0",
+            "assigned_employee": "liuhao-default",
+            "started_at": "2026-11-07 22:26:14.566441",
+            "completed_at": "2026-11-07 22:26:48.573670",
+            "result_excerpt": "结论：根据以上信息，2026年11月7日发布的\"Animanabu\"项目是今天值得关注的AI开源项目。\n\n依据1：nerfygf/Animanabu，发布于2026-11-07T09:23:47-08:00，来源：github.com（发布日期2026-11-07T09:23:47-08:00）\n\n依据2：lfg-seth/BriefReceipt，发布于2026-11-05T17:01:43-08:00，来源：github.com（发布日期2026-11-05T17:01:43-08:00）\n\n未查到其他符合要求的项目。\n\n来源（抓取时间 2026-11-07T14:26:15-08:00）：\n1. nerfygf/Animanabu — github.com — https://github.com/nerfygf/Animanabu，发布于 2026-11-07T09:23:47-0",
+            "error": null
+          },
+          {
+            "name": "整理 AI 开源项目摘要",
+            "capability_id": "execution_pipeline",
+            "status": "completed",
+            "assigned_agent": "liuhao-default-a0",
+            "assigned_employee": "liuhao-default",
+            "started_at": "2026-11-07 22:26:49.019410",
+            "completed_at": "2026-11-07 22:27:23.941121",
+            "result_excerpt": "### AI 开源项目摘要\n\n在众多AI开源项目中，\"Animanabu\"项目于2026年11月7日发布，是值得关注的项目之一。该项目由nerfygf在github.com上发布，发布日期为2026-11-07T09:23:47-08:00。\n\n截至目前，未发现其他符合要求的AI开源项目。以下是相关项目链接：\n\n1. [Animanabu](https://github.com/nerfygf/Animanabu) — 发布于2026-11-07T09:23:47-08:00\n2. [BriefReceipt](https://github.com/lfg-seth/BriefReceipt) — 发布于2026-11-05T17:01:43-08:00\n\n请持续关注AI领域的新动态，更多优秀项目将陆续推出。\n\n来源（抓取时间 2026-11-07T14:26:15-08:00）：\n1. ",
+            "error": null
+          }
+        ],
+        "max_concurrent_running": 1,
+        "employees": [
+          {
+            "employee": "liuhao-default",
+            "tasks": 2,
+            "completed": 2,
+            "failed": 0,
+            "total_duration_ms": 68928.94
+          }
+        ],
+        "artifacts": [],
+        "summary": "### AI 开源项目摘要\n\n今天值得关注的AI开源项目是\"Animanabu\"，该项目由nerfygf在github.com上发布，发布日期为2026年11月7日。该项目是目前唯一符合要求的项目。\n\n整理AI开源项目摘要的任务已完成，以下是相关项目链接：\n\n1. [Animanabu](https://github.com/nerfygf/Animanabu) — 发布于2026-11-07T09:23:47-08:00\n2. [BriefReceipt](https://github.com/lfg-seth/BriefReceipt) — 发布于2026-11-05T17:01:43-08:00\n\n请持续关注AI领域的新动态，更多优秀项目将陆续推出。\n\n### 最终结论\n\n- 目标完成：项目\"Animanabu\"的查找到并整理成摘要的任务已完成。该项目由liuhao-default完成，因为默认职责是由liuhao-default负责处理这类任务。\n- 产物：项目\"Animanabu\"的链接已整理并提供。\n- 未有失败任务。\n\n来源（抓取时间 2026-11-07T14:26:15-08:00）：\n1. nerfygf/Animanabu — github.com — https://github.com/nerfygf/Animanabu，发布于 2026-11-07T09:23:47-08:00\n2. lfg-seth/BriefReceipt — github.com — https://github.com/lfg-seth/BriefReceipt，发布于 2026-11-05T17:01:43-08:00",
+        "summary_excerpt": "### AI 开源项目摘要\n\n今天值得关注的AI开源项目是\"Animanabu\"，该项目由nerfygf在github.com上发布，发布日期为2026年11月7日。该项目是目前唯一符合要求的项目。\n\n整理AI开源项目摘要的任务已完成，以下是相关项目链接：\n\n1. [Animanabu](https://github.com/nerfygf/Animanabu) — 发布于2026-11-07T09:23:47-08:00\n2. [BriefReceipt](https://github.com/lfg-seth/BriefReceipt) — 发布于2026-11-05T17:01:43-08:00\n\n请持续关注AI领域的新动态，更多优秀项目将陆续推出。\n\n### 最终结论\n\n- 目标完成：项目\"Animanabu\"的查找到并整理成摘要的任务已完成。该项目由liuhao-default完成，因为默认职责是由liuhao-default负责处理这类任务。\n- 产物：项目\"Animanabu\"的链接已整理并提供。\n- 未有失败任务。\n\n来源（抓取时间 2026-11-07T14:26:15-08:00）：\n1. nerfygf/Animanabu — github.com — https://github.com/nerfygf/Animanabu，发布于 2026-11-07T09",
+        "summary_urls": [
+          "https://github.com/lfg-seth/BriefReceipt",
+          "https://github.com/lfg-seth/BriefReceipt)",
+          "https://github.com/nerfygf/Animanabu",
+          "https://github.com/nerfygf/Animanabu)"
+        ],
+        "summary_has_stamp": true,
+        "raw_dict_repr": []
+      }
+    },
+    {
+      "key": "assign",
+      "title": "单独指派（结果落到指定员工）",
+      "input": "计算 128 + 64 的结果，并告诉我答案",
+      "status": "PASS",
+      "detail": "员工 验收专员-30abd0 承接全部 1 个任务，结果含 128+64=192",
+      "elapsed_s": 23.58,
+      "evidence": {
+        "goal_id": "044fde5d",
+        "state": "completed",
+        "elapsed_s": 23.58,
+        "task_count": 1,
+        "tasks": [
+          {
+            "name": "Compute",
+            "capability_id": "python_compute",
+            "status": "completed",
+            "assigned_agent": "验收专员-30abd0-a0",
+            "assigned_employee": "验收专员-30abd0",
+            "started_at": "2026-11-07 22:28:51.333442",
+            "completed_at": "2026-11-07 22:28:52.366844",
+            "result_excerpt": "192",
+            "error": null
+          }
+        ],
+        "max_concurrent_running": 1,
+        "employees": [
+          {
+            "employee": "验收专员-30abd0",
+            "tasks": 1,
+            "completed": 1,
+            "failed": 0,
+            "total_duration_ms": 1033.402
+          }
+        ],
+        "artifacts": [],
+        "summary": "用户目标：计算 128 + 64 的结果，并告诉我答案。\n\n结论：目标已经全部完成。通过 Python 脚本计算的结果为 192。\n\n分工：由验收专员（ID: 30abd0）负责计算任务。因为用户明确点名指派给了他。\n\n产物路径：计算结果 192 保存在 Python 脚本中。\n\n用户已经得到了准确的结果，计算任务完成。",
+        "summary_excerpt": "用户目标：计算 128 + 64 的结果，并告诉我答案。\n\n结论：目标已经全部完成。通过 Python 脚本计算的结果为 192。\n\n分工：由验收专员（ID: 30abd0）负责计算任务。因为用户明确点名指派给了他。\n\n产物路径：计算结果 192 保存在 Python 脚本中。\n\n用户已经得到了准确的结果，计算任务完成。",
+        "summary_urls": [],
+        "summary_has_stamp": false,
+        "raw_dict_repr": [],
+        "employee_name": "验收专员-30abd0",
+        "assign_response_employee": "验收专员-30abd0"
+      }
+    },
+    {
+      "key": "parallel",
+      "title": "多任务并发（两件事都真的做完）",
+      "input": "帮我查一下今天有什么值得关注的 AI 开源项目，同时计算 128 + 64 的结果，两件事都要完成",
+      "status": "PASS",
+      "detail": "2 个任务全部完成，并发峰值 2，检索与计算结果都在",
+      "elapsed_s": 69.41,
+      "evidence": {
+        "goal_id": "7626fe89",
+        "state": "completed",
+        "elapsed_s": 69.41,
+        "task_count": 2,
+        "tasks": [
+          {
+            "name": "Search",
+            "capability_id": "network_bus",
+            "status": "completed",
+            "assigned_agent": "liuhao-default-a0",
+            "assigned_employee": "liuhao-default",
+            "started_at": "2026-11-07 22:29:14.915930",
+            "completed_at": "2026-11-07 22:30:02.814174",
+            "result_excerpt": "结论：今日值得关注的 AI 开源项目有：Shinygati/SD-Transporter，linuxopt/mp4-recomp，Incept5-AI/inferd，elhajahmadj/offline-emergency-library，DarthMDev/pmd-sky-recomp 和 fluttergo/CrystalStudio。它们分别位于以下 GitHub 地址：https://github.com/Shinygati/SD-Transporter，https://github.com/linuxopt/mp4-recomp，https://github.com/Incept5-AI/inferd，https://github.com/elhajahmadj/offline-emergency-library，https://github.com/DarthMDev/pmd",
+            "error": null
+          },
+          {
+            "name": "Compute",
+            "capability_id": "python_compute",
+            "status": "completed",
+            "assigned_agent": "liuhao-default-a1",
+            "assigned_employee": "liuhao-default",
+            "started_at": "2026-11-07 22:29:14.918452",
+            "completed_at": "2026-11-07 22:29:15.320902",
+            "result_excerpt": "192",
+            "error": null
+          }
+        ],
+        "max_concurrent_running": 2,
+        "employees": [
+          {
+            "employee": "liuhao-default",
+            "tasks": 2,
+            "completed": 2,
+            "failed": 0,
+            "total_duration_ms": 48300.694
+          }
+        ],
+        "artifacts": [],
+        "summary": "已完成 2 项任务：Search、Compute。分工：Search由liuhao-default负责；Compute由liuhao-default负责。Search：结论：今日值得关注的 AI 开源项目有：Shinygati/SD-Transporter，linuxopt/mp4-recomp，Incept5-AI/inferd，elhajahmadj/offline-emergency-library，DarthMDev/pmd-sky-recomp 和 fluttergo/CrystalStudio。Compute：192 来源（抓取时间 2026-11-07T14:29:14-08:00）：Shinygati/SD-Transporter — github.com — https://github.com/Shinygati/SD-Transporter（2026-11-07T13:44:07-08:00）；linuxopt/mp4-recomp — github.com — https://github.com/linuxopt/mp4-recomp（2026-11-07T11:59:15-08:00）；Incept5-AI/inferd — github.com — https://github.com/Incept5-AI/inferd（2026-11-07T10:38:52-08:00）；elhajahmadj/offline-emergency-library — github.com — https://github.com/elhajahmadj/offline-emergency-library（2026-11-07T08:55:58-08:00）；DarthMDev/pmd-sky-recomp — github.com — https://github.com/DarthMDev/pmd-sky-recomp（2026-11-07T08:17:44-08:00）",
+        "summary_excerpt": "已完成 2 项任务：Search、Compute。分工：Search由liuhao-default负责；Compute由liuhao-default负责。Search：结论：今日值得关注的 AI 开源项目有：Shinygati/SD-Transporter，linuxopt/mp4-recomp，Incept5-AI/inferd，elhajahmadj/offline-emergency-library，DarthMDev/pmd-sky-recomp 和 fluttergo/CrystalStudio。Compute：192 来源（抓取时间 2026-11-07T14:29:14-08:00）：Shinygati/SD-Transporter — github.com — https://github.com/Shinygati/SD-Transporter（2026-11-07T13:44:07-08:00）；linuxopt/mp4-recomp — github.com — https://github.com/linuxopt/mp4-recomp（2026-11-07T11:59:15-08:00）；Incept5-AI/inferd — github.com — https://github.com/Incept5-AI/inferd（2026-11-07T10:3",
+        "summary_urls": [
+          "https://github.com/DarthMDev/pmd-sky-recomp（2026-11-07T08:17:44-08:00",
+          "https://github.com/Incept5-AI/inferd（2026-11-07T10:38:52-08:00",
+          "https://github.com/Shinygati/SD-Transporter（2026-11-07T13:44:07-08:00",
+          "https://github.com/elhajahmadj/offline-emergency-library（2026-11-07T08:55:58-08:00",
+          "https://github.com/linuxopt/mp4-recomp（2026-11-07T11:59:15-08:00"
+        ],
+        "summary_has_stamp": true,
+        "raw_dict_repr": []
+      }
+    },
+    {
+      "key": "failure",
+      "title": "失败如实（不编造结果）",
+      "input": "write \"hello acceptance\" to ../escape-acceptance.txt",
+      "status": "PASS",
+      "detail": "goal=failed，失败原因可读：Max retries (3) exceeded; last error: 路径越界：'../escape-acceptance.txt' 不在允许的工作区内（D:\\cache\\temp\\liuhao-butler-gateway-08fe",
+      "elapsed_s": 0.34,
+      "evidence": {
+        "goal_id": "90ed884e",
+        "state": "failed",
+        "elapsed_s": 0.34,
+        "task_count": 2,
+        "tasks": [
+          {
+            "name": "WriteFile",
+            "capability_id": "file_write",
+            "status": "failed",
+            "assigned_agent": "liuhao-default-a0",
+            "assigned_employee": "liuhao-default",
+            "started_at": "2026-11-07 22:30:24.687356",
+            "completed_at": "2026-11-07 22:30:24.795278",
+            "result_excerpt": "",
+            "error": "Max retries (3) exceeded; last error: 路径越界：'../escape-acceptance.txt' 不在允许的工作区内（D:\\cache\\temp\\liuhao-butler-gateway-08fe963_\\workspace）"
+          },
+          {
+            "name": "WriteChecksum",
+            "capability_id": "file_write",
+            "status": "failed",
+            "assigned_agent": "liuhao-default-a1",
+            "assigned_employee": "liuhao-default",
+            "started_at": null,
+            "completed_at": null,
+            "result_excerpt": "",
+            "error": "依赖任务失败（任务 WriteFile）"
+          }
+        ],
+        "max_concurrent_running": 1,
+        "employees": [
+          {
+            "employee": "liuhao-default",
+            "tasks": 2,
+            "completed": 0,
+            "failed": 2,
+            "total_duration_ms": 107.922
+          }
+        ],
+        "artifacts": [],
+        "summary": "仍有 2 项任务失败：WriteFile、WriteChecksum。首个错误：Max retries (3) exceeded; last error: 路径越界：'../escape-acceptance.txt' 不在允许的工作区内（D:\\cache\\temp\\liuhao-butler-gateway-08fe963_\\workspace）。这类错误需要先修正配置或目标描述，直接重试大概率仍会失败。",
+        "summary_excerpt": "仍有 2 项任务失败：WriteFile、WriteChecksum。首个错误：Max retries (3) exceeded; last error: 路径越界：'../escape-acceptance.txt' 不在允许的工作区内（D:\\cache\\temp\\liuhao-butler-gateway-08fe963_\\workspace）。这类错误需要先修正配置或目标描述，直接重试大概率仍会失败。",
+        "summary_urls": [],
+        "summary_has_stamp": false,
+        "raw_dict_repr": []
+      }
+    },
+    {
+      "key": "format",
+      "title": "结果格式（可点击链接 / 时间戳 / 无原始结构）",
+      "input": "对场景 1/2/3 的真实响应做格式检查",
+      "status": "PASS",
+      "detail": "9 条真实链接、抓取时间戳齐全，页面已接入 linkify 渲染，响应无 dict repr",
+      "elapsed_s": null,
+      "evidence": {
+        "raw_dict_repr": [],
+        "summary_urls": [
+          "https://github.com/DarthMDev/pmd-sky-recomp（2026-11-07T08:17:44-08:00",
+          "https://github.com/Incept5-AI/inferd（2026-11-07T10:38:52-08:00",
+          "https://github.com/Shinygati/SD-Transporter（2026-11-07T13:44:07-08:00",
+          "https://github.com/elhajahmadj/offline-emergency-library（2026-11-07T08:55:58-08:00",
+          "https://github.com/lfg-seth/BriefReceipt",
+          "https://github.com/lfg-seth/BriefReceipt)",
+          "https://github.com/linuxopt/mp4-recomp（2026-11-07T11:59:15-08:00",
+          "https://github.com/nerfygf/Animanabu"
+        ],
+        "summary_has_stamp": true,
+        "frontend_linkify": true
+      }
+    }
+  ]
+}

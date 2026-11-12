@@ -18,6 +18,18 @@ from src.ai.agent_runtime import (
 from src.kernels.execution import ActionResult, Task, Verifier, VerifyResult
 from src.kernels.memory import MemoryScope, get_memory_kernel
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _allow_simulated_execution(monkeypatch):
+    # These offline engine tests intentionally run with NO real capability
+    # executor and rely on the engine's built-in *simulated* executor (the
+    # docstring states: "全部离线、使用引擎内置模拟执行器"). Simulation is now
+    # opt-in (LIUHAO_ALLOW_SIMULATED_EXECUTION); we opt in explicitly rather
+    # than relying on a silent default, so the simulation contract stays honest.
+    monkeypatch.setenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", "1")
+
 
 def _runtime() -> AgentRuntime:
     # 默认无 capability_executor → 引擎内置 _simulate_capability（离线、无 LLM）。
@@ -80,6 +92,29 @@ def test_replan_respects_max_bound():
     )
     same = rt.replan(prior)
     assert same is prior  # 不进入无限重规划
+
+
+def test_replan_refuses_when_max_replans_is_zero():
+    """An explicit ``max_replans=0`` (forbid replanning) must be honoured.
+
+    ``max_replans or self.max_replans`` treated 0 as "not provided" and fell
+    back to the permissive instance default, so a caller that meant to FORBID
+    re-execution silently got up to ``self.max_replans`` extra runs -- a control
+    bound that failed open. 0 must mean 0.
+    """
+    rt = _runtime()
+    prior = AgentRunResult(
+        goal_id="gz",
+        correlation_id="cz",
+        state=AgentRunState.FAILED,
+        context=None,
+        evaluation=None,
+        trace=ExecutionTrace(correlation_id="cz"),
+        replan_count=0,
+    )
+    same = rt.replan(prior, max_replans=0)
+    assert same is prior  # nothing re-ran
+    assert same.replan_count == 0
 
 
 def test_evaluator_wired():

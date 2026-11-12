@@ -1,0 +1,10 @@
+# Host-generated, not part of the authored deliverable
+node_modules/
+package-lock.json
+
+# Playwright run artifacts
+playwright-report/
+test-results/
+blob-report/
+.trace/
+*.log

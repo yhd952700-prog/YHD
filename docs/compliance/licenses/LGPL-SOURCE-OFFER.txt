@@ -1,0 +1,46 @@
+Jarvis · 贾维斯 —— LGPL 源码提供清单（iconv / lxml）
+========================================================
+
+适用对象
+--------
+lxml 6.1.3 的 Windows 二进制 wheel 内置 GNU libiconv（LGPL-2.1），
+随包文件为 runtime/Lib/site-packages/lxml/etree.cp312-win_amd64.pyd。
+本目录同时提供“工作”源码与库源码，供接收方修改 libiconv 后重新链接，
+以履行 LGPL-2.1 第 6 条的重链接/源码义务。
+
+源码包
+------
+1. lxml 6.1.3（“工作”源码）
+   文件：lxml-6.1.3.tar.gz
+   来源：https://pypi.org/project/lxml/6.1.3/#files
+   SHA256：45222d94ddd511536f3b2f7d9deae3b2339b4ce0f075f1ca25703b07cad9dd21
+
+2. GNU libiconv 1.17（被链接库源码）
+   文件：libiconv-1.17.tar.gz
+   来源：https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
+   SHA256：8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313
+
+3. GNU LGPL-2.1 全文
+   随包位置：licenses/LGPL-2.1.txt（构建源：packaging/licenses/LGPL-2.1.txt）
+   来源：https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+重链接步骤（可执行方案）
+------------------------
+1. 解压 lxml-6.1.3.tar.gz 与 libiconv-1.17.tar.gz。
+2. 按 lxml 官方构建说明准备 Windows 构建环境（MSVC + libxml2/libxslt 依赖）：
+   https://lxml.de/build.html
+3. 将 libiconv 构建为静态库（重建 etree.pyd）或 libiconv-2.dll（动态链接）。
+   - 静态方案：按 lxml 的 static-deps 流程，将 libiconv 的 import library
+     加入 libxml2 链接参数，重建 etree.cp312-win_amd64.pyd。
+   - 动态方案（推荐，义务最轻）：将 libiconv-2.dll 与重建后的 etree.pyd 放入
+     runtime/Lib/site-packages/lxml/，用户可直接替换 libiconv-2.dll。
+4. 用重建产物替换 runtime/Lib/site-packages/lxml/etree.cp312-win_amd64.pyd。
+5. 运行安装目录下的 LiuHao.bat 与 lxml 自检，确认 XML/XSLT 功能正常。
+
+书面要约与承诺
+--------------
+本文件即 LGPL-2.1 第 6 条意义上的书面要约：任何收到本二进制产品的接收方，
+均可通过本产品发布渠道（项目公开联络地址 team@liuhao.ai）索取上述
+lxml 6.1.3 与 libiconv 1.17 完整源码包及本构建说明。
+上述源码包与构建说明自二进制分发之日起至少保留 3 年；提供源码不收取
+超过实际分发成本的费用。该承诺不改变 LGPL-2.1 赋予接收方的法定权利。

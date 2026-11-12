@@ -9,10 +9,12 @@ Provides:
 """
 
 import json
+import os
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 from ..plugins.base import PluginMetadata
+from ..common.data_paths import resolve_store_path
 
 
 class PluginRegistry:
@@ -33,17 +35,32 @@ class PluginRegistry:
         Args:
             registry_path: Path to registry JSON file
         """
-        self.registry_path = Path(registry_path) if registry_path else Path(
-            self._get_default_registry_path()
-        )
-        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self.registry_path = Path(registry_path) if registry_path else self._default_registry_path()
+        try:
+            self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"无法创建插件注册表目录 {self.registry_path.parent}：{exc}。"
+                "请设置 LIUHAO_WORKSPACE_ROOT 指向可写目录后重试。"
+            ) from exc
         self._registry: Dict[str, Dict[str, Any]] = {}
         self._load_registry()
 
-    def _get_default_registry_path(self) -> str:
-        """Get the default registry file path."""
-        # Use the D: drive as per user convention
-        return "D:\\LiuHao-AI-OS\\data\\plugins\\registry.json"
+    @staticmethod
+    def _default_registry_path() -> Path:
+        """默认注册表位置：与执行 journal / 产物索引同一套解析策略。
+
+        ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > 仓库的
+        ``data/plugins/registry.json``；不写死盘符，也不静默使用开发机路径。
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        return Path(
+            resolve_store_path(
+                os.path.join("plugins", "registry.json"),
+                repo_root / "data" / "plugins" / "registry.json",
+                workspace=True,
+            )
+        )
 
     def _load_registry(self) -> None:
         """Load registry from persistent storage."""

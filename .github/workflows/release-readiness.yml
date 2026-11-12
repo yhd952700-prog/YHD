@@ -1,0 +1,187 @@
+name: Release Readiness
+
+# RELEASE-READINESS-CONTRACT.md gate battery (scripts/verify_readiness.py).
+# Wired here on purpose: an unwired verify_*.py fails tests/test_guardrail_scripts.py,
+# which is the meta-guardrail that keeps the 25+ gate scripts from silently decaying.
+# The script exits 2 only when a condition is genuinely contradicted (FAIL); NOT
+# VERIFIED / BLOCKED are pending verification and do not fail the run. As of this
+# commit every condition is PASS / NOT VERIFIED / BLOCKED, so this job is green;
+# if a real regression makes a check FAIL, CI goes red -- which is the point.
+
+on:
+  push:
+    # p36 是门禁契约的原始目标分支；release-0.3.0 是当前发版分支 ——
+    # 只挂 p36 时，在发版分支上的推送永远不跑这条门禁，C3/C12 也就永远
+    # 停留在 NOT VERIFIED（见 2026-11-12 C 组：release_ready=false 的
+    # 部分原因就是这条 workflow 在发版分支上从未触发）。不要另建 workflow：
+    # 同一份 verify_readiness.py --full 只应有一处接线，否则两处会漂移。
+    branches: ['p36', 'release-0.3.0', 'jarvis-0.4.0']
+  pull_request:
+    branches: ['p36', 'release-0.3.0', 'jarvis-0.4.0']
+
+jobs:
+  readiness:
+    name: Release Readiness Contract (C1..C12)
+    runs-on: ubuntu-latest
+    # 120 min = full-suite subprocess cap (90 min; _FULL_SUITE_TIMEOUT_S in
+    # scripts/verify_readiness.py, ~2x the measured 44m38s suite runtime) plus
+    # install/collection/other-check overhead. The job timeout must stay ABOVE
+    # the subprocess cap so the runner never preempts the gate's own honest
+    # rc=124 -> ERROR classification (pinned by test_readiness_full_timeout.py).
+    timeout-minutes: 120
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
+      # 服务容器起不来 -> 整个 job 在 setup 阶段就死，pytest 从未执行（实测 53 次
+      # 运行 0 成功）。
+      #
+      # 2026-10-24 根因修复（run 40118666865 死于 Initialize containers）：
+      # quay.io/coreos/etcd:v3.5.34 是 scratch 镜像——registry config history 只有
+      # `ADD etcd / etcdctl / etcdutl /usr/local/bin/` 三条，镜像内没有 /bin/sh；
+      # 而 docker CLI 恒把 --health-cmd 包装为 CMD-SHELL（docker/cli
+      # cli/command/container/opts.go: probe = []string{"CMD-SHELL", ...}），daemon
+      # 用 /bin/sh -c 执行探针 -> 探针进程根本起不来 -> 重试耗尽判 unhealthy。
+      # 当时 etcd 本身启动 1 秒内即 SERVING（容器日志可证），坏的只是探针；该镜像
+      # 上任何 --health-cmd 都不可能工作，故必须换带 shell 的镜像。
+      #
+      # 现用 bitnamilegacy/etcd:3.5.9——bitnami 弃用时冻结的官方 legacy 命名空间
+      # （Debian 底，含 /bin/bash 与 etcdctl），即被下线前可用的同一 lineage；
+      # 3.5.9 是其中最新的 3.5.x（amd64+arm64，tag 已实测存在）。bitnami
+      # entrypoint 要求显式 ALLOW_NONE_AUTHENTICATION=yes 才肯无鉴权启动；监听/
+      # 公告地址用其默认（0.0.0.0:2379 / localhost:2379）即可。健康探针使用镜像内
+      # 真实存在的 /opt/bitnami/etcd/bin/etcdctl，退出码即健康判定。
+      etcd:
+        image: bitnamilegacy/etcd:3.5.9
+        ports:
+          - 2379:2379
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCDCTL_API: "3"
+        options: >-
+          --health-cmd "/opt/bitnami/etcd/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[tests]
+
+      - name: Run release-readiness contract (full — executes the suite for C3/C12)
+        # --full makes check_tests / check_no_major_failures actually EXECUTE the
+        # full pytest suite (not just collect), so C3 (Stable tests) and C12 (No
+        # unexplained major failures) flip from NOT VERIFIED to PASS on a permanent
+        # CI artifact. C7 stays NOT VERIFIED on CI by design (its numeric gate is
+        # profile-keyed and SKIPs on the Linux runner — the machine-independent
+        # invariants remain the blocking check and PASS). The script exits 2 only
+        # on a real FAIL/ERROR; NOT VERIFIED / BLOCKED exit 3 and are surfaced as
+        # an explicit ::warning:: -- a pending condition is never rendered as a
+        # pass (this includes C7, which stays NOT_VERIFIED on Linux by design).
+        run: |
+          set +e
+          python scripts/verify_readiness.py --full
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::warning::NOT VERIFIED (exit 3): conditions remain NOT_VERIFIED/BLOCKED (e.g. C7 on Linux); NOT release-ready, NOT a pass"
+            exit 0
+          fi
+          exit "$code"
+
+  independent-verification:
+    name: Independent Verification (C10 harness)
+    runs-on: ubuntu-latest
+    needs: readiness
+    # CRITICAL-5: run even if 'readiness' failed, so this gate FAILS loudly
+    # instead of being silently SKIPPED.
+    if: always()
+    timeout-minutes: 30
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
+      # 服务容器起不来 -> 整个 job 在 setup 阶段就死，pytest 从未执行（实测 53 次
+      # 运行 0 成功）。
+      #
+      # 2026-10-24 根因修复（run 40118666865 死于 Initialize containers）：
+      # quay.io/coreos/etcd:v3.5.34 是 scratch 镜像——registry config history 只有
+      # `ADD etcd / etcdctl / etcdutl /usr/local/bin/` 三条，镜像内没有 /bin/sh；
+      # 而 docker CLI 恒把 --health-cmd 包装为 CMD-SHELL（docker/cli
+      # cli/command/container/opts.go: probe = []string{"CMD-SHELL", ...}），daemon
+      # 用 /bin/sh -c 执行探针 -> 探针进程根本起不来 -> 重试耗尽判 unhealthy。
+      # 当时 etcd 本身启动 1 秒内即 SERVING（容器日志可证），坏的只是探针；该镜像
+      # 上任何 --health-cmd 都不可能工作，故必须换带 shell 的镜像。
+      #
+      # 现用 bitnamilegacy/etcd:3.5.9——bitnami 弃用时冻结的官方 legacy 命名空间
+      # （Debian 底，含 /bin/bash 与 etcdctl），即被下线前可用的同一 lineage；
+      # 3.5.9 是其中最新的 3.5.x（amd64+arm64，tag 已实测存在）。bitnami
+      # entrypoint 要求显式 ALLOW_NONE_AUTHENTICATION=yes 才肯无鉴权启动；监听/
+      # 公告地址用其默认（0.0.0.0:2379 / localhost:2379）即可。健康探针使用镜像内
+      # 真实存在的 /opt/bitnami/etcd/bin/etcdctl，退出码即健康判定。
+      etcd:
+        image: bitnamilegacy/etcd:3.5.9
+        ports:
+          - 2379:2379
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCDCTL_API: "3"
+        options: >-
+          --health-cmd "/opt/bitnami/etcd/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      # CRITICAL-5 watchdog: fail loudly if the required 'readiness' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (readiness)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: readiness
+          upstream-result: ${{ needs.readiness.result }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[tests]
+
+      - name: Run independent verification harness
+        run: python scripts/independent_verification.py --emit verification_record.json
+
+      - name: Upload verification record
+        uses: actions/upload-artifact@v4
+        with:
+          name: independent-verification-record
+          path: verification_record.json
+          if-no-files-found: warn

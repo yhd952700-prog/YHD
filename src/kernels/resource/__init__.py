@@ -23,7 +23,7 @@ import os
 import threading
 import uuid
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 
 _log = logging.getLogger(__name__)
 
@@ -237,6 +237,7 @@ class ResourceQuotaManager:
     ) -> Optional[Allocation]:
         """Allocate resources from quota."""
         if amount <= 0:
+            mark_action_denied("allocate rejected: amount must be > 0")
             return None
 
         quota = self.get_quota(scope, owner, resource_type)
@@ -244,9 +245,14 @@ class ResourceQuotaManager:
             # Try to find parent scope quota (L3 -> L2 -> L1 -> L0)
             quota = self._find_parent_quota(scope, owner, resource_type)
             if not quota:
+                mark_action_denied("allocate rejected: no quota in scope or any parent scope")
                 return None
 
         if not quota.can_allocate(amount):
+            mark_action_denied(
+                f"allocate rejected: insufficient quota "
+                f"(available={quota.available}, requested={amount})"
+            )
             return None
 
         with self._lock:
@@ -302,19 +308,27 @@ class ResourceQuotaManager:
         with self._lock:
             allocation = self._allocations.get(allocation_id)
             if not allocation:
+                mark_action_denied(f"commit rejected: unknown allocation {allocation_id!r}")
                 return False
 
             quota = self._quotas.get(allocation.quota_id)
             if not quota:
+                mark_action_denied(
+                    f"commit rejected: quota {allocation.quota_id!r} no longer exists"
+                )
                 return False
 
             # Explicit idempotency: an already-committed allocation must not
             # charge ``used`` a second time.
             if allocation.committed:
+                mark_action_denied(f"commit rejected: allocation {allocation_id!r} already committed")
                 return False
 
             # Move from reserved to used
             if quota.reserved < allocation.amount:
+                mark_action_denied(
+                    f"commit rejected: reserved {quota.reserved} < amount {allocation.amount}"
+                )
                 return False
 
             quota.reserved -= allocation.amount
@@ -391,21 +405,27 @@ class ResourceQuotaManager:
             if allocation_id:
                 allocation = self._allocations.get(allocation_id)
                 if not allocation:
+                    mark_action_denied(f"release rejected: unknown allocation {allocation_id!r}")
                     return False
 
                 quota = self._quotas.get(allocation.quota_id)
                 if not quota:
+                    mark_action_denied(
+                        f"release rejected: quota {allocation.quota_id!r} no longer exists"
+                    )
                     return False
 
                 # Release from the bucket that actually holds the capacity.
                 if allocation.committed:
                     release_amount = min(amount, quota.used)
                     if release_amount <= 0:
+                        mark_action_denied("release rejected: nothing committed to release")
                         return False
                     quota.used -= release_amount
                 else:
                     release_amount = min(amount, quota.reserved)
                     if release_amount <= 0:
+                        mark_action_denied("release rejected: nothing reserved to release")
                         return False
                     quota.reserved -= release_amount
                 quota.updated_at = utc_now()
@@ -421,12 +441,14 @@ class ResourceQuotaManager:
             # Release without specific allocation - find matching
             quota = self.get_quota(scope, owner, resource_type)
             if not quota:
+                mark_action_denied(f"release rejected: no quota for {scope.value}/{owner}/{resource_type.value}")
                 return False
 
             release_amount = min(amount, quota.used)
             if release_amount <= 0:
                 # Nothing to release: report it honestly rather than dressing a
-                # no-op up as success.
+                # no-op up as success. HC-01 must not record this as a success.
+                mark_action_denied("release rejected: nothing to release")
                 return False
             quota.used -= release_amount
             quota.updated_at = utc_now()

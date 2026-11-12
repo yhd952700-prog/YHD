@@ -87,7 +87,19 @@ COPY_ROOT_FILES: Tuple[str, ...] = ("capability-registry.yaml",)
 #: These are passed to the copy as *ignore* patterns rather than deleted after
 #: the fact: nothing is ever written that then has to be removed. That is
 #: cheaper, and it keeps the build free of the bulk-delete path entirely.
-CONFIG_EXCLUDES = ("production", "monitoring")
+#:
+#: ``auth_secrets.json`` / ``human_identities.json`` are the operator's real
+#: credential and identity stores (``scripts/register_human_identity.py``
+#: writes both). A public bundle must never carry them: one is a password
+#: database, the other names real people. The demo site still needs a login,
+#: so :func:`_write_demo_account` generates a **synthetic** account inside the
+#: bundle after the copy.
+CONFIG_EXCLUDES = (
+    "production",
+    "monitoring",
+    "auth_secrets.json",
+    "human_identities.json",
+)
 
 #: Built console output. Copied to a directory named ``console`` rather than
 #: ``dist`` because the publishing uploader **strips conventional build-output
@@ -145,21 +157,23 @@ _SECRETS_FILE = os.path.join(BUNDLE_ROOT, "config", "auth_secrets.json")
 if os.path.isfile(_SECRETS_FILE):
     os.environ.setdefault("LIUHAO_AUTH_SECRETS_FILE", _SECRETS_FILE)
 
-# Policy Controlled, level 2: the kernel really blocks HIGH/CRITICAL actions
+# Policy Controlled, level 2: the kernel really blocks CRITICAL actions
 # unless a verified human issued a grant for them (OD-010). Without this the
 # deployment only *records* (level 1) and the "human sovereignty" claim is a
 # log line rather than an enforced boundary.
 #
-# This mirrors docker-compose.prod.yml, which has armed the same value since
-# Round 76, and it is only coherent because the identity registry above is
-# present: with zero registered humans every HIGH/CRITICAL action is denied --
-# fail-closed, deliberately.
+# This arms CRITICAL, matching docker-compose.prod.yml:69. D24 (2026-09-12)
+# narrowed the production deployment to CRITICAL only (dropping the earlier HIGH
+# tier), so the bundle must agree with the manifest rather than diverge. It is
+# only coherent
+# because the identity registry above is present: with zero registered humans
+# every CRITICAL action is denied -- fail-closed, deliberately.
 #
 # Disarm without a rebuild by exporting an *empty* value, which the parser
 # reads as "off":
 #     LIUHAO_KERNEL_POLICY_ENFORCE= ./serve.py
-os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "HIGH,CRITICAL")
-{{LLM_BLOCK}}{{JWT_BLOCK}}
+os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "CRITICAL")
+{{LLM_BLOCK}}{{JWT_BLOCK}}{{DEMO_BLOCK}}
 from src.gateway.__main__ import main  # noqa: E402
 
 if __name__ == "__main__":
@@ -228,6 +242,146 @@ def _render_jwt_block() -> str:
     )
 
 
+#: Synthetic account written into a published bundle so the demo can be used.
+#: It exists only inside the generated bundle -- never in the repository, and
+#: never derived from an operator's real registry or credential store.
+DEMO_PRINCIPAL = "demo"
+DEMO_DISPLAY_NAME = "演示账号"
+DEMO_PASSWORD_ENV = "LIUHAO_DEMO_PASSWORD"
+DEMO_ACCOUNT_FILE = "DEMO-ACCOUNT.txt"
+
+#: Placeholder for the demo account block in ``serve.py`` (always consumed;
+#: empty for ``--portable`` builds, where the recipient runs the setup wizard).
+DEMO_PLACEHOLDER = "{{DEMO_BLOCK}}"
+
+
+def _write_demo_account(out_dir: Path) -> Dict[str, str]:
+    """Create the bundle's own demo account: placeholder identity + credential.
+
+    Why generate instead of copying: ``config/auth_secrets.json`` is a password
+    database and ``config/human_identities.json`` names real people. Copying
+    either into a bundle published at a public URL leaks them. But a bundle with
+    no identity is a login wall nobody can pass, so this writes a synthetic
+    account -- a fresh random password and a fresh integrity key that only this
+    bundle knows -- using the same stores the product itself uses.
+
+    Returns the facts needed to finish the launcher (``serve.py`` must know the
+    integrity key, otherwise every row is refused fail-closed) and to tell the
+    operator the login.
+    """
+    from src.gateway.auth import (
+        AUTH_SECRETS_FILE_ENV,
+        resolve_secret_store,
+        verify_credential,
+    )
+    from src.kernels.identity._persistence import (
+        FIELD_DISPLAY_NAME,
+        FIELD_PERMISSIONS,
+        FIELD_PRINCIPAL,
+        FIELD_REGISTERED_AT,
+        FIELD_SCOPE,
+        FIELD_SOURCE,
+        HUMAN_IDENTITIES_BACKEND_ENV,
+        HUMAN_IDENTITIES_DB_ENV,
+        HUMAN_IDENTITIES_FILE_ENV,
+        HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+        resolve_human_identity_store,
+    )
+
+    config_dir = out_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    identity_file = config_dir / "human_identities.json"
+    secrets_file = config_dir / "auth_secrets.json"
+    password = (os.environ.get(DEMO_PASSWORD_ENV) or "").strip() or secrets.token_urlsafe(12)
+    integrity_key = secrets.token_urlsafe(32)
+
+    # The build machine may carry operator env vars (this one did: a machine
+    # scope pointed at the dev repo's identity DB). Pin the stores explicitly
+    # and restore afterwards, so the demo account can never land in the repo.
+    keys = (
+        HUMAN_IDENTITIES_BACKEND_ENV,
+        HUMAN_IDENTITIES_DB_ENV,
+        HUMAN_IDENTITIES_FILE_ENV,
+        HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+        AUTH_SECRETS_FILE_ENV,
+    )
+    saved = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ[HUMAN_IDENTITIES_BACKEND_ENV] = "file"
+        os.environ.pop(HUMAN_IDENTITIES_DB_ENV, None)
+        os.environ[HUMAN_IDENTITIES_FILE_ENV] = str(identity_file)
+        os.environ[HUMAN_IDENTITIES_INTEGRITY_KEY_ENV] = integrity_key
+        os.environ[AUTH_SECRETS_FILE_ENV] = str(secrets_file)
+
+        store = resolve_human_identity_store()
+        if not store.upsert(
+            {
+                FIELD_PRINCIPAL: DEMO_PRINCIPAL,
+                FIELD_DISPLAY_NAME: DEMO_DISPLAY_NAME,
+                # Empty: a demo account must not be able to approve anything.
+                FIELD_PERMISSIONS: [],
+                FIELD_SCOPE: "L0",
+                FIELD_REGISTERED_AT: "",
+                FIELD_SOURCE: "build_cloud_bundle.py (demo account)",
+            }
+        ):
+            raise SystemExit(f"演示账号写入失败：{store.location}")
+
+        secret_store = resolve_secret_store()
+        if not secret_store.set_credential(DEMO_PRINCIPAL, password):
+            raise SystemExit(f"演示账号凭据写入失败：{secret_store.path}")
+        if not verify_credential(password, secret_store.credential_for(DEMO_PRINCIPAL)):
+            raise SystemExit("演示账号凭据写入后校验失败，拒绝产出无法登录的发布包。")
+
+        # Read it back through the kernel's own loader: a row whose integrity tag
+        # does not verify is silently refused, which would ship a login wall.
+        admitted = {
+            str(row.get(FIELD_PRINCIPAL))
+            for row in store.load_all()
+            if isinstance(row, dict)
+        }
+        if DEMO_PRINCIPAL not in admitted:
+            raise SystemExit(
+                "演示账号写入后未被内核接受（完整性标签校验失败），拒绝产出无法登录的发布包。"
+            )
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    (out_dir / DEMO_ACCOUNT_FILE).write_text(
+        "本发布包自带的演示账号（构建时随机生成，只存在于这个目录）\n"
+        f"登录名: {DEMO_PRINCIPAL}\n"
+        f"密码  : {password}\n"
+        "\n"
+        "该账号没有任何审批权限，只用于登录演示站。\n"
+        "要换成自己的账号：在本机运行 scripts/register_human_identity.py。\n",
+        encoding="utf-8",
+    )
+    return {
+        "principal": DEMO_PRINCIPAL,
+        "password": password,
+        "integrity_key": integrity_key,
+    }
+
+
+def _render_demo_block(demo: Dict[str, str] | None) -> str:
+    """Emit the demo account's integrity key into ``serve.py`` ('' if none)."""
+    if not demo:
+        return ""
+    return (
+        "\n# Demo account (generated by scripts/build_cloud_bundle.py, this\n"
+        "# bundle only). The registry is signed with this key; without it the\n"
+        "# kernel refuses every row fail-closed and the demo cannot be used.\n"
+        "# Real operator identities/credentials are never copied into a bundle.\n"
+        "os.environ.setdefault("
+        "'LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY', "
+        f"{demo['integrity_key']!r})\n"
+    )
+
+
 def _llm_env() -> Dict[str, str]:
     """Collect the LLM settings actually present in the build environment."""
     found: Dict[str, str] = {}
@@ -245,13 +399,20 @@ def _mask(value: str) -> str:
     return f"{value[:7]}…{value[-4:]}"
 
 
-def _render_llm_block() -> str:
+def _render_llm_block(portable: bool = False) -> str:
     """Render the ``os.environ.setdefault`` lines injected into ``serve.py``.
 
     The key must travel inside the bundle because the publishing platform
     offers no secret store -- but ``deploy/cloud/`` is gitignored, so the key
     never reaches version control.
+
+    ``portable=True`` (自用版分发) **永远不**烘入 provider 配置：收件人通过
+    首次运行向导（scripts/first_run_wizard.py）把模型写进加密的模型配置存储，
+    API Key 以 AES-256-GCM 落盘，从不出现在 serve.py / .env 明文里。这样把包
+    发给别人绝不会带上构建者自己的 provider / base_url / key。
     """
+    if portable:
+        return ""
     env = _llm_env()
     if not env:
         return ""
@@ -388,7 +549,81 @@ def _floor(version: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 2 else str(major)
 
 
-def build(out_dir: Path) -> int:
+#: 自用版分发（--portable）随包附带的脚本：首次运行向导、身份注册、启动器、
+#: HTTPS 代理、自签证书生成。收件人拿到包后双击 start.bat 即可。
+PORTABLE_SCRIPTS: Tuple[str, ...] = (
+    "scripts/first_run_wizard.py",
+    "scripts/register_human_identity.py",
+    "scripts/start_liuhao.py",
+    "scripts/ops/https_proxy.py",
+    "scripts/gen_local_cert.py",
+)
+PORTABLE_ROOT_FILES: Tuple[str, ...] = ("start-liuhao.bat",)
+
+_PORTABLE_START_BAT = '''@echo off
+rem Jarvis · 贾维斯 自用版 — 双击启动。先跑首次运行向导，再起网关。
+setlocal
+cd /d "%~dp0"
+set "PY="
+if exist ".venv\\Scripts\\python.exe" (
+    set "PY=.venv\\Scripts\\python.exe"
+) else (
+    where python >nul 2>nul
+    if %errorlevel%==0 set "PY=python"
+)
+if not defined PY (
+    echo [FAIL] 没找到 Python 3.12。
+    echo        安装后执行：  python -m venv .venv ^&^& .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+    pause
+    exit /b 1
+)
+if not exist ".venv\\Scripts\\python.exe" (
+    echo [setup] 首次运行：创建虚拟环境并安装依赖...
+    python -m venv .venv
+    .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+)
+"%PY%" scripts\\first_run_wizard.py
+if errorlevel 1 ( echo [FAIL] 向导未通过 ^& pause ^& exit /b 1 )
+"%PY%" scripts\\start_liuhao.py %*
+set "LH_CODE=%ERRORLEVEL%"
+if not "%LH_CODE%"=="0" goto :lh_failed
+rem Exit code 0 also covers "already running" (a second double-click).
+rem Do not pause here, otherwise a no-op start leaves a window hanging.
+exit /b 0
+:lh_failed
+echo.
+echo [FAIL] 贾维斯未能正常启动（退出码 %LH_CODE%）。
+echo        原因见上方输出与日志。
+echo.
+echo 按任意键关闭此窗口。
+pause >nul
+endlocal
+exit /b %LH_CODE%
+'''
+
+
+def _write_portable_assets(out_dir: Path) -> None:
+    """把自用版分发需要的脚本与启动器写进包。"""
+    scripts_dir = out_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "ops").mkdir(parents=True, exist_ok=True)
+    for rel in PORTABLE_SCRIPTS:
+        src = REPO_ROOT / rel
+        if src.is_file():
+            dest = out_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            print(f"      portable -> {rel}")
+    for name in PORTABLE_ROOT_FILES:
+        src = REPO_ROOT / name
+        if src.is_file():
+            shutil.copy2(src, out_dir / name)
+            print(f"      portable -> {name}")
+    (out_dir / "start.bat").write_text(_PORTABLE_START_BAT, encoding="utf-8")
+    print("      portable -> start.bat（双击：向导→网关）")
+
+
+def build(out_dir: Path, portable: bool = False) -> int:
     if not (CONSOLE_DIST_SRC / "index.html").is_file():
         print(
             f"!! 驾驶舱构建产物缺失：{CONSOLE_DIST_SRC}/index.html\n"
@@ -431,6 +666,19 @@ def build(out_dir: Path) -> int:
         details = f"（已剔除 {', '.join(exclusions)}）" if exclusions else ""
         print(f"      {name:8s} -> {count} 个文件{details}")
 
+    # Defence in depth: the ignore list is the fix, this is the alarm. A bundle
+    # published at a public URL must never contain a password database or a
+    # registry of real people, even if someone later edits the copy paths.
+    leaked = [
+        name
+        for name in ("auth_secrets.json", "human_identities.json")
+        if (out_dir / "config" / name).exists()
+    ]
+    if leaked:
+        raise SystemExit(
+            f"发布包 config/ 里出现真实凭据/身份文件：{leaked} —— 已中止构建。"
+        )
+
     for name in COPY_ROOT_FILES:
         source_file = REPO_ROOT / name
         if source_file.is_file():
@@ -444,13 +692,22 @@ def build(out_dir: Path) -> int:
     console_target = out_dir / CONSOLE_DIST_REL
     console_count = _copy_tree(CONSOLE_DIST_SRC, console_target)
     print(f"      dist     -> {console_count} 个文件  →  {CONSOLE_DIST_REL}/")
-    launcher_source = _LAUNCHER.replace(LLM_PLACEHOLDER, _render_llm_block())
+    demo = None if portable else _write_demo_account(out_dir)
+    launcher_source = _LAUNCHER.replace(LLM_PLACEHOLDER, _render_llm_block(portable=portable))
     launcher_source = launcher_source.replace(JWT_PLACEHOLDER, _render_jwt_block())
-    for placeholder in (LLM_PLACEHOLDER, JWT_PLACEHOLDER):
+    launcher_source = launcher_source.replace(DEMO_PLACEHOLDER, _render_demo_block(demo))
+    for placeholder in (LLM_PLACEHOLDER, JWT_PLACEHOLDER, DEMO_PLACEHOLDER):
         if placeholder in launcher_source:  # 占位符必须被消费，否则产物是坏 Python
             raise AssertionError(f"launcher template still contains {placeholder}")
     (out_dir / LAUNCHER_NAME).write_text(launcher_source, encoding="utf-8")
     print(f"      入口脚本 -> {LAUNCHER_NAME}")
+    if demo:
+        print(
+            f"      演示账号 -> {demo['principal']} / {demo['password']} "
+            f"（写入 {DEMO_ACCOUNT_FILE}；无审批权限）"
+        )
+    else:
+        print("      演示账号 -> [portable] 不生成；收件人用首次运行向导建自己的账号")
 
     import re as _re
 
@@ -461,7 +718,9 @@ def build(out_dir: Path) -> int:
     print(f"      JWT 密钥 -> {_mask(_pinned) if _pinned else '(缺失!)'}  [{_source}]")
 
     llm_env = _llm_env()
-    if llm_env:
+    if portable:
+        print("      LLM      -> [portable] 未烘入 provider；收件人通过首次运行向导配置（加密存储）")
+    elif llm_env:
         provider = llm_env.get("AI_PROVIDER_TYPE", "?")
         model = llm_env.get("AI_PROVIDER_MODEL", "?")
         base = llm_env.get("OPENAI_BASE_URL", "(provider 默认)")
@@ -470,6 +729,9 @@ def build(out_dir: Path) -> int:
         print(f"      LLM      -> {provider} / {model} @ {base}  key={shown}")
     else:
         print("      LLM      -> 未配置 → 发布包用 mock provider（对话为演示模型）")
+
+    if portable:
+        _write_portable_assets(out_dir)
 
     lines = [
         "# 由 scripts/build_cloud_bundle.py 自动生成 —— 不要手改。",
@@ -504,10 +766,15 @@ def build(out_dir: Path) -> int:
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="构建可发布的单端口自包含包")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help=f"输出目录（默认 {DEFAULT_OUT}）")
+    parser.add_argument(
+        "--portable",
+        action="store_true",
+        help="自用版分发：不烘入 provider 配置，附带首次运行向导+启动脚本+start.bat",
+    )
     args = parser.parse_args(argv)
     # Keep bytecode out of the bundle for the measurement import.
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    return build(Path(args.out).expanduser().resolve())
+    return build(Path(args.out).expanduser().resolve(), portable=args.portable)
 
 
 if __name__ == "__main__":

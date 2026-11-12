@@ -1,26 +1,69 @@
 /**
- * 目录类页面：我AI员工 / 业务中心 / 知识中心。
+ * 目录类页面：我的员工 / 业务中心。
  *
- * 三者都是**同一份能力注册表**的不同切面：
- *   - 我AI员工  → 14 内核 + 14 能力层 + provider 服务面（全量）
+ * 两者都是**同一份能力注册表**的不同切面：
+ *   - 我的员工  → 14 内核 + 14 能力层 + provider 服务面（全量）
  *   - 业务中心  → 14 能力层（= 系统实际具备的业务能力），按阶段带分组
- *   - 知识中心  → 与知识/记忆相关的内核 + OpenAPI 里真实的 /knowledge/* 端点
+ *
+ * 知识中心已迁到 `pages/Knowledge.tsx`：旧实现只把 OpenAPI 的 /knowledge/*
+ * 路由列表摊开，用户看不到自己的文档，既不能导入也不能验收检索 —— 那不是
+ * "知识库"，只是一份端点清单。
  *
  * 没有数据源的地方如实说明，不用占位条目撑满表格。
  */
 
 import { useMemo, useState } from 'react'
-import type { RosterPayload } from '../lib/contracts'
+import type { RosterPayload, EmployeesPayload, GoalsPayload } from '../lib/contracts'
 import { useApi } from '../lib/api'
 import { colorAt } from '../lib/chartUtils'
+import {
+  capabilityModuleLabel,
+  capabilityStatusLabel,
+  capabilityStatusTone,
+  neutralLayerLabel,
+  phaseLabel,
+} from '../lib/layerLabels'
+import { goalStateLabel } from '../lib/butler'
+import { numberText } from '../lib/format'
 import { BrainMap, NetworkGraph } from '../components/charts'
+import {
+  AgentActionButtons,
+  CreateGoalForm,
+  EmployeeActionButtons,
+  GoalActionButtons,
+  HireEmployeeForm,
+} from '../components/OperatorControls'
 import { Card, Dot, Empty, Guard } from '../components/ui'
 
-type OpenApiPaths = { paths?: Record<string, Record<string, unknown>> }
+/** 运行时 Tab 的单页条数：接口一次返回全量，分页只在渲染层切片。 */
+const RUNTIME_PAGE_SIZE = 50
+
+const STATUS_TONE: Record<string, string> = {
+  idle: 'ok',
+  running: 'accent',
+  paused: 'muted',
+  stopped: 'danger',
+  completed: 'ok',
+  failed: 'danger',
+}
+
+/** 执行个体状态 → 中文；原始英文只进 `title`。 */
+const AGENT_STATUS_LABELS: Record<string, string> = {
+  idle: '空闲',
+  running: '执行中',
+  paused: '已暂停',
+  stopped: '已停止',
+  completed: '已完成',
+  failed: '失败',
+}
 
 export function Roster({ query }: { query: string }) {
   const roster = useApi<RosterPayload>('/v1/dashboard/roster', 60_000)
-  const [tab, setTab] = useState<'kernels' | 'layers'>('kernels')
+  const employees = useApi<EmployeesPayload>('/v1/employees', 30_000)
+  const goals = useApi<GoalsPayload>('/v1/goals', 30_000)
+  const [tab, setTab] = useState<'kernels' | 'layers' | 'runtime'>('kernels')
+  const [employeePage, setEmployeePage] = useState(0)
+  const [agentPage, setAgentPage] = useState(0)
 
   const need = query.trim().toLowerCase()
 
@@ -42,7 +85,7 @@ export function Roster({ query }: { query: string }) {
 
   return (
     <div className="os-grid">
-      <Card title="协作网络" sub="能力层按阶段带分布" span={5}>
+      <Card title="能力层分布" sub="能力层按阶段带分布" span={5}>
         <Guard
           loading={roster.loading}
           error={roster.error}
@@ -54,11 +97,11 @@ export function Roster({ query }: { query: string }) {
           {(data) => (
             <>
               <NetworkGraph
-                hubLabel="鎏灏 OS"
+                hubLabel="贾维斯 OS"
                 height={260}
                 nodes={data.layers.map((layer) => ({
                   id: layer.id,
-                  label: layer.name,
+                  label: neutralLayerLabel(layer.name),
                   group: layer.band,
                 }))}
               />
@@ -66,7 +109,7 @@ export function Roster({ query }: { query: string }) {
                 {data.bands.map((band, index) => (
                   <span className="os-legend-item" key={band.key}>
                     <span className="os-dot" style={{ background: colorAt(index) }} />
-                    {band.label}{' '}
+                    {neutralLayerLabel(band.label)}{' '}
                     <span className="os-legend-value">
                       {data.layers.filter((layer) => layer.band === band.key).length}
                     </span>
@@ -78,7 +121,7 @@ export function Roster({ query }: { query: string }) {
         </Guard>
       </Card>
 
-      <Card title="大脑地图" sub="14 内核按职责域分布" span={3}>
+      <Card title="大脑地图" sub="14 个能力模块按职责域分布" span={3}>
         <Guard
           loading={roster.loading}
           error={roster.error}
@@ -93,7 +136,7 @@ export function Roster({ query }: { query: string }) {
                 height={260}
                 regions={data.kernels.map((kernel) => ({
                   id: kernel.id,
-                  label: kernel.name,
+                  label: neutralLayerLabel(kernel.name),
                   group: kernel.domain,
                 }))}
               />
@@ -104,7 +147,7 @@ export function Roster({ query }: { query: string }) {
                     tone="accent"
                     label={
                       <>
-                        {domain.label}{' '}
+                        {neutralLayerLabel(domain.label)}{' '}
                         <span className="os-legend-value">
                           {data.kernels.filter((k) => k.domain === domain.key).length}
                         </span>
@@ -122,8 +165,8 @@ export function Roster({ query }: { query: string }) {
         title="AI 员工名册"
         sub={
           roster.data
-            ? `共 ${roster.data.totals.employees} 项 · 来源 ${roster.data.source}`
-            : '来源 capability-registry.yaml'
+            ? `共 ${roster.data.totals.employees} 项 · 来源：能力注册表`
+            : '来源：能力注册表'
         }
         span={12}
         action={
@@ -133,18 +176,242 @@ export function Roster({ query }: { query: string }) {
               data-tone={tab === 'kernels' ? 'accent' : 'muted'}
               onClick={() => setTab('kernels')}
             >
-              内核 {roster.data?.totals.kernels ?? 0}
+              能力模块 {numberText(roster.data?.totals.kernels)}
             </button>
             <button
               className="os-badge"
               data-tone={tab === 'layers' ? 'accent' : 'muted'}
               onClick={() => setTab('layers')}
             >
-              能力层 {roster.data?.totals.layers ?? 0}
+              能力层 {numberText(roster.data?.totals.layers)}
+            </button>
+            <button
+              className="os-badge"
+              data-tone={tab === 'runtime' ? 'accent' : 'muted'}
+              onClick={() => setTab('runtime')}
+            >
+              运行时 {numberText(employees.data?.count)}
             </button>
           </div>
         }
       >
+        {tab === 'runtime' ? (
+          <Guard
+            loading={employees.loading}
+            error={employees.error}
+            data={employees.data}
+            isEmpty={(data) => data.agents.length === 0}
+            emptyTitle="还没有可用的执行个体"
+            onRetry={employees.reload}
+          >
+            {(empData) => {
+              const empList = empData.employees ?? []
+              const empPageCount = Math.max(1, Math.ceil(empList.length / RUNTIME_PAGE_SIZE))
+              const safeEmpPage = Math.min(employeePage, empPageCount - 1)
+              const pageEmployees = empList.slice(
+                safeEmpPage * RUNTIME_PAGE_SIZE,
+                (safeEmpPage + 1) * RUNTIME_PAGE_SIZE,
+              )
+              const agentPageCount = Math.max(
+                1,
+                Math.ceil(empData.agents.length / RUNTIME_PAGE_SIZE),
+              )
+              const safeAgentPage = Math.min(agentPage, agentPageCount - 1)
+              const pageAgents = empData.agents.slice(
+                safeAgentPage * RUNTIME_PAGE_SIZE,
+                (safeAgentPage + 1) * RUNTIME_PAGE_SIZE,
+              )
+              return (<>
+              <div className="os-operator-panel">
+                <div className="os-operator-grid">
+                  <div>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 8 }}>
+                      雇佣员工
+                    </div>
+                    <HireEmployeeForm onDone={employees.reload} />
+                  </div>
+                  <div>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 8 }}>
+                      创建目标
+                    </div>
+                    <CreateGoalForm onDone={goals.reload} />
+                  </div>
+                </div>
+              </div>
+              <div className="os-list">
+                <div className="os-row" style={{ marginBottom: 8, borderBottom: '1px solid var(--os-border)' }}>
+                  <div className="os-row-main">
+                    <div className="os-row-sub">
+                      提交 {empData.stats.total_tasks_submitted} ·
+                      完成 {empData.stats.total_tasks_completed} ·
+                      失败 {empData.stats.total_tasks_failed} ·
+                      队列 {empData.stats.task_queue_length}
+                    </div>
+                  </div>
+                </div>
+                {empList.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>
+                      按名员工（{empList.length}）
+                    </div>
+                    {pageEmployees.map((emp) => (
+                      <div className="os-row" key={emp.name}>
+                        <span
+                          className="os-dot"
+                          style={{
+                            background:
+                              emp.name === 'liuhao-default'
+                                ? 'var(--os-accent)'
+                                : 'var(--os-ok)',
+                          }}
+                        />
+                        <div className="os-row-main">
+                          <div className="os-row-title">
+                            {emp.name}{' '}
+                            <span className="os-badge" data-tone="muted">
+                              {emp.agent_count} 个执行个体
+                            </span>
+                          </div>
+                          <div className="os-row-sub">
+                            {emp.agents
+                              .map((a) => AGENT_STATUS_LABELS[a.status] ?? '状态未知')
+                              .join(' · ')}
+                          </div>
+                        </div>
+                        <EmployeeActionButtons name={emp.name} onDone={employees.reload} />
+                      </div>
+                    ))}
+                    {empList.length > RUNTIME_PAGE_SIZE && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: 8,
+                          alignItems: 'center',
+                          justifyContent: 'flex-end',
+                          marginTop: 8,
+                        }}
+                      >
+                        <button
+                          className="os-btn os-btn-ghost"
+                          style={{ width: 'auto' }}
+                          disabled={safeEmpPage === 0}
+                          onClick={() => setEmployeePage(safeEmpPage - 1)}
+                        >
+                          上一页
+                        </button>
+                        <span className="os-hint">
+                          第 {safeEmpPage + 1} / {empPageCount} 页 · 共 {empList.length} 位
+                        </span>
+                        <button
+                          className="os-btn os-btn-ghost"
+                          style={{ width: 'auto' }}
+                          disabled={safeEmpPage >= empPageCount - 1}
+                          onClick={() => setEmployeePage(safeEmpPage + 1)}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {pageAgents.map((agent) => (
+                  <div className="os-row" key={agent.id}>
+                    <span className="os-dot" style={{ background: `var(--os-${STATUS_TONE[agent.status] ?? 'muted'})` }} />
+                    <div className="os-row-main">
+                      <div className="os-row-title">
+                        {agent.name}{' '}
+                        <span className="os-badge" data-tone="muted">
+                          {agent.id}
+                        </span>
+                      </div>
+                      <div className="os-row-sub">
+                        {agent.agent_type} ·
+                        完成 {agent.completed_tasks} ·
+                        失败 {agent.failed_tasks} ·
+                        延迟 {numberText(agent.total_latency_ms)} 毫秒
+                        {agent.current_task ? ` · 当前: ${agent.current_task}` : ''}
+                      </div>
+                    </div>
+                        <span
+                          className="os-badge"
+                          data-tone={STATUS_TONE[agent.status] ?? 'muted'}
+                          title={`原始状态：${agent.status}`}
+                        >
+                          {AGENT_STATUS_LABELS[agent.status] ?? '状态未知'}
+                        </span>
+                        <AgentActionButtons agentId={agent.id} status={agent.status} onDone={employees.reload} />
+                      </div>
+                    ))}
+                {empData.agents.length > RUNTIME_PAGE_SIZE && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      marginTop: 8,
+                    }}
+                  >
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeAgentPage === 0}
+                      onClick={() => setAgentPage(safeAgentPage - 1)}
+                    >
+                      上一页
+                    </button>
+                    <span className="os-hint">
+                      第 {safeAgentPage + 1} / {agentPageCount} 页 · 共 {empData.agents.length} 个执行个体
+                    </span>
+                    <button
+                      className="os-btn os-btn-ghost"
+                      style={{ width: 'auto' }}
+                      disabled={safeAgentPage >= agentPageCount - 1}
+                      onClick={() => setAgentPage(safeAgentPage + 1)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                )}
+                {goals.data && goals.data.goals.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>最近 Goal 执行</div>
+                    {goals.data.goals.slice(0, 5).map((goal) => (
+                      <div className="os-row" key={goal.goal_id}>
+                        <span className="os-dot" style={{ background: `var(--os-${STATUS_TONE[goal.state] ?? 'muted'})` }} />
+                        <div className="os-row-main">
+                          <div className="os-row-title">
+                            <code>{goal.goal_id}</code>{' '}
+                            <span className="os-badge" data-tone="muted">{goal.scope}</span>
+                          </div>
+                          <div className="os-row-sub">
+                            {goal.natural_language.length > 60
+                              ? goal.natural_language.slice(0, 60) + '…'
+                              : goal.natural_language}
+                            {goal.error ? ` · ${goal.error}` : ''}
+                            {goal.technical_detail ? (
+                              <details style={{ marginTop: 4 }}>
+                                <summary>技术详情</summary>
+                                <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                  {goal.technical_detail}
+                                </code>
+                              </details>
+                            ) : null}
+                          </div>
+                        </div>
+                        <span className="os-badge" data-tone={STATUS_TONE[goal.state] ?? 'muted'}>
+                          {goalStateLabel(goal.state)}
+                        </span>
+                        <GoalActionButtons goalId={goal.goal_id} state={goal.state} onDone={goals.reload} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              </>)
+            }}
+          </Guard>
+        ) : (
         <Guard
           loading={roster.loading}
           error={roster.error}
@@ -157,22 +424,23 @@ export function Roster({ query }: { query: string }) {
             tab === 'kernels' ? (
               <div className="os-list">
                 {kernels.map((kernel) => (
-                  <div className="os-row" key={kernel.id}>
+                  <div className="os-row" key={kernel.id} title={`编号：${kernel.id}`}>
                     <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
                     <div className="os-row-main">
                       <div className="os-row-title">
-                        {kernel.name}{' '}
-                        <span className="os-badge" data-tone="muted">
-                          {kernel.id}
-                        </span>
+                        {capabilityModuleLabel(kernel.kernel, kernel.name)}
                       </div>
                       <div className="os-row-sub">
-                        {kernel.domain_label} · kernel={kernel.kernel}
+                        {neutralLayerLabel(kernel.domain_label)}
                         {kernel.scope ? ` · ${kernel.scope}` : ''}
                       </div>
                     </div>
-                    <span className="os-badge" data-tone={kernel.status === 'implemented' ? 'ok' : 'muted'}>
-                      {kernel.status ?? '未知'}
+                    <span
+                      className="os-badge"
+                      data-tone={capabilityStatusTone(kernel.status)}
+                      title={kernel.status ? `原始状态：${kernel.status}` : undefined}
+                    >
+                      {capabilityStatusLabel(kernel.status)}
                     </span>
                   </div>
                 ))}
@@ -180,36 +448,42 @@ export function Roster({ query }: { query: string }) {
             ) : (
               <div className="os-list">
                 {layers.map((layer) => (
-                  <div className="os-row" key={layer.id}>
+                  <div
+                    className="os-row"
+                    key={layer.id}
+                    title={`编号：${layer.id}${layer.module ? ` · 模块：${layer.module}` : ''}`}
+                  >
                     <span className="os-dot" style={{ background: 'var(--os-accent-2)' }} />
                     <div className="os-row-main">
-                      <div className="os-row-title">
-                        {layer.name}{' '}
-                        <span className="os-badge" data-tone="muted">
-                          {layer.id}
-                        </span>
-                      </div>
+                      <div className="os-row-title">{neutralLayerLabel(layer.name)}</div>
                       <div className="os-row-sub">
-                        {layer.band_label} · {layer.phase ?? '—'} ·{' '}
-                        <code>{layer.module ?? '—'}</code>
+                        {neutralLayerLabel(layer.band_label)} · {phaseLabel(layer.phase)}
                       </div>
                     </div>
                     <span className="os-row-tail">{layer.tests} 用例</span>
+                    <span
+                      className="os-badge"
+                      data-tone={capabilityStatusTone(layer.status)}
+                      title={layer.status ? `原始状态：${layer.status}` : undefined}
+                    >
+                      {capabilityStatusLabel(layer.status)}
+                    </span>
                   </div>
                 ))}
               </div>
             )
           }
         </Guard>
+        )}
       </Card>
 
-      <Card title="服务面" sub="LLM provider 真实配置状态" span={12}>
+      <Card title="服务面" sub="模型服务商的真实配置状态" span={12}>
         <Guard
           loading={roster.loading}
           error={roster.error}
           data={roster.data?.providers ?? null}
           isEmpty={(data) => data.items.length === 0}
-          emptyTitle="没有已注册的 provider"
+          emptyTitle="还没有注册任何服务商"
           onRetry={roster.reload}
         >
           {(data) => (
@@ -224,10 +498,15 @@ export function Roster({ query }: { query: string }) {
                   />
                   <div className="os-row-main">
                     <div className="os-row-title">{item.label}</div>
-                    <div className="os-row-sub">
-                      {item.required_env.length > 0
-                        ? `需要：${item.required_env.join(' / ')}`
-                        : '无需密钥'}
+                    <div
+                      className="os-row-sub"
+                      title={
+                        item.required_env.length > 0
+                          ? `需要配置：${item.required_env.join(' / ')}`
+                          : undefined
+                      }
+                    >
+                      {item.required_env.length > 0 ? '需要配置密钥后可用' : '无需密钥'}
                     </div>
                   </div>
                   {item.active && (
@@ -284,7 +563,7 @@ export function BusinessCenter({ query }: { query: string }) {
                   {data.bands.map((band, index) => (
                     <span className="os-legend-item" key={band.key}>
                       <span className="os-dot" style={{ background: colorAt(index) }} />
-                      {band.label}{' '}
+                      {neutralLayerLabel(band.label)}{' '}
                       <span className="os-legend-value">
                         {data.layers.filter((layer) => layer.band === band.key).length}
                       </span>
@@ -293,24 +572,28 @@ export function BusinessCenter({ query }: { query: string }) {
                 </div>
                 <div className="os-list">
                   {rows.map((layer) => (
-                    <div className="os-row" key={layer.id}>
+                    <div
+                      className="os-row"
+                      key={layer.id}
+                      title={`编号：${layer.id}${layer.module ? ` · 模块：${layer.module}` : ''}`}
+                    >
                       <span
                         className="os-dot"
                         style={{ background: colorAt(data.bands.findIndex((b) => b.key === layer.band)) }}
                       />
                       <div className="os-row-main">
-                        <div className="os-row-title">{layer.name}</div>
+                        <div className="os-row-title">{neutralLayerLabel(layer.name)}</div>
                         <div className="os-row-sub">
-                          {layer.band_label} · {layer.phase ?? '—'} ·{' '}
-                          <code>{layer.module ?? '—'}</code>
+                          {neutralLayerLabel(layer.band_label)} · {phaseLabel(layer.phase)}
                         </div>
                       </div>
                       <span className="os-row-tail">{layer.tests} 用例</span>
                       <span
                         className="os-badge"
-                        data-tone={layer.status === 'implemented' ? 'ok' : 'muted'}
+                        data-tone={capabilityStatusTone(layer.status)}
+                        title={layer.status ? `原始状态：${layer.status}` : undefined}
                       >
-                        {layer.status ?? '未知'}
+                        {capabilityStatusLabel(layer.status)}
                       </span>
                     </div>
                   ))}
@@ -330,119 +613,6 @@ export function BusinessCenter({ query }: { query: string }) {
             <br />
             已接入的真实业务数据在 <strong>数据中心</strong> 与 <strong>总览</strong>：
             会话、审计事件、事件分布、依赖健康度。
-          </span>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-export function KnowledgeCenter({ query }: { query: string }) {
-  const roster = useApi<RosterPayload>('/v1/dashboard/roster', 60_000)
-  const spec = useApi<OpenApiPaths>('/openapi.json', 0)
-  const need = query.trim().toLowerCase()
-
-  const knowledgePaths = useMemo(() => {
-    const paths = Object.keys(spec.data?.paths ?? {})
-    return paths.filter((path) => path.startsWith('/knowledge')).sort()
-  }, [spec.data])
-
-  const relatedKernels = useMemo(() => {
-    const wanted = new Set(['context', 'memory', 'capability', 'evaluation'])
-    return (roster.data?.kernels ?? []).filter((kernel) => wanted.has(kernel.kernel))
-  }, [roster.data])
-
-  const filtered = need
-    ? knowledgePaths.filter((path) => path.toLowerCase().includes(need))
-    : knowledgePaths
-
-  return (
-    <div className="os-grid">
-      <Card title="知识检索 API" sub="来自运行中服务的 OpenAPI 定义（真实路由）" span={7}>
-        <Guard
-          loading={spec.loading}
-          error={spec.error}
-          data={spec.data}
-          isEmpty={() => filtered.length === 0}
-          emptyTitle="没有知识相关端点"
-          emptyHint={need ? `没有端点匹配「${query}」` : undefined}
-          onRetry={spec.reload}
-        >
-          {() => (
-            <div className="os-list">
-              {filtered.map((path) => {
-                const methods = Object.keys(spec.data?.paths?.[path] ?? {}).filter((key) =>
-                  ['get', 'post', 'put', 'delete', 'patch'].includes(key),
-                )
-                const detail = spec.data?.paths?.[path] ?? {}
-                const summary =
-                  typeof detail.get === 'object' &&
-                  detail.get !== null &&
-                  'summary' in (detail.get as Record<string, unknown>)
-                    ? String((detail.get as Record<string, unknown>).summary)
-                    : ''
-                return (
-                  <div className="os-row" key={path}>
-                    <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
-                    <div className="os-row-main">
-                      <div className="os-row-title">
-                        <code>{path}</code>
-                      </div>
-                      {summary && <div className="os-row-sub">{summary}</div>}
-                    </div>
-                    {methods.map((method) => (
-                      <span className="os-badge" data-tone="accent" key={method}>
-                        {method.toUpperCase()}
-                      </span>
-                    ))}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </Guard>
-      </Card>
-
-      <Card title="相关知识内核" sub="与知识/记忆/能力直接相关的内核" span={5}>
-        <Guard
-          loading={roster.loading}
-          error={roster.error}
-          data={roster.data}
-          isEmpty={() => relatedKernels.length === 0}
-          emptyTitle="注册表不可用"
-          onRetry={roster.reload}
-        >
-          {() => (
-            <div className="os-list">
-              {relatedKernels.map((kernel) => (
-                <div className="os-row" key={kernel.id}>
-                  <span className="os-dot" style={{ background: 'var(--os-accent-2)' }} />
-                  <div className="os-row-main">
-                    <div className="os-row-title">{kernel.name}</div>
-                    <div className="os-row-sub">
-                      {kernel.id} · {kernel.domain_label}
-                    </div>
-                  </div>
-                  <span
-                    className="os-badge"
-                    data-tone={kernel.status === 'implemented' ? 'ok' : 'muted'}
-                  >
-                    {kernel.status ?? '未知'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Guard>
-      </Card>
-
-      <Card title="说明" span={12}>
-        <div className="os-note">
-          <span>
-            知识检索端点是真实的（直接读自运行中服务的 OpenAPI 定义），但**能否返回结果**
-            取决于是否配置了可用的 LLM provider。provider 的配置状态见
-            <strong> 我AI员工 → 服务面 </strong>或 <strong>总览 → 系统通知</strong>。
-            未配置时端点会如实报错，而不是返回伪造的答案。
           </span>
         </div>
       </Card>

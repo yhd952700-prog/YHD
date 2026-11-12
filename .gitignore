@@ -35,6 +35,8 @@ secrets/
 *.sqlite3
 verify_metrics.db
 liuhao_ai_os.db
+# 目标存储的进程锁（运行期文件，不该进仓库）
+.liuhao_goals.json.lock
 
 # ===== 运行时 / 测试产物（测试生成的记忆/审计/密钥数据，不纳入版本管理） =====
 .pytest-tmp/
@@ -46,6 +48,13 @@ data/security/*.json
 data/model_registry.json
 backup_*.sql
 bandit-report.json
+
+# ===== 员工/目标存储（运行态）=====
+# EmployeeStore 在 LIUHAO_WORKSPACE_ROOT 未设置时把运行态写进仓库根
+# （见 src/ai/employee_store.py 的 _default_store_path）。它是运行数据、
+# 随本机而变，入库只会带来"神秘的 diff"。仓库根的其他临时产物
+# （.tmp_audit_*.db / *.log）已被上面的 *.db 与 *.log 覆盖，这一族是缺口。
+.liuhao_*.json
 
 # ===== 本地工作数据（记忆 / 诊断截图） =====
 .workbuddy/
@@ -63,6 +72,8 @@ Thumbs.db
 *.log
 *.tmp
 logs/*.log
+# 轮转日志（liuhao.log.1 … .5）：上面的 *.log 只匹配到 .log 结尾，轮转副本漏网。
+logs/*.log.*
 
 # ===== CI/CD / 构建产物 =====
 *.pyc
@@ -105,5 +116,99 @@ deploy/cloud/
 # ===== 运行期状态（身份库等）=====
 # *.sqlite3 已在上面忽略；补上 SQLite WAL 模式的伴生文件。
 data/
+# 单实例锁 / 持有者元信息（src/common/instance_lock.py 运行时生成）。
+run/
 *.sqlite3-wal
 *.sqlite3-shm
+
+# ===== 测试/脚本产物 =====
+# retention 冷归档测试落在本仓库根，属生成物。
+.retention_cold/
+# Windows 下 `2>nul` / `> nul` 重定向会在当前目录留一个 0 字节的 nul 文件。
+/nul
+
+# RELEASE-READINESS-CONTRACT 的机器判决，由 scripts/verify_readiness.py 生成。
+# 它嵌有 generated_at 时间戳、environment（os/python）与依赖插件的门禁结果 ——
+# 逐次重生成即不同，故提交它等于「把一份陈旧副本伪装成当前证据」：谁看到旧的
+# PASS 数谁就误判就绪度。判决的正确载体是运行本身 —— CI 在 release-readiness.yml
+# 跑 `--full`，本地跑 `python scripts/verify_readiness.py`。基线类产物
+# （test_baseline.json / bench_baseline.json）是受跟踪的输入，与此不同。
+/scripts/readiness_report.json
+
+# ===== 插件注册表索引（运行产物，非受跟踪输入）=====
+# PluginRegistry._save_index（src/kernels/plugin/__init__.py，写盘见 :443-453）产出的运行快照：
+# generated_at（datetime.now）随每次运行漂移，plugins 内容随当次进程注册了哪些插件而变
+# （本文件曾因此带出一条"注册了却没有 module_path、加载失败"的幽灵条目）。提交它等于把一份
+# 随时会被重写的墙钟快照当作证据 —— 与上面 readiness_report.json 同类。它的正确读法是
+# 运行时产物 / GET /v1/plugins，而非一份受跟踪文件。
+# 一致性说明：并行的第二套插件注册表 data/plugins/registry.json 早已被上方 `data/`
+# 规则（.gitignore:114）忽略；本条目只是补上同样的处置。
+/plugins/registry_index.json
+
+node_modules/
+frontend/dist/
+frontend/node_modules/
+
+# ===== 本地构建与演练产物（只应留在开发机，绝不进交付树）=====
+# dist/ 已在上方忽略；这里补上按轮次命名的中间产物目录（dist-mid-<hash>/）。
+dist-mid-*/
+# UI 验收截图：尺寸大、随分辨率变化，属本机证据而非源码。
+ui-evidence/
+# 升级器运行期状态（last-check.json / status.json / upgrade-ledger.db）。
+# 由 src/upgrade 在 --app-root . 时写进仓库根；含本机发布目录绝对路径。
+upgrade-state/
+upgrade-backups/
+# 自改闭环的运行期状态（selfmod.db 证据账本 + backups/）；同样随每次运行变化。
+.selfmod-state/
+
+# ===== 本机验收/运行时证据（不是交付物）=====
+# 下面五类都是「本机跑一遍才有、换台机器就重来」的证据或运行态：
+# .acceptance/ —— 验收脚本在仓库根留的 sqlite 库与探针（--workdir 默认值）；
+# logs/        —— 网关/启动器/桌面的运行日志与日志锁（内容随每次启动变化）；
+# reports/     —— 诊断与修复演练的截图/JSON（尺寸随分辨率变，属本机证据）；
+# .probe_tmp/  —— 临时探针输出（baseline_pytest.txt 之类）；
+# *.journal*   —— SQLite 回滚日志；*.lock —— 单实例/日志锁文件。
+# 判据：删除它们不影响任何源码、构建或安装包内容，重新跑对应命令即可再生。
+.acceptance/
+/logs/
+/reports/
+.probe_tmp/
+*.journal*
+*.lock
+# 例外：uv 的依赖锁是受跟踪的输入（可复现构建要用），不能一并忽略。
+!uv.lock
+# 仓库根的临时补丁/脚本（.tmp_ 前缀为本机一次性产物）。
+/.tmp_*
+
+# ===== 本地模型权重（运行资产，非受跟踪输入）=====
+# 用 Ollama 做真实联调时会把 gguf 拉到仓库根（例如 qwen2.5:3b，约 1.8 GB）。
+# 它不是源码也不是测试基线，提交它只会把仓库撑爆；权重应由 `ollama pull`
+# 或外部缓存目录管理。`*.gguf` 因此一律忽略。
+*.gguf
+
+# ===== 代码签名私钥（绝不入库）=====
+# 私钥与口令密文只应留在构建机；仓库里只提交公钥 .cer 与指纹配置 signing.json。
+signing/private/
+*.pfx
+*.p12
+*.pvk
+# DPAPI 包裹的口令/私钥密文同样属于机密：即使被误解包也不应进入版本库。
+*.dpapi
+
+# ===== 运行/测试产物（可再生，绝不入库）=====
+# outputs/ 由 selfmod 扫描与前端 a11y 审计写入（pytest JUnit、日志、截图）。
+# 这些是运行时产物，重新跑对应命令即可再生；提交只会带来噪声与仓库体积。
+/outputs/
+
+# ===== 证据类截图（本机证据，不入库）=====
+# 约定：证据类截图（Playwright 截图、审计现场图）随分辨率与机器变化，属「本机跑一遍才有」
+# 的证据，一律不入库；确需留痕请存到仓库外的证据库，不要靠 git 保存二进制截图。
+# artifacts/client-split/ —— 客户端拆分验收截图 + DOM 断言结果。
+# docs/audit/evidence/    —— 审计现场截图（maintenance-root-visible.png 等）。
+/artifacts/client-split/
+/docs/audit/evidence/
+# shots/ —— 本地验收截图，不入库（截图留原地，历史报告里的链接不能断）。
+/shots/
+
+# 内部协作清单（不随包、不入库）
+/src/selfmod/T1-REMAINING-CHECKLIST.md

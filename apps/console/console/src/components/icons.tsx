@@ -76,6 +76,15 @@ export const IconWorkbench = (p: IconProps) => (
   </Glyph>
 )
 
+/** 管家：主星代表「一句话」，两颗小星代表被拆出来、派给员工的子任务。 */
+export const IconButler = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M11 3.4l1.5 4.1 4.1 1.5-4.1 1.5L11 14.6l-1.5-4.1L5.4 9l4.1-1.5z" />
+    <path d="M18 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1L15.1 17l2.1-.8z" />
+    <path d="M5.6 16.4l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5L4 18.5l1.6-.6z" />
+  </Glyph>
+)
+
 export const IconData = (p: IconProps) => (
   <Glyph {...p}>
     <ellipse cx="12" cy="5.6" rx="7.6" ry="2.9" />
@@ -203,5 +212,54 @@ export const IconLock = (p: IconProps) => (
   <Glyph {...p}>
     <rect x="4.6" y="10.4" width="14.8" height="10" rx="2.2" />
     <path d="M8.2 10.4V7.8a3.8 3.8 0 0 1 7.6 0v2.6" />
+  </Glyph>
+)
+
+export const IconFiles = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M6 3.4h7.2L18 8.2v12.4H6z" />
+    <path d="M13 3.4V8.2h4.6" />
+    <path d="M9 12h6M9 15.2h6" />
+  </Glyph>
+)
+
+export const IconGoals = (p: IconProps) => (
+  <Glyph {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <circle cx="12" cy="12" r="2.5" fill="currentColor" />
+  </Glyph>
+)
+
+export const IconProjects = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M3.5 7.2A1.6 1.6 0 0 1 5.1 5.6h3.4l1.8 2.2h7.6A1.6 1.6 0 0 1 19.5 9.4v8.2A1.6 1.6 0 0 1 17.9 19.2H5.1A1.6 1.6 0 0 1 3.5 17.6z" />
+    <path d="M3.6 9.6h16.2v7.8" />
+  </Glyph>
+)
+
+export const IconApps = (p: IconProps) => (
+  <Glyph {...p}>
+    <rect x="3.5" y="3.5" width="7" height="7" rx="1.4" />
+    <rect x="13.5" y="3.5" width="7" height="7" rx="1.4" />
+    <rect x="3.5" y="13.5" width="7" height="7" rx="1.4" />
+    <rect x="13.5" y="13.5" width="7" height="7" rx="1.4" />
+  </Glyph>
+)
+
+export const IconEvents = (p: IconProps) => (
+  <Glyph {...p}>
+    <circle cx="12" cy="12" r="2.2" />
+    <path d="M7.8 7.8a6 6 0 0 0 0 8.4" />
+    <path d="M16.2 7.8a6 6 0 0 1 0 8.4" />
+    <path d="M4.9 4.9a9.5 9.5 0 0 0 0 14.2" />
+    <path d="M19.1 4.9a9.5 9.5 0 0 1 0 14.2" />
+  </Glyph>
+)
+
+export const IconTrust = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M12 3l7.2 2.8v5.4c0 4.4-3 8.3-7.2 9.6-4.2-1.3-7.2-5.2-7.2-9.6V5.8z" />
+    <path d="M12 7.4v9.2" />
+    <path d="M8.4 12h7.2" />
   </Glyph>
 )

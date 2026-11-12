@@ -7,10 +7,11 @@ failure, message history and correlation chains, and bus stats.
 """
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import httpx
 import pytest
-
 from src.kernels.network import (
     Message,
     MessageStatus,
@@ -18,6 +19,24 @@ from src.kernels.network import (
     ProtocolType,
     Route,
 )
+
+
+@pytest.fixture(autouse=True)
+def _direct_http_no_proxy(monkeypatch):
+    """Local-server tests must bypass any ambient HTTP proxy.
+
+    The dev/sandbox environment sets HTTP_PROXY/HTTPS_PROXY to a local forward
+    proxy; httpx routes loopback through it, and that proxy is flaky under full
+    suite load (WinError 10054 connection reset). These tests target an explicit
+    local server, so force trust_env=False on every httpx.Client they build.
+    """
+    _orig = httpx.Client
+
+    def _client(*args, **kwargs):
+        kwargs.setdefault("trust_env", False)
+        return _orig(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", _client)
 
 
 # Local server used to exercise the (now real) HTTP adapter honestly.
@@ -35,7 +54,34 @@ class _TestHandler(BaseHTTPRequestHandler):
 def _start_server():
     server = HTTPServer(("127.0.0.1", 0), _TestHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    # The socket is bound + listening in HTTPServer.__init__, but the daemon
+    # thread may not have begun its accept loop (serve_forever) yet. A client
+    # POST before that races the server and gets a RST (WinError 10054) under
+    # load. Poll with a real request until the server actually answers.
+    _wait_for_server_ready(server)
     return server
+
+
+def _wait_for_server_ready(server: HTTPServer, timeout: float = 5.0) -> None:
+    """Block until ``server``'s accept loop is handling requests.
+
+    Avoids a startup race where the test POSTs to a socket that is listening
+    but not yet accepting, which produces a spurious connection-reset failure
+    (WinError 10054) only under heavy GIL/scheduling contention.
+    """
+    port = server.server_address[1]
+    deadline = time.monotonic() + timeout
+    probe = httpx.Client(timeout=0.2, trust_env=False)
+    try:
+        while time.monotonic() < deadline:
+            try:
+                if probe.post(f"http://127.0.0.1:{port}/__lb_health__", content=b"{}").status_code == 200:
+                    return
+            except Exception:
+                time.sleep(0.005)
+        raise RuntimeError("test HTTP server did not become ready to accept connections")
+    finally:
+        probe.close()
 
 
 @pytest.fixture

@@ -14,12 +14,40 @@ What this proves:
   4. The audit chain closes: grant issue/revoke events exist AND an action
      executed under a window carries ``sovereignty_grant`` in its own record.
   5. SAFETY GUARDS: no production ``@kernel_action`` flips ``enforce=True``;
-     no production kernel code opens a sovereignty channel; the approval request
-     model cannot name the approver (the principal is token-only); and exactly one
-     file may arm the switch -- the production manifest, with a spec that resolves
-     to the whole gated surface **minus the audited exemptions** (C-6). Dev, CI
-     and the Dockerfile must never arm it, so the suite keeps exercising the
-     record-only (L1) contract.
+     no statically-resolvable opener of a sovereignty channel under ``src/``;
+     the approval request
+     model cannot name the approver (the principal is token-only); and exactly
+     three surfaces arm the switch for a deployed environment: the production
+     deployment manifest (``docker-compose.prod.yml``), the staging deployment
+     contract (``infra/staging/docker-compose.yml``) and the cloud-bundle
+     launcher template (``scripts/build_cloud_bundle.py``), each resolving to the
+     CRITICAL tier **minus the audited exemptions** (C-6; D24 narrowed the
+     deployment to CRITICAL only). Staging is a *deployed* pre-prod environment,
+     so mirroring production's CRITICAL there is the fail-closed-correct posture;
+     it exercises the real gate before prod instead of staying record-only.
+     Local dev, CI and the Dockerfile must never arm it, so the suite keeps
+     exercising the record-only (L1) contract.
+
+     Bounds of that last claim, stated rather than left implicit: the scan now
+     covers ``scripts/`` as well (the exclusion was removed), so the bundle
+     launcher is in scope and asserted to arm exactly CRITICAL -- not
+     ``HIGH,CRITICAL``. A Python write of the variable whose **value is a
+     variable** (a verification harness probing reachability, e.g.
+     ``scripts/verify_armed_actions_are_inert.py``) is *not* classified as a
+     deployment-arming site, because it ships no default spec; only a literal
+     spec write is. "Exactly three surfaces arm a shipped default, all CRITICAL"
+     is therefore what is asserted, and it holds.
+
+     Bounds of the opener claim too, stated rather than left implicit: the scan
+     covers ``src/`` only -- not ``tests/`` or ``scripts/``, which must be able to
+     open a window to exercise the channel -- and it resolves symbol *names*, so a
+     call whose symbol cannot be resolved statically (:func:`getattr` with a
+     runtime name) is out of scope. The label says "statically-resolvable opener
+     ... under src/" for exactly that reason. This file previously asserted the
+     unqualified "no production kernel code opens a sovereignty channel" over a
+     ``src/kernels/``-only scan, which is the defect the c3 guard names in its own
+     comment ("the label must not be broader than what the checker actually
+     proves").
 
 C-6 update (2026-09-12, Round 75)
 ---------------------------------
@@ -33,6 +61,11 @@ were replaced by the stronger, more specific pair:
   nothing extra *and* silently dropping nothing; and
 * no exempt action may be armed, and naming one in the spec must raise.
 
+D24 (2026-09-12): the deployment was narrowed from ``HIGH,CRITICAL`` to
+``CRITICAL`` only, so the check below now compares against the CRITICAL tier
+minus exemptions. The HIGH-tier audit is still complete (every HIGH action
+measured unreachable, one exempted); it is simply no longer armed by default.
+
 Reachability itself is not asserted here (a static file cannot see it); it is
 measured dynamically by ``scripts/verify_armed_actions_are_inert.py``.
 """
@@ -44,14 +77,16 @@ import importlib
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import time
-from typing import Optional
+from typing import Dict, List, Optional
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-KERNELS_DIR = REPO_ROOT / "src" / "kernels"
+SRC_DIR = REPO_ROOT / "src"
+DEFINING_MODULE = (SRC_DIR / "kernels" / "_sovereignty.py").resolve()
 POLICY_ROUTER = REPO_ROOT / "src" / "gateway" / "policy.py"
 
 #: The only file allowed to arm the switch: the production deployment manifest.
@@ -59,7 +94,37 @@ POLICY_ROUTER = REPO_ROOT / "src" / "gateway" / "policy.py"
 #: off so the suite keeps exercising the record-only (L1) contract.
 PROD_MANIFEST = "docker-compose.prod.yml"
 
+#: The second legitimate arming site: the cloud-bundle launcher template.
+#: ``scripts/build_cloud_bundle.py`` renders ``LIUHAO_KERNEL_POLICY_ENFORCE``
+#: unconditionally into the generated ``serve.py`` (D24 requires it to be
+#: CRITICAL, matching the production manifest). It is scanned alongside the
+#: manifest and must resolve to exactly CRITICAL.
+BUNDLE_LAUNCHER = "scripts/build_cloud_bundle.py"
+
+#: The third legitimate arming site: the *staging* deployment contract
+#: (``infra/staging/docker-compose.yml``, added by the G9 staging-verification
+#: chain). Staging is a DEPLOYED pre-prod environment, not a local dev/CI run, so
+#: mirroring production's CRITICAL enforcement there is the fail-closed-correct
+#: posture -- it exercises the real gate before prod, instead of staying
+#: record-only. It must also resolve to exactly CRITICAL. Local dev, CI and the
+#: Dockerfile stay record-only (L1) on purpose, so the suite keeps exercising the
+#: un-armed contract.
+STAGING_MANIFEST = "infra/staging/docker-compose.yml"
+
+#: The fourth legitimate arming site: the installed-build launcher.
+#: ``scripts/launch_installed.py`` is the entry point the Windows installer
+#: starts; the installed form IS the production form, so 0.1.2.1 makes it
+#: ``setdefault`` the switch to CRITICAL (and the app.env template it writes
+#: carries the same line). Local dev and CI never run this file, so the suite
+#: still exercises the record-only (L1) contract.
+INSTALLED_LAUNCHER = "scripts/launch_installed.py"
+
 RESULTS = []
+
+
+# Sovereignty grants are bound to a target (governance ruling 2026-10-05);
+# a concrete target is enough for these checks.
+_TARGET = "kernel-target:demo"
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -81,7 +146,7 @@ def _fresh_manager_with_human():
 def _discover_enforce_flags() -> dict:
     """Map of action-name -> True for any production call site passing enforce=True."""
     enforced: dict = {}
-    for path in KERNELS_DIR.rglob("*.py"):
+    for path in SRC_DIR.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
@@ -109,22 +174,121 @@ def _discover_enforce_flags() -> dict:
     return enforced
 
 
+#: Symbols that *open* the channel. Distinguished by name from the readers
+#: (``get_active_sovereignty`` et al), so an over-broad "anything imported from
+#: _sovereignty" rule -- which would flag legitimate reads -- is never needed.
+#: ``grant_window`` is an opener by the module's own account: ``_sovereignty.py``
+#: names it alongside ``human_sovereign`` / ``set_active_sovereignty`` as a way to
+#: open the channel, and it returns a ``human_sovereign`` bound to the grant.
+_OPENER_SYMBOLS = frozenset(
+    {"human_sovereign", "set_active_sovereignty", "ActiveSovereignty", "grant_window"}
+)
+
+
+def _folded_str(node: ast.AST) -> Optional[str]:
+    """Statically fold a string expression, or ``None`` if it is not one.
+
+    Covers ``"set_active_" + "sovereignty"`` and placeholder-free f-strings --
+    the shapes used to keep a symbol name out of a naive
+    ``getattr(func, "id", None)`` comparison.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_str(node.left)
+        right = _folded_str(node.right)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _import_aliases(tree: ast.AST) -> Dict[str, str]:
+    """Map each locally bound name to the symbol it actually refers to.
+
+    ``from src.kernels._sovereignty import human_sovereign as hs`` binds ``hs``
+    to ``human_sovereign``, so an aliased call resolves back to the opener
+    instead of looking like an unknown function.
+    """
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name.rsplit(".", 1)[-1]
+    return aliases
+
+
+def _callee_symbol(func: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
+    """The symbol a call target resolves to, or ``None`` if unresolvable.
+
+    Handles ``f(...)``, ``mod.f(...)``, an aliased ``f``, and the folded
+    ``getattr(obj, "a" + "b")(...)`` form -- where ``func`` is itself an
+    ``ast.Call`` and both ``id`` and ``attr`` are ``None``, which is exactly why
+    the previous marker comparison could never see it.
+    """
+    if isinstance(func, ast.Name):
+        return aliases.get(func.id, func.id)
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Call):
+        inner = func.func
+        name = getattr(inner, "id", None) or getattr(inner, "attr", None)
+        if name == "getattr" and len(func.args) >= 2:
+            return _folded_str(func.args[1])
+    return None
+
+
 def _production_opens_sovereignty() -> bool:
-    """True if any production kernel module OPENS a sovereignty channel."""
-    markers = ("human_sovereign", "set_active_sovereignty", "ActiveSovereignty")
-    for path in KERNELS_DIR.rglob("*.py"):
-        if path.name == "_sovereignty.py":
+    """True if any scanned production module OPENS a sovereignty channel.
+
+    The claim is bounded to the shapes actually covered:
+
+    * a **direct** call ``human_sovereign(...)`` / ``set_active_sovereignty(...)``
+      / ``ActiveSovereignty(...)`` / ``grant_window(..., target=_TARGET)``;
+    * an **attribute** call ``mod.set_active_sovereignty(...)``;
+    * an **import alias** (``from ... import human_sovereign as hs`` then
+      ``hs(...)``), resolved through the module's own import table;
+    * a **folded** ``getattr(obj, "set_active_" + "sovereignty")(...)``;
+
+    scanning ``src/`` (not only ``src/kernels/``). Reading the channel --
+    ``get_active_sovereignty`` -- is the mechanism itself and is *not* flagged in
+    any of the same four shapes: the predicate resolves to a symbol *name* and
+    only the opener names above are openers.
+
+    Deliberately out of scope, named rather than left implicit: ``tests/`` and
+    ``scripts/`` are not scanned at all, because a harness must be able to open
+    a window to exercise the channel. Neither is a call whose symbol cannot be
+    resolved statically (e.g. ``getattr(obj, runtime_name)``). The defining
+    module ``src/kernels/_sovereignty.py`` -- and only it, matched by resolved
+    path (:data:`DEFINING_MODULE`) -- is skipped: it is where these symbols are
+    *defined*, so a definition there is not a production opener. A different file
+    that merely shares the basename is scanned like any other.
+    """
+    for path in SRC_DIR.rglob("*.py"):
+        if path.resolve() == DEFINING_MODULE:
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
             continue
+        aliases = _import_aliases(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                fname = getattr(func, "id", None) or getattr(func, "attr", None)
-                if fname in markers:
-                    return True
+            if not isinstance(node, ast.Call):
+                continue
+            if _callee_symbol(node.func, aliases) in _OPENER_SYMBOLS:
+                return True
     return False
 
 
@@ -165,23 +329,154 @@ def _spec_from_line(line: str, var: str) -> Optional[str]:
     return None
 
 
+def _tracked_files() -> List[pathlib.Path]:
+    """Repository files tracked by git.
+
+    Excludes untracked scratch (e.g. local verification helpers) and gitignored
+    build output, so the check verifies the *committed, shippable* deployment
+    artifacts -- the production manifest and the cloud-bundle launcher -- rather
+    than whatever happens to sit in a working tree. Falls back to a full tree
+    walk if git is unavailable.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        # git 不可用时退化为文件树遍历：检查**仍然完整执行**，只是取证来源不同。
+        # 这是降级取证，不是"拿不到证据却 exit 0"。
+        return [p for p in REPO_ROOT.rglob("*") if p.is_file()]
+    return [REPO_ROOT / p for p in out.stdout.split("\0") if p]
+
+
+def _attr_chain(node: ast.AST) -> str:
+    """Render a dotted attribute/name chain as ``a.b.c`` (or '' if not a chain)."""
+    parts: List[str] = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+    return ".".join(reversed(parts)) if parts else ""
+
+
+def _python_arms_env_var(tree: ast.AST, var: str) -> Optional[str]:
+    """Return the literal spec a Python file arms ``var`` with, else ``None``.
+
+    Only real arming operations count -- ``os.environ.setdefault('VAR', 'VAL')``,
+    ``os.putenv('VAR', 'VAL')``, or ``os.environ['VAR'] = 'VAL'``. A docstring or
+    comment that merely *mentions* the pattern (e.g. an example embedded in a
+    gate script's docstring) is NOT an AST call/assignment and is therefore
+    ignored -- the regex-over-raw-text approach used previously mis-flagged such
+    mentions as deployment-arming sites. A write whose value is not a string
+    literal (a reachability probe) ships no default and is also ignored.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fname = _attr_chain(node.func)
+            if fname in ("os.environ.setdefault", "os.putenv") and len(node.args) >= 2:
+                key, val = node.args[0], node.args[1]
+                if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                        and key.value == var):
+                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                        return val.value
+                    return None
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Subscript)
+                        and _attr_chain(target.value) == "os.environ"
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                        and target.slice.value == var):
+                    val = node.value
+                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                        return val.value
+                    return None
+    return None
+
+
+def _python_arming_from_text(text_: str, var: str) -> Optional[str]:
+    """Return the literal spec a *file's raw text* arms ``var`` with, else None.
+
+    Scans raw text -- including string literals such as a generated launcher
+    template -- for ``os.environ.setdefault('VAR', 'VAL')``, ``os.putenv(...)``
+    or ``os.environ['VAR'] = 'VAL'``. Used ONLY for the cloud-bundle launcher,
+    which ships its arming inside a template string rather than an executable
+    call. Every other Python file is checked via AST, so its docstrings and
+    comments are never mis-classified as arming sites.
+    """
+    for line in text_.splitlines():
+        if var not in line:
+            continue
+        patterns = [
+            re.escape(var) + r'["\']\s*,\s*["\']([^"\']*)["\']',
+            re.escape(var) + r'["\']\s*\]\s*=\s*["\']([^"\']*)["\']',
+        ]
+        for pat in patterns:
+            m = re.search(pat, line)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def _python_arming_for_file(rel: str, text_: str, var: str) -> Optional[str]:
+    """Dispatch Python arming detection.
+
+    The bundle launcher is read from raw text because its arming lives in a
+    generated template string; every other Python file is checked via AST, so a
+    docstring/comment that merely *mentions* the write pattern (e.g. an example
+    inside a gate script's docstring) is never mis-classified as an arming site.
+    """
+    if rel == BUNDLE_LAUNCHER:
+        return _python_arming_from_text(text_, var)
+    try:
+        tree = ast.parse(text_, filename="<" + rel + ">")
+    except SyntaxError:
+        return None
+    return _python_arms_env_var(tree, var)
+
+
 def _armed_specs() -> dict:
     """Map every file that *arms* the switch to the spec it arms it with.
 
     Arming = assigning the variable in a config/deployment file, or *writing* it
-    from Python (``os.environ[...] =`` / ``putenv`` / ``setdefault``). Prose and
-    docstrings that merely name the variable are deliberately not hits -- the
-    enforcement module and the decorator must be able to document the switch.
+    from Python with a **literal** spec (``os.environ.setdefault("VAR", "VALUE")``
+    / ``putenv`` / ``environ["VAR"] = "VALUE"``). Python detection is AST-based,
+    so prose, docstrings and comments that merely *mention* the write pattern are
+    not hits -- the enforcement module and the gate scripts are free to document
+    or illustrate it. Only an actual ``os.environ[...]`` assignment or
+    ``setdefault``/``putenv`` call with a literal value counts as an arming site.
+
+    A Python write whose value is a *variable* (a verification harness probing
+    reachability, e.g. ``scripts/verify_armed_actions_are_inert.py`` setting the
+    variable to ``action`` / ``spec``) ships no default and is **not** counted as
+    an arming site -- only a literal spec write is.
+
+    The scan covers the whole repository **minus ``tests/``** (and ``.venv/``,
+    ``.git/``, ``node_modules/``). ``scripts/`` is deliberately scanned so the
+    cloud-bundle launcher is visible: D24 requires it to arm exactly CRITICAL,
+    matching the production manifest. ``infra/staging/`` is likewise a deployed
+    pre-prod contract that legitimately mirrors production's CRITICAL. Three
+    surfaces may therefore arm the switch -- the production manifest, the staging
+    contract and the bundle launcher -- and the caller asserts all three resolve
+    to CRITICAL. Do not read a single hit here as "only one file in the
+    repository arms this".
     """
     var = "LIUHAO_KERNEL_POLICY_ENFORCE"
     config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}
+    # Enumerated rather than a bare directory skip, so the exclusion is visible
+    # at the point it is applied -- and its consequence is recorded above.
+    # NOTE: ``scripts/`` is intentionally NOT excluded -- the cloud-bundle
+    # launcher is a real arming site that D24 requires to be CRITICAL.
+    excluded_roots = (".venv/", ".git/", "node_modules/", "tests/")
     armed = {}
-    for path in REPO_ROOT.rglob("*"):
+    for path in _tracked_files():
         if not path.is_file():
             continue
         rel = path.relative_to(REPO_ROOT).as_posix()
-        if any(rel.startswith(p) for p in (".venv/", ".git/", "node_modules/",
-                                           "tests/", "scripts/")):
+        if any(rel.startswith(p) for p in excluded_roots):
             continue
         try:
             text_ = path.read_text(encoding="utf-8", errors="ignore")
@@ -193,22 +488,18 @@ def _armed_specs() -> dict:
         is_config = suffix in config_suffixes or path.name.startswith("Dockerfile")
         if not is_config and suffix != ".py":
             continue
-        for line in text_.splitlines():
-            if var not in line:
-                continue
-            if is_config:
+        if is_config:
+            for line in text_.splitlines():
+                if var not in line:
+                    continue
                 spec = _spec_from_line(line, var)
-                if spec is None:
-                    continue
-            else:
-                writes_env = ("putenv" in line or "setdefault" in line
-                              or ("=" in line and "environ" in line))
-                if not writes_env:
-                    continue
-                # A Python env write is always unexpected, whatever it sets.
-                spec = _spec_from_line(line, var) or "<env-write>"
-            armed[rel] = spec
-            break
+                if spec is not None:
+                    armed[rel] = spec
+                    break
+        else:
+            spec = _python_arming_for_file(rel, text_, var)
+            if spec is not None:
+                armed[rel] = spec
     return armed
 
 
@@ -229,8 +520,8 @@ def main() -> int:
 
     check("parse_spec('CRITICAL') -> 2 actions", len(enf.parse_spec("CRITICAL")) == 2)
     check(
-        "parse_spec('HIGH') -> 14 actions (15 minus the audited exemption)",
-        len(enf.parse_spec("HIGH")) == 14,
+        "parse_spec('HIGH') -> 16 actions (17 minus the audited exemption)",
+        len(enf.parse_spec("HIGH")) == 16,
         f"got {len(enf.parse_spec('HIGH'))}",
     )
     check(
@@ -286,8 +577,8 @@ def main() -> int:
                 raised = err.verdict == "defer"
             check("switch ON -> production-style call site now defers (no grant)", raised)
 
-            grant = sov.issue_grant(human.id, ["capability.retire"], reason="c4 verify")
-            with sov.grant_window(grant):
+            grant = sov.issue_grant(human.id, ["capability.retire"], reason="c4 verify", target=_TARGET)
+            with sov.grant_window(grant, target=_TARGET):
                 out = retire_armed()
             check("switch ON + grant -> action executes", out == "ran", str(out))
         finally:
@@ -295,7 +586,7 @@ def main() -> int:
             enf.reload()
 
         # 3. grant mechanics
-        grant = sov.issue_grant(human.id, ["capability.retire"], reason="mechanics")
+        grant = sov.issue_grant(human.id, ["capability.retire"], reason="mechanics", target=_TARGET)
         check("grant is active on issue", grant.is_active() and not grant.is_expired())
         check("grant retrievable by id", sov.get_grant(grant.grant_id) is grant)
         check("grant appears in listing",
@@ -311,15 +602,15 @@ def main() -> int:
         check("revoked grant hidden from default listing",
               grant.grant_id not in [g.grant_id for g in sov.list_grants()])
         try:
-            sov.grant_window(revoked)
+            sov.grant_window(revoked, target=_TARGET)
             check("revoked grant cannot open a window", False, "no ValueError")
         except ValueError:
             check("revoked grant cannot open a window", True)
 
-        expired = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01)
+        expired = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01, target=_TARGET)
         time.sleep(0.05)
         try:
-            sov.grant_window(expired)
+            sov.grant_window(expired, target=_TARGET)
             check("expired grant cannot open a window", False, "no ValueError")
         except ValueError:
             check("expired grant cannot open a window", True)
@@ -333,14 +624,14 @@ def main() -> int:
             ([], "empty action set"),
         ):
             try:
-                sov.issue_grant(human.id, bad)
+                sov.issue_grant(human.id, bad, target=_TARGET)
                 check(f"issue_grant rejects {label}", False, "no ValueError")
             except ValueError:
                 check(f"issue_grant rejects {label}", True)
 
         for bad in (0, -1, sov.MAX_GRANT_TTL_SECONDS + 1):
             try:
-                sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=bad)
+                sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=bad, target=_TARGET)
                 check(f"issue_grant rejects ttl={bad}", False, "no ValueError")
             except ValueError:
                 check(f"issue_grant rejects ttl={bad}", True)
@@ -351,7 +642,7 @@ def main() -> int:
             ("liuhao-internal-service", "service identity"),
         ):
             try:
-                sov.issue_grant(bad, ["capability.retire"])
+                sov.issue_grant(bad, ["capability.retire"], target=_TARGET)
                 check(f"issue_grant rejects {label}", False, "no ValueError")
             except ValueError:
                 check(f"issue_grant rejects {label}", True)
@@ -373,20 +664,42 @@ def main() -> int:
         check("grant issue writes a 'granted' audit event", bool(_events("granted")))
         check("grant revoke writes a 'revoked' audit event", bool(_events("revoked")))
 
-        chained = sov.issue_grant(human.id, ["capability.retire"], reason="chain")
+        chained = sov.issue_grant(human.id, ["capability.retire"], reason="chain", target=_TARGET)
 
         @xc.kernel_action("capability.retire", enforce=True)
         def retire_enforced():
             return "ran"
 
-        with sov.grant_window(chained):
+        with sov.grant_window(chained, target=_TARGET):
             retire_enforced()
 
         details = None
-        for ev in audit_query(principal_id="kernel", limit=200, reverse=True):
+        # PHASE 3.6 / A2 + F26: the audit subject is no longer the literal string
+        # "kernel" -- it is the *actual* acting principal (here, the delegated
+        # human, because the grant window made the policy engine adjudicate as
+        # that human). Pinning the old literal would find either nothing or a
+        # stale row left in the shared audit store by an earlier run, and a stale
+        # row is a green that proves nothing. So: find the event by WHAT HAPPENED,
+        # then assert the attribution as a VALUE rather than reading a column.
+        for ev in audit_query(limit=200, reverse=True):
             det = ev.get("details") or {}
             if det.get("action") == "capability.retire" and det.get("policy_decision") == "allow":
                 details = det
+                fingerprint = det.get("actor_fingerprint")
+                check(
+                    "allowed action audit carries a usable attribution",
+                    isinstance(fingerprint, str)
+                    and len(fingerprint) == 32
+                    and all(c in "0123456789abcdef" for c in fingerprint),
+                    f"actor_fingerprint={fingerprint!r} "
+                    f"(F26: a non-empty column is not evidence)",
+                )
+                check(
+                    "audit principal keyspace agrees with the actor identity id",
+                    ev.get("principal_id") == det.get("actor_identity_id"),
+                    f"principal_id={ev.get('principal_id')!r} vs "
+                    f"actor_identity_id={det.get('actor_identity_id')!r}",
+                )
                 break
         check("allowed action audit carries sovereignty_grant",
               bool(details) and details.get("sovereignty_grant") == chained.grant_id,
@@ -403,7 +716,7 @@ def main() -> int:
     flipped = _discover_enforce_flags()
     check("no production @kernel_action has enforce=True",
           not flipped, f"flipped={sorted(flipped)}" if flipped else "")
-    check("no production kernel code opens a sovereignty channel",
+    check("no statically-resolvable opener of a sovereignty channel under src/",
           not _production_opens_sovereignty())
 
     fields = _approval_request_fields()
@@ -421,10 +734,21 @@ def main() -> int:
     )
 
     armed = _armed_specs()
-    unexpected = sorted(k for k in armed if k != PROD_MANIFEST)
-    check("only the production manifest arms enforcement (dev/CI/Dockerfile never)",
+    allowed_arming = {
+        PROD_MANIFEST, STAGING_MANIFEST, BUNDLE_LAUNCHER, INSTALLED_LAUNCHER,
+    }
+    unexpected = sorted(k for k in armed if k not in allowed_arming)
+    check("only the production manifest, the staging contract, the "
+          "cloud-bundle launcher, and the installed-build launcher arm "
+          "enforcement (dev/CI/Dockerfile never)",
           not unexpected,
-          f"unexpected={unexpected}" if unexpected else f"armed via {PROD_MANIFEST} only")
+          f"unexpected={unexpected}" if unexpected else f"armed via {sorted(armed)}")
+    for site in sorted(allowed_arming):
+        spec = armed.get(site)
+        check(f"{site} arms exactly CRITICAL (D24 deployment truth)",
+              spec == "CRITICAL",
+              (f"{site} spec={spec!r}" if spec != "CRITICAL"
+               else f"armed via {sorted(armed)}"))
 
     prod_spec = armed.get(PROD_MANIFEST)
     check("production manifest arms the switch explicitly",
@@ -441,11 +765,12 @@ def main() -> int:
         check("production manifest spec parses (no typo, no inert entry)",
               spec_error is None, spec_error or f"spec={prod_spec!r}")
 
-        # C-6: the armed set must equal the whole gated surface minus the audited
-        # exemptions -- not more (nothing armed by accident) and not less (nothing
-        # silently dropped from a tier expansion).
-        audited_surface = (high_actions | critical_actions) - set(enf.EXEMPT_ACTIONS)
-        check("production manifest arms exactly the audited surface",
+        # C-6/D24: the armed set must equal the CRITICAL tier minus the audited
+        # exemptions (D24 narrowed the deployment from HIGH,CRITICAL to CRITICAL)
+        # -- not more (nothing armed by accident) and not less (nothing silently
+        # dropped from the tier expansion).
+        audited_surface = critical_actions - set(enf.EXEMPT_ACTIONS)
+        check("production manifest arms exactly the audited (CRITICAL) surface",
               armed_actions == audited_surface,
               f"armed={len(armed_actions)} audited={len(audited_surface)} "
               f"missing={sorted(audited_surface - armed_actions)} "

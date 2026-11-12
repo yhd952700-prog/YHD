@@ -16,12 +16,37 @@ from src.kernels._risk_classification import RiskTier
 
 
 def _audit_details(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    Does **not** filter by ``principal_id``: before A2 the decorator recorded the
+    literal subject ``"kernel"``, so a test could find its own row by that
+    string. A2 replaced the constant with the *actual* acting principal, so
+    pinning the literal finds either nothing or a stale row left in the shared
+    ``audit_store.db`` by an earlier run -- a green that proves nothing.
+
+    Attribution is asserted as a **value** (F26): ``actor_fingerprint`` must be
+    32 hex chars, and the event's ``principal_id`` must agree with the
+    ``actor_identity_id`` in ``details`` (the A2 keyspace convergence).
+    """
     from src.kernels.audit import audit_query
 
-    for ev in audit_query(principal_id="kernel", limit=200, reverse=True):
+    for ev in audit_query(limit=200, reverse=True):
         det = ev.get("details") or {}
-        if det.get("action") == action_name:
-            return det
+        if det.get("action") != action_name:
+            continue
+        fp = det.get("actor_fingerprint")
+        assert isinstance(fp, str) and len(fp) == 32 and all(
+            c in "0123456789abcdef" for c in fp
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fp!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
     return None
 
 
@@ -114,7 +139,10 @@ class TestEnforcedAllowDoesNotBlock:
         # If adjudication returns allow for a HIGH action, enforce must NOT fire.
         import src.kernels._crosscutting as xc
 
-        monkeypatch.setattr(xc, "_adjudicate", lambda a, r: ("allow", "sim"))
+        monkeypatch.setattr(
+            xc, "_adjudicate",
+            lambda a, r: ("allow", "sim", xc._service_actor_policy_shape()),
+        )
 
         @kernel_action("identity.grant_permission", enforce=True)
         def high_simulated_allow():
@@ -129,7 +157,10 @@ class TestFailClosed:
     def test_adjudication_failure_blocks(self, monkeypatch):
         import src.kernels._crosscutting as xc
 
-        monkeypatch.setattr(xc, "_adjudicate", lambda a, r: (None, None))
+        monkeypatch.setattr(
+            xc, "_adjudicate",
+            lambda a, r: (None, None, xc._service_actor_policy_shape()),
+        )
 
         @kernel_action("security.set_abac_rule", enforce=True)  # CRITICAL
         def critical_enforced():
@@ -143,7 +174,10 @@ class TestFailClosed:
     def test_adjudication_failure_not_enforced_is_safe(self, monkeypatch):
         import src.kernels._crosscutting as xc
 
-        monkeypatch.setattr(xc, "_adjudicate", lambda a, r: (None, None))
+        monkeypatch.setattr(
+            xc, "_adjudicate",
+            lambda a, r: (None, None, xc._service_actor_policy_shape()),
+        )
 
         @kernel_action("security.set_abac_rule")  # enforce defaults False
         def critical_record_only():
@@ -171,3 +205,26 @@ class TestGateOnlyEscalatesEnforcedTiers:
         assert RiskTier.MEDIUM not in ENFORCED_TIERS
         assert is_enforced_tier(RiskTier.CRITICAL) is True
         assert is_enforced_tier(RiskTier.MEDIUM) is False
+
+
+class TestCriticalBlockVsRecord:
+    """D24: CRITICAL actions are deferred/blocked when enforced, recorded when not."""
+
+    @kernel_action("capability.retire", enforce=True)  # CRITICAL, service=deny
+    def critical_enforced(self):
+        return "ran-should-not"
+
+    def test_enforced_critical_blocks_pending_human(self):
+        with pytest.raises(PolicyDeferredError) as exc:
+            self.critical_enforced()
+        assert exc.value.action == "capability.retire"
+        assert exc.value.verdict == "defer"
+
+    def test_record_only_critical_executes(self):
+        @kernel_action("capability.retire")  # enforce defaults False
+        def critical_record_only():
+            return "ran"
+
+        # Library default (no enforce + env unset): additive record-only, the
+        # body runs and nothing is blocked even though the verdict is deny.
+        assert critical_record_only() == "ran"

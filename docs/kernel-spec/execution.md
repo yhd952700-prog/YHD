@@ -136,6 +136,129 @@ Execution Kernel 是 Human-Sovereign Agent OS 的**编排内核**，负责把一
   - 重试基元与 `src/ai/providers.py` 重复，应收敛为共享原语。
   - `resource` 内核被导入却未消费（`__init__.py:28`），配额约束未真正接入执行路径。
 
+## 7.1 幂等与重入语义（ACTION-01 / TOOL-04，现状已核对）
+
+副作用去重靠三条相互独立的机制：稳定 key、默认 fail-closed 的判定、以及「执行前占坑
+→ 执行 → 落账」的账本。缺任何一条，发消息 / 调外部接口 / 写记忆这类副作用都可能被重放。
+
+### 7.1.1 稳定 action id 会传到执行器
+
+- `make_action_id(goal_id, task_name, attempt=0)`（`src/kernels/execution/__init__.py:203`）
+  产出 `act-<sha1(goal_id:task_name) 前 12 位>-<attempt>`。`Task.id` 是 `uuid4()[:8]`，
+  跨进程每次重跑都会变，**不能**当幂等键；同一次执行的所有重试复用同一个 action id。
+- 执行器契约支持可选关键字参数
+  `executor(capability_id, inputs, *, action_id: str | None = None)`。
+  `invoke_capability_executor`（`:226`）先做签名内省（`executor_accepts_action_id`，
+  `:214`），只把 `action_id` 传给声明了该参数（或 `**kwargs`）的执行器；旧签名
+  `executor(capability_id, inputs)` 不会因多传参数而 `TypeError`。`action_id` 走显式
+  关键字、不塞进 `inputs`，避免被业务字段覆盖。
+
+### 7.1.2 默认 fail-closed：名单外一律按不可重入
+
+- 只有 `REENTRANT_CAPABILITIES`（`__init__.py:153` 起）里的天然幂等能力免去重：
+  `file_write`、`python_compute`、`file.read`、`file.list`、`memory.search`、
+  `audit.query`、`system.status`、`preview_stop`。
+- 判定 `capability_is_reentrant`（`:193`）是**白名单**：不在名单内即为不可重入。
+- 另有一份**硬副作用**清单 `HARD_SIDE_EFFECT_CAPABILITIES`（`:179-185`）：
+  `network_bus`、`personal.write`、`multi_tier_memory`、`preview_start`、
+  `execution_pipeline`。它**不参与**去重判定，只用于「账本缺席时该拒绝谁」（见 7.1.5）。
+  `NON_REENTRANT_CAPABILITIES`（`:190`）是历史名字，语义已等同于这份硬副作用清单。
+- 新增能力默认落在「不可重入」一侧，不需要有人记得把它加进黑名单；但新增
+  「不可撤销外部后果」的能力时**必须**加进 `HARD_SIDE_EFFECT_CAPABILITIES`，
+  否则在无账本部署里它会被当作可安全重入而放行。
+- `_action_idempotency_key`（`:1367`）只对不可重入能力返回键；把幂等能力强制
+  走账本，会把一次无害重试误报成「重放」。
+
+### 7.1.3 占坑 → 执行 → 落账
+
+1. 执行前 `journal.claim_idempotency(key, execution_id, ...)` 原子占坑
+   （`src/kernels/execution/_journal.py` 的 `INSERT OR IGNORE` + 主键唯一；跨进程
+   共用一个 SQLite 文件时也只有一个调用方能赢）。
+2. 占坑失败 → `_replay_action`（`:1480`）：
+   - 已落账：直接返回首次结果（`replayed=True`），**不再执行**；
+   - **有占坑、无结果**（副作用已发生但结果没写进账本）：`status="replayed_unknown"`、
+     `success=False`，错误文案「该动作已执行过但结果未落账（结果未知），已停止重复执行；
+     请人工确认后再决定是否重试」，**不再执行**。
+3. 执行后 `_settle_idempotency`（`:1536`）：
+   - 成功 → `remember_idempotent_result` 落账；
+   - 超时 → **保留占坑不释放**（工具可能在超时前已提交副作用）；
+   - 只有执行器**显式**返回 `success: False` → `release_idempotency`（允许下次真跑）；
+   - 缺 `success` 字段或返回非 dict → 结果未知，**保留占坑**。
+
+### 7.1.4 崩溃续跑的两条分界
+
+`_adopt_journaled_progress`（`:2236`）按 journal 事件区分「已领取未开始」与
+「已开始」：
+
+| journal 里有什么 | 含义 | 续跑动作 |
+| --- | --- | --- |
+| 只有 `task_started`，没有 `task_exec_started` | 已领取、执行尚未开始 → 不可能有副作用 | **允许自动重跑**（`task_requeued`，reason=`no_exec_started`） |
+| 有 `task_exec_started` 且能力天然幂等 | 副作用可重放（同路径覆盖写 / 纯计算 / 只读） | **允许自动重跑**（reason=`reentrant_capability`） |
+| 有 `task_exec_started` 且能力非幂等 | 副作用可能已发生、结果未知 | 标 `FAILED`、落 `task_interrupted_unknown`，错误「执行中断：结果未知…已停止自动重跑；请人工确认后再决定是否重试该任务」，**不自动重跑** |
+| `ctx.explicit_retry_names` 命中 | 人工已显式确认可以再跑一次 | 执行一次，并释放该任务「已占坑但无结果」的幂等账（键不变，仍是同一个 action id） |
+
+`task_exec_started` 是在真正调用执行器之前落的一条，因此它是
+「副作用可能已经开始」的分界线；只有它之前的 `task_started` 才算「已领取未开始」。
+另有一条独立的动作级兜底：同一 action id 命中「有占坑无结果」时同样转人工，而不是
+靠任务级事件推断。
+
+### 7.1.5 账本缺席 / 写不进：分档与健康面（现状已核对）
+
+账本（`ExecutionJournal`）有两种「不可用」，处理方式不同，都不静默：
+
+| 情形 | 实现 | 动作 |
+| --- | --- | --- |
+| 构造时没注入账本（`journal=None`） | `_ledger_missing_refusal`（`:1382`） | **硬副作用能力拒绝执行**（`HARD_SIDE_EFFECT_CAPABILITIES`，见 7.1.2），返回中文可解释的失败并打 `evt=idempotency_hard_side_effect_refused`；只读/可安全重入能力**放行**，记一条告警 |
+| 账本存在但写入抛异常（磁盘只读/权限不足） | `_ledger_unavailable_result` | **不可重入动作一律拒绝执行**（fail-closed），避免「无法证明只执行一次」时赌副作用；打 `evt=idempotency_ledger_write_failed`，错误文案提示修复 journal 写入权限 |
+
+告警不是只躺在日志里：`dedupe_advisories()`（`:338`）把快照交给健康/就绪面，
+同一 code 只记一条、`occurrences` 持续累加（`_record_dedupe_advisory`，`:293`）。
+三个 code 与显示文案：
+
+- `hard_side_effect_without_ledger` → 「硬副作用已拒绝（账本未接入）」
+- `journal_write_failed` → 「幂等账本不可写」
+- `ledger_missing_safe_replay` → 「幂等账本未接入（安全能力已放行）」
+
+健康面 `checks.idempotency_dedupe`（`src/gateway/health.py:491`、`:1265`）：
+
+- 无告警 → `status="healthy"`，显示「幂等去重正常」，文案「幂等账本已接入：不可重入动作的重复投递会复用首次结果。」
+- 有告警 → `status="degraded"`、`advisory=True`、**`blocks_readiness=False`**，并带
+  `codes` / `capabilities` / `occurrences` / `first_seen_at` / `last_seen_at`；
+  硬副作用被挡下时 `user_message` 末尾追加「本次被挡下的硬副作用能力：…」。
+- `blocks_readiness=False` 的语义是：**它不让业务断服、不参与 503 判定**
+  （`health.py:1282-1291` 把 `blocking_unhealthy` 与 `advisory_checks` 分开），
+  但总览必须看得到。**不要把它读成「检查通过」**。
+- 告警按 code 去重，`occurrences` 才是实际发生次数；同一 code 只产生一条告警对象。
+
+### 7.1.6 L-Core 直路由路径（绕过 ExecutionEngine 的那条）
+
+`LCore.handle_intent`（`src/ai/lcore.py`）不走 `ExecutionEngine`，而是直接
+`ToolRouter.execute`。它必须和内核**共用**同一套判定，否则执行内核的闸门旁边
+就有一扇常开的门：
+
+- **闸门共用**：执行前调用 `evaluate_ledger_gate(capability_id, journal_available=...)`
+  （`src/kernels/execution/__init__.py`）。账本缺席时硬副作用拒绝、只读/可重入放行，
+  与 7.1.5 完全一致；拒绝文案、`status` 也来自同一个函数。
+- **稳定幂等键**：`handle_intent(..., action_id=...)` 的 `action_id` 是调用方给的
+  稳定标识。传入时它直接作为 goal id，每个任务的账本键由
+  `make_action_id(goal.id, task.name)` 派生（与 ExecutionEngine 同一个函数），
+  于是同一意图被重复投递/重试/重启续跑会命中同一占坑：第二次不再执行副作用，
+  回放首次结果（输出带 `replayed_from`，`task_result_text` 渲染成
+  「已复用首次执行结果 …，未重复执行副作用」）。
+  占坑/回放/落账分别复用 `replay_from_journal` 与 `settle_idempotency`，
+  超时保留占坑、明确 `success: False` 才释放的规则与内核一致。
+- **缺省不复用**：`action_id=None` 时每次生成新的 goal id，**不占坑、不回放**，
+  与改动前行为一致；跨调用没有重复保护，只剩「账本缺席时拒绝硬副作用」这一道
+  静态闸门。`e2e_demo` / `vhl_benchmark` 属于这一类（它们只需要能跑通，不需要
+  跨调用去重）。
+- **失败进事件流**：拒绝时发布 `action_failed`（`source="lcore"`，带
+  `status` / `capability_id` / 中文 `error`），回放时发布 `action_replayed` /
+  `action_replayed_unknown`。这样以后即使有人把 `handle_intent` 接进网关，
+  也不会出现「界面显示成功、实际被闸门拒绝」的静默失败。
+- **残余**：L-Core 不跑 `check_capability_scope`（scope 校验仍由工具注册表的
+  可用性承担），也不写 `execution_*` 系列事件；它的事件只有上面三类。这条路径
+  目前没有 HTTP 入口，网关只把 `LCore` 当能力执行器与能力目录来源。
+
 ## 8. 测试要求
 
 通过 DoD（Implemented + Tested + Observable + Permissioned + Audited + Documented）必须满足：

@@ -6,6 +6,7 @@
     "module": "esnext",
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
+    "resolveJsonModule": true,
     "skipLibCheck": true,
 
     /* Bundler mode */
@@ -22,5 +23,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* 测试文件归 vitest 管（它用 esbuild 转译，不做类型检查），不进 app 编译项目：
+     它们 import 了 node:fs / node:path，而本项目的 types 白名单只含 vite/client，
+     混进来会让 `tsc -b` 直接失败（TS2591）。运行时构建不需要 node 类型。 */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-setup.ts"]
 }

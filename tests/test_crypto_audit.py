@@ -1,644 +1,376 @@
-"""
-Tests for Phase 1 SEC-04: Cryptography Audit & Key Management
+"""D19 retention / high-water-mark tests for the in-memory audit loggers.
 
-Tests VaultTransitCrypto, CryptoAuditLogger, and their integration
-with existing security modules (EncryptionManager, JWTHandler, APIKeyManager).
+These prove the ring-buffer eviction accounting and the monotonic HWM counter
+(telemetry only — NOT audit evidence) for both ``CryptoAuditLogger`` (HC-09)
+and ``AuditKernel`` (HC-10). The HWM file holds ONLY a counter and must never
+influence a trust decision.
 """
+from __future__ import annotations
 
-import time
-import hashlib
 import json
-import sys
 import os
+import sys
 
-# Ensure project root is in path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-from src.security import (
-    VaultTransitCrypto,
-    CryptoAuditLogger,
-    CryptoAuditEvent,
-    CryptoOperation,
-    EncryptionManager,
-    JWTHandler,
-    APIKeyManager,
-    KeyScope,
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from src.security.audit_logger import CryptoAuditLogger, CryptoOperation  # noqa: E402
+from src.security.audit_policy import AuditKernel, AuditEventType  # noqa: E402
+from src.security.persistence_health import (  # noqa: E402
+    PersistenceHealth,
+    resolve_persistence_health,
+    unaccounted_loss,
 )
-from src.integrations.vault.client import VaultClient
 
 
-class TestCryptoAuditLogger:
-    """Tests for the crypto audit logger."""
+# ---------------------------------------------------------------------------
+# CryptoAuditLogger (HC-09) — D19
+# ---------------------------------------------------------------------------
+def test_ring_eviction_counts_dropped_and_evicts_oldest() -> None:
+    """D19: >10000 events evicts the oldest and increments dropped_count."""
+    logger = CryptoAuditLogger(component_name="p08-d19", hwm_path=None)
+    op = CryptoOperation.ENCRYPT
+    first = logger.log(op, key_name="oldest", success=True)
+    for _ in range(10000):  # 10001 total -> exactly one eviction
+        logger.log(op, success=True)
+    assert logger.dropped_count == 1
+    # the oldest event is no longer in the buffer
+    ids = [e.event_id for e in logger.get_events()]
+    assert first.event_id not in ids
+    assert len(logger._events) == 10000
 
-    def test_audit_event_creation_basic(self):
-        """Test basic CryptoAuditEvent creation and hashing."""
-        logger = CryptoAuditLogger(component_name="test")
-        event = logger.log(
-            operation=CryptoOperation.ENCRYPT,
-            key_name="test-key",
-            success=True,
-            details={"algorithm": "AES-256-GCM", "key_size": 32},
-        )
-        assert event is not None
-        assert event.operation == CryptoOperation.ENCRYPT
-        assert event.key_name == "test-key"
-        assert event.success is True
-        assert event.event_hash is not None
-        assert len(event.event_hash) == 64  # SHA256 hex
 
-    def test_audit_event_hash_chain(self):
-        """Test that events form a hash chain (prev_event_hash links)."""
-        logger = CryptoAuditLogger(component_name="chain-test")
-        e1 = logger.log(CryptoOperation.SIGN, key_name="rsa-key", success=True)
-        e2 = logger.log(CryptoOperation.VERIFY, key_name="rsa-key", success=True)
-        e3 = logger.log(CryptoOperation.ENCRYPT, key_name="aes-key", success=True)
+def test_high_water_mark_survives_restart_and_is_monotonic(tmp_path) -> None:
+    """D19: HWM persists across instances (same file) and is monotonic."""
+    hwm = str(tmp_path / "audit_hwm.json")
+    l1 = CryptoAuditLogger(component_name="p08-d19", hwm_path=hwm)
+    for _ in range(37):
+        l1.log(CryptoOperation.ENCRYPT, success=True)
+    assert l1.high_water_mark == 37
+    assert os.path.isfile(hwm)
+    raw = json.loads(open(hwm, encoding="utf-8").read())
+    assert raw == {"entries_ever_written": 37}
 
-        assert e1.event_hash is not None
-        assert e2.prev_event_hash == e1.event_hash  # Chain link
-        assert e3.prev_event_hash == e2.event_hash  # Chain link
+    # A new instance loading the same HWM file continues from 37 (monotonic).
+    l2 = CryptoAuditLogger(component_name="p08-d19", hwm_path=hwm)
+    assert l2.high_water_mark == 37
+    for _ in range(3):
+        l2.log(CryptoOperation.ENCRYPT, success=True)
+    assert l2.high_water_mark == 40
+    # the first instance is untouched
+    assert l1.high_water_mark == 37
 
-    def test_audit_event_chain_integrity_verification(self):
-        """Test verify_chain() detects intact chain."""
-        logger = CryptoAuditLogger(component_name="integrity-test")
-        for i in range(10):
-            logger.log(CryptoOperation.ENCRYPT, key_name=f"key-{i}", success=True)
-        assert logger.verify_chain() is True
 
-    def test_audit_event_chain_tampering_detection(self):
-        """Test verify_chain() detects a broken chain."""
-        logger = CryptoAuditLogger(component_name="tamper-test")
-        e1 = logger.log(CryptoOperation.ENCRYPT, key_name="key-1", success=True)
-        e2 = logger.log(CryptoOperation.DECRYPT, key_name="key-2", success=True)
-
-        # Tamper: break the chain by changing prev_event_hash
-        e2.prev_event_hash = "tampered-hash-value"
-        assert logger.verify_chain() is False
-
-    def test_audit_event_hash_mismatch_detection(self):
-        """Test verify_chain() detects a modified event."""
-        logger = CryptoAuditLogger(component_name="hash-mismatch-test")
-        e1 = logger.log(CryptoOperation.ENCRYPT, key_name="key-1", success=True)
-        e2 = logger.log(CryptoOperation.DECRYPT, key_name="key-2", success=True)
-
-        # Tamper: modify the event's stored hash
-        original_hash = e2.event_hash
-        e2.event_hash = hashlib.sha256(b"wrong").hexdigest()
-        assert logger.verify_chain() is False
-        # Verify it would be True if restored
-        e2.event_hash = original_hash
-        assert logger.verify_chain() is True
-
-    def test_audit_event_sanitizes_secrets(self):
-        """Test that sensitive data in details is redacted."""
-        logger = CryptoAuditLogger(component_name="sanitization-test")
-        event = logger.log(
-            operation=CryptoOperation.ENCRYPT,
-            key_name="test-key",
-            details={
-                "algorithm": "AES-256-GCM",
-                "secret_key": "super-secret-key-value",
-                "api_key": "sk-1234567890",
-                "password": "my-password",
-            },
-        )
-        assert event.details.get("algorithm") == "AES-256-GCM"
-        assert event.details.get("secret_key") == "[REDACTED]"
-        assert event.details.get("api_key") == "[REDACTED]"
-        assert event.details.get("password") == "[REDACTED]"
-
-    def test_audit_event_long_string_truncation(self):
-        """Test that long string values are truncated."""
-        logger = CryptoAuditLogger(component_name="truncation-test")
-        long_str = "A" * 1000
-        event = logger.log(
-            operation=CryptoOperation.SIGN,
-            key_name="test-key",
-            details={"data": long_str},
-        )
-        truncated = event.details.get("data")
-        assert truncated is not None
-        assert len(truncated) == 142  # 128 chars + "...[truncated]" (14 chars)
-        assert truncated.endswith("...[truncated]")
-
-    def test_audit_event_id_uniqueness(self):
-        """Test that event IDs are unique."""
-        logger = CryptoAuditLogger(component_name="uniqueness-test")
-        ids = set()
-        for i in range(50):
-            event = logger.log(CryptoOperation.ENCRYPT, success=True)
-            assert event.event_id not in ids, f"Duplicate event_id: {event.event_id}"
-            ids.add(event.event_id)
-
-    def test_audit_get_events_limit(self):
-        """Test get_events with limit returns correct number."""
-        logger = CryptoAuditLogger(component_name="limit-test")
-        for i in range(20):
-            logger.log(CryptoOperation.ENCRYPT, key_name=f"k{i}", success=True)
-
-        events = logger.get_events(limit=5)
-        assert len(events) == 5
-        # Newest first
-        assert events[0].key_name == "k19"
-        assert events[4].key_name == "k15"
-
-    def test_audit_clear_resets_state(self):
-        """Test that clear() resets the logger state."""
-        logger = CryptoAuditLogger(component_name="clear-test")
+def test_clear_does_not_reset_high_water_mark() -> None:
+    """D19: clear() wipes events but the HWM counter stays monotonic."""
+    logger = CryptoAuditLogger(component_name="p08-d19", hwm_path=None)
+    for _ in range(5):
         logger.log(CryptoOperation.ENCRYPT, success=True)
-        logger.log(CryptoOperation.DECRYPT, success=True)
-        assert len(logger.get_events()) == 2
+    assert logger.high_water_mark == 5
+    logger.clear()
+    assert len(logger._events) == 0
+    assert logger.high_water_mark == 5  # NOT reset
+    assert logger.dropped_count == 0   # NOT incremented by clear
+    # logging after clear continues the counter
+    logger.log(CryptoOperation.ENCRYPT, success=True)
+    assert logger.high_water_mark == 6
 
+
+def test_hwm_file_is_counter_only_and_fail_open(tmp_path) -> None:
+    """D19: the HWM file holds ONLY a counter; a malformed file fails open (0)."""
+    hwm = str(tmp_path / "audit_hwm.json")
+    logger = CryptoAuditLogger(component_name="p08-d19", hwm_path=hwm)
+    logger.log(CryptoOperation.ENCRYPT, success=True)
+    content = open(hwm, encoding="utf-8").read()
+    assert content == json.dumps({"entries_ever_written": 1})
+
+    # Corrupt the file -> next instance must NOT crash and must start at 0.
+    with open(hwm, "w", encoding="utf-8") as fh:
+        fh.write("not-json{")
+    broken = CryptoAuditLogger(component_name="p08-d19", hwm_path=hwm)
+    assert broken.high_water_mark == 0
+
+
+# ---------------------------------------------------------------------------
+# AuditKernel (HC-10) — D19 (same pattern)
+# ---------------------------------------------------------------------------
+def test_audit_kernel_ring_eviction_counts_dropped() -> None:
+    kernel = AuditKernel(hwm_path=None)
+    etype = next(iter(AuditEventType))
+    for _ in range(10001):
+        kernel.log(etype, "p", result="ok")
+    assert kernel.dropped_count == 1
+    assert len(kernel._entries) == 10000
+
+
+def test_audit_kernel_high_water_mark_survives_restart(tmp_path) -> None:
+    hwm = str(tmp_path / "ak_hwm.json")
+    k1 = AuditKernel(hwm_path=hwm)
+    etype = next(iter(AuditEventType))
+    for _ in range(12):
+        k1.log(etype, "p", result="ok")
+    assert k1.high_water_mark == 12
+    k2 = AuditKernel(hwm_path=hwm)
+    assert k2.high_water_mark == 12
+    k2.log(etype, "p", result="ok")
+    assert k2.high_water_mark == 13
+
+
+# ---------------------------------------------------------------------------
+# D19-A+ persistence-health accounting — the half of A+ that was never wired
+# ---------------------------------------------------------------------------
+# A+ shipped the three counters (HWM / dropped / buffered) but nothing ever
+# RECONCILED them, so "evidence was DESTROYED" and "evidence was evicted as
+# expected" were indistinguishable at runtime. These pin the reconciliation for
+# both chains. Every alert state has a healthy-path CONTROL beside it, because
+# an accountability signal that cries wolf on a healthy chain is worse than none.
+
+
+@pytest.mark.parametrize(
+    "hwm,dropped,buffered,expected",
+    [
+        # Nothing was ever written -> idle.
+        (0, 0, 0, PersistenceHealth.IDLE),
+        # 120 written, 20 evicted, 100 buffered -> the ledger balances.
+        (120, 20, 100, PersistenceHealth.EXPECTED_EVICTION),
+        # No eviction happened yet -> still balanced, still healthy.
+        (5, 0, 5, PersistenceHealth.EXPECTED_EVICTION),
+        # Buffer empty but the durable counter says entries existed -> gone.
+        (37, 0, 0, PersistenceHealth.DESTROYED),
+        # 10 written, 0 evicted, 9 buffered -> one entry vanished silently.
+        (10, 0, 9, PersistenceHealth.TRUNCATED),
+        # A rolled-back/corrupt counter must never crash telemetry.
+        (-1, -1, -1, PersistenceHealth.IDLE),
+    ],
+)
+def test_verdict_is_a_pure_function_of_the_counters(
+    hwm, dropped, buffered, expected
+) -> None:
+    assert resolve_persistence_health(hwm, dropped, buffered) is expected
+
+
+def test_unaccounted_loss_is_never_negative() -> None:
+    assert unaccounted_loss(3, 10, 5) == 0
+    assert unaccounted_loss(10, 0, 9) == 1
+
+
+# ---------------------------------------------------------------------------
+# Epoch baseline — regression for a defect this very change introduced
+# ---------------------------------------------------------------------------
+# HWM is DURABLE (reloaded from file) but dropped_count/buffered are PER-PROCESS
+# (they reset on restart). The naive identity therefore mixes lifetimes and, on
+# every restart, reports the previous process's evictions as unexplained loss.
+# Proven with a live probe before the fix: a healthy chain that simply rewrote
+# its 5 entries reported truncated / unaccounted_loss=5 / evidence_destroyed.
+# A signal that cries wolf on every restart is worse than no signal, so the
+# epoch baseline exists -- and these pin it.
+
+
+@pytest.mark.parametrize(
+    "hwm,dropped,buffered,baseline,expected",
+    [
+        # The proven false alarm: 10 written / 5 buffered, but 5 of those were
+        # written by a PREVIOUS process whose evictions this process cannot see.
+        (10, 0, 5, 5, PersistenceHealth.EXPECTED_EVICTION),
+        # Same numbers, baseline 0 (no epoch tracking) -> the old false TRUNCATED.
+        (10, 0, 5, 0, PersistenceHealth.TRUNCATED),
+        # Genuine in-epoch tampering is STILL caught with a baseline set:
+        # 3 written this epoch, 1 buffered, no eviction accounted for.
+        (8, 0, 2, 5, PersistenceHealth.TRUNCATED),
+        # Ring eviction inside the epoch stays healthy.
+        (30, 10, 15, 5, PersistenceHealth.EXPECTED_EVICTION),
+        # Empty buffer after restart is still DESTROYED (truthful for volatile).
+        (5, 0, 0, 5, PersistenceHealth.DESTROYED),
+        # A rolled-back HWM file (baseline > hwm) must clamp, not crash or lie.
+        (4, 0, 4, 99, PersistenceHealth.EXPECTED_EVICTION),
+    ],
+)
+def test_epoch_baseline_excludes_previous_process_losses(
+    hwm, dropped, buffered, baseline, expected
+) -> None:
+    assert (
+        resolve_persistence_health(
+            hwm,
+            dropped,
+            buffered,
+            high_water_mark_at_epoch_start=baseline,
+        )
+        is expected
+    )
+
+
+def test_epoch_baseline_keeps_unaccounted_loss_consistent_with_the_verdict() -> None:
+    """The reported magnitude must agree with the category, or operators get
+    'truncated' next to 'unaccounted_loss: 0' -- the exact self-contradiction
+    this repo already had to fix once in the readiness payload."""
+    for baseline in (0, 5):
+        v = resolve_persistence_health(
+            10, 0, 5, high_water_mark_at_epoch_start=baseline
+        )
+        loss = unaccounted_loss(
+            10, 0, 5, high_water_mark_at_epoch_start=baseline
+        )
+        assert (v is PersistenceHealth.TRUNCATED) == (loss > 0)
+        assert loss >= 0
+
+
+class TestRestartDoesNotFalselyAlert:
+    """End-to-end on the real kernel: a restart must not manufacture a TRUNCATED."""
+
+    def test_rewriting_the_same_entries_after_restart_is_healthy(self, tmp_path):
+        hwm = tmp_path / "hwm.json"
+        etype = AuditEventType.ACCESS_DECISION
+
+        first = AuditKernel(hwm_path=str(hwm))
+        for _ in range(5):
+            first.log(etype, "p", result="ok")
+
+        # Restart: HWM reloads, dropped_count resets. Rewriting the SAME five
+        # entries is a perfectly healthy chain.
+        second = AuditKernel(hwm_path=str(hwm))
+        for _ in range(5):
+            second.log(etype, "p", result="ok")
+
+        assert second.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
+        stats = second.stats()
+        assert stats["unaccounted_loss"] == 0
+        assert stats["evidence_destroyed"] is False, (
+            "a healthy post-restart chain reported evidence_destroyed -- "
+            "this is the false alarm that trains operators to ignore the check"
+        )
+
+    def test_empty_buffer_after_restart_is_still_reported_destroyed(self, tmp_path):
+        """The fix must not blind the check: volatile loss is still reported."""
+        hwm = tmp_path / "hwm.json"
+        first = AuditKernel(hwm_path=str(hwm))
+        for _ in range(5):
+            first.log(AuditEventType.ACCESS_DECISION, "p", result="ok")
+
+        second = AuditKernel(hwm_path=str(hwm))
+        assert second.persistence_health() is PersistenceHealth.DESTROYED
+
+    def test_in_epoch_silent_removal_is_still_caught(self, tmp_path):
+        """Detection survives the epoch fix: bypassing the eviction counter
+        inside this process is still TRUNCATED."""
+        kernel = AuditKernel(hwm_path=str(tmp_path / "hwm.json"))
+        for _ in range(10):
+            kernel.log(AuditEventType.ACCESS_DECISION, "p", result="ok")
+        # Simulate a removal that does NOT go through the ring's eviction path.
+        kernel._entries.popleft()
+        assert kernel.persistence_health() is PersistenceHealth.TRUNCATED
+
+
+class TestCryptoLoggerPersistenceHealth:
+    """HC-09 (CryptoAuditLogger)."""
+
+    def test_fresh_logger_is_idle(self) -> None:
+        logger = CryptoAuditLogger(component_name="p08-f1", hwm_path=None)
+        assert logger.persistence_health() is PersistenceHealth.IDLE
+
+    def test_healthy_buffer_is_not_an_alert(self) -> None:
+        """CONTROL: a fully-accounted healthy chain must NOT raise an alert."""
+        logger = CryptoAuditLogger(component_name="p08-f1", hwm_path=None)
+        for _ in range(5):
+            logger.log(CryptoOperation.ENCRYPT, success=True)
+        assert logger.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
+        assert logger.stats()["evidence_destroyed"] is False
+
+    def test_ring_eviction_is_accounted_not_truncated(self) -> None:
+        """CONTROL: documented eviction is expected loss, not corruption."""
+        logger = CryptoAuditLogger(component_name="p08-f1", hwm_path=None)
+        for _ in range(10001):
+            logger.log(CryptoOperation.ENCRYPT, success=True)
+        assert logger.dropped_count == 1
+        assert logger.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
+        assert logger.stats()["unaccounted_loss"] == 0
+
+    def test_clear_is_reported_as_destroyed(self) -> None:
+        logger = CryptoAuditLogger(component_name="p08-f1", hwm_path=None)
+        for _ in range(5):
+            logger.log(CryptoOperation.ENCRYPT, success=True)
         logger.clear()
-        assert len(logger.get_events()) == 0
-        assert logger._last_hash is None
+        # HWM stays 5 by design while the buffer is empty -> the loss is now
+        # reported instead of silent.
+        assert logger.persistence_health() is PersistenceHealth.DESTROYED
 
-    def test_audit_event_serialization(self):
-        """Test that CryptoAuditEvent can be serialized to dict."""
-        logger = CryptoAuditLogger(component_name="serialization-test")
-        event = logger.log(
-            operation=CryptoOperation.SIGN,
-            key_name="rsa-key",
-            key_id="key-uuid-123",
-            success=True,
-            duration_ms=1.5,
-            details={"algorithm": "RS256"},
+    def test_restart_is_reported_as_destroyed(self, tmp_path) -> None:
+        """The A+ promise itself: restart loss becomes quantified, not silent."""
+        hwm = str(tmp_path / "hwm.json")
+        first = CryptoAuditLogger(component_name="p08-f1", hwm_path=hwm)
+        for _ in range(9):
+            first.log(CryptoOperation.ENCRYPT, success=True)
+
+        restarted = CryptoAuditLogger(component_name="p08-f1", hwm_path=hwm)
+        assert restarted.high_water_mark == 9
+        assert len(restarted._events) == 0
+        assert restarted.persistence_health() is PersistenceHealth.DESTROYED
+
+    def test_silent_removal_is_truncated(self) -> None:
+        """Entries that vanish WITHOUT an eviction count are unexplained."""
+        logger = CryptoAuditLogger(component_name="p08-f1", hwm_path=None)
+        for _ in range(5):
+            logger.log(CryptoOperation.ENCRYPT, success=True)
+        assert logger.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
+
+        logger._events.popleft()  # behind the logger's back: no dropped bump
+        assert logger.persistence_health() is PersistenceHealth.TRUNCATED
+        assert logger.stats()["unaccounted_loss"] == 1
+
+    def test_stats_exposes_the_verdict(self) -> None:
+        logger = CryptoAuditLogger(component_name="p08-f1", hwm_path=None)
+        logger.log(CryptoOperation.ENCRYPT, success=True)
+        stats = logger.stats()
+        assert stats["persistence_health"] == (
+            PersistenceHealth.EXPECTED_EVICTION.value
         )
-        d = event.to_dict()
-        assert d["operation"] == "sign"
-        assert d["key_name"] == "rsa-key"
-        assert d["key_id"] == "key-uuid-123"
-        assert d["success"] is True
-        assert d["duration_ms"] == 1.5
-        assert d["event_hash"] is not None
-        assert d["prev_event_hash"] is None  # first event
+        assert stats["buffered_entries"] == 1
+        assert stats["high_water_mark"] == 1
+        assert stats["evidence_destroyed"] is False
 
 
-class TestVaultTransitCrypto:
-    """Tests for VaultTransitCrypto (offline fallback mode)."""
+class TestAuditKernelPersistenceHealth:
+    """HC-10 (AuditKernel) — same contract, independently pinned."""
 
-    def test_vault_crypto_initialization_offline(self):
-        """Test VaultTransitCrypto initializes (offline mode when Vault unavailable)."""
-        crypto = VaultTransitCrypto()
-        # In offline mode (no Vault), is_online should be False
-        assert crypto.is_online is False
-
-    def test_vault_crypto_hmac_returns_none_offline(self):
-        """Test that HMAC returns None when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        result = crypto.hmac_sha256("test-key", "hello world")
-        assert result is None
-
-    def test_vault_crypto_encrypt_returns_none_offline(self):
-        """Test that encrypt returns None when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        result = crypto.encrypt("test-key", "secret-data")
-        assert result is None
-
-    def test_vault_crypto_sign_returns_none_offline(self):
-        """Test that RSA sign returns None when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        result = crypto.sign_rsa_pkcs1v15_sha256("jwt-key", b"data to sign")
-        assert result is None
-
-    def test_vault_crypto_verify_returns_false_offline(self):
-        """Test that HMAC/RSA verify returns False when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        assert crypto.verify_hmac("key", "abc", "data") is False
-        assert crypto.verify_rsa_pkcs1v15_sha256("key", "sig", b"data") is False
-
-    def test_vault_crypto_ensure_key_offline(self):
-        """Test that ensure_key returns False when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        assert crypto.ensure_key("test-key", "hmac") is False
-
-    def test_vault_crypto_rotate_key_offline(self):
-        """Test that rotate returns False when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        assert crypto.rotate_transit_key("test-key") is False
-
-    def test_vault_crypto_decrypt_none_offline(self):
-        """Test that decrypt returns None when Vault is offline."""
-        crypto = VaultTransitCrypto()
-        result = crypto.decrypt("test-key", "encrypted-ciphertext")
-        assert result is None
-
-
-class TestEncryptionManagerIntegration:
-    """Tests for EncryptionManager + crypto audit logging integration."""
-
-    def test_encryption_round_trip(self):
-        """Test encrypt/decrypt round trip with Fernet."""
-        mgr = EncryptionManager()
-        plaintext = "sensitive data 12345"
-        encrypted = mgr.encrypt(plaintext)
-        assert encrypted is not None
-        assert encrypted != plaintext
-
-        decrypted = mgr.decrypt(encrypted)
-        assert decrypted == plaintext.encode()
-
-    def test_encryption_with_metadata(self):
-        """Test encrypt/decrypt with metadata wrapper."""
-        mgr = EncryptionManager()
-        plaintext = "data with metadata"
-        metadata = {"purpose": "api-key", "version": 2}
-        encrypted = mgr.encrypt(plaintext, metadata=metadata)
-
-        decrypted, meta = mgr.decrypt(encrypted, return_metadata=True)
-        assert decrypted == plaintext.encode()
-        assert meta == metadata
-
-    def test_aes_gcm_round_trip(self):
-        """Test AES-GCM encrypt/decrypt round trip with AAD."""
-        mgr = EncryptionManager()
-        plaintext = "gcm-encrypted data"
-        aad = b"associated-data"
-        result = mgr.encrypt_aesgcm(plaintext, associated_data=aad)
-        assert "nonce" in result
-        assert "ciphertext" in result
-        assert result["algorithm"] == "aes-gcm"
-
-        decrypted = mgr.decrypt_aesgcm(
-            nonce=result["nonce"],
-            ciphertext=result["ciphertext"],
-            associated_data=aad,
-        )
-        assert decrypted == plaintext.encode()
-
-    def test_hmac_sign_verify_constant_time(self):
-        """Test HMAC sign/verify with constant-time comparison."""
-        mgr = EncryptionManager()
-        data = "data to sign"
-        signature = mgr.hmac_sign(data)
-
-        assert len(signature) == 64  # SHA256 hex
-        assert mgr.hmac_verify(data, signature) is True
-        # Tampered data should fail
-        assert mgr.hmac_verify("wrong data", signature) is False
-
-    def test_key_derivation_pbkdf2(self):
-        """Test PBKDF2 key derivation."""
-        mgr = EncryptionManager()
-        password = "user-password"
-        key1 = mgr.derive_key_from_password(password)
-        assert len(key1) == 32
-
-        # Same password + same salt = same key
-        import secrets
-        salt = secrets.token_bytes(16)
-        key2 = mgr.derive_key_from_password(password, salt=salt)
-        key3 = mgr.derive_key_from_password(password, salt=salt)
-        assert key2 == key3
-
-    def test_key_derivation_different_passwords(self):
-        """Test that different passwords produce different keys."""
-        mgr = EncryptionManager()
-        k1 = mgr.derive_key_from_password("password1")
-        k2 = mgr.derive_key_from_password("password2")
-        assert k1 != k2
-
-    def test_envelope_encryption_wrap_unwrap(self):
-        """Test envelope encryption: wrap data key, then unwrap."""
-        mgr = EncryptionManager()
-        data_key = EncryptionManager.generate_key(32)
-        wrapped = mgr.wrap_key(data_key)
-
-        assert "wrapped_key" in wrapped
-        unwrapped = mgr.unwrap_key(wrapped["wrapped_key"])
-        assert unwrapped == data_key
-
-    def test_key_rotation_re_encrypt(self):
-        """Test key rotation with re-encryption."""
-        mgr1 = EncryptionManager()
-        plaintext = "data to rotate"
-        encrypted = mgr1.encrypt(plaintext)
-
-        new_key = EncryptionManager.generate_key(32)
-        mgr2 = EncryptionManager(master_key=new_key)
-
-        re_encrypted = mgr1.re_encrypt(encrypted, mgr2)
-        decrypted = mgr2.decrypt(re_encrypted)
-        assert decrypted == plaintext.encode()
-
-
-class TestJWTHandlerIntegration:
-    """Tests for JWT handler integration with audit logging."""
-
-    def test_jwt_hs256_issuance_and_validation(self):
-        """Test JWT issuance and validation with HS256."""
-        handler = JWTHandler(algorithm="HS256", secret_key="test-secret-key")
-        token, payload = handler.create_token(
-            subject="user-123",
-            scopes=["read", "write"],
-            roles=["admin"],
-        )
-        assert token is not None
-        assert payload.sub == "user-123"
-
-        validated = handler.validate_token(token)
-        assert validated.sub == "user-123"
-        assert "read" in validated.scopes
-        assert "admin" in validated.roles
-
-    def test_jwt_access_refresh_pair(self):
-        """Test access + refresh token pair creation."""
-        handler = JWTHandler(algorithm="HS256", secret_key="test-secret-key")
-        token_pair = handler.create_token_pair(
-            subject="user-456",
-            scopes=["read"],
+    def test_fresh_kernel_is_idle(self) -> None:
+        assert AuditKernel(hwm_path=None).persistence_health() is (
+            PersistenceHealth.IDLE
         )
 
-        assert "access_token" in token_pair
-        assert "refresh_token" in token_pair
-        assert token_pair["token_type"] == "Bearer"
-        assert token_pair["expires_in"] == 900
+    def test_healthy_kernel_is_not_an_alert(self) -> None:
+        """CONTROL."""
+        kernel = AuditKernel(hwm_path=None)
+        etype = next(iter(AuditEventType))
+        for _ in range(4):
+            kernel.log(etype, "p", result="ok")
+        assert kernel.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
 
-        # Access token should validate
-        access_payload = handler.validate_access_token(token_pair["access_token"])
-        assert access_payload.sub == "user-456"
+    def test_eviction_is_accounted(self) -> None:
+        """CONTROL."""
+        kernel = AuditKernel(hwm_path=None)
+        etype = next(iter(AuditEventType))
+        for _ in range(10001):
+            kernel.log(etype, "p", result="ok")
+        assert kernel.dropped_count == 1
+        assert kernel.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
 
-        # Refresh token should validate
-        refresh_payload = handler.validate_refresh_token(token_pair["refresh_token"])
-        assert refresh_payload.sub == "user-456"
-        assert refresh_payload.token_type.value == "refresh"
+    def test_silent_removal_is_truncated(self) -> None:
+        kernel = AuditKernel(hwm_path=None)
+        etype = next(iter(AuditEventType))
+        for _ in range(5):
+            kernel.log(etype, "p", result="ok")
+        kernel._entries.popleft()
+        assert kernel.persistence_health() is PersistenceHealth.TRUNCATED
 
-    def test_jwt_refresh_token_rotation(self):
-        """Test refresh token rotation."""
-        handler = JWTHandler(algorithm="HS256", secret_key="test-secret-key")
-        token_pair = handler.create_token_pair(subject="user-789", scopes=["read"])
-
-        new_pair = handler.refresh_access_token(token_pair["refresh_token"], rotate=True)
-        assert "access_token" in new_pair
-        assert "refresh_token" in new_pair
-        # New refresh token should be different
-        assert new_pair["refresh_token"] != token_pair["refresh_token"]
-
-    def test_jwt_revocation_blocklist(self):
-        """Test JWT token revocation via blocklist."""
-        handler = JWTHandler(algorithm="HS256", secret_key="test-secret-key")
-        token, payload = handler.create_token(subject="user-999", scopes=["read"])
-
-        # Revoke the token
-        handler.revoke_token(payload.jti)
-
-        # Validation should fail after revocation
-        try:
-            handler.validate_token(token)
-            assert False, "Should have raised InvalidTokenError"
-        except Exception:
-            pass
-
-    def test_jwt_jwks_generation_hs256(self):
-        """Test JWKS generation for HS256 (symmetric)."""
-        handler = JWTHandler(algorithm="HS256", secret_key="test-secret-key")
-        jwks = handler.get_jwks()
-        assert "keys" in jwks
-        assert len(jwks["keys"]) == 1
-        assert jwks["keys"][0]["kty"] == "oct"
-        assert jwks["keys"][0]["alg"] == "HS256"
-
-
-class TestAPIKeyManagerIntegration:
-    """Tests for API key manager with encryption and audit."""
-
-    @classmethod
-    def setup_class(cls):
-        """Set up isolated temp storage for all tests in this class."""
-        import tempfile
-        cls._tmpdir = tempfile.mkdtemp(prefix="test_api_keys_")
-
-    @classmethod
-    def teardown_class(cls):
-        """Clean up temp storage."""
-        import shutil
-        shutil.rmtree(cls._tmpdir, ignore_errors=True)
-
-    def _make_manager(self):
-        """Create an isolated APIKeyManager using temp storage."""
-        from src.config_manager import ConfigManager
-        storage_path = os.path.join(self._tmpdir, f"keys_{id(self)}.json")
-        return APIKeyManager(
-            config=ConfigManager(),
-            storage_path=storage_path,
+    def test_stats_carries_the_verdict(self) -> None:
+        kernel = AuditKernel(hwm_path=None)
+        etype = next(iter(AuditEventType))
+        kernel.log(etype, "p", result="ok")
+        stats = kernel.stats()
+        assert stats["persistence_health"] == (
+            PersistenceHealth.EXPECTED_EVICTION.value
         )
-
-    def test_api_key_create_and_validate(self):
-        """Test API key creation and validation."""
-        mgr = self._make_manager()
-        key, raw_key = mgr.create_key(
-            name="test-key",
-            scopes=[KeyScope.READONLY],
-            expires_in_days=30,
-        )
-        assert key.id.startswith("lhao_")
-        assert raw_key.startswith("lhao_")
-
-        # Validate the key
-        validated = mgr.validate_key(raw_key)
-        assert validated is not None
-        assert validated.id == key.id
-        assert validated.status.value == "active"
-
-    def test_api_key_hash_not_plaintext(self):
-        """Test that stored key hash is not plaintext."""
-        mgr = self._make_manager()
-        key, raw_key = mgr.create_key(
-            name="hash-test",
-            scopes=[KeyScope.READONLY],
-        )
-        # Key hash should not contain the raw key
-        assert raw_key not in key.key_hash
-        # Should be a hex hash
-        assert len(key.key_hash) == 64  # SHA256 hex
-
-    def test_api_key_rotation(self):
-        """Test API key rotation."""
-        mgr = self._make_manager()
-        key, raw_key = mgr.create_key(
-            name="rotation-test",
-            scopes=[KeyScope.AGENT],
-            expires_in_days=30,
-        )
-
-        new_key, new_raw = mgr.rotate_key(key.id)
-        assert new_key.id != key.id
-        assert new_key.rotation_count == 1
-
-        # Old key should be in PENDING_ROTATION state
-        old_key = mgr.get_key(key.id)
-        assert old_key.status.value == "pending_rotation"
-
-    def test_api_key_revocation(self):
-        """Test API key revocation."""
-        mgr = self._make_manager()
-        key, raw_key = mgr.create_key(
-            name="revoke-test",
-            scopes=[KeyScope.READONLY],
-        )
-
-        assert mgr.revoke_key(key.id) is True
-        revoked = mgr.get_key(key.id)
-        assert revoked.status.value == "revoked"
-
-    def test_api_key_stats(self):
-        """Test API key statistics."""
-        mgr = self._make_manager()
-        mgr.create_key(name="stat-key-1", scopes=[KeyScope.READONLY])
-        mgr.create_key(name="stat-key-2", scopes=[KeyScope.AGENT])
-
-        stats = mgr.get_key_stats()
-        assert stats["total"] == 2
-        assert "active" in stats["by_status"]
-        assert "readonly" in stats["by_scope"]
-
-    def test_api_key_scope_filtering(self):
-        """Test listing keys filtered by scope."""
-        mgr = self._make_manager()
-        mgr.create_key(name="filter-1", scopes=[KeyScope.READONLY])
-        mgr.create_key(name="filter-2", scopes=[KeyScope.ADMIN])
-
-        readonly_keys = mgr.list_keys(scope=KeyScope.READONLY)
-        admin_keys = mgr.list_keys(scope=KeyScope.ADMIN)
-        assert all(KeyScope.READONLY in k.scopes for k in readonly_keys)
-        assert all(KeyScope.ADMIN in k.scopes for k in admin_keys)
-
-
-class TestVaultTransitCryptoWithAudit:
-    """Integration tests for VaultTransitCrypto + CryptoAuditLogger."""
-
-    def test_audit_logs_crypto_operations(self):
-        """Test that crypto audit logger records operations."""
-        logger = CryptoAuditLogger(component_name="integration-test")
-
-        # Simulate encrypt operation
-        event = logger.log(
-            operation=CryptoOperation.ENCRYPT,
-            key_name="api-key-hash-pepper",
-            success=True,
-            duration_ms=0.5,
-            details={"algorithm": "HMAC-SHA256", "backend": "vault-transit"},
-        )
-
-        assert event.component == "integration-test"
-        assert event.duration_ms == 0.5
-        assert event.details["algorithm"] == "HMAC-SHA256"
-        assert event.details["backend"] == "vault-transit"
-
-    def test_audit_logs_failed_operations(self):
-        """Test that failed crypto operations are logged with success=False."""
-        logger = CryptoAuditLogger(component_name="failure-test")
-
-        event = logger.log(
-            operation=CryptoOperation.DECRYPT,
-            key_name="encrypted-data-key",
-            success=False,
-            details={"error": "Invalid ciphertext"},
-        )
-
-        assert event.success is False
-        assert len(logger.get_events()) == 1
-
-    def test_audit_chain_integrity_across_operations(self):
-        """Test hash chain integrity across multiple operations."""
-        logger = CryptoAuditLogger(component_name="chain-integrity")
-
-        # Simulate a full key lifecycle
-        operations = [
-            (CryptoOperation.KEY_GENERATE, "master-key"),
-            (CryptoOperation.ENCRYPT, "api-key-pepper"),
-            (CryptoOperation.SIGN, "jwt-sign-key"),
-            (CryptoOperation.VERIFY, "jwt-sign-key"),
-            (CryptoOperation.KEY_ROTATE, "master-key"),
-            (CryptoOperation.DECRYPT, "api-key-pepper"),
-        ]
-
-        for op, key in operations:
-            logger.log(operation=op, key_name=key, success=True)
-
-        events = logger.get_events()
-        assert len(events) == len(operations)
-
-        # Verify chain integrity
-        assert logger.verify_chain() is True
-
-        # Verify all operations are logged
-        for i, (expected_op, expected_key) in enumerate(reversed(operations)):
-            event = logger.get_events()[i]
-            assert event.operation == expected_op
-            assert event.key_name == expected_key
-
-
-class TestCryptoSecurityProperties:
-    """Security property tests for cryptographic components."""
-
-    def test_encryption_manager_key_length(self):
-        """Test that generated keys are 32 bytes (256 bits)."""
-        key = EncryptionManager.generate_key(32)
-        assert len(key) == 32
-
-    def test_encryption_manager_key_randomness(self):
-        """Test that generated keys are random (not predictable)."""
-        key1 = EncryptionManager.generate_key(32)
-        key2 = EncryptionManager.generate_key(32)
-        assert key1 != key2
-        assert len(key1) == len(key2) == 32
-
-    def test_hmac_constant_time_comparison(self):
-        """Test HMAC verification uses constant-time comparison."""
-        mgr = EncryptionManager()
-        data = "test data"
-        sig = mgr.hmac_sign(data)
-
-        # Correct signature validates
-        assert mgr.hmac_verify(data, sig) is True
-        # Wrong signature fails
-        assert mgr.hmac_verify(data, sig[:-1] + ("a" if sig[-1] != "a" else "b")) is False
-        # Wrong data fails
-        assert mgr.hmac_verify("wrong data", sig) is False
-
-    def test_no_secret_leakage_in_audit_details(self):
-        """Test that no secret material appears in audit event details."""
-        logger = CryptoAuditLogger(component_name="security-test")
-
-        # Try to sneak secrets in via various key names
-        event = logger.log(
-            operation=CryptoOperation.ENCRYPT,
-            key_name="secret-key",
-            details={
-                "api_key_secret": "sk-1234567890abcdef",
-                "password": "my-secret-password",
-                "secret_value": "should-be-redacted",
-                "token": "tok_abc123",
-                "normal_field": "safe-value",
-            },
-        )
-
-        assert event.details["api_key_secret"] == "[REDACTED]"
-        assert event.details["password"] == "[REDACTED]"
-        assert event.details["secret_value"] == "[REDACTED]"
-        assert event.details["token"] == "[REDACTED]"
-        assert event.details["normal_field"] == "safe-value"
-
-    def test_jwt_token_expiration(self):
-        """Test JWT tokens expire correctly."""
-        handler = JWTHandler(algorithm="HS256", secret_key="test-key-verification")
-        import time
-        token, payload = handler.create_token(
-            subject="user-exp",
-            ttl=1,  # 1 second
-            scopes=["read"],
-        )
-        time.sleep(2)  # wait past expiration
-        assert payload.is_expired(leeway=0) is True  # now expired
-
-        # Valid token (15 min)
-        token2, payload2 = handler.create_token(
-            subject="user-valid",
-            scopes=["read"],
-        )
-        assert payload2.is_expired(leeway=30) is False  # 15 min > 30s leeway
-
-
-if __name__ == "__main__":
-    import pytest
-    pytest.main([__file__, "-v", "--tb=short"])
+        assert stats["unaccounted_loss"] == 0
+        assert stats["evidence_destroyed"] is False

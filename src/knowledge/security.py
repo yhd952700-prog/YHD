@@ -40,15 +40,29 @@ class KnowledgeSecurityPolicy:
         return {"allowed": True, "reason": None}
 
     def filter_content(self, text: str) -> str:
-        """Redact PII from `text`; returns the text unchanged when disabled."""
+        """Redact PII from `text`; returns the text unchanged when disabled.
+
+        Fail-closed: if redaction itself raises, the original text must never
+        reach the caller/LLM. We replace it with an explicit marker so the
+        failure is visible instead of silently leaking the raw content.
+        """
         if not self.redact_pii or not text:
             return text
         try:
             from .pii import redact_text
 
             return redact_text(text)
-        except Exception:  # pragma: no cover - defensive
-            return text
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error(
+                "knowledge PII redaction failed; refusing to return raw text: %s",
+                exc,
+            )
+            self.audit_security_event({
+                "event": "pii_redaction_failed",
+                "error": type(exc).__name__,
+                "status": "fail_closed",
+            })
+            return "[内容已屏蔽：PII 脱敏失败，未输出原文]"
 
     def audit_security_event(self, event: Dict[str, Any]) -> None:
         """Record a security-relevant event (retrieval / filter / deny)."""

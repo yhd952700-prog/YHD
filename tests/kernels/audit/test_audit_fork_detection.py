@@ -1,0 +1,289 @@
+"""F5/F6 regression tests: deterministic fork detection + live no-fork gate.
+
+F5 (RCA-1 remediation, team-owned engineering under HC-01-Autonomous-
+Decision-Memo.md): the audit verifier must deterministically detect a forked
+chain -- duplicate ``seq`` numbers, the RCA-1 concurrency signature -- and the
+fork metric must be independently countable.
+
+F6: the fail-closed live-DB no-fork monitor (scripts/verify_audit_chain_no_fork.py)
+must (a) report SKIP with exit 3 (NOT VERIFIED) when no live store is deployed,
+(b) PASS with exit 0 when the live store is intact, and (c) FAIL with exit 2
+when the live store is forked. The exit-code contract is the same tri-state
+used by the aggregate (scripts/verify_audit_integrity.py): 0 = PASS,
+3 = SKIP, anything else = FAIL. SKIP is never PASS.
+
+These tests never touch the real deployed audit_store.db; everything runs on
+per-test temp files.
+"""
+import hashlib
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from src.kernels.audit import (
+    AuditEventType,
+    AuditScope,
+    AuditStore,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+GATE_SCRIPT = REPO_ROOT / "scripts" / "verify_audit_chain_no_fork.py"
+
+
+def _build_clean_store(db_path: str, n: int = 5) -> AuditStore:
+    store = AuditStore(db_path=db_path)
+    for i in range(n):
+        store.log_event(
+            AuditEventType.STATE_CHANGE, "p%d" % i, AuditScope.L0, "ok",
+            details={"i": i}, correlation_id="c%d" % i,
+        )
+    return store
+
+
+def test_clean_store_has_no_duplicate_seq_and_verifies(tmp_path):
+    db = str(tmp_path / "clean.db")
+    store = _build_clean_store(db, n=5)
+    ok, total = store.verify_integrity()
+    assert ok is True, "clean store must verify ok"
+    assert total == 5
+    assert store.duplicate_seq_count() == 0, "clean store must have no dup seq"
+    store._conn.close()
+
+
+def test_forked_store_detected_by_verifier_and_metric(tmp_path, monkeypatch):
+    """Inject an RCA-1 fork out-of-band (duplicate seq) and prove both the
+    verifier and the independent dup metric catch it.
+
+    The live code refuses to OPEN a forked store (UNIQUE(seq) backstop in
+    _apply_schema), mirroring the cold-storage forked copy. To exercise the
+    verifier's read path we neutralise only the index creation so the legacy
+    forked store can be opened and read (the heavy reads go through the
+    read-only snapshot, which never runs _apply_schema).
+    """
+    db = str(tmp_path / "fork.db")
+    # Build the forked DB directly with raw sqlite: no UNIQUE(seq) backstop,
+    # mirroring a store created before the index existed.
+    raw = sqlite3.connect(db)
+    raw.execute(
+        "CREATE TABLE audit_events ("
+        "seq INTEGER, event_id TEXT, event_type TEXT, principal_id TEXT, "
+        "scope TEXT, timestamp REAL, correlation_id TEXT, outcome TEXT, "
+        "details TEXT, event_hash TEXT, prev_event_hash TEXT, "
+        "hash_alg TEXT, link_hash TEXT)"
+    )
+    raw.execute(
+        "CREATE TABLE chain_state (id INTEGER PRIMARY KEY, last_seq INTEGER, "
+        "last_hash TEXT, last_link_hash TEXT)"
+    )
+    # 4 events, then a 5th that DUPLICATES seq=3 (the fork).
+    rows = [
+        (1, "e1", "STATE_CHANGE", "p", "L0", 1.0, "c1", "ok", "{}", "h1", None, "sha256", None),
+        (2, "e2", "STATE_CHANGE", "p", "L0", 2.0, "c2", "ok", "{}", "h2", "h1", "sha256", None),
+        (3, "e3", "STATE_CHANGE", "p", "L0", 3.0, "c3", "ok", "{}", "h3", "h2", "sha256", None),
+        (3, "e3-dup", "STATE_CHANGE", "p", "L0", 3.5, "c3b", "ok", "{}", "h3b", "h2", "sha256", None),
+        (4, "e4", "STATE_CHANGE", "p", "L0", 4.0, "c4", "ok", "{}", "h4", "h3b", "sha256", None),
+    ]
+    raw.executemany(
+        "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
+    )
+    raw.execute("INSERT INTO chain_state VALUES (1, 4, 'h4', NULL)")
+    raw.commit()
+    raw.close()
+
+    # Neutralise ONLY the UNIQUE(seq) index creation so the forked store can be
+    # opened; the lease table is created by SqliteWriterLease itself.
+    def _noop_apply_schema(self):
+        try:
+            self._conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    monkeypatch.setattr(AuditStore, "_apply_schema", _noop_apply_schema)
+
+    store = AuditStore(db_path=db)
+    ok, total = store.verify_integrity()
+    assert ok is False, "forked store must FAIL integrity verification"
+    assert store.duplicate_seq_count() == 1, "exactly one duplicate row expected"
+    store._conn.close()
+
+
+def _run_gate(db_path) -> tuple[int, str]:
+    env = dict(os.environ)
+    env["AUDIT_DB_PATH"] = str(db_path)
+    proc = subprocess.run(
+        [sys.executable, str(GATE_SCRIPT)],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def _load_aggregate():
+    """Import scripts/verify_audit_integrity.py by path (not a package)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "vai_tristate_contract",
+        REPO_ROOT / "scripts" / "verify_audit_integrity.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_AGGREGATE = _load_aggregate()
+
+
+def _gate_state(rc: int, out: str) -> str:
+    """Classify a gate run with the SAME tri-state contract as the aggregate.
+
+    Mirrors ``scripts/verify_audit_integrity.py::_run_gate`` and reuses its
+    ``SKIP_MARKERS`` so there is one definition of "not verified", not two:
+
+      0 = PASS, 3 = SKIP (NOT VERIFIED), anything else = FAIL.
+      rc 0 that only prints a skip marker is SKIP, never PASS.
+    """
+    if rc == 3:
+        return "SKIP"
+    if rc == 0:
+        lowered = out.lower()
+        if any(marker in lowered for marker in _AGGREGATE.SKIP_MARKERS):
+            return "SKIP"
+        return "PASS"
+    return "FAIL"
+
+
+def test_no_fork_gate_skips_when_no_live_store(tmp_path):
+    missing = tmp_path / "does_not_exist.db"
+    rc, out = _run_gate(missing)
+    assert rc == 3, "missing live store must be SKIP (rc 3), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "SKIP", out
+    assert "SKIP" in out
+    assert "NOT VERIFIED" in out
+    # A skip must never be worded as a pass.
+    assert "GATE PASS" not in out, out
+
+
+def test_no_fork_gate_passes_on_clean_live_store(tmp_path):
+    db = tmp_path / "clean_live.db"
+    _build_clean_store(str(db), n=4)._conn.close()
+    rc, out = _run_gate(db)
+    assert rc == 0, "clean live store must PASS (rc 0), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "PASS", out
+    assert "NO-FORK GATE PASS:" in out
+
+
+def _load_gate_module():
+    """Import scripts/verify_audit_chain_no_fork.py by path (not a package)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_audit_chain_no_fork", GATE_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _tree_hashes(root: Path, db: Path) -> dict[str, str]:
+    """sha256 of the DB and any -wal/-shm sidecars that exist."""
+    out = {}
+    for name in ("", "-wal", "-shm"):
+        candidate = db.with_name(db.name + name)
+        if candidate.exists():
+            out[candidate.name] = hashlib.sha256(
+                candidate.read_bytes()).hexdigest()
+    return out
+
+
+def test_gate_does_not_modify_the_target_store(tmp_path):
+    """The gate claims to be read-only: prove it leaves the bytes untouched.
+
+    This is the regression for finding G-3 -- constructing an AuditStore issues
+    and COMMITS DDL, so a 'read-only' monitor that built a store was writing to
+    the very evidence it reported on.
+    """
+    db = tmp_path / "live.db"
+    _build_clean_store(str(db), n=4)._conn.close()
+    before = _tree_hashes(tmp_path, db)
+    rc, out = _run_gate(db)
+    assert rc == 0, "clean store must PASS: %s" % out
+    after = _tree_hashes(tmp_path, db)
+    assert after == before, (
+        "the no-fork gate MODIFIED the store it only claims to read:\n"
+        "before=%s\nafter=%s" % (before, after)
+    )
+
+
+def test_gate_selftest_runs_even_without_a_live_store(tmp_path):
+    """The deployed DB is gitignored, so CI SKIPs the live check. Prove the gate
+    still does real work there instead of being a green no-op (finding G-2),
+    and that the SKIP is reported as NOT VERIFIED (exit 3), not as a pass."""
+    rc, out = _run_gate(tmp_path / "does_not_exist.db")
+    assert rc == 3, "no live store must be SKIP (rc 3), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "SKIP", out
+    assert "SKIP" in out, "no live store must be reported as a SKIP, not a pass"
+    assert "NOT VERIFIED" in out, out
+    assert "SELF-TEST PASS" in out, (
+        "no live store means the gate must still prove its detector works; "
+        "otherwise CI would learn nothing from this gate")
+
+
+def test_selftest_catches_a_broken_detector(tmp_path):
+    """Negative control: if the detector stops detecting, the gate must FAIL."""
+    gate = _load_gate_module()
+
+    healthy_ok, healthy_detail = gate.selftest_detector()
+    assert healthy_ok, "detector self-test failed on an intact detector: %s" % (
+        healthy_detail,)
+
+    with tempfile.TemporaryDirectory(prefix="liuhao-nofork-neg-") as tmp:
+        path = str(Path(tmp) / "forked.db")
+        gate._build_forked_store(path)
+        conn = gate.open_read_only(path)
+        try:
+            ok, detail = gate.check_store_read_only(conn)
+        finally:
+            conn.close()
+        assert ok is False, "forked store must be detected: %s" % detail
+
+    # Now neuter the detector and assert the self-test refuses to pass.
+    original = gate.check_store_read_only
+    gate.check_store_read_only = lambda conn: (True, "always healthy")
+    try:
+        broken_ok, broken_detail = gate.selftest_detector()
+        assert broken_ok is False, (
+            "self-test passed even though the detector reports everything as "
+            "healthy -- a broken monitor would silently green-light a re-fork")
+        assert "BROKEN" in broken_detail
+    finally:
+        gate.check_store_read_only = original
+
+
+def test_no_fork_gate_fails_on_forked_live_store(tmp_path):
+    db = tmp_path / "fork_live.db"
+    _build_clean_store(str(db), n=4)._conn.close()
+    # Inject a fork out-of-band, then drop the UNIQUE(seq) index so the store
+    # still opens (mirrors a legacy forked store the live code refuses to open
+    # via the index backstop -- the gate must still alert).
+    raw = sqlite3.connect(str(db))
+    raw.execute("DROP INDEX IF EXISTS uidx_seq")
+    raw.execute(
+        "INSERT INTO audit_events "
+        "(seq, event_id, event_type, principal_id, scope, timestamp, "
+        "correlation_id, outcome, details, event_hash, prev_event_hash, "
+        "hash_alg, link_hash) "
+        "SELECT seq, event_id || '-dup', event_type, principal_id, scope, "
+        "timestamp, correlation_id, outcome, details, event_hash, "
+        "prev_event_hash, hash_alg, link_hash FROM audit_events WHERE seq = 2"
+    )
+    raw.commit()
+    raw.close()
+    rc, out = _run_gate(db)
+    assert rc == 2, "forked live store must FAIL (rc 2), got %d: %s" % (rc, out)
+    assert _gate_state(rc, out) == "FAIL", out
+    assert "FAIL" in out

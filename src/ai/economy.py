@@ -24,7 +24,7 @@ NO FAKE AI: all arithmetic is real; reservations are real; rejections are real.
 from __future__ import annotations
 
 import uuid
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from .observability import observe
 
@@ -121,9 +121,15 @@ class BillingEngine:
     """§76 Billing Engine - per-model token cost accounting.
 
     Pricing arithmetic: cost = (tokens_in + tokens_out) / 1000 * price_per_1k for
-    the simple float form, and input/output split for the dict form. Unknown
-    models are reported honestly (cost 0, unknown_model=True).
+    the simple float form, and input/output split for the dict form.
+
+    未知价格模型**不按 0 元入账**：成本返回 ``None``，报表里明确标记
+    ``pricing_status="unknown"`` / ``暂无价格``，并且 ``total_cost`` 只汇总
+    已知模型；``total_cost_complete=False`` 告诉调用方"这个合计不是全部"。
+    token 用量仍然照记（用量是真实的，只是价格未知）。
     """
+
+    UNKNOWN_COST_MESSAGE = "该模型暂无价格数据，未计入成本"
 
     def __init__(self, price_table: PriceTable):
         self._price_table: PriceTable = dict(price_table)
@@ -133,7 +139,7 @@ class BillingEngine:
     def _price(self, model: str, tokens_in: int, tokens_out: int):
         entry = self._price_table.get(model)
         if entry is None:
-            return 0.0, True
+            return None, True
         if isinstance(entry, dict):
             in_p = float(entry.get("input", 0.0))
             out_p = float(entry.get("output", 0.0))
@@ -144,58 +150,82 @@ class BillingEngine:
         cost = ((tokens_in + tokens_out) / 1000.0) * price
         return cost, False
 
-    def estimate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
-        """Pure cost estimate - no accounting side effects."""
+    def estimate_cost(
+        self, model: str, tokens_in: int, tokens_out: int
+    ) -> Optional[float]:
+        """Pure cost estimate - no accounting side effects.
+
+        未知价格返回 ``None``（**不是 0.0**）：0 元会被误读成"免费"。
+        """
         cost, _ = self._price(model, tokens_in, tokens_out)
         return cost
 
     def has_price(self, model: str) -> bool:
-        """Whether this model has a price entry.
-
-        ``estimate_cost`` returns 0.0 for a model that is not in the table. A
-        caller that is about to *guard* a budget must not read that 0.0 as
-        "free": for an unpriced model the cost is genuinely **unknown**, and
-        passing 0.0 into a quota comparison would silently defeat the guard
-        (0 is always within budget). Ask this first and omit the cost instead.
-        """
+        """Whether this model has a price entry."""
         return model in self._price_table
 
     @observe("billing.record_usage")
-    def record_usage(self, model: str, tokens_in: int, tokens_out: int) -> Dict[str, Union[float, str, bool]]:
+    def record_usage(
+        self, model: str, tokens_in: int, tokens_out: int
+    ) -> Dict[str, Union[float, str, bool, None]]:
         """Record one usage event, aggregate it, and return its cost breakdown."""
         cost, unknown = self._price(model, tokens_in, tokens_out)
         agg = self._usage.setdefault(
-            model, {"tokens_in": 0.0, "tokens_out": 0.0, "total_tokens": 0.0, "cost": 0.0}
+            model,
+            {
+                "tokens_in": 0.0,
+                "tokens_out": 0.0,
+                "total_tokens": 0.0,
+                "cost": 0.0,
+                "unknown": 0.0,
+            },
         )
         agg["tokens_in"] += tokens_in
         agg["tokens_out"] += tokens_out
         agg["total_tokens"] += tokens_in + tokens_out
-        agg["cost"] += cost
+        if unknown:
+            agg["unknown"] = 1.0
+        else:
+            agg["cost"] += float(cost or 0.0)
 
         return {
             "model": model,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
-            "cost": cost,
+            # 未知价格明确返回 None，而不是 0.0
+            "cost": None if unknown else cost,
             "unknown_model": unknown,
+            "pricing_status": "unknown" if unknown else "priced",
+            "message": self.UNKNOWN_COST_MESSAGE if unknown else "",
         }
 
     def usage_report(self) -> Dict[str, object]:
-        models = {
-            m: {
+        models: Dict[str, Dict[str, object]] = {}
+        unknown_models: List[str] = []
+        for model, agg in self._usage.items():
+            unknown = bool(agg.get("unknown"))
+            if unknown:
+                unknown_models.append(model)
+            models[model] = {
                 "tokens_in": agg["tokens_in"],
                 "tokens_out": agg["tokens_out"],
                 "total_tokens": agg["total_tokens"],
-                "cost": round(agg["cost"], 6),
+                "cost": None if unknown else round(agg["cost"], 6),
+                "pricing_status": "unknown" if unknown else "priced",
+                "message": self.UNKNOWN_COST_MESSAGE if unknown else "",
             }
-            for m, agg in self._usage.items()
-        }
         total_tokens = sum(a["total_tokens"] for a in self._usage.values())
-        total_cost = sum(a["cost"] for a in self._usage.values())
+        # 合计只含已知价格模型；未知模型以 None 展示，绝不当 0 元参与合计。
+        total_cost = sum(
+            agg["cost"] for agg in self._usage.values() if not agg.get("unknown")
+        )
         return {
             "models": models,
             "total_tokens": total_tokens,
             "total_cost": round(total_cost, 6),
+            "total_cost_complete": not unknown_models,
+            "unknown_models": unknown_models,
+            "message": self.UNKNOWN_COST_MESSAGE if unknown_models else "",
             "model_count": len(self._usage),
         }
 
@@ -219,6 +249,23 @@ class EconomyEngine:
             return {"ok": False, "status": "blocked", "model": model}
 
         estimated = self._billing.estimate_cost(model, tokens_in, tokens_out)
+        if estimated is None:
+            # 未知价格：不预留、不扣费（0 元会骗过预算闸门），但用量照记，
+            # 并把"暂无价格"明确返回给调用方。
+            record = self._billing.record_usage(model, tokens_in, tokens_out)
+            return {
+                "ok": True,
+                "status": "ok",
+                "model": model,
+                "cost": None,
+                "estimated_cost": None,
+                "unknown_model": True,
+                "pricing_status": "unknown",
+                "message": self._billing.UNKNOWN_COST_MESSAGE,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }
+
         rid = self._budget.reserve(estimated)
         if rid is None:
             return {
@@ -237,4 +284,5 @@ class EconomyEngine:
             "cost": record["cost"],
             "estimated_cost": estimated,
             "unknown_model": record["unknown_model"],
+            "pricing_status": record["pricing_status"],
         }

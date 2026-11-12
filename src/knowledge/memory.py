@@ -1,5 +1,5 @@
 """
-LiuHao AI OS (镭灏) - Memory Layer
+Jarvis · 贾维斯 - Memory Layer
 Integrates Mem0 (mem0ai) as the production-grade long-term memory backend.
 Provides unified interface compatible with 10-layer memory architecture.
 """
@@ -7,6 +7,7 @@ Provides unified interface compatible with 10-layer memory architecture.
 from __future__ import annotations
 import os
 import json
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Optional, List, Dict
@@ -14,25 +15,42 @@ from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
 
-# Optional imports with graceful degradation
-try:
-    from mem0 import Memory as Mem0Memory
-    from mem0.configs.llms.base import BaseLlmConfig
-    from mem0.configs.embeddings.base import BaseEmbedderConfig
-    from mem0.configs.vector_stores.base import BaseVectorStoreConfig
-    MEM0_AVAILABLE = True
-except ImportError:
-    MEM0_AVAILABLE = False
-    Mem0Memory = None
-    BaseLlmConfig = None
-    BaseEmbedderConfig = None
-    BaseVectorStoreConfig = None
+from .memory_system import MemoryService, Memory, MemoryType  # noqa: F401  (re-export)
 
-try:
-    from openai import OpenAI  # noqa: F401
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+#: mem0（及其传递依赖 openai / qdrant_client）**按需**导入，绝不在模块导入期拉起。
+#: 实测：冷进程 ``import src.knowledge.memory`` 曾因这条链花 8.4 秒，而所有
+#: 真实调用方（``src/ai/goal_task_graph.py``、``src/ai/langgraph_workflow.py``、
+#: ``src/ai/employee.py``）用的都是 ``use_mem0=False`` —— 于是"点了执行才卡 8 秒"
+#: 的代价买回来一个根本不会用到的后端。缓存三种结果（可用类 / 不可用 / 未探明），
+#: 同一进程只探明一次。
+_mem0_class: Any = None
+_mem0_probed = False
+_mem0_lock = threading.Lock()
+
+
+def _mem0() -> Any:
+    """返回 ``mem0.Memory`` 类；未安装时返回 ``None``（不抛、不重复探测）。"""
+    global _mem0_class, _mem0_probed
+    if _mem0_probed:
+        return _mem0_class
+    with _mem0_lock:
+        if _mem0_probed:
+            return _mem0_class
+        try:
+            from mem0 import Memory as _Memory
+        except ImportError:
+            _mem0_class = None
+        else:
+            _mem0_class = _Memory
+        finally:
+            _mem0_probed = True
+        return _mem0_class
+
+
+def mem0_available() -> bool:
+    """mem0 后端是否可用（首次调用才会真正尝试导入）。"""
+    return _mem0() is not None
+
 
 try:
     from ..ai.observability import observe
@@ -46,8 +64,7 @@ except ImportError:
 # --- Memory System refactor (DB-backed MemoryService) ---
 # Completed 2026-09-15. Kept separate from the Mem0-compatible MemoryManager
 # API above so existing callers (src/ai/*) and tests/test_knowledge_memory.py
-# keep working. Re-exported here for convenience.
-from .memory_system import MemoryService, Memory, MemoryType  # noqa: F401  (re-export)
+# keep working. Re-exported at the top of this module for convenience.
 
 
 class MemoryTier(Enum):
@@ -169,12 +186,13 @@ class Mem0Backend(MemoryBackend):
         config: Optional[Dict[str, Any]] = None,
         user_id: str = "default"
     ):
-        if not MEM0_AVAILABLE:
+        mem0_class = _mem0()
+        if mem0_class is None:
             raise RuntimeError("mem0 not installed. Run: pip install mem0ai")
 
         self.user_id = user_id
         self.config = config or self._default_config()
-        self._memory = Mem0Memory.from_config(self.config)
+        self._memory = mem0_class.from_config(self.config)
 
     def _default_config(self) -> Dict[str, Any]:
         """Default Mem0 configuration for LiuHao"""
@@ -425,7 +443,7 @@ class InMemoryBackend(MemoryBackend):
 
 class MemoryManager:
     """
-    Unified Memory Manager for LiuHao AI OS.
+    Unified Memory Manager for Jarvis.
     Supports multiple backends with tiered memory architecture.
     """
 
@@ -441,7 +459,7 @@ class MemoryManager:
         # Initialize backend
         if backend:
             self.backend = backend
-        elif MEM0_AVAILABLE:
+        elif mem0_available():
             try:
                 self.backend = Mem0Backend(config=self.config, user_id=user_id)
             except Exception as e:
@@ -593,7 +611,7 @@ def create_memory_manager(
     config: Optional[Dict[str, Any]] = None
 ) -> MemoryManager:
     """Factory function to create configured MemoryManager"""
-    if use_mem0 and MEM0_AVAILABLE:
+    if use_mem0 and mem0_available():
         backend = Mem0Backend(config=config, user_id=user_id)
     else:
         backend = InMemoryBackend(user_id=user_id)
@@ -615,7 +633,7 @@ if __name__ == "__main__":
         tags=["preference", "language"]
     )
     id2 = mm.remember(
-        "Current project: LiuHao AI OS Y1 implementation",
+        "Current project: Jarvis Y1 implementation",
         tier=MemoryTier.EPISODIC,
         importance=0.8,
         tags=["project", "status"]

@@ -10,9 +10,9 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
 from datetime import datetime
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import Plugin, PluginVersion
@@ -34,6 +34,7 @@ class PluginMarketplaceStore:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._plugins: Dict[str, Plugin] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -46,10 +47,16 @@ class PluginMarketplaceStore:
                     k: Plugin.from_dict(v) for k, v in data.get("plugins", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                # P0-8c: NO default fallback. An envelope that declares
+                # no algorithm is UNVERIFIED, never silently read as sha256.
+                self._hash_alg = data.get("hash_alg")
                 # Rebuild hash chain if missing or inconsistent
-                if not self._hash_chain or len(self._hash_chain) != len(self._plugins):
+                if self._hash_alg and (
+                    not self._hash_chain or len(self._hash_chain) != len(self._plugins)
+                ):
                     self._hash_chain = None
                     self._build_hash_chain()
+
             except Exception as e:
                 print(f"Warning: Failed to load marketplace: {e}")
                 self._plugins = {}
@@ -60,6 +67,14 @@ class PluginMarketplaceStore:
 
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain from current plugins."""
+        # P0-8c: refuse to (re)build a chain without a declared algorithm.
+        # Defaulting to sha256 is exactly what the containment forbids;
+        # the operator must stamp legacy data via the migration script.
+        if not self._hash_alg:
+            raise ValueError(
+                "cannot build a hash chain without a declared hash_alg; "
+                "run scripts/migrate_p08_hash_alg.py to stamp legacy data"
+            )
         chain: List[str] = []
         sorted_ids = sorted(self._plugins.keys())
         prev_hash = "genesis"
@@ -68,7 +83,7 @@ class PluginMarketplaceStore:
             plugin_dict = plugin.to_dict()
             plugin_dict["prev_hash"] = prev_hash
             plugin_data = json.dumps(plugin_dict, sort_keys=True, separators=(",", ":"))
-            plugin_hash = hashlib.sha256(plugin_data.encode()).hexdigest()
+            plugin_hash = compute_hash(self._hash_alg, plugin_data.encode())
             chain.append(plugin_hash)
             prev_hash = plugin_hash
 
@@ -77,12 +92,13 @@ class PluginMarketplaceStore:
 
     def _save(self) -> None:
         """Persist plugins to storage with hash chain."""
-        if self._hash_chain is None:
+        if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
 
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "plugins": {k: v.to_dict() for k, v in self._plugins.items()},
         }
@@ -208,8 +224,13 @@ class PluginMarketplaceStore:
 
     def verify_integrity(self) -> bool:
         """Verify the hash chain integrity."""
-        if not self._plugins or not self._hash_chain:
+        if not self._plugins:
             return True
+        # P0-8c: data that declares no algorithm (or carries no chain) is
+        # UNVERIFIED -- fail closed, never a silent pass and never a
+        # silent fallback to sha256.
+        if not self._hash_alg or not self._hash_chain:
+            return False
 
         chain = self._hash_chain
         if len(chain) != len(self._plugins):
@@ -222,12 +243,11 @@ class PluginMarketplaceStore:
             plugin_dict = plugin.to_dict()
             plugin_dict["prev_hash"] = prev_hash
             plugin_data = json.dumps(plugin_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(plugin_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, plugin_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 

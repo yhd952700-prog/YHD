@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "steps": {
+    "bootstrap": {
+      "seconds": 8.7,
+      "exit": 0,
+      "stdout": [
+        "or scripts/issue_console_token.py for the console token.",
+        "REGISTER_RC 0",
+        "MODEL_ID d4da925975ce",
+        "MODEL_NAME stub-model",
+        "MODEL_PROVIDER openai"
+      ],
+      "stderr_tail": []
+    },
+    "gateway_first_start": {
+      "seconds_to_health": 8.4,
+      "wall": 8.4
+    },
+    "console_page": {
+      "status": 200,
+      "has_html": true,
+      "has_title": true
+    },
+    "login": {
+      "status": 200,
+      "has_token": true
+    },
+    "first_message": {
+      "seconds": 2.4,
+      "status": 200,
+      "reply": "E2E-REPLY-OK from stub-model",
+      "from_stub": true,
+      "is_mock": false,
+      "body_tail": ""
+    },
+    "stub_hits": [
+      {
+        "path": "/v1/chat/completions",
+        "model": "stub-model",
+        "auth": "Bearer sk-e2e-"
+      }
+    ],
+    "restart": {
+      "seconds_to_health": 8.8,
+      "login_status": 200,
+      "history_status": 200,
+      "history_has_user": true,
+      "history_has_reply": true
+    },
+    "port_occupied": {
+      "observed_line": "[warn] 网关 端口 18130 被占用，已自动改用 18131",
+      "launcher_exit": null
+    }
+  },
+  "errors": [],
+  "total_seconds": 33.2,
+  "artifacts": {
+    "gateway_log": "D:\\cache\\temp\\liuhao-e2e\\gateway.log",
+    "stub_log": "D:\\cache\\temp\\liuhao-e2e\\stub_hits.log",
+    "data_dir": "D:\\cache\\temp\\liuhao-e2e\\data"
+  }
+}

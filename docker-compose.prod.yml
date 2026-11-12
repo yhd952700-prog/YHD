@@ -29,21 +29,60 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Posture: the canonical, app-namespaced signal. Previously the codebase
+      # read LIUHAO_ENV for production-posture but it was never set here, so the
+      # fail-closed gates (secret backend, Vault fallback, JWT durable key)
+      # silently took the NON-production branch in production. Keep ENVIRONMENT
+      # too: config/production/config.py still reads it. (posture.py SoT)
+      - LIUHAO_ENV=production
       - ENVIRONMENT=production
       - PORT=8080
       # 应用当前不用 Postgres（默认 sqlite）。保留变量只为兼容既有 .env；
       # 若将来真的切库，驱动与迁移都要一并补上。
       - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/liuhao_ai_os.db}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      # 必填：不提供时 docker compose 直接拒绝启动（而不是带着空值上线后
+      # 由应用在第一次登录时才报错）。生产必须使用持久、随机、所有 worker
+      # 共享的签名密钥，否则重启即全端登出。
+      - "JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set for production}"
       - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY}
       - API_KEY_MASTER_KEY=${API_KEY_MASTER_KEY}
       # 身份持久化（Policy C-7）：默认 SQLite 后端。
       # 不用数据库、只想用 JSON 种子文件的话，改为设置
       # LIUHAO_HUMAN_IDENTITIES_FILE 并挂载该文件即可。
       - LIUHAO_HUMAN_IDENTITIES_DB=${LIUHAO_HUMAN_IDENTITIES_DB:-/app/data/human_identities.sqlite3}
-      # Policy Controlled (C-6 decision, 2026-09-12): arm every HIGH and
-      # CRITICAL kernel action except the audited exemptions recorded in
-      # src/kernels/_enforcement.py (EXEMPT_ACTIONS). The Round 75 call-site
+      # 登录凭据库（与身份库是**两个不同的库**，见
+      # scripts/register_human_identity.py 的说明）。
+      #
+      # 不设这一行时它落在默认路径 <repo>/config/auth_secrets.json，也就是容器内
+      # /app/config/auth_secrets.json —— 那不在任何卷里（唯一挂载是
+      # liuhao_data:/app/data）⇒ 每重建一次容器，所有人的密码都消失，已登录会话
+      # 全部失效，且界面会退回"尚未配置登录凭据（fail-closed）"。一个把人类凭据
+      # 放在可丢弃层里的部署不是可运维的部署。改指到卷内，与身份库同生命周期。
+      # Rollback: 删掉这一行即回到默认行为。
+      - LIUHAO_AUTH_SECRETS_FILE=${LIUHAO_AUTH_SECRETS_FILE:-/app/data/auth_secrets.json}
+      # 行级校验密钥（HC-11 / U6）。不设 ⇒ 校验无法进行 ⇒ 表中每一行都被拒绝 ⇒
+      # 系统承认的人类数为 0（无人能登录/审批）。存量身份表升级后必须重新登记每个人。
+      - LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY=${LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY}
+      # 审计库持久化（P0 · CRIT-1B）：审计库默认落在 <bundle_root>/audit_store.db，
+      # 即容器内 /app/audit_store.db。/app 由 Dockerfile:45 WORKDIR 以 root 创建、
+      # :60 只 chown 了 /app/data、:62 以 USER app 运行 ⇒ 该路径既可能不可写，
+      # 也不在任何卷内（本文件唯一挂载是 liuhao_data:/app/data）⇒ 每重建一次容器
+      # 整条审计哈希链归零。改指到卷内、且已 chown app:app 的 /app/data。
+      # Rollback: 删掉这一行即回到默认行为。
+      - AUDIT_DB_PATH=/app/data/audit_store.db
+      # JWT 吊销黑名单（SQLite，重启/多 worker 共享）。默认路径是
+      # <bundle_root>/.liuhao_jwt_revocation.db（容器内 /app/.liuhao_jwt_revocation.db），
+      # 既不在唯一卷 liuhao_data:/app/data 内，也不一定可写（USER app）——
+      # 容器启动时会直接死掉：sqlite3.OperationalError: unable to open database file。
+      # 必须落在卷内。
+      # Rollback: 删掉这一行即回到默认行为（仅适用于单次运行）。
+      - LIUHAO_JWT_REVOCATION_DB=${LIUHAO_JWT_REVOCATION_DB:-/app/data/jwt_revocations.db}
+      # Policy Controlled (C-6 decision, 2026-09-12; D24 narrow, 2026-09-12):
+      # arm every CRITICAL kernel action except the audited exemptions recorded
+      # in src/kernels/_enforcement.py (EXEMPT_ACTIONS). D24 narrowed the
+      # deployment from "HIGH,CRITICAL" to "CRITICAL" so the default-protective
+      # posture is CRITICAL-block / LOW-record, and the switch is NOT globally ON.
+      # The Round 75 call-site
       # audit measured every armed action as unreachable from production
       # code, so this is a zero-behaviour change today -- but the gate is now
       # live across the whole high-risk surface, and a future or compromised
@@ -52,11 +91,47 @@ services:
       # scripts/verify_armed_actions_are_inert.py turns CI red if a change
       # makes an armed action reachable.
       #
-      # 注意：武装之后，一旦有 HIGH/CRITICAL 动作真的可达，就必须有人类能批准。
+      # 注意：武装之后，一旦有 CRITICAL 动作真的可达，就必须有人类能批准。
       # 未登记任何人类 = 无人可批 = fail-closed（刻意默认）。网关启动时会以
       # WARNING 明确打印这一点；登记用 scripts/register_human_identity.py。
       # Rollback: set this variable to the empty string.
-      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}
+      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}
+      # ---- 安全默认（fail-closed）：以下每个值都刻意取"最严格"的一侧，
+      # 不需要更严时可以显式改回，但默认不允许"没设置 = 放行"。
+      #
+      # 执行围栏默认武装：未武装时整条 default-deny 门禁在运行时从不执行，
+      # 每次受围栏保护的动作都会变成"无门禁直通"。生产默认开启，失败即报警。
+      - LIUHAO_EXECUTOR_FENCE=on
+      # 围栏安装失败时拒绝启动（fail-closed），而不是带着"无围栏"进程继续服务。
+      - LIUHAO_REQUIRE_EXECUTOR_FENCE=1
+      # 严格姿态：无法判定 deployment posture 时直接硬失败。LIUHAO_ENV 已在
+      # 上方显式设为 production，所以正常启动不受影响；这只是在配置缺失时
+      # 不再退回"非生产"的宽容分支。
+      - LIUHAO_POSTURE_STRICT=1
+      # 并发执行器上限保守取 4：未设置等于"无上限"，会让 N+1 并发泄漏无法被
+      # 围栏发现。按单容器 2 CPU 的资源上限，4 已足够且留有余量。
+      - LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS=4
+      # 跨进程围栏租约目录固定在持久卷内。backend=file 时未设置会静默退回
+      # 单节点 sqlite、而启动日志仍打印 backend=file（"看起来跨进程、实际单机"）。
+      - LIUHAO_EXECUTOR_FENCE_LEASE_DIR=/app/data/executor_fence_leases
+      # HIGH/CRITICAL 沙箱动作强制真实隔离；没有可用隔离后端时 fail-closed
+      # 拒绝执行，绝不退化为宿主机直跑。
+      - LIUHAO_SANDBOX_ENFORCE=on
+      # 模拟执行显式关闭。开关必须"显式关闭"而不是"未设置"：两者在代码里
+      # 都不会启用模拟，但显式 0 让审计面能证明这是刻意的生产决定。
+      - LIUHAO_ALLOW_SIMULATED_EXECUTION=0
+      # 审计库崩溃恢复所用的备份文件，与 AUDIT_DB_PATH 同卷（同一生命周期）。
+      # 未设置时路径只是默认的 <db>.backup，生产代码从不写它 ⇒ 恢复分支形同虚设。
+      - AUDIT_DB_BACKUP_PATH=/app/data/audit_store.db.backup
+      # API Key 注册表落盘到持久卷（文件内容只有哈希、创建即 0600）。未设置
+      # 时注册表只存在于内存，容器重启后已签发的全部密钥丢失。
+      - LIUHAO_API_KEY_STORE=/app/data/api_keys.json
+      # 驾驶舱构建产物路径，必须与 Dockerfile:84 的 COPY 目标一致；固定写死
+      # 避免依赖"从源码树推算"的相对路径。
+      - LIUHAO_CONSOLE_DIST=/app/apps/console/console/dist
+      # 工作区根固定在持久卷内。未设置时会退回开发者主目录/盘符路径，容器里
+      # 那既不稳定也不可审计（目标文件、项目元数据、员工库都挂在它下面）。
+      - LIUHAO_WORKSPACE_ROOT=/app/data/workspace
     volumes:
       # 运行期状态：身份库 / SQLite / WAL 文件。
       - liuhao_data:/app/data
@@ -70,7 +145,7 @@ services:
           memory: 1G
           cpus: '0.5'
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/v1/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/v1/ready', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3

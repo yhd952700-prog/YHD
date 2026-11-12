@@ -13,16 +13,26 @@ from typing import Dict, Any, Optional, List
 
 import json
 import os
+import threading
 import time
 import logging
 from pathlib import Path
 
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
+
 logger = logging.getLogger(__name__)
+
+#: 同进程内多个 registry 实例（以及多 worker 进程）的写入串行锁。
+_PROCESS_WRITE_LOCK = threading.Lock()
 
 # Repository root, resolved from this file (src/models/registry.py -> parents[2]).
 # Used to make every default path below *portable*: the historical hard-coded
-# ``D:\LiuHao-AI-OS\...`` path does not exist inside the Linux release bundle
-# (``deploy/cloud/``), which is why model prices never reached production.
+# absolute development-machine path does not exist inside the Linux release
+# bundle (``deploy/cloud/``), which is why model prices never reached production.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Override for the registry's persistent state file.
@@ -123,10 +133,15 @@ class ModelRegistry:
                 back to ``$LIUHAO_MODEL_PRICING_FILE``, then to
                 ``config/model_pricing.json``.
         """
+        from src.common.data_paths import resolve_store_path
+
         self.storage_path = Path(
             storage_path
-            or os.environ.get(MODEL_REGISTRY_FILE_ENV)
-            or DEFAULT_MODEL_REGISTRY_FILE
+            or resolve_store_path(
+                "model_registry.json",
+                DEFAULT_MODEL_REGISTRY_FILE,
+                env_var=MODEL_REGISTRY_FILE_ENV,
+            )
         )
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.pricing_path = Path(
@@ -234,8 +249,7 @@ class ModelRegistry:
         """Load registry state from persistent storage."""
         if self.storage_path.exists():
             try:
-                with open(self.storage_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = json.loads(read_text_with_retry(self.storage_path))
 
                 for model_data in data.get("models", []):
                     metadata = ModelMetadata(
@@ -279,15 +293,39 @@ class ModelRegistry:
                 logger.error(f"Failed to load model registry: {e}")
 
     def _save_state(self) -> None:
-        """Save registry state to persistent storage."""
-        data = {
+        """Save registry state to persistent storage.
+
+        读-改-写事务：进程锁 → OS 文件锁 → 锁内重读磁盘 → 按 model_id 合并
+        （同 id 以内存为准，磁盘上其它进程刚注册的模型保留）→ 原子替换。
+        """
+        payload = {
             "version": 1,
             "saved_at": time.time(),
             "models": [asdict(metadata) for metadata in self._models.values()],
         }
+        with _PROCESS_WRITE_LOCK:
+            with exclusive_file_lock(
+                f"{self.storage_path}.lock", description="模型注册表"
+            ):
+                merged = self._merge_disk_models(payload["models"])
+                merged_payload = dict(payload, models=merged)
+                atomic_write_text(
+                    str(self.storage_path),
+                    json.dumps(merged_payload, indent=2),
+                )
 
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+    def _merge_disk_models(self, memory_models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """锁内重读磁盘模型列表；同 id 以内存为准，磁盘独有模型保留。"""
+        by_id: Dict[str, Dict[str, Any]] = {}
+        if self.storage_path.exists():
+            disk = json.loads(read_text_with_retry(self.storage_path))
+            if isinstance(disk, dict):
+                for item in disk.get("models", []):
+                    if isinstance(item, dict) and item.get("model_id"):
+                        by_id[item["model_id"]] = item
+        for item in memory_models:
+            by_id[item["model_id"]] = item
+        return list(by_id.values())
 
     # ==================== Model Registration ====================
 

@@ -1,11 +1,11 @@
 # 快速开始指南
 
-## 10分钟上手 LiuHao AI OS
+## 10分钟上手 Jarvis · 贾维斯
 
 ### 前置条件
 
-- Python 3.11+
-- LiuHao AI OS 已安装
+- Python 3.12
+- Jarvis · 贾维斯 已安装
 - D:\\LiuHao-AI-OS 目录权限
 
 ### 安装步骤
@@ -23,24 +23,25 @@ venv\Scripts\activate
 pip install -r requirements.txt
 
 # 4. 验证安装
-# 优先验证权威审计链 src.kernels.audit（SQLite + 哈希链，防篡改，是真实数据源）。
+# 优先验证权威审计链 src.kernels.audit（SQLite + 哈希链，设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉：284 处断链 / 169 行重复 seq，待 F1–F6 修复 + 独立验证后方可断言为完整证据源）。
 # 旧路径 src.audit 仍 import 可用，但已弃用、不具防篡改链。
-python -c "from src.kernels.audit import AuditStore, verify_audit_integrity; print('Audit kernel (authoritative, tamper-evident) OK')"
+python -c "from src.kernels.audit import AuditStore, verify_audit_integrity; print('Audit kernel importable (SQLite + hash chain, designed tamper-evident; runtime integrity currently UNVERIFIED — forked chain, pending F1-F6 + independent verification)')"
 python -c "from src.audit import AuditEvent; print('Audit legacy compat layer importable (deprecated: not tamper-evident)')"
 python -c "from src.observability import Span; print('Observability module OK')"
 python -c "from src.performance import create_lru_cache; print('Performance module OK')"
 python -c "from src.integrations import Base, init_models; print('Integration module OK')"
+# 注意：插件 marketplace 仅作内部 API 冒烟；0.1.2 不开放第三方插件入口（控制台「应用」页只列内置示例能力，旧插件接口返回 404），0.1.3 适配后方可用于产品。
 python -c "from src.plugins.marketplace import Plugin, get_marketplace_store; print('Plugin marketplace OK')"
 ```
 
 ### 基本使用
 
 ```python
-# 权威审计实现：src.kernels.audit（SQLite + 哈希链，防篡改，是真实证据源）。
+# 权威审计实现：src.kernels.audit（SQLite + 哈希链，设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复 + 独立验证后方可断言为完整证据源）。
 # 旧路径 src.audit 仍可 import，但其事件写入 JSON 文件、不具防篡改链，请勿用于真实审计。
 from src.kernels.audit import AuditStore, AuditEventType, AuditScope
 
-# 创建审计事件（示例写入临时库；生产用默认 AuditStore() 落到 audit_store.db 防篡改链）
+# 创建审计事件（示例写入临时库；生产用默认 AuditStore() 落到 audit_store.db；注意该链当前运行时完整性 UNVERIFIED，存在分叉，待修复）
 store = AuditStore(db_path="examples/audit_example.db")
 store.log_event(AuditEventType.ACCESS_ALLOWED, "user1", AuditScope.L1, "allow",
                 details={"note": "login ok"})
@@ -57,6 +58,8 @@ print(f"完整性验证: {ok} (共 {total} 条)")
 ```
 
 ### 第一个插件
+
+> **0.1.2 不开放第三方插件入口**：控制台「应用」页当前只列出内置的示例能力，没有第三方插件的安装、发现或更新入口，也不显示旧插件；旧插件直接调相关接口会返回 404。本节是插件 marketplace 的开发者 API 预览，0.1.3 完成适配与可用性标注后方可用于产品。
 
 ```python
 from src.plugins.marketplace import Plugin, PluginMetadata, PluginVersion, get_marketplace_store
@@ -164,7 +167,7 @@ storage_cfg = create_storage_config(
 function_cfg = create_function_config(
     provider="aws",
     function_name="process-data",
-    runtime="python3.11",
+    runtime="python3.12",
     handler="handler.main",
     timeout=60,
     memory=256,
@@ -213,7 +216,7 @@ LiuHao-AI-OS/
 
 | 问题 | 解决方案 |
 |------|----------|
-| 审计事件未持久化 | 权威审计落在 `audit_store.db`（SQLite 防篡改链）；`src.audit` 遗留层写入 `data/audit/events.json` 且不具防篡改链，请勿用于真实审计 |
+| 审计事件未持久化 | 权威审计落在 `audit_store.db`（SQLite 哈希链，设计为防篡改；但当前运行时完整性 UNVERIFIED，存在分叉，待修复）；`src.audit` 遗留层写入 `data/audit/events.json` 且不具防篡改链，请勿用于真实审计 |
 | 插件注册失败 | 检查插件元数据是否完整，版本是否冲突 |
 | 沙箱超时 | 调整 `ResourceLimits.execution_time_limit` 或优化代码 |
 | 缓存命中率低 | 调整 `max_size` 或�查 key 是否一致 |
@@ -221,7 +224,7 @@ LiuHao-AI-OS/
 
 ### 升级指南
 
-- **从 v0.x 升级**: 运行 `python scripts/migrate.py` 自动迁移数据库 schema
+- **从 v0.x 升级**: 数据库 schema 迁移走 Alembic：`alembic upgrade head`（迁移脚本在 `alembic/versions/`；本仓库没有 `scripts/migrate.py`）
 - **插件版本升级**: 在 marketplace 使用 `store.add_version(plugin_id, new_version)`
 - **配置变更**: 修改 `config.yaml` 并重启服务
 

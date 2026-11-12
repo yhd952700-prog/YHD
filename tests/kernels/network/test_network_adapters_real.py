@@ -14,8 +14,11 @@ Every server is shut down at the end of each test.
 """
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import httpx
+import pytest
 from src.kernels.network import (
     AdapterConfig,
     HTTPAdapter,
@@ -28,6 +31,24 @@ from src.kernels.network import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _direct_http_no_proxy(monkeypatch):
+    """Local-server tests must bypass any ambient HTTP proxy.
+
+    The dev/sandbox environment sets HTTP_PROXY/HTTPS_PROXY to a local forward
+    proxy; httpx routes loopback through it, and that proxy is flaky under full
+    suite load (WinError 10054 connection reset). These tests target an explicit
+    local server, so force trust_env=False on every httpx.Client they build.
+    """
+    _orig = httpx.Client
+
+    def _client(*args, **kwargs):
+        kwargs.setdefault("trust_env", False)
+        return _orig(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", _client)
+
+
 # ---------------------------------------------------------------------
 # Local HTTP server helpers (real, background-threaded, random port)
 # ---------------------------------------------------------------------
@@ -37,6 +58,12 @@ _received: list = []
 
 class _RecordingHandler(BaseHTTPRequestHandler):
     def do_POST(self):
+        # A readiness probe (see _wait_for_server_ready) hits this sentinel path
+        # and must not be counted as a real message delivery.
+        if self.path == "/__lb_health__":
+            self.send_response(200)
+            self.end_headers()
+            return
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
         _received.append({
@@ -57,7 +84,32 @@ def _start_server() -> HTTPServer:
     server = HTTPServer(("127.0.0.1", 0), _RecordingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    # The socket is bound + listening in __init__, but the daemon thread may not
+    # have begun its accept loop yet. A client POST before that races the server
+    # and gets a RST (WinError 10054) under load. Poll until it answers.
+    _wait_for_server_ready(server)
     return server
+
+
+def _wait_for_server_ready(server: HTTPServer, timeout: float = 5.0) -> None:
+    """Block until ``server``'s accept loop is handling requests.
+
+    Prevents a startup race (spurious WinError 10054 connection reset) that only
+    surfaces under heavy GIL/scheduling contention in the full suite.
+    """
+    port = server.server_address[1]
+    deadline = time.monotonic() + timeout
+    probe = httpx.Client(timeout=0.2, trust_env=False)
+    try:
+        while time.monotonic() < deadline:
+            try:
+                if probe.post(f"http://127.0.0.1:{port}/__lb_health__", content=b"{}").status_code == 200:
+                    return
+            except Exception:
+                time.sleep(0.005)
+        raise RuntimeError("test HTTP server did not become ready to accept connections")
+    finally:
+        probe.close()
 
 
 def _server_url(server: HTTPServer) -> str:

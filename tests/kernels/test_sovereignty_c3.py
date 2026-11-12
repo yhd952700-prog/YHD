@@ -13,6 +13,7 @@ These tests prove:
 
 from __future__ import annotations
 
+
 import pytest
 
 from src.kernels._crosscutting import (
@@ -25,7 +26,9 @@ from src.kernels._sovereignty import (
     ActiveSovereignty,
     clear_active_sovereignty,
     get_active_sovereignty,
+    grant_window,
     human_sovereign,
+    issue_grant,
     set_active_sovereignty,
 )
 from src.kernels.identity import (
@@ -34,6 +37,13 @@ from src.kernels.identity import (
     IdentityScope,
     IdentityStatus,
 )
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 def _fresh_manager_with_human():
@@ -63,12 +73,37 @@ def human_manager(monkeypatch):
 
 
 def _audit_details(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    Does **not** filter by ``principal_id``: before A2 the decorator recorded the
+    literal subject ``"kernel"``, so a test could find its own row by that
+    string. A2 replaced the constant with the *actual* acting principal, so
+    pinning the literal finds either nothing or a stale row left in the shared
+    ``audit_store.db`` by an earlier run -- a green that proves nothing.
+
+    Attribution is asserted as a **value** (F26): ``actor_fingerprint`` must be
+    32 hex chars, and the event's ``principal_id`` must agree with the
+    ``actor_identity_id`` in ``details`` (the A2 keyspace convergence).
+    """
     from src.kernels.audit import audit_query
 
-    for ev in audit_query(principal_id="kernel", limit=200, reverse=True):
+    for ev in audit_query(limit=200, reverse=True):
         det = ev.get("details") or {}
-        if det.get("action") == action_name:
-            return det
+        if det.get("action") != action_name:
+            continue
+        fp = det.get("actor_fingerprint")
+        assert isinstance(fp, str) and len(fp) == 32 and all(
+            c in "0123456789abcdef" for c in fp
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fp!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
     return None
 
 
@@ -100,9 +135,12 @@ class TestSovereigntyContext:
 class TestNoSovereigntyStillDenies:
     def test_high_critical_denied_without_delegation(self, human_manager):
         clear_active_sovereignty()
-        verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+        verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: with no sovereignty window the adjudicated actor is the internal
+        # service, and that is the actor the audit record will name.
+        assert actor == {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
 
     def test_enforced_high_raises_deferred_without_delegation(self, human_manager):
         clear_active_sovereignty()
@@ -121,9 +159,14 @@ class TestHumanSovereignFlipsAllow:
     def test_delegated_high_allowed(self, human_manager):
         mgr, human = human_manager
         with human_sovereign(human.id, ["capability.retire"]):
-            verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "allow"
         assert rule == "human_sovereignty"
+        # A2: the actor is no longer discarded. A delegation window means the
+        # action is adjudicated *as the human*, so the audit record names the
+        # human rather than the kernel -- "谁批准的" is now answerable.
+        assert actor["type"] == "human"
+        assert actor["principal"] == human.id
 
     def test_delegated_high_executes_when_enforced(self, human_manager):
         mgr, human = human_manager
@@ -139,18 +182,24 @@ class TestHumanSovereignFlipsAllow:
         mgr, human = human_manager
         # Delegate ONLY capability.retire; security.set_abac_rule is out of scope.
         with human_sovereign(human.id, ["capability.retire"]):
-            verdict, rule = _adjudicate("security.set_abac_rule", "CRITICAL")
+            verdict, rule, actor = _adjudicate("security.set_abac_rule", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: an out-of-scope action must not be escalated to the human *at all* --
+        # the actor stays the service, so the record cannot claim human authority
+        # for an action the delegation never covered.
+        assert actor == {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
 
     def test_low_not_escalated_under_delegation(self, human_manager):
         mgr, human = human_manager
         # LOW stays on the service actor (allow-listed there); delegation must
         # NOT change its verdict.
         with human_sovereign(human.id, ["memory.store"]):
-            verdict, rule = _adjudicate("memory.store", "LOW")
+            verdict, rule, actor = _adjudicate("memory.store", "LOW")
         assert verdict == "allow"
         assert rule == "internal_service_allow"
+        # A2: LOW is never enforcement-gated, so it is never escalated either.
+        assert actor == {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
 
 
 class TestSpoofRejected:
@@ -158,15 +207,23 @@ class TestSpoofRejected:
         # Label the internal service principal as a "human" actor -- the kind
         # guard in _is_verified_human must reject it.
         with human_sovereign(INTERNAL_SERVICE_PRINCIPAL, ["capability.retire"]):
-            verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: the *claim* is recorded (the window asked for this principal to be
+        # treated as human) but it bought no authority -- which is exactly the
+        # distinction the record must preserve.
+        assert actor["principal"] == INTERNAL_SERVICE_PRINCIPAL
 
     def test_unknown_principal_rejected(self, human_manager):
         with human_sovereign("does-not-exist", ["capability.retire"]):
-            verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: an unregistered principal cannot be resolved to an identity, so
+        # the audit record for it will show an absent attribution rather than a
+        # plausible-looking string.
+        assert actor["principal"] == "does-not-exist"
 
 
 class TestAuditOfDefer:
@@ -185,3 +242,55 @@ class TestAuditOfDefer:
         # "was this actually blocked?" is separately auditable.
         assert det.get("policy_decision") == "deny"
         assert det.get("policy_enforced") is True
+
+
+def _latest_details(action_name: str):
+    """Newest audit event details for ``action_name`` (lenient: no attribution asserts)."""
+    from src.kernels.audit import audit_query
+
+    for ev in audit_query(limit=200, reverse=True):
+        det = ev.get("details") or {}
+        if det.get("action") == action_name:
+            return det
+    return None
+
+
+class TestSovereigntyGrantRecorded:
+    """D23: the allow path stamps the real grant id; the deny path stamps none."""
+
+    def test_allow_under_active_grant_records_the_grant_id(self, human_manager):
+        mgr, human = human_manager
+        grant = issue_grant(human.id, ["capability.retire"], reason="d23", target=_TARGET)
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran-under-grant"
+
+        with grant_window(grant, target=_TARGET):
+            assert retire() == "ran-under-grant"
+
+        det = _latest_details("capability.retire")
+        assert det is not None, "no audit row written"
+        # D23: the grant that authorised this action is recorded as a real,
+        # non-None value -- closing the action <- grant <- human chain.
+        assert det.get("policy_decision") == "allow"
+        assert det.get("sovereignty_grant") is not None
+        assert det.get("sovereignty_grant") == grant.grant_id
+
+    def test_no_window_records_no_grant(self, human_manager):
+        clear_active_sovereignty()
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran"
+
+        # No delegation -> service actor -> deny verdict, still executes
+        # (record-only, the library default).
+        assert retire() == "ran"
+
+        det = _latest_details("capability.retire")
+        assert det is not None, "no audit row written"
+        assert det.get("policy_decision") == "deny", det
+        # D23: a denied action (no window) must carry NO grant id -- the deny
+        # path is forced to None by the wrapper guard, independent of claim_held.
+        assert det.get("sovereignty_grant") is None, det

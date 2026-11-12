@@ -99,6 +99,8 @@ risk=CRITICAL -> deny   trace=['RULE:default_deny:deny']
 
 → **判决与动作、风险完全无关**，是一个常量。装饰器又 additive，故该 `deny` 无执行效果。审计事件已显式标注 `policy_enforced: false` 以避免误读。
 
+> ⚠️ **口径边界（2026-09-21 补）：** 本句描述的是**代码默认**（44 个装饰点 `enforce=False` + 开关默认空），即「记录型 / L1」。**部署面不等于代码默认**：`docker-compose.prod.yml:69` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}` 武装，被武装的 CRITICAL 动作上 `deny` **会**产生执行效果（抛 `PolicyDeniedError` / `PolicyDeferredError`）。云发布包的启动器在**源码侧**同样渲染该 setdefault（`scripts/build_cloud_bundle.py:161`，无条件），但磁盘上当前那一份 `deploy/cloud/serve.py` **不含**该行、且它晚于最后一次发布 ⇒ **线上当刻是否武装，本工作区不可判定**。读本句与部署清单时请勿互推。
+
 > **⚠️ 本节为"修复前"基线。** C-1 已实施（2026-09-11）：actor 改为经核验的内部
 > service 主体，内置规则 `internal_service_allow`（白名单 14 项）使判决变为
 > `allow`/`deny` **随动作变化**。实施记录见 §10。
@@ -375,7 +377,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 **已裁决（2026-09-12 Round 73，用户授权"剩余的剩余裁决也交给你"）**：
 
 ① **生产开启内核层真拦截 = 是。** 落地在**生产部署清单**，而不是代码：
-`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`。
+`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
 
   Round 73 只开了 `CRITICAL`（2 个），前置条件是「HIGH 待调用点审计」。**Round 75（C-6）
   完成该审计并把武装面扩到 16 个**（全部 HIGH/CRITICAL 减去 1 个实测有活调用点的豁免项
@@ -494,9 +496,19 @@ CRITICAL 动作，审计记为「system 批准」。不构成越权（需本机�
 |---|---|---|
 | 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | 0 违规 |
 | 2 | importlib 全量导入 `src/` 下 **195** 个模块 | FAILED: 0 |
-| 3 | `scripts/verify_d8_risk_classification.py` 五重断言 | **ALL GREEN** |
+| 3 | `scripts/verify_d8_risk_classification.py` 五重断言（第 4 项为**正交主权不变量**，非 `LOW==allow-list`） | **ALL GREEN** |
 | 4 | 装饰器端到端：CRITICAL 动作审计 `risk_level=CRITICAL`、LOW 动作 `=LOW`；verdict 不变（仍 record-only） | 通过 |
 | 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/` | **610 passed / 1 skipped / 0 failed** |
+
+> **注（第 3 项口径，verify_d8）**：第 4 项断言现为**正交主权不变量**
+> （`ALLOW ∩ ENFORCED_TIERS == ∅`、allow 中无 destructive 动作、且 allow-list 中
+> 刻意保留的 MEDIUM 操作性动作 `identity.create_identity` / `network.add_route` /
+> `resource.allocate` / `resource.create_quota` / `trust.assign_score` /
+> `trust.update_score` 仍 ∈ allow 且确为 MEDIUM），**不再**断言 `LOW == allow-list`。
+> 内部 service 主体运行这些 MEDIUM 操作性动作是**设计意图**，**不得**为让门禁变绿
+> 而把 allow-list 回退成 LOW-only——那会让身份/配额/路由/信任/planner 路径落
+> `default_deny`、破坏 operational loop。该不变量镜像自
+> `tests/kernels/test_risk_classification.py::TestSovereigntyInvariant`。
 
 ### 10.5.4 未做的事（明确边界）
 
@@ -670,7 +682,7 @@ C-4 的职责就是把它补完。
 | 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | **0 违规** |
 | 2 | importlib 全量导入 `src/` 下 **199** 个模块 | **FAILED: 0** |
 | 3 | `scripts/verify_c4_approval_channel.py` | **ALL GREEN（44 项）** |
-| 4 | `verify_policy_c1` / `verify_d8_risk_classification` / `verify_c2_enforcement`(11) / `verify_c3_sovereignty`(15) | 全部 **ALL GREEN**（零回归） |
+| 4 | `verify_policy_c1` / `verify_d8_risk_classification`（正交主权不变量，见 §10.5.3 注）/ `verify_c2_enforcement`(11) / `verify_c3_sovereignty`(15) | 全部 **ALL GREEN**（零回归） |
 | 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/ tests/test_policy_approval_api.py` | **697 passed / 1 skipped / 0 failed**（Round 68 基线 635 + 新增 62，零回归） |
 
 ### 10.8.5 未做的事（明确边界）
@@ -901,7 +913,7 @@ CI 里跑）。
 - `describe()` 增加 `exempt_actions`，因此 `GET /v1/policy/enforcement` 可见。
 
 生产清单：`docker-compose.prod.yml` →
-`LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`。
+`LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
 
 ### 10.11.5 把「惰性」变成 CI 门禁（本轮最重要的交付）
 

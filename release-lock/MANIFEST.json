@@ -1,0 +1,311 @@
+{
+  "entries": [
+    {
+      "mode": "exact",
+      "sha256": "4909a238a998ae835c3c7cb0e77f5a4bfb56048c97be4bc16dffc7a959189e45",
+      "size": 60342,
+      "source": "scripts/release/package-frozen.ps1",
+      "target": "scripts/release/package-frozen.ps1"
+    },
+    {
+      "mode": "exact",
+      "sha256": "ace6bcdbb871ae89b33a40f457baf0ba43c9bf493a9dad73435e3a81b28543d2",
+      "size": 35323,
+      "source": "scripts/release/freeze_checks.py",
+      "target": "scripts/release/freeze_checks.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "fc23ca6986e14da1346a2a6f9ce2adacb7f9fbf41ed4fd79511bf123bf08668b",
+      "size": 31111,
+      "source": "scripts/release/preflight.py",
+      "target": "scripts/release/preflight.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "a07a495f6c8f5607f0ffa6983fe17a3b4be4378858b53b7dcbb457bc69df790e",
+      "size": 21078,
+      "source": "scripts/release/verify_publish_source.py",
+      "target": "scripts/release/verify_publish_source.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "ff860359d6d37966e5fb0adc3eb1541affd27b9b1a3d4763c5aac9bdf6807b7a",
+      "size": 16183,
+      "source": "scripts/release/release-pipeline.ps1",
+      "target": "scripts/release/release-pipeline.ps1"
+    },
+    {
+      "mode": "exact",
+      "sha256": "cf09bf9d8fb4e711250be384fb04565b1a85b221fd38e385a11c700d9b462006",
+      "size": 13671,
+      "source": "scripts/verify_openapi_contract.py",
+      "target": "scripts/verify_openapi_contract.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "eef8d0b78b844c224726c3efb28f6fd737fa0c88114a24e5b22a4f51cafdcd71",
+      "size": 6220,
+      "source": "scripts/verify_test_collection.py",
+      "target": "scripts/verify_test_collection.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "a004452432c034c25ce939cc3e2f03a2db8a43fcfbf4f705f5a5158d98fced71",
+      "size": 8055,
+      "source": "scripts/verify_release_page_values.py",
+      "target": "scripts/verify_release_page_values.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "0098597c31b38b0dde06f1c5b4fc38a0db69d4eaa6098dbf507e41ace33962d0",
+      "size": 2481,
+      "source": "scripts/verify_orm_vs_db.py",
+      "target": "scripts/verify_orm_vs_db.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "1c60071248ee7222f83887744fa7cfd3715d3c24bebf9d8287bb3d93fbf3d8ac",
+      "size": 34369,
+      "source": "scripts/verify_dependency_declaration_surface.py",
+      "target": "scripts/verify_dependency_declaration_surface.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "4a7170c85315a54f22a44825372e882f46fb9c297bdb516b80b57fa1628c782b",
+      "size": 8657,
+      "source": "scripts/verify_app_instantiation_hygiene.py",
+      "target": "scripts/verify_app_instantiation_hygiene.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "92740ffb9293b07063e896d6384c4db98cd5dc2058a954e9b01b511a3b2f37df",
+      "size": 7839,
+      "source": "scripts/verify_doc_links.py",
+      "target": "scripts/verify_doc_links.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "c37f533509ec240612d15b3d4d634ebf4527a1b052917f40e62aa8cf77cb7ff5",
+      "size": 17237,
+      "source": "scripts/verify_docs_index_coverage.py",
+      "target": "scripts/verify_docs_index_coverage.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "99ce0dccf7d5fbea140ed14a8a43f0c7842377ce9f906d86a61b0a500eeb0c8a",
+      "size": 17167,
+      "source": "scripts/verify_doc_count_claims.py",
+      "target": "scripts/verify_doc_count_claims.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "ec40d54d93ab044d691b8dbb5cd7d42ab35565dd7102e6eb59fe351d9904a0d5",
+      "size": 44276,
+      "source": "scripts/check_docs_commands.py",
+      "target": "scripts/check_docs_commands.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "f7b7dba5cdd3860b51f5e5124912d742303cfd28967b8e8b9bfe31c447e9e616",
+      "size": 45155,
+      "source": "scripts/lint_audit_claims.py",
+      "target": "scripts/lint_audit_claims.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "40033a3173fa95209631babfdad496926087629949246295516d108240d32b9a",
+      "size": 14873,
+      "source": "scripts/lint_control_claims.py",
+      "target": "scripts/lint_control_claims.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "4bb702de935289aad05bbb0d58c361fdf01babdbe2aafa0f841b05c281e36807",
+      "size": 70490,
+      "source": "scripts/acceptance/local_attack_surface_e2e.py",
+      "target": "scripts/acceptance/local_attack_surface_e2e.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "119ca9f25ceb1d84cc06e2a0133e31d606b9f78a6a025854b804b4fb4bcd4ab9",
+      "size": 25956,
+      "source": "packaging/build_windows_installer.ps1",
+      "target": "packaging/build_windows_installer.ps1"
+    },
+    {
+      "mode": "exact",
+      "sha256": "e65d9451614ef984c1ea50306ab1d90c0391f4e6da9bbba20593964c1cdb608c",
+      "size": 4937,
+      "source": "packaging/build_console.py",
+      "target": "packaging/build_console.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "f38aac9ee7e4815fa78744e8ebe37b228485922651acdf79a154806ecd537578",
+      "size": 77649,
+      "source": "packaging/stage_payload.py",
+      "target": "packaging/stage_payload.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "0dfd9e5e076490558f6e7b559a676408cb6625d41261c66f8445214d9df69145",
+      "size": 18155,
+      "source": "packaging/smoke_payload.py",
+      "target": "packaging/smoke_payload.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "6bef1cc377d5cf20a9fd81234b3d85a5061deb5a2eab5532d217849822b43174",
+      "size": 38007,
+      "source": "packaging/make_release.py",
+      "target": "packaging/make_release.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "cb588ee008da74cc96a841dbabbee7579b27a0a7f17c5b2e85bffbf23b8b6d59",
+      "size": 11514,
+      "source": "packaging/brand_guard.py",
+      "target": "packaging/brand_guard.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "2a770411c9d1d23d350cb91561a896e0457892c1e824216d411aaa9293cc3301",
+      "size": 6640,
+      "source": "packaging/env_guard.py",
+      "target": "packaging/env_guard.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "adb1ec57aa12e833fd8f6c3aa1faf1f1dc6e8fa9c31b62735e4831568bb63813",
+      "size": 6087,
+      "source": "packaging/sign_installer.ps1",
+      "target": "packaging/sign_installer.ps1"
+    },
+    {
+      "mode": "exact",
+      "sha256": "6ca60e1bdbdc4b25fdaff1637c174e23c2ce92df1deae8d0599460686aad1c8e",
+      "size": 5577,
+      "source": "packaging/console_provenance.py",
+      "target": "packaging/console_provenance.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "75bca22e9b9f507850eb7daf157c6a31db3d1707896ab117397b60a657381014",
+      "size": 16736,
+      "source": "packaging/third_party_notices.py",
+      "target": "packaging/third_party_notices.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "0698e2724ccfa3b4f4520058e7ad02b5e84d5e8832d746c0ecd8d1cf84af225a",
+      "size": 11570,
+      "source": "packaging/verify_payload_clean.py",
+      "target": "packaging/verify_payload_clean.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "def1c68f2620e7433a3b81a1971f45a8341fb903243045c87f1ae08eccf76321",
+      "size": 2901,
+      "source": "packaging/prepare_release_venv.ps1",
+      "target": "packaging/prepare_release_venv.ps1"
+    },
+    {
+      "mode": "normalized",
+      "sha256": "1c21c38bfa4d241fbd9d837e66574ba546dc60f1fd33d594f63cb6a6ff59c7d6",
+      "size": 94031,
+      "source": "installer/liuhao.iss",
+      "target": "installer/liuhao.iss"
+    },
+    {
+      "mode": "exact",
+      "sha256": "bf0751fa176569c6faa2f6e17ed2734617bef325d5cc06eae030fdd0258ee778",
+      "size": 21099,
+      "source": "installer/ChineseSimplified.isl",
+      "target": "installer/ChineseSimplified.isl"
+    },
+    {
+      "mode": "exact",
+      "sha256": "4c9459562901aea709b24b1fa8f2f5e6909ee01d0df82248f3ff242fb8eca76c",
+      "size": 10591,
+      "source": "installer/assets/BEFORE-INSTALL.txt",
+      "target": "installer/assets/BEFORE-INSTALL.txt"
+    },
+    {
+      "mode": "exact",
+      "sha256": "578693aab79ef849b29cbe7b16ffd1e9c273ae4f1865716bfe1b46e7cfe2c214",
+      "size": 37584,
+      "source": "dist/release-gate/verify_package_compliance.py",
+      "target": "release-gate/verify_package_compliance.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "53263fd12b84af77f394f0fd631ecc9451a714ccb2350d30b7889551e1642d1e",
+      "size": 61426,
+      "source": "dist/release-gate/sbom_audit.py",
+      "target": "release-gate/sbom_audit.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "33c64a4af5b3b27c2796bfb5b32dee02d752ee3b2489dc9998529b80ba19498d",
+      "size": 4248,
+      "source": "dist/release-gate/pe_imports.py",
+      "target": "release-gate/pe_imports.py"
+    },
+    {
+      "mode": "exact",
+      "sha256": "adf4651932a6cd6dc0957c06c5c6eab14b6cd83be8913130f49a8376860c8d18",
+      "size": 15434,
+      "source": "dist/release-gate/verify_installed_compliance.py",
+      "target": "release-gate/verify_installed_compliance.py"
+    },
+    {
+      "mode": "tool",
+      "sha256": "ab58400460cfda503ec88702dd3d82f6ee207b28e0548c9f8861ef008f85b644",
+      "size": 1798656,
+      "source": "dist/release-gate/tools/innounp-2/innounp.exe",
+      "target": "release-gate/tools/innounp-2/innounp.exe"
+    },
+    {
+      "mode": "exact",
+      "sha256": "1eaac288981f1545a1fecb636e3b9fdcfed448e9cce2f50b6d1e60360be7f997",
+      "size": 5835,
+      "source": "dist/release-gate/tools/innounp-2/innounp-cl.txt",
+      "target": "release-gate/tools/innounp-2/innounp-cl.txt"
+    },
+    {
+      "mode": "exact",
+      "sha256": "6aa6bc3c5cf689dcadde91ccede78362e89f33f1e3fef713e2efe7b42cd65f9f",
+      "size": 31201,
+      "source": "dist/release-gate/tools/innounp-2/innounp.htm",
+      "target": "release-gate/tools/innounp-2/innounp.htm"
+    },
+    {
+      "mode": "exact",
+      "sha256": "6c0de3a42e0e3b422ec63a60e853ebd8270168c1e542f0c17d328d2956452b7d",
+      "size": 2737,
+      "source": "dist/release-gate/tools/innounp-2/innounp.css",
+      "target": "release-gate/tools/innounp-2/innounp.css"
+    },
+    {
+      "mode": "exact",
+      "sha256": "a557747c9768dd94172fb164fc806ae38262820c484a98d3fcf6bcfa42c343fc",
+      "size": 2238,
+      "source": "dist/release-gate/tools/innounp-2/innounp.ico",
+      "target": "release-gate/tools/innounp-2/innounp.ico"
+    },
+    {
+      "mode": "derived",
+      "sha256": "f3da579a8a7f1a804d5d0260e72e93225e50063934eb22416a1465682ce7dcac",
+      "size": 4174,
+      "source": "tests/test_version_consistency.py",
+      "target": "tests/test_version_consistency.py"
+    }
+  ],
+  "git_author": "Hermes",
+  "reason": "0.3.0 初始盖章（自升级闭环落树）",
+  "schema": "liuhao.release-lock/1",
+  "seq": 1,
+  "source_commit": "d58b96f01cdd0d88c1ddf9648221fe99a839f413",
+  "stamped_at": "2026-11-11T08:22:09+00:00"
+}

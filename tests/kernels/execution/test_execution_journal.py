@@ -52,7 +52,9 @@ def _goal() -> Goal:
 def _recording_executor(bag: list):
     def capability_executor(capability_id, inputs):
         bag.append(capability_id)
-        return {"ok": True, "capability": capability_id}
+        # ``success`` 是执行器契约里唯一的成功信号：引擎对缺失该字段的结果
+        # fail-closed（不再默认 ok=True），所以 fake 也必须显式声明成功。
+        return {"success": True, "ok": True, "capability": capability_id}
     return capability_executor
 
 
@@ -73,7 +75,7 @@ def capability_executor(capability_id, inputs):
     calls["n"] += 1
     if calls["n"] > kill_after:
         os.kill(os.getpid(), signal.SIGTERM)   # 硬中断，无清理机会
-    return {"ok": True, "capability": capability_id}
+    return {"success": True, "ok": True, "capability": capability_id}
 
 
 engine = ExecutionEngine(journal=journal)
@@ -193,7 +195,19 @@ class TestCrashRecovery:
         script = tmp_path / "child.py"
         script.write_text(_CHILD_SRC, encoding="utf-8")
 
-        env = dict(os.environ, PYTHONPATH=str(ROOT))
+        # Give the child its OWN audit store. It is a second live process, and
+        # the audit writer lease is single-writer per database: sharing the
+        # parent's AUDIT_DB_PATH makes the child's capability.register fail
+        # closed (it cannot obtain evidence), so it would die in
+        # GoalDecomposer.__init__ before ever reaching the code this test is
+        # about. The lease behaviour is correct and is NOT weakened here -- see
+        # docs/autonomous/ADR-audit-single-writer-lease.md (U39) for the
+        # cross-process limitation this exposes and its remediation path.
+        env = dict(
+            os.environ,
+            PYTHONPATH=str(ROOT),
+            AUDIT_DB_PATH=str(tmp_path / "child_audit.db"),
+        )
         proc = subprocess.run(
             [sys.executable, str(script), db, "1"],
             capture_output=True, text=True, timeout=120, env=env,
@@ -231,14 +245,17 @@ class TestCrashRecovery:
         engine.set_capability_executor(_recording_executor(executed))
         ctx = engine.execute_goal(_goal())
 
-        assert len(ctx.completed_tasks) == 3, "重启后应当整段目标完成"
-        assert len(executed) == 2, (
-            f"只应补跑剩下的 2 个任务，实跑 {len(executed)} 个 —— "
-            "若这里等于 3，说明 journal 没起作用，已完成的那个被重跑了"
+        # TOOL-05：只有 task_started、没有 task_completed 的任务属于「结果未知」，
+        # 副作用可能已经发生 —— 不得自动重跑，只能显式重试。
+        assert "Plan" not in executed, (
+            f"有开始记录但没有完成记录的任务被自动重跑了: {executed}"
         )
-        assert ctx.plan.status == PlanStatus.COMPLETED
+        plan_task = next(t for t in ctx.plan.tasks if t.name == "Plan")
+        assert plan_task.status == TaskStatus.FAILED
+        assert "结果未知" in (plan_task.error or "")
+        assert ctx.plan.status in (PlanStatus.FAILED, PlanStatus.PARTIAL)
 
-        # 被恢复的那个任务必须明确标注来源，而不是伪装成一次真实执行
+        # 已完成的那个任务必须被恢复，且明确标注来源，而不是伪装成一次真实执行
         restored = [
             r for r in ctx.task_results.values()
             if isinstance(r.output, dict) and r.output.get("restored_from_journal")
@@ -246,8 +263,31 @@ class TestCrashRecovery:
         assert len(restored) == 1
         assert restored[0].output["task_name"] == list(finished)[0]
 
-        # 所有任务最终状态一致
-        assert all(t.status == TaskStatus.COMPLETED for t in ctx.plan.tasks)
+        # 只有「从未开始过」的任务可以自动执行；被失败任务挡住的下游任务
+        # 只能跳过，不许假装完成
+        started_names = {
+            e.task_name for e in events
+            if e.event_type == "task_started" and e.task_name
+        }
+        untouched = {t.name for t in ctx.plan.tasks} - started_names - finished
+        assert set(executed) <= untouched, (
+            f"只应执行从未开始过的任务 {untouched}，实际执行 {executed}"
+        )
+        blocked = [t for t in ctx.plan.tasks if t.name in untouched]
+        assert all(t.status != TaskStatus.COMPLETED for t in blocked), (
+            f"未执行的任务不得自称完成: {[(t.name, t.status) for t in blocked]}"
+        )
+
+        # 显式重试才允许补跑那个「结果未知」的任务
+        retry_executed: list = []
+        retry_engine = ExecutionEngine(journal=ExecutionJournal(db))
+        retry_engine.set_capability_executor(_recording_executor(retry_executed))
+        retry_ctx = retry_engine.execute_goal(_goal(), only_task_name="Plan")
+        retried = next(t for t in retry_ctx.plan.tasks if t.name == "Plan")
+        assert retried.status == TaskStatus.COMPLETED
+        assert len(retry_executed) == 1, (
+            f"显式重试只应补跑该任务一次，实际调用: {retry_executed}"
+        )
 
     def test_partial_failure_is_recorded(self, tmp_path):
         """非崩溃场景：任务失败也要落盘，重启后不能再假装没失败过。"""

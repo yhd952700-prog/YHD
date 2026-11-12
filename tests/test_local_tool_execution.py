@@ -97,6 +97,26 @@ def test_directive_goal_is_extracted_and_executed():
     assert result.output["result"] == "55"
 
 
+def test_empty_execution_is_not_reported_as_success():
+    """跑完但没产出答案 = 失败；不能把空结果当成 completed。"""
+    lcore = LCore(register_local_tools=True)
+    executor = ActionExecutor(capability_executor=lcore.capability_executor())
+
+    result = executor.execute(_action(code="128 + 64"))
+    assert result.success is False
+    assert "没有产出答案" in (result.error or "")
+
+
+def test_print_only_execution_returns_printed_answer():
+    """只 print 不赋值也应把打印内容作为答案返回。"""
+    lcore = LCore(register_local_tools=True)
+    executor = ActionExecutor(capability_executor=lcore.capability_executor())
+
+    result = executor.execute(_action(code="print(128 + 64)"))
+    assert result.success is True
+    assert "192" in str(result.output.get("result"))
+
+
 def test_prose_goal_without_code_is_rejected_honestly():
     """Prose is never guessed into Python — the capability asks for code."""
     lcore = LCore(register_local_tools=True)

@@ -38,16 +38,48 @@ def create_span(name: str, **kwargs):
     return _SpanContextmanager(span)
 
 
-def end_span(span_context):
+def end_span(span_context, error: Optional[BaseException] = None):
     """结束一个 span
 
     Args:
         span_context: 由 create_span 返回的上下文管理器
+        error: 可选的异常。传入时会在 span 上记录异常并把状态标记为 ERROR。
+
+    ``error`` 参数是**必需的兼容面**：``src/ai/employee.py`` 与
+    ``src/ai/goal_task_graph.py`` 的失败分支一直调用 ``end_span(span, error=e)``，
+    而本函数此前只接受 1 个位置参数，于是**每一条失败路径在收尾时自己先崩**：
+    ``TypeError: end_span() got an unexpected keyword argument 'error'``。
+    后果不是"少了点可观测性"，而是失败被二次异常顶替 —— 调用方拿到的是一个
+    与真实原因无关的 TypeError，真实的 task/provider 错误被吞掉。
+    （2026-10-04 实测：goal_task_graph._execute_task_audited 的 except 分支
+    100% 抛此 TypeError，而不是返回它自己写好的 {"status":"failed"} 结果。）
+    记录异常本身必须容错：可观测性永远不能反过来打断业务路径。
     """
     if span_context is None:
         return
-    if hasattr(span_context, '__exit__'):
-        span_context.__exit__(None, None, None)
+    if error is not None:
+        try:
+            _record_error(span_context, error)
+        except Exception:  # noqa: BLE001 - 可观测性不得抛
+            logger.debug("failed to record error on span", exc_info=True)
+    try:
+        if hasattr(span_context, '__exit__'):
+            span_context.__exit__(None, None, None)
+    except Exception:  # noqa: BLE001 - 同上，收尾也不得抛
+        logger.debug("failed to end span", exc_info=True)
+
+
+def _record_error(span_context, error: BaseException) -> None:
+    """把异常写进 span（OTel 有 record_exception 就用，否则退化为 no-op）。"""
+    # _SpanContextmanager 包了一层，真正的 span 在 .span 上。
+    target = getattr(span_context, "span", span_context)
+    record = getattr(target, "record_exception", None)
+    if callable(record):
+        record(error)
+    setter = getattr(target, "set_attribute", None)
+    if callable(setter):
+        setter("error.type", type(error).__name__)
+        setter("error.message", str(error))
 
 
 class _SpanContextmanager:

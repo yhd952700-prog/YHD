@@ -2,7 +2,8 @@
 
 覆盖：
 - ``personal_context.summarize()`` 被注入到 system prompt（Personalization）
-- 三个个性化工具（set_preference / add_fact / set_display_name）真实写入画像
+- 三个个性化工具（set_preference / set_display_name 直接写画像；add_fact 按
+  MEM-009 进待确认区）
 - 不同 principal 之间画像严格隔离
 - 画像为空时 system prompt 不出现「用户画像」分隔段（无副作用）
 """
@@ -32,7 +33,9 @@ def isolate_state(tmp_path, monkeypatch):
     db_path = str(tmp_path / "personal.db")
     fresh_mgr = pc_module.PersonalContextManager(db_path=db_path)
     import src.ai.tools as tools_module
+    from src.ai.tools import kernel_tools as kt_module
     monkeypatch.setattr(tools_module, "get_personal_context", lambda: fresh_mgr)
+    monkeypatch.setattr(kt_module, "get_personal_context", lambda: fresh_mgr)
     monkeypatch.setattr(pc_module, "get_personal_context", lambda: fresh_mgr)
 
     return {"conv": store, "personal": fresh_mgr}
@@ -61,12 +64,23 @@ def test_set_preference_tool_writes_real_profile(isolate_state):
     assert profile.preferences["语言"].value == "简体中文"
 
 
-def test_add_fact_tool_writes_real_profile(isolate_state):
+def test_add_fact_tool_writes_pending_not_profile(isolate_state):
+    """MEM-009（记忆投毒防线）：模型写事实进待确认区，不直接落长期画像。
+
+    依据 ``docs/audit/findings-memory-knowledge.md`` 的 MEM-009 条（「事实写入改为
+    '提议 + 用户确认' 两阶段（工具只返回 pending_fact，UI 确认后才落库）」），
+    实现见 ``src/ai/tools/kernel_tools.py`` 的 ``personal_add_fact`` -> ``propose_fact``。
+    """
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
     fn = next(t.fn for t in tools if t.name == "personal_add_fact")
-    fn(key="公司", value="鎏灏科技")
+    payload = json.loads(fn(key="公司", value="鎏灏科技"))
+    assert payload["status"] == "pending_confirmation"
+
     profile = isolate_state["personal"].get_profile("alice")
-    assert profile.facts["公司"] == "鎏灏科技"
+    assert "公司" not in profile.facts
+
+    pending = isolate_state["personal"].list_pending_facts("alice")
+    assert [(p["key"], p["value"]) for p in pending] == [("公司", "鎏灏科技")]
 
 
 def test_set_display_name_tool_writes_real_profile(isolate_state):

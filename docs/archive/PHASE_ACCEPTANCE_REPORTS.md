@@ -1725,6 +1725,8 @@ Note: 3 pre-existing tests fail due to a `dataclass` field ordering bug in `obse
 
 ---
 
+> **NOTE (SEC-04 / CryptoAuditLogger / HC-09)**: The 'Tamper-evident audit logging' / 'Hash-chain integrity' / 'verify_chain() detects tampering' statements in this SEC-04 section describe the IN-MEMORY hash chain of CryptoAuditLogger, which is NOT persisted and NOT audit-grade (HC-09 status = VOLATILE / NON-AUTHORITATIVE per the P0-8 Evidence Matrix). Durable, tamper-evident audit is provided by src.kernels.audit (HC-01), whose runtime chain-of-custody integrity is currently UNVERIFIED.
+
 ## Test Results
 
 | Test Suite | Tests | Status |
@@ -1782,6 +1784,8 @@ Note: 3 pre-existing tests fail due to a `dataclass` field ordering bug in `obse
 ---
 
 ## 19. 原文：`docs/SEC_05_06_AUTHZ_ACCEPTANCE_REPORT.md`
+
+> **NOTE**: The 'Tamper-evident audit logging' / 'Chain verification' rows above describe the IN-MEMORY hash chain of CryptoAuditLogger at the time of writing. CryptoAuditLogger is NOT persisted and is NOT audit-grade (HC-09 status = VOLATILE / NON-AUTHORITATIVE per the P0-8 Evidence Matrix). Durable tamper-evident audit is provided by src.kernels.audit (HC-01), whose runtime integrity is currently UNVERIFIED.
 
 # Phase 1 — SEC-05 & SEC-06 Acceptance Report
 
@@ -1886,6 +1890,8 @@ Note: 3 pre-existing tests fail due to a `dataclass` field ordering bug in `obse
 | Value truncation | Strings >512 chars → 128 + `...[truncated]` (142 total) | ✅ |
 | Operation logging | `log_encryption()`, `log_decryption()`, `log_signing()`, `log_key_generation()` | ✅ |
 | Chain verification | `verify_chain()` detects tampering | ✅ |
+
+> **NOTE**: The 'Tamper-evident audit logging' / 'Chain verification' rows above describe the IN-MEMORY hash chain of CryptoAuditLogger at the time of writing. CryptoAuditLogger is NOT persisted and is NOT audit-grade (HC-09 status = VOLATILE / NON-AUTHORITATIVE per the P0-8 Evidence Matrix). Durable tamper-evident audit is provided by src.kernels.audit (HC-01), whose runtime integrity is currently UNVERIFIED.
 
 ---
 

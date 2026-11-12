@@ -10,13 +10,48 @@ from dataclasses import dataclass, field
 from enum import Enum
 import uuid
 import time
+import json
+import os
+import threading
 from collections import defaultdict, deque
 
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
+from src.common.data_paths import resolve_store_path
+
 from .providers import BaseProvider, get_provider
-from ..observability.metrics import track_goal_decomposition, track_task_execution
+try:
+    from ..observability.metrics import (
+        track_goal_decomposition,
+        track_task_execution,
+    )
+except Exception:  # pragma: no cover - metrics backend optional at import time
+    # When the metrics backend (prometheus_client) is not installed the planner
+    # must still import and run; metrics simply degrade to no-ops. In the normal
+    # (venv) environment the import succeeds and behaviour is unchanged.
+    def track_goal_decomposition(*_args, **_kwargs):
+        return None
+
+    def track_task_execution(*_args, **_kwargs):
+        return None
 from ..observability.tracing import create_span, end_span, AISpanAttributes
 from ..knowledge.memory import create_memory_manager, MemoryTier
 from .observability import observe
+# The kernel layer is audited via @kernel_action (Policy Controlled + Audited +
+# Observable). Importing it here follows the existing src/ai -> src/kernels
+# dependency pattern (src/ai/agent_runtime.py, src/ai/liuhao.py already do so).
+from src.kernels._crosscutting import kernel_action
+
+
+class PlannerStateError(RuntimeError):
+    """任务图状态落盘失败（调用方不得把这次保存当成成功）。"""
+
+
+#: 同进程内多实例并发保存同一状态文件时的串行锁。
+_STATE_WRITE_LOCK = threading.Lock()
 
 
 class GoalStatus(Enum):
@@ -26,6 +61,11 @@ class GoalStatus(Enum):
     DECOMPOSED = "decomposed"
     EXECUTING = "executing"
     COMPLETED = "completed"
+    #: Some tasks completed, some failed. Deliberately distinct from COMPLETED:
+    #: ``GoalStatus`` is what ``save_state`` persists and ``get_graph_summary``
+    #: reports, so folding "partial" into COMPLETED would make a partially-failed
+    #: goal indistinguishable from a clean success after a process restart.
+    PARTIAL = "partial"
     FAILED = "failed"
 
 
@@ -423,14 +463,25 @@ Example output format:
     @observe("goal_task_graph.execute_task")
     def execute_task(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
         """
-        Execute a single task using the provided agent executor.
+        Execute a single task via the audited ``@kernel_action`` path.
 
-        Args:
-            task_id: ID of task to execute
-            agent_executor: Function(agent_id, task_description) -> result
+        The real execution work (status transitions + the agent callback) is
+        performed by :meth:`_execute_task_audited`, which is decorated with
+        ``@kernel_action("ai.execute_planner_task")`` so the planner's
+        task-execution loop is now covered by the audit (previously it called
+        ``agent_executor`` directly and was orphaned from the audited path).
+        """
+        return self._execute_task_audited(task_id, agent_executor)
 
-        Returns:
-            Execution result
+    @kernel_action("ai.execute_planner_task")
+    def _execute_task_audited(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
+        """
+        Audited core of a single task's execution.
+
+        Decorated with ``@kernel_action`` so every task run records an honest
+        audit event (``outcome`` / ``policy_decision``) via the same
+        cross-cutting path used by the kernel layer. The policy posture stays
+        record-only (``enforce=False``) -- this is honest auditing, not blocking.
         """
         if task_id not in self.tasks:
             return {"task_id": task_id, "status": "failed", "error": "Task not found"}
@@ -449,8 +500,13 @@ Example output format:
         )
 
         try:
-            # Execute via agent executor
-            result = agent_executor(task.assigned_agent or "default", task.description)
+            # Execute via agent executor -- now inside the audited wrapper.
+            # 任务内部的模型调用（prose/network_bus 等）按 task_id 打标签，
+            # 这样派活账本可以"总额 = 各任务分项之和"，并落到对应员工/账号。
+            from src.ai.usage_meter import label_scope
+
+            with label_scope(f"task:{task_id}"):
+                result = agent_executor(task.assigned_agent or "default", task.description)
 
             task.result = result
             task.status = TaskStatus.COMPLETED
@@ -530,6 +586,7 @@ Example output format:
             Execution results
         """
         import concurrent.futures
+        import contextvars
 
         tasks = self.get_tasks_for_goal(goal_id)
         if not tasks:
@@ -553,25 +610,41 @@ Example output format:
                 ready = [t for t in tasks if t.id in remaining and self._is_ready(t.id)]
 
                 if not ready:
-                    # No ready tasks but remaining - check for deadlock
-                    if self.has_cycle([t for t in tasks if t.id in remaining]):
-                        # Mark remaining as failed due to cycle
-                        for tid in remaining:
-                            task = self.tasks[tid]
-                            task.status = TaskStatus.FAILED
-                            task.error = "Circular dependency detected"
-                            self.failed_tasks.add(tid)
-                            results[tid] = {"task_id": tid, "status": "failed", "error": "Circular dependency"}
-                        break
-                    # Wait a bit and retry
-                    time.sleep(0.1)
-                    continue
+                    # No task is ready but work remains => the remaining tasks can
+                    # never become ready. There are exactly two causes, and BOTH
+                    # are terminal:
+                    #   (a) a dependency reached a non-completed terminal state
+                    #       (failed) -- ``_is_ready`` only accepts deps in
+                    #       ``completed_tasks``, so a failed dep blocks forever;
+                    #   (b) a dependency cycle.
+                    # The previous code only handled (b) and otherwise did
+                    # ``time.sleep(0.1); continue`` -- an UNBOUNDED busy-wait that
+                    # never terminates: proven hang (a goal whose first task fails
+                    # while a second task depends on it spins forever at 10Hz,
+                    # holding the thread pool open and the caller never returns).
+                    #
+                    # Note this is a *provable* deadlock, not a race: every future
+                    # submitted in the previous iteration is fully collected by the
+                    # ``as_completed`` loop below before control returns here, so
+                    # "no ready task" can never be a transient in-flight state.
+                    # There is nothing to wait for -- we must terminate honestly.
+                    self._fail_blocked_tasks(
+                        remaining, tasks, results, cycle=self.has_cycle(
+                            [t for t in tasks if t.id in remaining]
+                        )
+                    )
+                    break
 
                 # Submit ready tasks
                 future_to_task = {}
                 for task in ready[:max_parallel]:
                     remaining.remove(task.id)
-                    future = executor.submit(self.execute_task, task.id, agent_executor)
+                    # 线程池不继承 ContextVar；复制当前上下文，让任务内 provider
+                    # 上报的真实 usage 回到本次 Goal 的记账作用域。
+                    ctx = contextvars.copy_context()
+                    future = executor.submit(
+                        ctx.run, self.execute_task, task.id, agent_executor
+                    )
                     future_to_task[future] = task.id
 
                 # Collect results
@@ -594,7 +667,11 @@ Example output format:
             self.goal.status = GoalStatus.FAILED
             overall_status = "failed"
         else:
-            self.goal.status = GoalStatus.COMPLETED  # Partial success
+            # Partial success must NOT be recorded as COMPLETED: ``goal.status`` is
+            # what ``save_state`` persists and what ``get_graph_summary`` reports,
+            # so stamping COMPLETED on a partially-failed goal makes a partial
+            # failure indistinguishable from a clean success after a restart.
+            self.goal.status = GoalStatus.PARTIAL
             overall_status = "partial"
 
         self.goal.updated_at = time.time()
@@ -609,6 +686,53 @@ Example output format:
             "results": results,
             "execution_order": [t.id for t in self.get_execution_order(tasks)],
         }
+
+    def _fail_blocked_tasks(
+        self,
+        remaining: Set[str],
+        tasks: List[TaskNode],
+        results: Dict[str, Any],
+        *,
+        cycle: bool,
+    ) -> None:
+        """Terminally fail every task that can never become ready.
+
+        Called from :meth:`execute_graph` when no remaining task is ready. Each
+        blocked task is failed with the *actual* reason it is blocked -- a failed
+        dependency (transitively), a dependency that does not exist, or a cycle --
+        rather than a single blanket message. "Marked failed" is not the same as
+        "we know why it failed", and the reason is what makes the resulting goal
+        failure diagnosable from the outside.
+        """
+        for tid in sorted(remaining):
+            task = self.tasks[tid]
+            if cycle:
+                error = "Circular dependency detected"
+            else:
+                error = self._describe_block(tid)
+            task.status = TaskStatus.FAILED
+            task.error = error
+            task.completed_at = time.time()
+            self.failed_tasks.add(tid)
+            results[tid] = {"task_id": tid, "status": "failed", "error": error}
+
+    def _describe_block(self, task_id: str) -> str:
+        """Explain why ``task_id`` can never run, naming the offending dep."""
+        task = self.tasks.get(task_id)
+        if task is None:  # pragma: no cover - defensive
+            return "Task not found"
+        for dep in task.depends_on:
+            if dep in self.failed_tasks:
+                return f"Blocked: dependency '{dep}' failed"
+            dep_task = self.tasks.get(dep)
+            if dep_task is None:
+                return f"Blocked: dependency '{dep}' does not exist"
+            if dep_task.status not in (TaskStatus.COMPLETED,):
+                return (
+                    f"Blocked: dependency '{dep}' is "
+                    f"{dep_task.status.value}, never completed"
+                )
+        return "Blocked: dependencies can never be satisfied"
 
     def _is_ready(self, task_id: str) -> bool:
         """Check if task is ready to execute."""
@@ -639,7 +763,264 @@ Example output format:
             "completed": len([t for t in tasks if t.id in self.completed_tasks]),
             "failed": len([t for t in tasks if t.id in self.failed_tasks]),
             "pending": len([t for t in tasks if t.status == TaskStatus.PENDING]),
+            # 目标的步骤记录：目标本身没有独立的 steps 表，步骤就是分解出的
+            # TaskNode（B组第二轮透出）。每一步含状态/优先级/负责人/依赖，
+            # 调用方不用再拼 get_tasks_for_goal 才能看到步骤明细。
+            "steps": [
+                {
+                    "id": t.id,
+                    "description": t.description,
+                    "task_type": t.task_type,
+                    "status": t.status.value,
+                    "priority": t.priority,
+                    "assigned_agent": t.assigned_agent,
+                    "depends_on": list(t.depends_on),
+                    "started_at": t.started_at,
+                    "completed_at": t.completed_at,
+                }
+                for t in tasks
+            ],
         }
+
+    # ------------------------------------------------------------------ #
+    # Durable persistence (restart recovery) -- stdlib json only, no deps.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _default_state_path() -> str:
+        """Default location for the persisted planner state.
+
+        ``LIUHAO_WORKSPACE_ROOT`` > ``LIUHAO_DATA_DIR`` > repo-root fallback
+        (see ``src.common.data_paths``), so isolation runs never write to the
+        shared development tree.
+        """
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        return resolve_store_path(
+            "planner_state.json",
+            os.path.join(repo_root, ".planner_state.json"),
+            workspace=True,
+        )
+
+    def _serialize_goal(self, goal: Optional[GoalDefinition]) -> Optional[Dict[str, Any]]:
+        if goal is None:
+            return None
+        return {
+            "id": goal.id,
+            "description": goal.description,
+            "priority": goal.priority,
+            "status": goal.status.value,
+            "metadata": goal.metadata,
+            "created_at": goal.created_at,
+            "updated_at": goal.updated_at,
+        }
+
+    def _serialize_task(self, task: TaskNode) -> Dict[str, Any]:
+        # result may be an arbitrary object; keep it JSON-safe or fall back to a
+        # stringified form so the dump never raises during restart recovery.
+        try:
+            json.dumps(task.result)
+            result = task.result
+        except (TypeError, ValueError):
+            result = {"__unserializable__": str(task.result)}
+        return {
+            "id": task.id,
+            "description": task.description,
+            "task_type": task.task_type,
+            "depends_on": list(task.depends_on),
+            "status": task.status.value,
+            "assigned_agent": task.assigned_agent,
+            "result": result,
+            "error": task.error,
+            "priority": task.priority,
+            "metadata": task.metadata,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+        }
+
+    @staticmethod
+    def _read_persisted_state(path: str) -> Dict[str, Any]:
+        """写事务内重读磁盘状态。
+
+        读不到（不存在）返回空字典；读失败/损坏必须抛错 —— 用空快照覆盖
+        唯一副本会让整张任务图消失。
+        """
+        if not os.path.exists(path):
+            return {}
+        try:
+            data = json.loads(read_text_with_retry(path))
+        except Exception as exc:  # noqa: BLE001 - corrupt state must fail closed
+            raise PlannerStateError(
+                f"读取任务图状态失败（{path}）：{type(exc).__name__}: {exc}；"
+                "为避免覆盖唯一副本，本次写入已拒绝"
+            ) from exc
+        if not isinstance(data, dict):
+            raise PlannerStateError(
+                f"任务图状态结构不合法（{path}）：期望 JSON 对象，"
+                f"实际 {type(data).__name__}；本次写入已拒绝"
+            )
+        return data
+
+    @staticmethod
+    def _merge_state_documents(
+        disk: Dict[str, Any], memory: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """把本实例的目标态合并进磁盘现状。
+
+        * 同一个 goal id（或磁盘为空/无 goal）：按 task id 合并 —— 磁盘上
+          另一个写入者新增、本实例还不知道的任务保留，同一 id 以内存为准
+          （内存是这个图当前的目标态，完成/失败状态不会被磁盘旧值回退）；
+        * 不同 goal id：这是另一个任务的图，整份替换。把上一个目标的任务
+          混进新目标会破坏依赖图，比"后写者覆盖"更糟；
+        * **终态不可回退**：任务的 COMPLETED/FAILED/SKIPPED、目标的
+          COMPLETED/FAILED/PARTIAL 一旦落盘就不能被一个持旧快照的并发写入者
+          改回 PENDING/RUNNING。状态流转本身是单向的，单调合并既防止已完成
+          的任务被回退，又不阻塞"PENDING → COMPLETED"这类正常推进。
+        """
+        if not isinstance(disk, dict) or not disk:
+            return memory
+        disk_goal = disk.get("goals")
+        memory_goal = memory.get("goals")
+        if (
+            isinstance(disk_goal, dict)
+            and isinstance(memory_goal, dict)
+            and disk_goal.get("id") != memory_goal.get("id")
+        ):
+            return memory
+
+        terminal_task = {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.SKIPPED.value,
+        }
+        tasks: Dict[str, Dict[str, Any]] = {}
+        for item in disk.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id"):
+                tasks[item["id"]] = item
+        for item in memory.get("tasks") or []:
+            if not (isinstance(item, dict) and item.get("id")):
+                continue
+            existing = tasks.get(item["id"])
+            # 磁盘已是终态，而内存持有的是非终态旧快照：保留磁盘，不回退。
+            if (
+                isinstance(existing, dict)
+                and existing.get("status") in terminal_task
+                and item.get("status") not in terminal_task
+            ):
+                continue
+            tasks[item["id"]] = item
+
+        terminal_goal = {
+            GoalStatus.COMPLETED.value,
+            GoalStatus.FAILED.value,
+            GoalStatus.PARTIAL.value,
+        }
+        if (
+            isinstance(disk_goal, dict)
+            and isinstance(memory_goal, dict)
+            and disk_goal.get("id") == memory_goal.get("id")
+            and disk_goal.get("status") in terminal_goal
+            and memory_goal.get("status") not in terminal_goal
+        ):
+            merged_goal = disk_goal
+        else:
+            merged_goal = memory_goal if memory_goal is not None else disk_goal
+
+        return {
+            "version": memory.get("version", 1),
+            "goals": merged_goal,
+            "tasks": list(tasks.values()),
+        }
+
+    def save_state(self, path: Optional[str] = None) -> str:
+        """Persist goals + tasks to a JSON file.
+
+        Returns the path written. Uses only the stdlib ``json`` module so no
+        third-party dependency is introduced. Call this after (or during)
+        execution so a process restart can recover the graph via
+        :meth:`load_state`.
+
+        写入事务：进程锁 → OS 文件锁 → 锁内重读磁盘并按 task id 做目标态合并
+        → 唯一临时文件 + fsync + 重试 replace。失败抛
+        :class:`PlannerStateError`，不会"返回路径但文件是半截/被覆盖"。
+        """
+        path = path or self._default_state_path()
+        data = {
+            "version": 1,
+            "goals": self._serialize_goal(self.goal),
+            "tasks": [self._serialize_task(t) for t in self.tasks.values()],
+        }
+        with _STATE_WRITE_LOCK:
+            with exclusive_file_lock(f"{path}.lock", description="任务图状态"):
+                merged = self._merge_state_documents(
+                    self._read_persisted_state(path), data
+                )
+                try:
+                    atomic_write_text(
+                        path, json.dumps(merged, ensure_ascii=False, indent=2)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise PlannerStateError(
+                        f"任务图状态写入失败（{path}）：{type(exc).__name__}: "
+                        f"{exc}；本次修改未落盘"
+                    ) from exc
+        return path
+
+    @classmethod
+    def load_state(
+        cls, path: Optional[str] = None, **init_kwargs: Any
+    ) -> "GoalTaskGraph":
+        """Load a previously saved planner state into a fresh instance.
+
+        The restored instance carries the same goal id, task ids, statuses,
+        dependency edges and completion sets, enabling recovery across a
+        process restart. ``**init_kwargs`` are forwarded to the constructor
+        (e.g. ``enable_observability=False``).
+        """
+        resolved = path or cls._default_state_path()
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(f"planner state not found: {resolved}")
+        data = json.loads(read_text_with_retry(resolved))
+
+        graph = cls(**init_kwargs)
+        goal_data = data.get("goals")
+        if goal_data:
+            graph.goal = GoalDefinition(
+                id=goal_data["id"],
+                description=goal_data.get("description", ""),
+                priority=goal_data.get("priority", "medium"),
+                status=GoalStatus(goal_data.get("status", "pending")),
+                metadata=goal_data.get("metadata", {}) or {},
+                created_at=goal_data.get("created_at", time.time()),
+                updated_at=goal_data.get("updated_at", time.time()),
+            )
+        for td in data.get("tasks", []):
+            task = TaskNode(
+                id=td["id"],
+                description=td.get("description", ""),
+                task_type=td.get("task_type", "general"),
+                depends_on=list(td.get("depends_on", []) or []),
+                status=TaskStatus(td.get("status", "pending")),
+                assigned_agent=td.get("assigned_agent"),
+                result=td.get("result"),
+                error=td.get("error"),
+                priority=td.get("priority", 0),
+                metadata=td.get("metadata", {}) or {},
+                created_at=td.get("created_at", time.time()),
+                started_at=td.get("started_at"),
+                completed_at=td.get("completed_at"),
+            )
+            graph.tasks[task.id] = task
+            if graph.goal is not None:
+                graph.goal_tasks[graph.goal.id].append(task.id)
+                for dep in task.depends_on:
+                    graph.task_dependencies[dep].add(task.id)
+            if task.status == TaskStatus.COMPLETED:
+                graph.completed_tasks.add(task.id)
+            elif task.status == TaskStatus.FAILED:
+                graph.failed_tasks.add(task.id)
+        return graph
 
 
 # Convenience function for quick goal decomposition

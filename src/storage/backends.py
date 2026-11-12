@@ -10,8 +10,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-import hashlib
 import json
+from src.common.atomic_write import atomic_write_text
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 import time
 
 # Type variable for storage entries
@@ -112,43 +113,35 @@ class StorageBackend(ABC, Generic[T]):
     @abstractmethod
     def storage_type(self) -> StorageType:
         """Return the storage backend type."""
-        pass
 
     @property
     @abstractmethod
     def stats(self) -> StorageStats:
         """Return storage statistics."""
-        pass
 
     @abstractmethod
     def get(self, key: str) -> Optional[T]:
         """Get a value by key."""
-        pass
 
     @abstractmethod
     def put(self, key: str, value: T, ttl: Optional[float] = None) -> None:
         """Put a value with optional TTL."""
-        pass
 
     @abstractmethod
     def delete(self, key: str) -> bool:
         """Delete a value by key. Returns True if deleted."""
-        pass
 
     @abstractmethod
     def contains(self, key: str) -> bool:
         """Check if key exists and is not expired."""
-        pass
 
     @abstractmethod
     def cleanup(self) -> int:
         """Remove expired entries. Returns count of removed entries."""
-        pass
 
     @abstractmethod
     def get_stats(self) -> StorageStats:
         """Get storage statistics."""
-        pass
 
 
 # ==================== Concrete Implementations ====================
@@ -166,6 +159,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._entries: Dict[str, StorageEntry] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     @property
@@ -195,9 +189,15 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
                     k: StorageEntry.from_dict(v) for k, v in data.get("entries", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
-                if not self._hash_chain or len(self._hash_chain) != len(self._entries):
+                # P0-8c: NO default fallback. An envelope that declares
+                # no algorithm is UNVERIFIED, never silently read as sha256.
+                self._hash_alg = data.get("hash_alg")
+                if self._hash_alg and (
+                    not self._hash_chain or len(self._hash_chain) != len(self._entries)
+                ):
                     self._hash_chain = None
                     self._build_hash_chain()
+
             except Exception as e:
                 print(f"Warning: Failed to load storage: {e}")
                 self._entries = {}
@@ -208,6 +208,14 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
 
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain."""
+        # P0-8c: refuse to (re)build a chain without a declared algorithm.
+        # Defaulting to sha256 is exactly what the containment forbids;
+        # the operator must stamp legacy data via the migration script.
+        if not self._hash_alg:
+            raise ValueError(
+                "cannot build a hash chain without a declared hash_alg; "
+                "run scripts/migrate_p08_hash_alg.py to stamp legacy data"
+            )
         chain: List[str] = []
         sorted_keys = sorted(self._entries.keys())
         prev_hash = "genesis"
@@ -216,7 +224,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             entry_dict = entry.to_dict()
             entry_dict["prev_hash"] = prev_hash
             entry_data = json.dumps(entry_dict, sort_keys=True, separators=(",", ":"))
-            entry_hash = hashlib.sha256(entry_data.encode()).hexdigest()
+            entry_hash = compute_hash(self._hash_alg, entry_data.encode())
             chain.append(entry_hash)
             prev_hash = entry_hash
         self._hash_chain = chain
@@ -224,14 +232,52 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
 
     def _save(self) -> None:
         """Persist entries to JSON file."""
+        if self._hash_alg and self._hash_chain is None:
+            self._build_hash_chain()
+
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "entries": {k: v.to_dict() for k, v in self._entries.items()},
         }
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        # Whole-file replacement via temp file + fsync + os.replace: a
+        # `open(..., 'w')` here truncated the live store BEFORE writing, so
+        # an interruption left a half-written JSON file that no longer loads.
+        atomic_write_text(self.storage_path, json.dumps(data, indent=2))
+
+    def verify_integrity(self) -> bool:
+        """Verify the hash chain integrity using the declared hash algorithm.
+
+        Fail-closed: an unknown declared algorithm (or any hash mismatch)
+        returns ``False`` — never raises, never silently falls back.
+        """
+        if not self._entries:
+            return True
+        # P0-8c: data that declares no algorithm (or carries no chain) is
+        # UNVERIFIED -- fail closed, never a silent pass and never a
+        # silent fallback to sha256.
+        if not self._hash_alg:
+            return False
+        chain = self._hash_chain
+        if chain is None:
+            return False
+        if len(chain) != len(self._entries):
+            return False
+
+        sorted_keys = sorted(self._entries.keys())
+        prev_hash = "genesis"
+        for i, key in enumerate(sorted_keys):
+            entry = self._entries[key]
+            entry_dict = entry.to_dict()
+            entry_dict["prev_hash"] = prev_hash
+            entry_data = json.dumps(entry_dict, sort_keys=True, separators=(",", ":"))
+            ok, _reason = verify_declared_hash(self._hash_alg, entry_data.encode(), chain[i])
+            if not ok:
+                return False
+            prev_hash = chain[i]
+        return True
 
     def get(self, key: str) -> Optional[StorageEntry]:
         """Get an entry by key."""

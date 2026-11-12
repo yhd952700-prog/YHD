@@ -1,0 +1,68 @@
+﻿{
+  "generated_at": "2026-11-05T21:07:37-0800",
+  "python": "3.12.14",
+  "platform": "win32",
+  "quick": true,
+  "single_append": {
+    "events": 500,
+    "events_per_sec": 636.8,
+    "latency_ms_p50": 1.191,
+    "latency_ms_p95": 2.654,
+    "latency_ms_p99": 5.16,
+    "cpu_seconds": 0.25,
+    "wall_seconds": 0.785
+  },
+  "batched_append": [
+    {
+      "batch_size": 10,
+      "events": 2000,
+      "events_per_sec": 4939.8,
+      "batch_latency_ms_p50": 2.043,
+      "batch_latency_ms_p95": 3.03,
+      "batch_latency_ms_p99": 5.376,
+      "per_event_ms_p95": 0.303,
+      "cpu_seconds": 0.172,
+      "wall_seconds": 0.405,
+      "batches": 200
+    },
+    {
+      "batch_size": 100,
+      "events": 2000,
+      "events_per_sec": 11967.4,
+      "batch_latency_ms_p50": 6.826,
+      "batch_latency_ms_p95": 12.178,
+      "batch_latency_ms_p99": 12.631,
+      "per_event_ms_p95": 0.1218,
+      "cpu_seconds": 0.172,
+      "wall_seconds": 0.167,
+      "batches": 20
+    }
+  ],
+  "verify": {
+    "verify_ms_at_6500_events": 235.53,
+    "verify_ms_at_10500_events": 343.76
+  },
+  "chain_verifies": true,
+  "events_in_database": 10500,
+  "disk_bytes_per_event": 724.1,
+  "database_bytes": 7697376,
+  "multi_process": {
+    "processes": 2,
+    "batch_size": 25,
+    "aggregate_events_per_sec_including_startup": 1958.0,
+    "aggregate_events_per_sec_excluding_startup": 12137.4,
+    "wall_seconds": 0.511,
+    "slowest_child_seconds": 0.082,
+    "startup_overhead_seconds": 0.428,
+    "rows_committed": 1000,
+    "rows_expected": 1000,
+    "no_lost_appends": true,
+    "contiguous_seq": true
+  },
+  "recovery": {
+    "recovery_seconds": 0.036,
+    "chain_intact_after_kill": true
+  }
+}
+
+=== PERFORMANCE GATE: PASS ===

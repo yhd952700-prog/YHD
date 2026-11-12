@@ -37,6 +37,7 @@ class DependencySpec:
         dependency_type: str = DependencyType.HARD,
         optional: bool = False,
         weak: bool = False,
+        id: Optional[str] = None,
     ):
         self.name = name
         self.version = version
@@ -44,7 +45,10 @@ class DependencySpec:
         self.dependency_type = dependency_type
         self.optional = optional
         self.weak = weak
-        self.id = str(uuid.uuid4())
+        # Restore a persisted id verbatim; only mint a fresh uuid when none is
+        # supplied. This is what makes the on-disk -> independent-reload hash
+        # chain round-trip consistent (a regenerated id would break the hash).
+        self.id = id or str(uuid.uuid4())
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -68,6 +72,7 @@ class DependencySpec:
             dependency_type=data.get("dependency_type", DependencyType.HARD),
             optional=data.get("optional", False),
             weak=data.get("weak", False),
+            id=data.get("id"),
         )
 
 

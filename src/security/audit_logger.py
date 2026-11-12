@@ -5,21 +5,43 @@ Provides tamper-evident logging of all cryptographic operations:
 - encrypt/decrypt invocations
 - sign/verify operations
 - key generation, rotation, export
-- Vault Transit key lifecycle
 
-Audit events are written to the AuditStore with SHA256 event hashing,
-ensuring a verifiable chain of custody for all crypto operations.
+Audit events are recorded IN-MEMORY in `self._events` as a hash chain
+(event_hash / prev_event_hash, SHA256). They are NOT written to any store and
+are NOT backed by the authoritative AuditStore (src.kernels.audit), so there is
+NO durable / authoritative chain of custody — all events are lost on process
+restart. Do NOT treat this logger as audit-grade evidence. For durable,
+tamper-evident audit (HC-01 runtime integrity currently UNVERIFIED), use
+src.kernels.audit.
 """
 
-import hashlib
+from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
+from src.security.persistence_health import (
+    ALERTING_STATES,
+    PersistenceHealth,
+    resolve_persistence_health,
+    unaccounted_loss,
+)
+import collections
 import json
 import logging
+import os
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, ClassVar
 
 logger = logging.getLogger(__name__)
+
+#: HWM 文件是单调计数器：多实例并发保存时必须串行 + 取最大值，否则后写者
+#: 会把计数写小（甚至用固定 ``.tmp`` 写出半截 JSON）。
+_HWM_WRITE_LOCK = threading.Lock()
 
 
 class CryptoOperation(Enum):
@@ -55,6 +77,16 @@ class CryptoAuditEvent:
     event_hash: Optional[str] = None
     # Hash of the previous event (links into audit chain)
     prev_event_hash: Optional[str] = None
+    #: P0-8c: which algorithm produced ``event_hash``. The chain now says how
+    #: to verify itself instead of relying on a hard-coded sha256. It is
+    #: EXCLUDED from the canonical form, so adding it changed no existing hash.
+    hash_alg: str = "sha256"
+    #: D21 / HC-09 — envelope-only version LABEL / contract selector. It is a
+    #: class constant (NOT a dataclass field), so it is excluded from the
+    #: canonical form: the chain's hashing is unchanged. It confers NO durability
+    #: or authority on the chain; it only labels which canonical contract produced
+    #: the event.
+    canon_version: ClassVar[str] = "CURRENT"
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -62,13 +94,26 @@ class CryptoAuditEvent:
         return data
 
     def compute_hash(self) -> str:
-        """Compute SHA256 hash of this event's canonical JSON form."""
+        """Compute this event's hash using its DECLARED algorithm.
+
+        P0-8c: the algorithm is dispatched from the shared registry on the
+        event's own ``hash_alg`` declaration. An unknown declaration fails
+        closed (raises) -- it is never silently recomputed with sha256.
+        """
         # Canonicalize: sort keys, remove event_hash and prev_event_hash
         canonical = self.to_dict()
         canonical.pop("event_hash", None)
         canonical.pop("prev_event_hash", None)
+        # The declaration is metadata about the hash, not part of its input.
+        canonical.pop("hash_alg", None)
         raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode()).hexdigest()
+        fn = _CHAIN_HASH_ALGORITHMS.get(self.hash_alg)
+        if fn is None:
+            raise ValueError(
+                f"unknown hash algorithm {self.hash_alg!r}; this build can "
+                f"verify {sorted(_CHAIN_HASH_ALGORITHMS)}"
+            )
+        return fn(raw.encode())
 
 
 def redact_secrets(details: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,15 +146,34 @@ class CryptoAuditLogger:
 
     Integration:
         - Called from EncryptionManager, JWTHandler, APIKeyManager
-        - Uses the existing AuditStore for persistence
+        - IN-MEMORY ONLY: events are held in ``self._events`` and are NOT
+          persisted to any store (this is NOT backed by AuditStore and there is
+          no durable/authoritative historical evidence). They are lost on
+          process restart, so do not treat this logger as audit-grade evidence.
         - Also logs to standard logging for real-time monitoring
     """
 
-    def __init__(self, component_name: str = "crypto"):
+    def __init__(self, component_name: str = "crypto", hwm_path: Optional[str] = None):
         self._component = component_name
-        self._events: List[CryptoAuditEvent] = []
+        # D19: bounded ring buffer -> old events are evicted (telemetry, not
+        # evidence). See ``dropped_count`` / ``high_water_mark``.
+        self._events: collections.deque = collections.deque(maxlen=10000)
         self._last_hash: Optional[str] = None
         self._event_counter = 0
+        self._dropped_count = 0
+        # HWM (high-water-mark) telemetry file. None => file writing DISABLED
+        # (the default for direct construction; the production singleton sets a
+        # real path). The file holds ONLY a monotonic counter and must NEVER
+        # influence any trust decision.
+        self._hwm_path = hwm_path if hwm_path is not None else os.environ.get("AUDIT_HWM_PATH")
+        self._lock = threading.RLock()
+        self._entries_ever_written = self._load_hwm()
+        # D19-A+: baseline of the HWM as loaded at construction. Only entries
+        # written from here on can be reconciled against this process's own
+        # eviction counter; without it, every restart would re-report the
+        # previous process's evictions as unexplained loss. See
+        # :mod:`src.security.persistence_health`.
+        self._hwm_at_epoch_start = self._entries_ever_written
 
     def _generate_event_id(self) -> str:
         """Generate a unique event ID using timestamp + counter + random."""
@@ -143,27 +207,41 @@ class CryptoAuditLogger:
 
         Returns:
             The CryptoAuditEvent that was logged
+
+        Thread-safety: the hash-chain linkage (prev_event_hash / event_hash /
+        _last_hash), the ring buffer, and the HWM counter are all mutated under
+        ``self._lock`` so concurrent callers from a thread pool cannot corrupt
+        the chain or silently drop the eviction counter.
         """
         # Sanitize: never log secrets, keys, or full tokens
         safe_details = redact_secrets(details) if details else {}
 
-        event = CryptoAuditEvent(
-            event_id=self._generate_event_id(),
-            operation=operation,
-            component=component or self._component,
-            key_name=key_name,
-            key_id=key_id,
-            success=success,
-            timestamp=time.time(),
-            duration_ms=duration_ms,
-            details=safe_details,
-        )
-        event.prev_event_hash = self._last_hash
-        event.event_hash = event.compute_hash()
-        self._last_hash = event.event_hash
+        with self._lock:
+            event = CryptoAuditEvent(
+                event_id=self._generate_event_id(),
+                operation=operation,
+                component=component or self._component,
+                key_name=key_name,
+                key_id=key_id,
+                success=success,
+                timestamp=time.time(),
+                duration_ms=duration_ms,
+                details=safe_details,
+            )
+            event.prev_event_hash = self._last_hash
+            event.event_hash = event.compute_hash()
+            self._last_hash = event.event_hash
 
-        # Add to local buffer
-        self._events.append(event)
+            # D19: ring eviction -> if the buffer is already full, the append
+            # below will silently drop the OLDEST event. Count it as dropped
+            # (telemetry) so callers can detect the loss.
+            if len(self._events) == self._events.maxlen:
+                self._dropped_count += 1
+            self._events.append(event)
+
+            self._entries_ever_written += 1
+            if self._hwm_path is not None:
+                self._save_hwm()
 
         # Log to standard logging (info for operations, warning for failures)
         level = logging.INFO if success else logging.WARNING
@@ -281,7 +359,13 @@ class CryptoAuditLogger:
                     f"expected prev_hash={expected_prev}, got={event.prev_event_hash}"
                 )
                 return False
-            expected_hash = event.compute_hash()
+            try:
+                expected_hash = event.compute_hash()
+            except ValueError as exc:
+                # P0-8c: an event declaring an algorithm this build cannot
+                # perform is UNVERIFIABLE -- fail closed, never assume sha256.
+                logger.error("audit event %s is unverifiable: %s", event.event_id, exc)
+                return False
             if event.event_hash != expected_hash:
                 logger.error(
                     f"Audit event hash mismatch at {event.event_id}: "
@@ -290,11 +374,137 @@ class CryptoAuditLogger:
                 return False
         return True
 
+    # ------------------------------------------------------------------
+    # D19: high-water-mark (HWM) telemetry
+    # ------------------------------------------------------------------
+    def _load_hwm(self) -> int:
+        """Load the monotonic ``entries_ever_written`` counter from disk.
+
+        Fail-open: ANY error (missing file, unreadable, malformed, wrong type)
+        returns 0. The HWM file holds ONLY a counter and must NEVER influence a
+        trust decision, so it is safe to ignore bad content.
+        """
+        if not self._hwm_path:
+            return 0
+        try:
+            data = json.loads(read_text_with_retry(self._hwm_path))
+            if isinstance(data, dict):
+                val = data.get("entries_ever_written")
+                if isinstance(val, int) and val >= 0:
+                    return val
+            logger.warning(
+                "HWM file %s has unexpected content; starting counter at 0",
+                self._hwm_path,
+            )
+            return 0
+        except FileNotFoundError:
+            return 0
+        except Exception as exc:  # noqa: BLE001 - fail-open on any HWM error
+            logger.warning("Failed to load HWM file %s: %s", self._hwm_path, exc)
+            return 0
+
+    def _save_hwm(self) -> None:
+        """Persist the ``entries_ever_written`` counter (telemetry only).
+
+        Called under ``self._lock``. Fail-open: ANY error is logged and swallowed
+        so a bad/locked file can NEVER break crypto logging. The file holds ONLY
+        a counter and is NOT audit evidence.
+        """
+        if not self._hwm_path:
+            return
+        with self._lock:
+            with _HWM_WRITE_LOCK:
+                try:
+                    with exclusive_file_lock(
+                        f"{self._hwm_path}.lock", description="审计 HWM"
+                    ):
+                        # 单调合并：另一个进程可能已经写到更高计数，绝不能写小。
+                        value = max(
+                            self._entries_ever_written, self._load_hwm()
+                        )
+                        atomic_write_text(
+                            self._hwm_path,
+                            json.dumps({"entries_ever_written": value}),
+                        )
+                        try:
+                            os.chmod(self._hwm_path, 0o600)
+                        except OSError:
+                            pass
+                        self._entries_ever_written = value
+                except Exception as exc:  # noqa: BLE001 - fail-open (telemetry)
+                    logger.warning(
+                        "Failed to save HWM file %s: %s", self._hwm_path, exc
+                    )
+
+    @property
+    def dropped_count(self) -> int:
+        """Number of events evicted from the ring buffer (telemetry, not evidence)."""
+        return self._dropped_count
+
+    @property
+    def high_water_mark(self) -> int:
+        """Monotonic count of events ever written (survives restart via HWM file)."""
+        return self._entries_ever_written
+
+    # ------------------------------------------------------------------
+    # D19-A+: persistence-health accounting (telemetry, NOT evidence)
+    # ------------------------------------------------------------------
+    def persistence_health(self) -> PersistenceHealth:
+        """D19-A+: reconcile HWM / evictions / buffer into one verdict.
+
+        This is the half of A+ that was never wired up: the counters existed
+        (``high_water_mark`` / ``dropped_count`` / buffer length) but nothing
+        ever reconciled them, so "evidence was DESTROYED" and "evidence was
+        evicted as expected" were indistinguishable at runtime. See
+        :mod:`src.security.persistence_health` for what each state does and
+        does not mean.
+
+        Telemetry only -- never a trust, policy or authorization input.
+        """
+        with self._lock:
+            return resolve_persistence_health(
+                self._entries_ever_written,
+                self._dropped_count,
+                len(self._events),
+                high_water_mark_at_epoch_start=self._hwm_at_epoch_start,
+            )
+
+    def stats(self) -> Dict[str, Any]:
+        """Telemetry snapshot (NOT audit evidence) including persistence health."""
+        health = self.persistence_health()
+        with self._lock:
+            buffered = len(self._events)
+            hwm = self._entries_ever_written
+            dropped = self._dropped_count
+        return {
+            "persistence_health": health.value,
+            "buffered_entries": buffered,
+            "high_water_mark": hwm,
+            "dropped_count": dropped,
+            "unaccounted_loss": unaccounted_loss(
+                hwm, dropped, buffered,
+                high_water_mark_at_epoch_start=self._hwm_at_epoch_start,
+            ),
+            "evidence_destroyed": health in ALERTING_STATES,
+        }
+
     def clear(self) -> None:
-        """Clear the in-memory event buffer (does NOT clear persistent storage)."""
-        self._events.clear()
-        self._last_hash = None
-        self._event_counter = 0
+        """Clear the in-memory event buffer.
+
+        This logger is memory-only (no persistence layer exists), so clearing
+        the buffer discards all recorded crypto events permanently.
+
+        NOTE: clear() does NOT reset ``high_water_mark`` (the monotonic
+        ``entries_ever_written`` counter) — it is intentionally durable across
+        clears so the telemetry survives. The HWM file is telemetry, NOT audit
+        evidence, and must never be treated as authoritative.
+        """
+        with self._lock:
+            self._events.clear()
+            self._last_hash = None
+            self._event_counter = 0
+        # Intentionally NOT resetting ``self._entries_ever_written`` and NOT
+        # incrementing ``self._dropped_count``.
 
 
 # Module-level default instance
@@ -302,8 +512,25 @@ _default_logger: Optional[CryptoAuditLogger] = None
 
 
 def get_crypto_audit_logger() -> CryptoAuditLogger:
-    """Get singleton crypto audit logger."""
+    """Get singleton crypto audit logger.
+
+    The production singleton is the ONLY construction that writes the HWM
+    telemetry file: it resolves a real path from ``AUDIT_HWM_PATH`` or a default
+    under the ``~/.liuhao`` data dir. Direct constructions keep ``hwm_path=None``
+    (file writing disabled) unless they opt in explicitly.
+    """
     global _default_logger
     if _default_logger is None:
-        _default_logger = CryptoAuditLogger()
+        from src.common.data_paths import resolve_store_path
+
+        hwm_path = resolve_store_path(
+            "audit_hwm.json",
+            os.path.join(os.path.expanduser("~"), ".liuhao", "audit_hwm.json"),
+            env_var="AUDIT_HWM_PATH",
+        )
+        try:
+            os.makedirs(os.path.dirname(hwm_path), exist_ok=True)
+        except OSError:
+            hwm_path = None
+        _default_logger = CryptoAuditLogger(hwm_path=hwm_path)
     return _default_logger

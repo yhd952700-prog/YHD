@@ -13,7 +13,12 @@ Phase 2.4 Knowledge Security Policy:
 - Convenience functions for PII detection and redaction
 """
 
-from .chunker import chunk_text, chunk_by_sentences
+from .chunker import (
+    TextChunk,
+    chunk_by_sentences,
+    chunk_document_structured,
+    chunk_text,
+)
 from .embedding import EmbeddingPipeline, embed_text
 from .vector_store import VectorStore
 from .pii import (
@@ -43,6 +48,8 @@ from .security import KnowledgeSecurityPolicy
 __all__ = [
     "chunk_text",
     "chunk_by_sentences",
+    "chunk_document_structured",
+    "TextChunk",
     "EmbeddingPipeline",
     "embed_text",
     "VectorStore",

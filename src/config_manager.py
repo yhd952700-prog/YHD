@@ -31,7 +31,6 @@ CONFIG_PRIORITY = [
 
 class ConfigError(Exception):
     """配置错误"""
-    pass
 
 
 class ConfigManager:

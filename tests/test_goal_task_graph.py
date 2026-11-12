@@ -62,6 +62,30 @@ class TestGoalTaskGraph:
             assert hasattr(task, 'depends_on')
             assert hasattr(task, 'status')
     
+    def test_graph_summary_includes_steps(self):
+        """B组第二轮 M4：目标摘要应透出步骤记录（steps），不用再拼 task 列表。"""
+        from src.ai.providers import reset_provider
+        reset_provider()
+        from src.ai.providers import get_provider
+        provider = get_provider()
+        goal = GoalDefinition(
+            id="goal-steps-001",
+            description="Build a comprehensive AI assistant with multi-agent coordination",
+            priority="high",
+            status="pending",
+        )
+        graph = GoalTaskGraph(provider=provider, goal=goal)
+        tasks = graph.decompose_goal()
+        assert len(tasks) > 0
+        summary = graph.get_graph_summary("goal-steps-001")
+        assert summary["task_count"] == len(tasks)
+        assert "steps" in summary
+        assert len(summary["steps"]) == len(tasks)
+        for step in summary["steps"]:
+            assert {"id", "description", "task_type", "status", "priority",
+                    "assigned_agent", "depends_on"} <= set(step)
+        assert {s["id"] for s in summary["steps"]} == {t.id for t in tasks}
+
     def test_task_chain_generation(self):
         """Test that task chains can be generated with dependencies."""
         from src.ai.providers import reset_provider

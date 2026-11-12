@@ -115,6 +115,10 @@ class ModelRouter:
     def __init__(self, registry: ModelRegistry, rules: Optional[List[RoutingRule]] = None):
         self.registry = registry
         self._rules: List[RoutingRule] = rules or []
+        # 长跑实测 RSS +24.5MB/h：路由历史每条请求都追加一份 RouteResult 且没有
+        # 上限，持续聊天时与事件总线相关性索引一起构成"只增不删"的内存曲线。
+        # 路由历史是运维观测用的近况，不是账本，保留最近 2000 条即可。
+        self._max_routing_history = 2000
         self._routing_history: List[RouteResult] = []
         # Sort rules by priority (higher first) on init
         self._rules.sort(key=lambda r: r.priority, reverse=True)
@@ -196,6 +200,8 @@ class ModelRouter:
 
         # Step 5: Record routing decision
         self._routing_history.append(result)
+        if len(self._routing_history) > self._max_routing_history:
+            del self._routing_history[: len(self._routing_history) - self._max_routing_history]
 
         return result
 

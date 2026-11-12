@@ -92,7 +92,7 @@ def prometheus_response() -> Tuple[bytes, str]:
 
 
 # ============================================================
-# 2) 子系统探针 —— 把 14 内核纳入就绪检查
+# 2) 子系统探针 —— 把每个内核纳入就绪检查（数量随内核增加，勿写死 14）
 # ============================================================
 
 #: ``(子系统名, 模块路径, getter 名)``。getter 均在对应内核的 ``__init__`` 中定义。
@@ -113,6 +113,9 @@ SUBSYSTEM_PROBES: Tuple[Tuple[str, str, str], ...] = (
     ("audit", "src.kernels.audit", "get_audit_store"),
     ("trust", "src.kernels.trust", "get_trust_manager"),
     ("plugin", "src.kernels.plugin", "get_plugin_registry"),
+    # Added with the retention subsystem: a kernel package on disk with no probe
+    # is invisible to readiness, which is how a whole subsystem ships unmonitored.
+    ("retention", "src.kernels.retention", "get_retention_manager"),
 )
 
 STATUS_HEALTHY = "healthy"
@@ -325,8 +328,16 @@ def validate_production_config(
     source = env if env is not None else _os_environ()
     placeholders = _placeholder_set()
 
+    # Production posture is resolved through the single source of truth
+    # (src.security.posture), which honors LIUHAO_ENV > ENVIRONMENT > APP_ENV —
+    # NOT just APP_ENV. The old direct read masked a production deployment that
+    # set LIUHAO_ENV/ENVIRONMENT but not APP_ENV, silently downgrading the
+    # critical findings below to "non-production" (fail-open). strict=False so
+    # the preflight never raises on an undeterminable posture — it reports
+    # findings, it does not decide process-wide posture.
+    from src.security.posture import is_production as _is_production
+    is_prod = _is_production(source, strict=False)
     app_env = (source.get(APP_ENV_ENV) or "").strip()
-    is_prod = app_env.lower() in _PRODUCTION_ENVS
 
     findings: List[ConfigFinding] = []
 

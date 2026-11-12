@@ -1,0 +1,8 @@
+{
+  "record_id": "051514a413ef42e5ae6fae07d4d2b2c4",
+  "backup_id": "20261106T055113Z-53a124b5",
+  "from_version": "0.1.2",
+  "to_version": "0.1.0",
+  "restored_files": 516,
+  "message": "已回滚到升级前版本"
+}

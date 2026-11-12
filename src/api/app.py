@@ -3,7 +3,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .providers_metrics import ProviderMetric, ProviderMetricsRepository
+from .providers_metrics import (
+    ProviderMetric,
+    ProviderMetricsRepository,
+    default_metrics_database_url,
+)
 from ..ai.observability import observe
 
 
@@ -11,7 +15,13 @@ class MetricsApplication:
     """Minimal application object that exposes the main runtime surface."""
 
     def __init__(self, database_url: str | None = None) -> None:
-        self.database_url = database_url or os.environ.get("DATABASE_URL", "sqlite:///./verify_metrics.db")
+        # 历史默认是相对 cwd 的 ``sqlite:///./verify_metrics.db``：从用户主目录
+        # 启动会把指标库悄悄写到 C 盘。未显式配置时改由数据根解析（含旧库迁移）。
+        self.database_url = (
+            database_url
+            or (os.environ.get("DATABASE_URL") or "").strip()
+            or default_metrics_database_url()
+        )
         self.repository = ProviderMetricsRepository(self.database_url)
 
     @observe("api.metrics_application.health")
@@ -23,9 +33,18 @@ class MetricsApplication:
         }
 
     def ready(self) -> dict[str, Any]:
-        count = self.repository.count()
+        """Readiness probe that can actually report ``not_ready``.
+
+        Previously this returned ``"ready" if count >= 0 else "not_ready"`` --
+        and SQL ``COUNT(*)`` is never negative, so the ``not_ready`` branch was
+        unreachable and the probe reported healthy without checking anything.
+        It now performs a real liveness probe (``repository.is_ready()``) and
+        reports ``not_ready`` when the store is genuinely unreachable.
+        """
+        ready = self.repository.is_ready()
+        count = self.repository.count() if ready else 0
         return {
-            "status": "ready" if count >= 0 else "not_ready",
+            "status": "ready" if ready else "not_ready",
             "database_url": self.database_url,
             "provider_samples": count,
         }

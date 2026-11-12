@@ -5,16 +5,78 @@ Provides multi-agent coordination framework for complex task execution.
 Supports agent pools, task distribution, result aggregation, and KPI reporting.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .providers import BaseProvider, get_provider
-from ..observability.metrics import track_agent_task, track_coordination
-from ..observability.tracing import create_span, end_span, AISpanAttributes
-from ..knowledge.memory import create_memory_manager, MemoryTier
+
+# 重依赖一律按需导入 —— 本模块会被 ``EmployeeStore`` 拉进名册读取路径，而名册
+# 只需要 JSON 摘要。实测把 ``knowledge.memory``（mem0 → openai → qdrant_client）
+# 与本模块的 observability 依赖放在顶层，会让首个 ``/v1/dashboard/roster``
+# 请求付 6–12 秒的一次性导入成本。指标/追踪/长期记忆都只服务"真正执行任务"，
+# 放到首次使用时再加载，语义不变，失败仍降级为无操作。
+_metrics_module: Any = None
+_tracing_module: Any = None
+
+
+def _metrics():
+    """首次调用时导入指标模块；不可用则永久降级为 None。"""
+    global _metrics_module
+    if _metrics_module is None:
+        try:
+            from ..observability import metrics as _impl
+        except Exception:  # pragma: no cover - prometheus_client 可选
+            _impl = None
+        _metrics_module = _impl or False
+    return _metrics_module or None
+
+
+def track_agent_task(*args, **kwargs):
+    module = _metrics()
+    if module is None:
+        return None
+    return module.track_agent_task(*args, **kwargs)
+
+
+def track_coordination(*args, **kwargs):
+    module = _metrics()
+    if module is None:
+        return None
+    return module.track_coordination(*args, **kwargs)
+
+
+def _tracing():
+    """首次调用时导入追踪模块；不可用则永久降级为 None。"""
+    global _tracing_module
+    if _tracing_module is None:
+        try:
+            from ..observability import tracing as _impl
+        except Exception:  # pragma: no cover - OpenTelemetry 可选
+            _impl = None
+        _tracing_module = _impl or False
+    return _tracing_module or None
+
+
+def create_span(name: str, **kwargs):
+    module = _tracing()
+    if module is None:
+        return None
+    return module.create_span(name, **kwargs)
+
+
+def end_span(span_context, error=None):
+    module = _tracing()
+    if module is None or span_context is None:
+        return None
+    return module.end_span(span_context, error=error)
+
+
+def _span_attributes():
+    module = _tracing()
+    return module.AISpanAttributes if module is not None else None
 
 
 class AgentStatus(Enum):
@@ -23,6 +85,7 @@ class AgentStatus(Enum):
     Lifecycle (MASTER-SPEC Phase 3): create → run → pause → resume → stop → recover.
     """
     IDLE = "idle"              # created, ready to run
+    BUSY = "busy"              # employee pool engaged on a goal (run-level)
     RUNNING = "running"        # actively executing a task
     PAUSED = "paused"          # suspended mid-flight, resumable
     STOPPED = "stopped"        # terminal stop, not resumable
@@ -55,6 +118,9 @@ class Agent:
     total_latency_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     checkpoint_state: Optional[Dict[str, Any]] = None
+    #: 执行期按当前配置解析 provider（未显式注入实例时由 Employee 设置）。
+    #: 不长期持有构建时的快照，否则控制台改 Key/改默认模型后仍用旧 Key。
+    provider_resolver: Optional[Callable[[], BaseProvider]] = None
 
     def execute(self, task: str, **kwargs) -> Dict[str, Any]:
         """Execute a task using this agent's provider."""
@@ -62,21 +128,28 @@ class Agent:
         self.current_task = task
         start_time = time.time()
 
-        # Use tracing if available
+        # Use tracing if available（属性键同样按需取，避免顶层拉入 OTel SDK）
+        span_attrs = _span_attributes()
         span = create_span(
             f"agent.execute.{self.agent_type}",
             attributes={
-                AISpanAttributes.AGENT_TYPE: self.agent_type,
-                AISpanAttributes.AGENT_TASK: task[:100],
+                span_attrs.AGENT_TYPE: self.agent_type,
+                span_attrs.AGENT_TASK: task[:100],
             }
+            if span_attrs is not None
+            else {"agent_type": self.agent_type, "agent_task": task[:100]},
         )
 
         try:
             # Build prompt with system prompt
             full_prompt = f"{self.system_prompt}\n\nTask: {task}" if self.system_prompt else task
 
-            # Generate response with retry
-            response = self.provider.generate_with_retry(full_prompt, **kwargs)
+            # Generate response with retry（执行前按当前配置解析：
+            # 控制台改 Key / 改默认模型后无需重启即可生效）。
+            provider = (
+                self.provider_resolver() if self.provider_resolver else self.provider
+            )
+            response = provider.generate_with_retry(full_prompt, **kwargs)
 
             latency_ms = (time.time() - start_time) * 1000
             self.total_latency_ms += latency_ms
@@ -199,6 +272,10 @@ class Employee:
     - Observability integration (metrics, tracing, memory)
     """
 
+    #: ``employment_status`` 的合法取值：在职 / 停用。
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
     def __init__(
         self,
         name: str,
@@ -207,6 +284,12 @@ class Employee:
         agent_types: Optional[List[str]] = None,
         system_prompts: Optional[Dict[str, str]] = None,
         enable_observability: bool = True,
+        role_description: str = "",
+        default_capabilities: Optional[List[str]] = None,
+        owner_account_id: str = "",
+        employment_status: str = "active",
+        employee_id: str = "",
+        last_activity: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize an Employee.
@@ -218,13 +301,39 @@ class Employee:
             agent_types: List of agent types (defaults to ["general"] * agent_count)
             system_prompts: Custom system prompts per agent type
             enable_observability: Enable metrics/tracing/memory integration
+            role_description: 职责描述（人可读）
+            default_capabilities: 默认能力（已注册执行器的 capability id）
+            owner_account_id: 归属账号（决定谁能看到/改/派活）
+            employment_status: ``active``（在职）/ ``disabled``（停用）
+            employee_id: 稳定员工 id（改名不变，用于记忆归属等跨改名关联）
+            last_activity: 最后一次活动的可读快照
+                ``{"description", "outcome", "at"}``
         """
         self.name = name
+        # 稳定 id 与名字解耦：改名不会让历史记忆/关联断线。老数据没有这个字段，
+        # 由 ``stable_id()`` 退回名字（行为与以前一致）。
+        self.employee_id = employee_id or ""
+        self.last_activity: Dict[str, Any] = dict(last_activity or {})
         self.provider = provider or get_provider()
+        # 未显式注入 provider 时，执行期按当前模型配置重新解析：控制台改 Key /
+        # 改默认模型后无需重启，也不会长期持有一个构建时的旧实例。
+        self._provider_resolver: Optional[Callable[[], BaseProvider]] = (
+            None if provider is not None else get_provider
+        )
         self.agent_count = agent_count
         self.agent_types = agent_types or ["general"] * agent_count
         self.system_prompts = system_prompts or {}
         self.enable_observability = enable_observability
+        # 员工实体字段（不只是"agent 池"）：职责、默认能力、归属账号、在职状态。
+        # 这些字段全部持久化，因此重启后仍是同一个"员工"，不是重新生成的编号。
+        self.role_description = role_description or ""
+        self.default_capabilities = list(default_capabilities or [])
+        self.owner_account_id = owner_account_id or ""
+        self.employment_status = (
+            employment_status
+            if employment_status in (self.ACTIVE, self.DISABLED)
+            else self.ACTIVE
+        )
 
         # Validate agent_types length
         if len(self.agent_types) < agent_count:
@@ -246,8 +355,19 @@ class Employee:
         self.total_tasks_completed = 0
         self.total_tasks_failed = 0
 
-        # Observability
+        # Goal-level metrics (real execution binding): each goal submitted to /
+        # completed / failed by this employee. Drives roster / KPI so the
+        # "autonomous worker" actually shows up in the numbers, not just tasks.
+        self.total_goals_submitted = 0
+        self.total_goals_completed = 0
+        self.total_goals_failed = 0
+        self.goals: List[str] = []
+
+        # Observability（长期记忆只在启用可观测性的员工上按需加载：
+        # mem0/openai/qdrant_client 的首次导入成本不应落在名册读取路径上）
         if self.enable_observability:
+            from ..knowledge.memory import create_memory_manager
+
             self._memory = create_memory_manager(user_id=f"employee_{name}", use_mem0=False)
         else:
             self._memory = None
@@ -256,7 +376,13 @@ class Employee:
         """Create agent pool."""
         for i in range(self.agent_count):
             agent_type = self.agent_types[i]
-            agent_id = f"agent_{i}"
+            # Globally-unique id (prefixed by employee name) so that an agent can
+            # be addressed by id across multiple employees without collision --
+            # required for by-name pause/resume in AIStateManager. Previously
+            # every employee used the same ``agent_0``/``agent_1``/... ids, which
+            # made ``pause_agent(agent_id)`` ambiguous once more than one
+            # employee existed.
+            agent_id = f"{self.name}-a{i}"
             system_prompt = self.system_prompts.get(agent_type, "")
 
             agent = Agent(
@@ -264,9 +390,57 @@ class Employee:
                 agent_type=agent_type,
                 name=f"{self.name}-{agent_type}-{i}",
                 provider=self.provider,
+                provider_resolver=self._provider_resolver,
                 system_prompt=system_prompt,
             )
             self.agents[agent_id] = agent
+
+    def is_active(self) -> bool:
+        """在职员工才接受派活；停用只是"还在名册里，但不再接活"。"""
+        return self.employment_status == self.ACTIVE
+
+    # ── 可读状态 / 最后一次活动 ──
+
+    #: ``current_status()`` 的取值：空闲 / 执行中 / 出错 / 已完成 / 已停用。
+    STATUS_IDLE = "idle"
+    STATUS_RUNNING = "running"
+    STATUS_ERROR = "error"
+    STATUS_COMPLETED = "completed"
+    STATUS_DISABLED = "disabled"
+
+    def stable_id(self) -> str:
+        """跨改名稳定的员工 id（老数据没有 id 时退回名字）。"""
+        return self.employee_id or self.name
+
+    def record_activity(
+        self, description: str, outcome: str, when: Optional[float] = None
+    ) -> None:
+        """记录"最后一次做了什么、什么时候、结果如何"（人可读，不含内部 id）。"""
+        self.last_activity = {
+            "description": str(description or "")[:500],
+            "outcome": str(outcome or ""),
+            "at": float(when if when is not None else time.time()),
+        }
+
+    def current_status(self) -> str:
+        """员工当前状态：停用 > 执行中 > 上一次结果（出错/已完成）> 空闲。
+
+        执行中来自 agent 的真实 BUSY/RUNNING 状态；否则用最后一次活动的结果，
+        避免"跑完了界面还说空闲"。没有活动记录时就是空闲。
+        """
+        if self.employment_status == self.DISABLED:
+            return self.STATUS_DISABLED
+        if any(
+            agent.status in (AgentStatus.BUSY, AgentStatus.RUNNING)
+            for agent in self.agents.values()
+        ):
+            return self.STATUS_RUNNING
+        outcome = str((self.last_activity or {}).get("outcome") or "").lower()
+        if outcome in ("failed", "error"):
+            return self.STATUS_ERROR
+        if outcome in ("completed", "cancelled"):
+            return self.STATUS_COMPLETED
+        return self.STATUS_IDLE
 
     def add_task(self, description: str, task_type: str = "general",
                  priority: int = 0, depends_on: Optional[List[str]] = None) -> str:
@@ -283,6 +457,43 @@ class Employee:
         self.task_queue.append(task_id)
         self.total_tasks_submitted += 1
         return task_id
+
+    # ── Goal-level binding (real autonomous-worker accounting) ──
+
+    def mark_agents_busy(self) -> None:
+        """Mark every idle agent BUSY while this employee works a goal.
+
+        Only touches agents that are IDLE/BUSY so it never clobbers a
+        paused/resumed agent mid-lifecycle (important for the pause/resume
+        endpoint's semantics).
+        """
+        for agent in self.agents.values():
+            if agent.status in (AgentStatus.IDLE, AgentStatus.BUSY):
+                agent.status = AgentStatus.BUSY
+
+    def mark_agents_idle(self) -> None:
+        """Release the goal-level BUSY flag back to IDLE once the goal ends."""
+        for agent in self.agents.values():
+            if agent.status == AgentStatus.BUSY:
+                agent.status = AgentStatus.IDLE
+
+    def record_goal_submitted(self, goal_id: str) -> None:
+        """Register a goal as submitted (counted once per goal_id)."""
+        if goal_id not in self.goals:
+            self.goals.append(goal_id)
+            self.total_goals_submitted += 1
+
+    def record_goal_finished(self, goal_id: str, state: str) -> None:
+        """Account a goal's terminal outcome in the employee KPI.
+
+        ``state`` is the AgentRunState value ("completed" / "failed" /
+        "cancelled"). A cancelled goal counts as failed for KPI purposes.
+        """
+        self.record_goal_submitted(goal_id)
+        if state == "completed":
+            self.total_goals_completed += 1
+        elif state in ("failed", "cancelled"):
+            self.total_goals_failed += 1
 
     def add_tasks(self, tasks: List[Dict[str, Any]]) -> List[str]:
         """Add multiple tasks at once."""
@@ -399,6 +610,8 @@ class Employee:
 
                     # Persist to memory
                     if self.enable_observability and self._memory:
+                        from ..knowledge.memory import MemoryTier
+
                         self._memory.remember(
                             content=f"Task {task_id}: {task.description}",
                             tier=MemoryTier.EPISODIC,

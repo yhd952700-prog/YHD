@@ -25,6 +25,14 @@ Design notes (NO FAKE, §158):
   NOT fabricate a successful delivery.
 - All identity / trust / policy checks consult the real kernels; nothing
   is stubbed or self-asserted.
+
+Protocol-adapter reality (NO FAKE, continued): the ``A2AAdapter`` /
+``MCPAdapter`` below are honest LOCAL-DELIVERY adapters -- their ``send()``
+returns ``False`` and records ``"transport not configured"`` / "real ...
+transport not implemented in this build" when no real wire transport is
+configured (which is the default). There is NO ``GRPCAdapter`` and NO real
+A2A/MCP/gRPC wire transport anywhere in this repo; those protocols are
+PLANNED / not-implemented. Do not advertise them as live transports.
 """
 from __future__ import annotations
 
@@ -38,7 +46,7 @@ from ..kernels.network import (
     MessageStatus,
     ProtocolAdapter,
     ProtocolType,
-    get_network_bus,
+    NetworkBus,
 )
 from ..kernels.identity import (
     get_identity_manager,
@@ -288,7 +296,10 @@ class AgentNetworkGateway:
         self._identity = identity_manager or get_identity_manager()
         self._trust = trust_manager or get_trust_manager()
         self._policy = policy_engine or get_policy_engine()
-        self._bus = network_bus or get_network_bus()
+        # A gateway owns its default routing surface. Sharing the process-wide
+        # bus lets an unrelated lifecycle shutdown/pause make delegation fail
+        # based on global state rather than this gateway's configuration.
+        self._bus = network_bus or NetworkBus()
         self.registry = registry or AgentRegistry(
             identity_manager=self._identity, trust_manager=self._trust
         )

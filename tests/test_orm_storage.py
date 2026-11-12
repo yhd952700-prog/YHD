@@ -25,15 +25,22 @@ from src.integrations.orm_models import (
 from src.integrations.storage import get_storage, StorageManager, Repository, reset_storage
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def ensure_schema():
-    """Create ORM tables before the first test runs.
+    """Create ORM tables before each test runs.
 
-    Default engine points at ./liuhao_ai_os.db which is gitignored, so on a
-    fresh checkout the file is absent and get_session() never creates the
-    schema -- every CRUD case then fails with "no such table". Tests must be
-    self-sufficient instead of depending on a pre-seeded local database.
+    Default engine points at the per-test ``LIUHAO_DATA_DIR`` (see
+    ``tests/conftest.py`` / ``src.common.data_paths``), so the schema must be
+    created for that test's database. A session-scoped engine would cache the
+    first test's database and every later CRUD case would fail with
+    ``no such table``. Tests must be self-sufficient instead of depending on a
+    pre-seeded local database.
     """
+    import src.integrations.orm_models as orm_models
+
+    if orm_models._engine is not None:
+        orm_models._engine.dispose()
+        orm_models._engine = None
     Base.metadata.create_all(get_engine())
 
 

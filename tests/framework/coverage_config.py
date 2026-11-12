@@ -2,6 +2,12 @@
 Test Coverage Configuration for LiuHao AI OS
 
 Defines coverage settings, exclusions, and reporting options.
+
+历史遗留说明：本文件只是一个名为 ``coverage`` 的 Python dict，
+pytest-cov 不会自动读取它。真实生效的覆盖率配置在 pyproject.toml 的
+[tool.coverage.run] / [tool.coverage.report]（与 scripts/run_tests.py
+--coverage 的 --cov-fail-under=80 保持一致）。本文件保留仅作历史参照，
+不要在这里改阈值——改 pyproject.toml。
 """
 
 # Coverage configuration for pytest-cov

@@ -12,6 +12,7 @@ non-gated or unknown actions.
 
 from __future__ import annotations
 
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -24,6 +25,12 @@ from src.security import get_jwt_handler
 
 HUMAN_ID = "human-api-approver"
 OTHER_HUMAN_ID = "human-api-someone-else"
+
+
+# Mandatory target for /v1/policy/approvals (governance ruling
+# 2026-10-05). A single concrete target is enough here; target-binding
+# semantics are covered in tests/kernels/test_sovereignty_target_binding.py.
+_T = "kernel-target:demo"
 
 
 @pytest.fixture
@@ -48,18 +55,22 @@ def client(humans):
 
 
 def _auth(subject: str) -> dict:
-    token, _payload = get_jwt_handler().create_token(subject=subject)
+    # Write endpoints require an administrative claim (policy writes); the
+    # seeded local human is authorised via L0 sovereignty, not via roles.
+    token, _payload = get_jwt_handler().create_token(
+        subject=subject, metadata={"kind": "human", "scope": "L0"}
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
 class TestAuthenticationIsRequired:
     def test_missing_token_is_401(self, client):
-        assert client.post("/v1/policy/approvals", json={"actions": ["capability.retire"]}).status_code == 401
+        assert client.post("/v1/policy/approvals", json={"target": _T, "actions": ["capability.retire"]}).status_code == 401
 
     def test_malformed_header_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers={"Authorization": "Token abc"},
         )
         assert resp.status_code == 401
@@ -67,7 +78,7 @@ class TestAuthenticationIsRequired:
     def test_garbage_token_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers={"Authorization": "Bearer not-a-jwt"},
         )
         assert resp.status_code == 401
@@ -76,11 +87,13 @@ class TestAuthenticationIsRequired:
         # Signature is fine, but the subject is not an ACTIVE human identity.
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers=_auth("ghost-user"),
         )
         assert resp.status_code == 400
-        assert "unknown principal" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "还没有登记" in detail
+        assert "sovereignty" not in detail.lower()
 
     def test_listing_requires_auth(self, client):
         assert client.get("/v1/policy/approvals").status_code == 401
@@ -92,7 +105,7 @@ class TestIssueApproval:
         resp = client.post(
             "/v1/policy/approvals",
             json={
-                "actions": ["capability.retire"],
+                "target": _T, "actions": ["capability.retire"],
                 "reason": "planned retirement",
                 "ttl_seconds": 60,
             },
@@ -112,7 +125,7 @@ class TestIssueApproval:
         resp = client.post(
             "/v1/policy/approvals",
             json={
-                "actions": ["capability.retire"],
+                "target": _T, "actions": ["capability.retire"],
                 "principal": OTHER_HUMAN_ID,
                 "issued_by": OTHER_HUMAN_ID,
             },
@@ -127,24 +140,24 @@ class TestIssueApproval:
     def test_unknown_action_is_400(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["not.a.real.action"]},
+            json={"target": _T, "actions": ["not.a.real.action"]},
             headers=_auth(HUMAN_ID),
         )
         assert resp.status_code == 400
-        assert "unknown kernel action" in resp.json()["detail"]
+        assert "动作不存在" in resp.json()["detail"]
 
     def test_non_gated_action_is_400(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["memory.store"]},
+            json={"target": _T, "actions": ["memory.store"]},
             headers=_auth(HUMAN_ID),
         )
         assert resp.status_code == 400
-        assert "enforcement-gated" in resp.json()["detail"]
+        assert "不需要审批" in resp.json()["detail"]
 
     def test_empty_action_list_is_422(self, client):
         resp = client.post(
-            "/v1/policy/approvals", json={"actions": []}, headers=_auth(HUMAN_ID)
+            "/v1/policy/approvals", json={"target": _T, "actions": []}, headers=_auth(HUMAN_ID)
         )
         assert resp.status_code == 422
 
@@ -152,7 +165,7 @@ class TestIssueApproval:
         for ttl in (0, -5, 99999):
             resp = client.post(
                 "/v1/policy/approvals",
-                json={"actions": ["capability.retire"], "ttl_seconds": ttl},
+                json={"target": _T, "actions": ["capability.retire"], "ttl_seconds": ttl},
                 headers=_auth(HUMAN_ID),
             )
             assert resp.status_code == 422
@@ -160,7 +173,7 @@ class TestIssueApproval:
     def test_multiple_critical_actions(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire", "security.set_abac_rule"]},
+            json={"target": _T, "actions": ["capability.retire", "security.set_abac_rule"]},
             headers=_auth(HUMAN_ID),
         )
         assert resp.status_code == 200
@@ -174,7 +187,7 @@ class TestListAndFetch:
     def test_list_contains_the_grant_and_the_enforcement_snapshot(self, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers=_auth(HUMAN_ID),
         ).json()["grant"]
 
@@ -187,7 +200,7 @@ class TestListAndFetch:
     def test_fetch_by_id(self, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers=_auth(HUMAN_ID),
         ).json()["grant"]
 
@@ -206,7 +219,7 @@ class TestRevoke:
     def test_revoke_records_revoker_and_reason(self, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers=_auth(HUMAN_ID),
         ).json()["grant"]
 
@@ -224,7 +237,7 @@ class TestRevoke:
     def test_revoked_grant_leaves_the_active_listing(self, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers=_auth(HUMAN_ID),
         ).json()["grant"]
         client.delete(
@@ -235,7 +248,7 @@ class TestRevoke:
     def test_revoke_is_idempotent_via_api(self, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["capability.retire"]},
+            json={"target": _T, "actions": ["capability.retire"]},
             headers=_auth(HUMAN_ID),
         ).json()["grant"]
         url = f"/v1/policy/approvals/{created['grant_id']}"

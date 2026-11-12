@@ -1,0 +1,68 @@
+name: Multiuser Acceptance (8 items)
+
+# 多账号 8 项验收：一条命令跑完 383 项真实 HTTP 检查，输出「8 行通过表 +
+# 失败明细」并归档 JSON。默认不参与 PR 门禁（耗时且依赖 Windows 能力：
+# taskkill 杀进程树、DPAPI 一次性证明），用 schedule / 手动触发。
+on:
+  workflow_dispatch:
+    inputs:
+      port_base:
+        description: '固定端口基准（默认 21680）'
+        required: false
+        default: '21680'
+  schedule:
+    # 每周一 03:00 UTC
+    - cron: '0 3 * * 1'
+
+concurrency:
+  group: multiuser-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: 多账号 8 项验收
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[tests]
+
+      - name: Run multiuser acceptance
+        # 固定端口 + 独立数据目录；退出码 0 = 全绿或仅已知项，1 = 有未知失败。
+        shell: pwsh
+        run: |
+          $portBase = "${{ github.event.inputs.port_base }}"
+          if (-not $portBase) { $portBase = "21680" }
+          python scripts/acceptance/run_multiuser_acceptance.py `
+            --port-base $portBase `
+            --data-root .acceptance/multiuser-ci `
+            --json-report .acceptance/multiuser-ci/report.json
+
+      - name: Run readable export acceptance
+        # 人可读导出（我的数据）：目录/索引页、只含本人数据、无 Key/恢复码/用户名，
+        # 记忆回导幂等。自带临时数据目录，跑完即删。
+        shell: pwsh
+        run: |
+          python scripts/acceptance/readable_export_e2e.py --port-base 27180
+
+      - name: Archive acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiuser-acceptance-report
+          path: |
+            .acceptance/multiuser-ci/report.json
+            .acceptance/multiuser-ci/**/server.log
+            .acceptance/readable_export/report.json
+          retention-days: 14

@@ -1,0 +1,75 @@
+{
+  "schema": "liuhao-bench-baseline/v1",
+  "default_profile": "Windows|py3.13.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
+  "profiles": {
+    "Windows|py3.13.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick": {
+      "generated_at": "2026-09-28T04:01:54-0700",
+      "python": "3.13.14",
+      "platform": "win32",
+      "quick": true,
+      "single_append": {
+        "events": 500,
+        "events_per_sec": 697.5,
+        "latency_ms_p50": 1.217,
+        "latency_ms_p95": 2.492,
+        "latency_ms_p99": 3.319,
+        "cpu_seconds": 0.203,
+        "wall_seconds": 0.717
+      },
+      "batched_append": [
+        {
+          "batch_size": 10,
+          "events": 2000,
+          "events_per_sec": 5028.5,
+          "batch_latency_ms_p50": 1.822,
+          "batch_latency_ms_p95": 2.769,
+          "batch_latency_ms_p99": 4.513,
+          "per_event_ms_p95": 0.2769,
+          "cpu_seconds": 0.219,
+          "wall_seconds": 0.398,
+          "batches": 200
+        },
+        {
+          "batch_size": 100,
+          "events": 2000,
+          "events_per_sec": 13078.0,
+          "batch_latency_ms_p50": 6.704,
+          "batch_latency_ms_p95": 12.126,
+          "batch_latency_ms_p99": 14.4,
+          "per_event_ms_p95": 0.1213,
+          "cpu_seconds": 0.094,
+          "wall_seconds": 0.153,
+          "batches": 20
+        }
+      ],
+      "verify": {
+        "verify_ms_at_6500_events": 225.3,
+        "verify_ms_at_10500_events": 382.66
+      },
+      "chain_verifies": true,
+      "events_in_database": 10500,
+      "disk_bytes_per_event": 710.0,
+      "database_bytes": 7549080,
+      "multi_process": {
+        "processes": 2,
+        "batch_size": 25,
+        "aggregate_events_per_sec_including_startup": 714.4,
+        "aggregate_events_per_sec_excluding_startup": 16077.4,
+        "wall_seconds": 1.4,
+        "slowest_child_seconds": 0.062,
+        "startup_overhead_seconds": 1.337,
+        "rows_committed": 1000,
+        "rows_expected": 1000,
+        "no_lost_appends": true,
+        "contiguous_seq": true
+      },
+      "recovery": {
+        "recovery_seconds": 0.128,
+        "chain_intact_after_kill": true
+      },
+      "profile": "Windows|py3.13.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
+      "captured_at": "2026-09-28T04:01:54-0700",
+      "machine": "Windows-10-10.0.19045-SP0"
+    }
+  }
+}

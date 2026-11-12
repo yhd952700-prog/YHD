@@ -1,0 +1,450 @@
+"""AI 员工名册的「纯数据构建」层（不依赖 fastapi）。
+
+本模块刻意 **不** 引用 ``fastapi``，以便独立验证脚本（``scripts/verify_roster_real_employees.py``）
+可以在未安装 fastapi 的 **系统 python** 下直接 ``from src.ai.roster_payload import build_roster_payload``
+来跑真实代码。
+
+职责（与 ``gateway/roster.py`` 的 NO-FAKE 契约一致）：
+1. ``capability-registry.yaml`` 仍是内核/能力层的唯一真实来源 —— 它们是**注册表信息**，
+   不是"员工"。
+2. **真实持久化员工** 来自 ``EmployeeStore``（``LIUHAO_WORKSPACE_ROOT`` 可重定向），
+   作为 ``real_employees`` 透出；``totals.employees`` 只数真实员工，不再把模块算作员工。
+3. ``provider_status`` 仍取自 ``src.ai.providers`` 的真实类。
+
+``gateway/roster.py`` 的 ``@router.get`` 薄包装仅调用 ``build_roster_payload()``。
+"""
+
+from __future__ import annotations
+
+import logging
+import pathlib
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+#: 仓库根（本文件位于 ``<root>/src/ai/roster_payload.py``，向上两级到仓库根）。
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: 权威能力注册表（14 kernel + 14 能力层）。
+REGISTRY_PATH = _REPO_ROOT / "capability-registry.yaml"
+
+# ---------------------------------------------------------------------------
+# 展示分组（presentation grouping）—— 分组名是**呈现用标签**，不是注册表字段。
+# 每条 kernel 的真实归属见其 ``kernel`` 字段；此处只决定它落在哪个展示域。
+# ---------------------------------------------------------------------------
+DOMAIN_BY_KERNEL: Dict[str, str] = {
+    "context": "cognition",
+    "memory": "cognition",
+    "event": "cognition",
+    "capability": "cognition",
+    "execution": "execution",
+    "resource": "execution",
+    "plugin": "execution",
+    "network": "execution",
+    "policy": "governance",
+    "security": "governance",
+    "audit": "governance",
+    "identity": "trust",
+    "trust": "trust",
+    "evaluation": "trust",
+}
+
+DOMAIN_LABELS: Dict[str, str] = {
+    "cognition": "认知内核",
+    "execution": "执行内核",
+    "governance": "治理内核",
+    "trust": "信任内核",
+}
+
+#: 能力层按 Phase 归入阶段带（同样是展示分组）。
+BAND_BY_PHASE: Dict[int, str] = {
+    9: "loop",
+    10: "loop",
+    11: "loop",
+    12: "org",
+    13: "org",
+    14: "org",
+    15: "world",
+    16: "world",
+    17: "world",
+    18: "evo",
+    19: "evo",
+    20: "evo",
+    21: "evo",
+}
+
+BAND_LABELS: Dict[str, str] = {
+    "loop": "内核闭环",
+    "org": "组织与任务",
+    "world": "世界与治理",
+    "evo": "验证与进化",
+}
+
+#: 每个 provider 需要的密钥环境变量（``AI_PROVIDER_KEY`` 是所有 provider 的通用兜底，
+#: 见 ``BaseProvider.__init__``）。``mock``/``ollama`` 不需要云端密钥。
+PROVIDER_KEY_ENVS: Dict[str, Tuple[str, ...]] = {
+    "mock": (),
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "google": ("GOOGLE_API_KEY",),
+    "ollama": ("OLLAMA_BASE_URL",),
+    "moonshot": ("MOONSHOT_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+}
+
+#: provider 的展示名（仅用于界面标签；类型串本身来自注册表）。
+PROVIDER_LABELS: Dict[str, str] = {
+    "mock": "Mock（内置）",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic Claude",
+    "google": "Google Gemini",
+    "ollama": "Ollama（本地）",
+    "moonshot": "Moonshot Kimi",
+    "deepseek": "DeepSeek",
+}
+
+#: provider"会不会返回编造结果"由 :func:`src.ai.providers.provider_mode_for` 唯一
+#: 裁决（它读 ``NON_REAL_PROVIDER_TYPES``）。本模块**不**再自带一份清单：两处各写
+#: 一遍 judgement 就会各自演化，最后名册说 mock 而 ``/v1/health`` 说 real，
+#: 那时界面该信谁就没有答案了。
+
+# 注册表解析结果缓存：(mtime, payload)。文件小但每轮轮询都读没必要。
+_cache: Optional[Tuple[float, Dict[str, Any]]] = None
+
+#: ``EmployeeStore`` 类型对象在首次使用时解析并缓存。
+#: 首次 ``from .employee_store import EmployeeStore`` 会连带导入 provider /
+#: observability 等依赖；放在请求路径里就是首屏那 5–12 秒。这里改为
+#: 「模块级懒加载 + 启动后台预热」：结果缓存、失败也缓存，绝不每请求重试。
+_employee_store_class: Any = None
+_employee_store_failed = False
+_employee_store_lock = threading.Lock()
+
+
+def _employee_store() -> Any:
+    """返回 ``EmployeeStore`` 类；首次调用时导入并缓存，失败后不再重试。"""
+    global _employee_store_class, _employee_store_failed
+    if _employee_store_class is not None:
+        return _employee_store_class
+    with _employee_store_lock:
+        if _employee_store_class is not None:
+            return _employee_store_class
+        if _employee_store_failed:
+            raise ImportError("employee_store unavailable")
+        try:
+            from .employee_store import EmployeeStore
+        except Exception:
+            _employee_store_failed = True
+            raise
+        _employee_store_class = EmployeeStore
+        return _employee_store_class
+
+
+def prewarm_employee_store() -> bool:
+    """后台预热 ``EmployeeStore`` 的导入；返回是否成功，失败不抛。
+
+    由网关 lifespan 的后台线程调用，目的是让首个 ``/v1/dashboard/roster``
+    请求不再承担一次性导入成本。失败只记录（与其它后台预热步骤一致）。
+    """
+    try:
+        _employee_store()
+    except Exception as exc:  # pragma: no cover - 依赖缺失时的降级
+        logger.warning("employee_store prewarm failed: %s", exc)
+        return False
+    return True
+
+
+def _phase_number(raw: Any) -> Optional[int]:
+    """``"Phase 9"`` → ``9``；解析不出来时返回 None（不猜）。"""
+    text = str(raw or "")
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def load_registry() -> Dict[str, Any]:
+    """读取 ``capability-registry.yaml``。失败时返回带 ``error`` 的空壳。"""
+    global _cache
+
+    try:
+        mtime = REGISTRY_PATH.stat().st_mtime
+    except OSError as exc:
+        logger.warning("capability registry not found: %s", exc)
+        return {
+            "available": False,
+            "error": "能力清单暂时读不到，请稍后重试。",
+            "kernels": [],
+            "layers": [],
+        }
+
+    if _cache is not None and _cache[0] == mtime:
+        return _cache[1]
+
+    try:
+        import yaml  # noqa: F401  (config_manager 已依赖，属既有第三方栈)
+
+        raw = yaml.safe_load(REGISTRY_PATH.read_text(encoding="utf-8"))
+        block = raw["capability-registry"]
+    except Exception as exc:  # 解析失败不编造名册
+        logger.warning("capability registry parse failed: %s", exc, exc_info=True)
+        return {
+            "available": False,
+            "error": "能力清单解析失败，请检查配置文件后重试。",
+            "kernels": [],
+            "layers": [],
+        }
+
+    kernels: List[Dict[str, Any]] = []
+    for entry in block.get("capabilities") or []:
+        kernel = str(entry.get("kernel") or "")
+        domain = DOMAIN_BY_KERNEL.get(kernel, "other")
+        kernels.append(
+            {
+                "id": entry.get("id"),
+                "legacy_id": entry.get("legacy_id"),
+                "name": entry.get("name"),
+                "kernel": kernel,
+                "kind": entry.get("kind"),
+                "status": entry.get("status"),
+                "scope": entry.get("scope"),
+                "source": entry.get("source"),
+                "domain": domain,
+                "domain_label": DOMAIN_LABELS.get(domain, "其他"),
+            }
+        )
+
+    layers: List[Dict[str, Any]] = []
+    for entry in block.get("capability-layers") or []:
+        phase_no = _phase_number(entry.get("phase"))
+        band = BAND_BY_PHASE.get(phase_no, "other") if phase_no is not None else "other"
+        layers.append(
+            {
+                "id": entry.get("id"),
+                "name": entry.get("name"),
+                "module": entry.get("module"),
+                "phase": entry.get("phase"),
+                "status": entry.get("status"),
+                "tests": entry.get("test_count") or 0,
+                "band": band,
+                "band_label": BAND_LABELS.get(band, "其他"),
+            }
+        )
+
+    payload: Dict[str, Any] = {
+        "available": True,
+        "version": block.get("version"),
+        "declared_totals": {
+            "capabilities": block.get("total_capabilities"),
+            "layers": block.get("total_layers"),
+        },
+        "kernels": kernels,
+        "layers": layers,
+        "domains": [
+            {"key": key, "label": label}
+            for key, label in DOMAIN_LABELS.items()
+        ],
+        "bands": [
+            {"key": key, "label": label}
+            for key, label in BAND_LABELS.items()
+        ],
+    }
+    _cache = (mtime, payload)
+    return payload
+
+
+def provider_status() -> Dict[str, Any]:
+    """真实 provider 面：已注册的类 + 当前生效的 provider + 密钥是否就位。
+
+    ``active`` 额外携带 **诚实性判据**（``mode`` / ``simulated``），取自
+    :func:`src.ai.providers.ai_provider_status` —— 那是全仓唯一裁决
+    "mock 还是 real / 执行是否被模拟" 的地方。
+
+    为什么必须带上
+    --------------
+    控制台 ``Overview`` 的 provider 卡片逐条渲染本函数的 ``items``，此前对每个
+    ``configured`` 为真的项一律写"已配置，可用于真实调用" + 绿色"就绪"。而
+    ``configured`` 只回答"密钥/环境变量到位了吗"，**不回答"这是不是假AI"**：
+    ``mock`` 无需密钥，于是这里 ``configured=True``，界面就把内置 mock 呈现成
+    真实能力。
+
+    后端其实一直在如实播报（``/v1/health``、``/v1/ready``、
+    ``/v1/dashboard/summary`` 都带 ``mode``/``simulated``，``providers.py`` 的注释
+    原文是"Never silently pretends a simulation is real"），但名册这条路径没带，
+    于是前端**无从显示**这个区分 —— 一条"后端有事实、界面给假绿灯"的通路。
+
+    现在 ``active`` 与 ``items`` 都带上这两个字段，且都出自同一个函数：同一份
+    事实只有一个来源，前端不需要、也无法自己重新推断。
+    """
+    # 与 dashboard.py 同一解析口径：os.environ 优先，其次 .env（经 ConfigManager）。
+    # 只读 os.environ 会把写在 .env 里的 AI_PROVIDER_* / *_API_KEY 误报为"未配置"。
+    from .providers import (
+        ProviderFactory,
+        _provider_env,
+        ai_provider_status,
+        get_provider,
+        provider_mode_for,
+    )
+
+    registered = sorted(ProviderFactory._providers.keys())
+
+    # 诚实性判据的唯一来源。取不到时如实降级为 None（"未知"），绝不猜成 real。
+    try:
+        honesty = ai_provider_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("ai_provider_status failed, honesty fields omitted: %s", exc)
+        honesty = {}
+
+    active_type = _provider_env("AI_PROVIDER_TYPE", "mock")
+    active: Dict[str, Any] = {
+        "type": active_type,
+        # 这两个字段是"前端能不能如实告知真人"的前提，不是可选装饰。
+        "mode": honesty.get("mode"),
+        "simulated": honesty.get("simulated"),
+        "model": None,
+        "name": None,
+    }
+    try:
+        instance = get_provider()
+        active["model"] = getattr(instance, "model", None)
+        active["name"] = getattr(instance, "name", None)
+        active["type"] = active_type
+    except Exception as exc:
+        logger.warning("active provider status failed: %s", exc, exc_info=True)
+        active["error"] = "服务商状态暂时读不到，请稍后重试。"
+
+    items: List[Dict[str, Any]] = []
+    for provider_type in registered:
+        required = PROVIDER_KEY_ENVS.get(provider_type, ())
+        keys_present = [name for name in required if _provider_env(name)]
+        # mock / 本地 ollama 无需密钥即视为就绪；云端 provider 需密钥或通用兜底键。
+        generic_key = bool(_provider_env("AI_PROVIDER_KEY"))
+        if not required or provider_type == "ollama":
+            configured = True
+        else:
+            configured = bool(keys_present) or generic_key
+        items.append(
+            {
+                "type": provider_type,
+                "label": PROVIDER_LABELS.get(provider_type, provider_type),
+                "registered": True,
+                "configured": configured,
+                "active": provider_type == active.get("type"),
+                "required_env": list(required),
+                # 逐项的诚实性判据。`configured` 只说明"环境变量齐了"，这一项才
+                # 说明"调用出去会不会得到假结果"—— 两者不可互相替代，界面必须分开显示。
+                "is_mock": provider_mode_for(provider_type) == "mock",
+                "is_active_provider_mock": (
+                    provider_type == active.get("type")
+                    and honesty.get("mode") == "mock"
+                ),
+            }
+        )
+
+    return {
+        "registered_count": len(registered),
+        "configured_count": sum(1 for item in items if item["configured"]),
+        "active": active,
+        "items": items,
+        # 顶层再放一份，供只想问"现在整个系统是不是假的"的调用方一次取到，
+        # 免得为了这一个布尔去翻 providers.active。
+        "mode": honesty.get("mode"),
+        "simulated": honesty.get("simulated"),
+    }
+
+
+def prewarm_roster_payload() -> bool:
+    """后台预热整条名册路径：员工存储 / 注册表 YAML / 服务商实例。
+
+    首个 ``/v1/dashboard/roster`` 除了 ``EmployeeStore`` 之外，还会首次导入
+    ``yaml``、构造 provider 单例并读取模型配置（实测首次约 200ms）。这些
+    都是一次性成本，挪到 lifespan 的后台线程即可；失败只记录，不影响服务。
+    """
+    ok = prewarm_employee_store()
+    for step in (load_registry, provider_status):
+        try:
+            step()
+        except Exception as exc:  # pragma: no cover - 依赖缺失时的降级
+            logger.warning("roster prewarm step %s failed: %s", step.__name__, exc)
+            ok = False
+    return ok
+
+
+def _build_real_employees() -> List[Dict[str, Any]]:
+    """从 ``EmployeeStore`` 重建真实持久化员工列表。
+
+    返回对象形如::
+
+        {"id", "name", "agent_count", "agents":[{"id","agent_type","status"}],
+         "total_tasks_submitted","total_tasks_completed","total_tasks_failed"}
+
+    ``id`` 与 ``name`` 同源：store 以员工名作为持久化键，因此该员工在真实
+    库中的可追溯身份就是其名称，这里在 ``id`` 键下如实透出。
+
+    若 store 文件缺失、``employee_store`` 不可导入、或任意员工加载失败，
+    一律返回 ``[]``（并打 warning）—— **持久化失败绝不能让名册端点崩溃**。
+    """
+    try:
+        store = _employee_store()()
+    except Exception as exc:  # pragma: no cover - import/init guard
+        logger.warning("employee_store unavailable, real_employees=[]: %s", exc)
+        return []
+
+    try:
+        # 只读摘要：直接读 JSON，不构造 Employee/Agent —— 后者会在
+        # ``enable_observability=True`` 时导入 knowledge.memory（mem0 链）。
+        return store.list_summaries()
+    except Exception as exc:
+        logger.warning("list_summaries failed, real_employees=[]: %s", exc)
+        return []
+
+
+def build_roster_payload() -> Dict[str, Any]:
+    """构建名册响应 dict（无 fastapi 依赖，供端点与验证脚本共用）。
+
+    关键契约变化（相对旧版）：
+    - ``real_employees``：真实持久化员工（来自 ``EmployeeStore``）。
+    - ``totals.employees``：只数真实员工 == ``len(real_employees)``，
+      **不再** 把 kernel/能力层模块算作员工。
+    - ``totals.kernels`` / ``totals.layers``：仍是注册表计数（14/14）。
+    - ``totals.registry_entries``：保留 ``kernels + layers`` 这一真实数字，
+      但它**只是注册表条目数**，不再是"员工数"。
+    - ``kernels`` / ``layers`` / ``domains`` / ``bands`` / ``providers`` 等
+      原样保留，保证 UI 不被破坏（仅语义上从"员工"降级为"注册表信息"）。
+    """
+    registry = load_registry()
+    try:
+        providers = provider_status()
+    except Exception as exc:
+        logger.warning("provider_status failed: %s", exc, exc_info=True)
+        providers = {
+            "registered_count": 0,
+            "configured_count": 0,
+            "active": {},
+            "items": [],
+            "error": "服务商清单暂时读不到，请稍后重试。",
+        }
+
+    kernels = registry.get("kernels") or []
+    layers = registry.get("layers") or []
+    real_employees = _build_real_employees()
+
+    return {
+        "generated_at": time.time(),
+        "source": str(REGISTRY_PATH.name),
+        "available": bool(registry.get("available")),
+        "error": registry.get("error"),
+        "version": registry.get("version"),
+        "declared_totals": registry.get("declared_totals", {}),
+        "totals": {
+            "kernels": len(kernels),
+            "layers": len(layers),
+            "registry_entries": len(kernels) + len(layers),
+            "employees": len(real_employees),
+        },
+        "real_employees": real_employees,
+        "kernels": kernels,
+        "layers": layers,
+        "domains": registry.get("domains", []),
+        "bands": registry.get("bands", []),
+        "providers": providers,
+    }

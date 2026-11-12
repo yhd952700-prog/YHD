@@ -10,11 +10,31 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
+import logging
+import os
+import threading
 import time
 from typing import Dict, List, Optional, Any
-
+from src.common.atomic_write import atomic_write_text
+from src.common.data_paths import resolve_store_path
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from .models import Alert, AlertRule, AlertThreshold, AlertSeverity, AlertState, AlertType
+from .sinks import dispatch_alert
+
+logger = logging.getLogger(__name__)
+
+# Tests redirect the alert store to a temp dir via this env var (REDIR). The
+# production default is unchanged; this only makes the path overridable.
+ALERTS_STORE_PATH_ENV = "LIUHAO_ALERTS_STORE_PATH"
+DEFAULT_ALERTS_STORE_PATH = "data/observability/alerts.json"
+
+# 多个 AlertStore 实例（网关守护线程 / 读取面 / install_production_rules）
+# 会写同一个 JSON 文件。`open('w')` 先截断再分多次写入，两次保存交错时
+# 读者可能读到空文件或半截 JSON —— `_load` 于是整库重置，规则凭空消失
+# （CI 3.11 实测：/v1/alerts/rules 返回 count=0，并打印
+# "Failed to load alert store: Expecting value: line 1 column 1"）。
+# 串行化保存 + 临时文件原子替换：读者要么看到旧的完整文件，要么看到新的。
+_SAVE_LOCK = threading.RLock()
 
 
 class AlertStore:
@@ -29,12 +49,19 @@ class AlertStore:
     - History and resolution tracking
     """
 
-    def __init__(self, storage_path: str = "data/observability/alerts.json"):
+    def __init__(self, storage_path: str = None):
+        if storage_path is None:
+            storage_path = resolve_store_path(
+                os.path.join("observability", "alerts.json"),
+                DEFAULT_ALERTS_STORE_PATH,
+                env_var=ALERTS_STORE_PATH_ENV,
+            )
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._alerts: Dict[str, Alert] = {}
         self._rules: Dict[str, AlertRule] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -50,10 +77,17 @@ class AlertStore:
                     k: AlertRule.from_dict(v) for k, v in data.get("rules", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                # P0-8c: NO default fallback. An envelope that declares
+                # no algorithm is UNVERIFIED, never silently read as sha256.
+                self._hash_alg = data.get("hash_alg")
                 # Rebuild hash chain if missing or inconsistent
-                if not self._hash_chain or len(self._hash_chain) != len(self._alerts) + len(self._rules):
+                if self._hash_alg and (
+                    not self._hash_chain
+                    or len(self._hash_chain) != len(self._alerts) + len(self._rules)
+                ):
                     self._hash_chain = None
                     self._build_hash_chain()
+
             except Exception as e:
                 print(f"Warning: Failed to load alert store: {e}")
                 self._alerts = {}
@@ -66,6 +100,14 @@ class AlertStore:
 
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain from current alerts and rules."""
+        # P0-8c: refuse to (re)build a chain without a declared algorithm.
+        # Defaulting to sha256 is exactly what the containment forbids;
+        # the operator must stamp legacy data via the migration script.
+        if not self._hash_alg:
+            raise ValueError(
+                "cannot build a hash chain without a declared hash_alg; "
+                "run scripts/migrate_p08_hash_alg.py to stamp legacy data"
+            )
         chain: List[str] = []
         # Combine and sort by ID for consistent ordering
         all_items: List[tuple[str, Any]] = []
@@ -83,13 +125,13 @@ class AlertStore:
                 item_dict = item.to_dict()
                 item_dict["prev_hash"] = prev_hash
                 item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
+                item_hash = compute_hash(self._hash_alg, item_data.encode())
                 chain.append(item_hash)
             elif isinstance(item, AlertRule):
                 item_dict = item.to_dict()
                 item_dict["prev_hash"] = prev_hash
                 item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
+                item_hash = compute_hash(self._hash_alg, item_data.encode())
                 chain.append(item_hash)
             prev_hash = chain[-1] if chain else "genesis"
 
@@ -98,27 +140,43 @@ class AlertStore:
 
     def _save(self) -> None:
         """Persist alerts and rules to storage with hash chain."""
-        if self._hash_chain is None:
+        if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
 
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "alerts": {k: v.to_dict() for k, v in self._alerts.items()},
             "rules": {k: v.to_dict() for k, v in self._rules.items()},
         }
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        payload = json.dumps(data, indent=2, ensure_ascii=False)
+        # Serialise + atomic replace. See _SAVE_LOCK: interleaved writers used to
+        # leave a truncated/empty file, which _load then silently reset.
+        # 统一走 atomic_write_text：只读卷上先快速失败（不阻塞），磁盘满/无权限
+        # 也统一翻译成中文可行动提示。
+        with _SAVE_LOCK:
+            atomic_write_text(str(self.storage_path), payload)
 
     # ==================== Alert Operations ====================
 
-    def emit_alert(self, alert: Alert) -> str:
+    def emit_alert(self, alert: Alert, dispatch: bool = True) -> str:
         """
-        Emit (store) an alert.
+        Emit (store + deliver) an alert.
+
+        The alert is first persisted to the JSON store (the fail-closed
+        guarantee: the record always survives). It is then dispatched to the
+        configured notification sink(s) — console log, and a webhook when
+        ``LIUHAO_ALERT_WEBHOOK`` is set. A sink failure is logged and swallowed;
+        it can never lose the persisted record or break the caller.
 
         Args:
-            alert: The alert to store
+            alert: The alert to store.
+            dispatch: When ``True`` (default) the alert is delivered to the
+                configured sink(s). When ``False`` the alert is persisted but
+                NOT re-dispatched — used to refresh an alert that is already
+                firing so a sustained breach cannot storm the sink.
 
         Returns:
             The alert ID
@@ -126,6 +184,14 @@ class AlertStore:
         eid = alert.id
         self._alerts[eid] = alert
         self._save()
+        # Real delivery: dispatch to the configured sink(s). File persistence
+        # above is the fail-closed guarantee — even if dispatch fails, the alert
+        # record is already on disk.
+        if dispatch:
+            try:
+                dispatch_alert(alert)
+            except Exception as exc:  # noqa: BLE001 - emit_alert must never raise
+                logger.warning("alert dispatch failed (alert already persisted): %s", exc)
         return eid
 
     def get_alert(self, alert_id: str) -> Optional[Alert]:
@@ -213,38 +279,50 @@ class AlertStore:
     # ==================== Integrity ====================
 
     def verify_integrity(self) -> bool:
-        """Verify the hash chain integrity."""
+        """Verify the hash chain integrity using the declared hash algorithm.
+
+        Fail-closed: an unknown declared algorithm (or any hash mismatch)
+        returns ``False`` — never raises, never silently falls back.
+        """
         if not self._alerts and not self._rules:
             return True
+        # P0-8c: data that declares no algorithm (or carries no chain) is
+        # UNVERIFIED -- fail closed, never a silent pass and never a
+        # silent fallback to sha256.
+        if not self._hash_alg:
+            return False
 
-        # Recalculate and compare
-        chain: List[str] = []
+        chain = self._hash_chain
+        if chain is None:
+            return False
+
         all_items: List[tuple[str, Any]] = []
-
         for eid, alert in self._alerts.items():
             all_items.append((eid, alert))
         for rid, rule in self._rules.items():
             all_items.append((rid, rule))
 
+        if len(chain) != len(all_items):
+            return False
+
         all_items.sort(key=lambda x: x[0])
 
         prev_hash = "genesis"
-        for eid, item in all_items:
+        for i, (eid, item) in enumerate(all_items):
             if isinstance(item, Alert):
                 item_dict = item.to_dict()
-                item_dict["prev_hash"] = prev_hash
-                item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
-                chain.append(item_hash)
             elif isinstance(item, AlertRule):
                 item_dict = item.to_dict()
-                item_dict["prev_hash"] = prev_hash
-                item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
-                chain.append(item_hash)
-            prev_hash = chain[-1] if chain else "genesis"
+            else:
+                return False
+            item_dict["prev_hash"] = prev_hash
+            item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
+            ok, _reason = verify_declared_hash(self._hash_alg, item_data.encode(), chain[i])
+            if not ok:
+                return False
+            prev_hash = chain[i]
 
-        return self._hash_chain == chain
+        return True
 
     # ==================== Statistics ====================
 
@@ -278,9 +356,9 @@ def get_alert_store() -> AlertStore:
     return _default_store
 
 
-def emit_alert(alert: Alert) -> str:
+def emit_alert(alert: Alert, dispatch: bool = True) -> str:
     """Emit (store) an alert using the default store."""
-    return get_alert_store().emit_alert(alert)
+    return get_alert_store().emit_alert(alert, dispatch=dispatch)
 
 
 def get_alert(alert_id: str) -> Optional[Alert]:

@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.ai import liuhao as lh_module
 from src.ai.conversation_store import ConversationStore
 from src.ai.providers import BaseProvider, MockProvider
-from src.ai.liuhao import LiuHaoAssistant
+from src.ai.liuhao import LiuHaoAssistant, coerce_tool_output
 from src.ai.tools import build_tool_prompt, make_tools, parse_tool_call
 
 
@@ -31,7 +33,12 @@ def make_assistant(name: str = "tool-test", provider=None) -> LiuHaoAssistant:
 # ---------------------------------------------------------------------- #
 # 工具集构建
 # ---------------------------------------------------------------------- #
-def test_make_tools_has_seven_builtins():
+def test_make_tools_builtin_set_is_exact():
+    """内置工具集合是**精确**断言，不是"至少包含"。
+
+    刻意不放松成子集判断：新增工具必须显式更新这里，从而保证每一次扩大"模型可
+    调用的动作面"都是一次有意识的决定 —— 而不是某天悄悄多出来一只手。
+    """
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
     expected = {
         "search_memory",
@@ -41,15 +48,100 @@ def test_make_tools_has_seven_builtins():
         "personal_set_preference",
         "personal_add_fact",
         "personal_set_display_name",
+        # 2026-09-24 新增：受工作区闸门约束的只读文件工具
+        "read_file",
+        "list_files",
+        # 2026-11-05 新增：定时提醒（复用本地排程器，含糊时间会反问）
+        "manage_reminders",
     }
     assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    assert len(a._tool_list) == 7
+    # 10 = 原 7 个内置 + read_file / list_files（只读）+ manage_reminders
+    # （293ace94/393ace94 的定时提醒技能）。自动化观测工具默认不出现：三闸关闭时
+    # build_observation_tools 返回空列表。
+    assert len(a._tool_list) == 10
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
+
+
+def test_tool_registration_is_shared_once_per_profile(monkeypatch):
+    """同一画像主体只注册一次工具：第二个冷会话直接复用已激活的注册表。
+
+    注册/审批/激活每一步都写审计；若每个冷会话都重放，冷启动成本会随会话数
+    线性增长（实测 10 个工具 × 4 步 ≈ 40 条同步写入）。
+    """
+    lh_module._TOOL_CACHE.clear()
+    builds = []
+    real_make_tools = lh_module.make_tools
+
+    def counting_make_tools(principal, status_fn=None):
+        builds.append(principal)
+        return real_make_tools(principal, status_fn=status_fn)
+
+    monkeypatch.setattr(lh_module, "make_tools", counting_make_tools)
+    try:
+        first = LiuHaoAssistant(
+            name="session-a",
+            profile_principal="user-shared",
+            provider=MockProvider(name="test", model="mock-model"),
+        )
+        second = LiuHaoAssistant(
+            name="session-b",
+            profile_principal="user-shared",
+            provider=MockProvider(name="test", model="mock-model"),
+        )
+
+        assert builds == ["user-shared"], "同一主体不应重复构建工具集"
+        assert first.tools is second.tools, "注册表应被复用"
+        assert first._tool_list is second._tool_list
+        assert all(
+            first.tools.status(tool.tool_id).value == "active"
+            for tool in first._tool_list
+        )
+    finally:
+        lh_module._TOOL_CACHE.clear()
+
+
+def test_tool_cache_is_bounded_and_evicts_lru(monkeypatch):
+    """工具缓存有上限；超限按 LRU 淘汰，淘汰后下一次冷构造重建一次。"""
+    lh_module._TOOL_CACHE.clear()
+    monkeypatch.setenv("LIUHAO_TOOL_CACHE_MAX", "2")
+    builds = []
+    real_make_tools = lh_module.make_tools
+
+    def counting_make_tools(principal, status_fn=None):
+        builds.append(principal)
+        return real_make_tools(principal, status_fn=status_fn)
+
+    monkeypatch.setattr(lh_module, "make_tools", counting_make_tools)
+
+    def build(principal: str) -> LiuHaoAssistant:
+        return LiuHaoAssistant(
+            name=f"session-{principal}",
+            profile_principal=principal,
+            provider=MockProvider(name="test", model="mock-model"),
+        )
+
+    try:
+        build("user-a")
+        build("user-b")
+        # 触碰 user-a：user-b 成为最久未使用，应被淘汰。
+        lh_module._shared_tools("user-a")
+        build("user-c")
+
+        assert len(lh_module._TOOL_CACHE) == 2, "工具缓存不得超过配置上限"
+        assert "user-b" not in lh_module._TOOL_CACHE
+        assert builds.count("user-b") == 1
+
+        # 被淘汰的主体再次使用时会重建一次（只影响冷构造，不影响已有会话）。
+        build("user-b")
+        assert builds.count("user-b") == 2
+        assert len(lh_module._TOOL_CACHE) == 2
+    finally:
+        lh_module._TOOL_CACHE.clear()
 
 
 def test_build_tool_prompt_lists_tools():
@@ -88,33 +180,51 @@ def test_execute_search_memory_finds_stored():
     a = make_assistant(name="tool-mem")
     a.chat("hello world")
     out = a._execute_tool("search_memory", {"query": "hello"})
-    assert "hello" in out
+    assert isinstance(out, (dict, list)), "工具结果必须是结构化 JSON，不是 repr 字符串"
+    assert "hello" in json.dumps(out, ensure_ascii=False)
 
 
 def test_execute_unknown_tool():
     a = make_assistant()
-    assert "未知工具" in a._execute_tool("no_such_tool", {})
+    out = a._execute_tool("no_such_tool", {})
+    assert isinstance(out, dict)
+    assert "未知工具" in out["error"]
 
 
 def test_execute_system_status():
     a = make_assistant(name="tool-status")
     out = a._execute_tool("system_status", {})
-    assert "MockProvider" in out  # stats 含 provider 类名
+    assert isinstance(out, dict)
+    assert "MockProvider" in json.dumps(out, ensure_ascii=False)  # stats 含 provider 类名
 
 
 def test_execute_python_compute_real():
     """驾驶舱助手的计算工具必须真执行（返回真实计算结果，非模拟）。"""
     a = make_assistant(name="tool-compute")
     out = a._execute_tool("python_compute", {"code": "result = sum(i * i for i in range(1, 11))"})
-    assert "385" in out
-    assert "executed" in out
+    rendered = json.dumps(out, ensure_ascii=False)
+    assert "385" in rendered
+    assert "executed" in rendered
 
 
 def test_execute_python_compute_rejects_unsafe():
     """计算工具必须诚实拒绝不安全代码，而不是静默成功。"""
     a = make_assistant(name="tool-compute-bad")
     out = a._execute_tool("python_compute", {"code": "import os"})
-    assert '"success": false' in out.lower() or "rejected" in out.lower()
+    rendered = json.dumps(out, ensure_ascii=False).lower()
+    assert '"success": false' in rendered or "rejected" in rendered
+
+
+def test_coerce_tool_output_reads_legacy_repr_records():
+    """D5 向后兼容：旧记录里的 Python repr 字符串要能还原成结构。"""
+    assert coerce_tool_output("{'a': 1, 'b': None}") == {"a": 1, "b": None}
+    assert coerce_tool_output("[1, 2, None]") == [1, 2, None]
+    assert coerce_tool_output('{"a": 1}') == {"a": 1}
+    # 普通文本原样保留，不被误解析。
+    assert coerce_tool_output("hello") == "hello"
+    assert coerce_tool_output("{not valid}") == "{not valid}"
+    # 已经是结构化数据时不做任何改变。
+    assert coerce_tool_output({"a": 1}) == {"a": 1}
 
 
 # ---------------------------------------------------------------------- #
@@ -192,7 +302,9 @@ def test_chat_stream_yields_tool_event():
     assert tool_events[0]["type"] == "tool"
     assert tool_events[0]["name"] == "system_status"
     assert tool_events[0]["raw"] == '{"tool": "system_status", "args": {}}'
-    assert isinstance(tool_events[0]["output"], str) and tool_events[0]["output"]
+    output = tool_events[0]["output"]
+    assert isinstance(output, dict), "tool 事件的 output 必须是结构化 JSON"
+    json.dumps(output)  # 必须可 JSON 序列化，前端无需解析 repr
     # 最终回复 token 存在（工具 JSON 原文也会诚实流出，前端用 raw 剥离）
     assert "系统状态已查询" in "".join(text_tokens)
     # 收尾落盘：turn 递增、历史写入两条（user + assistant）

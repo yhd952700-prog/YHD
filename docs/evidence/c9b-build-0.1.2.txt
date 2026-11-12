@@ -1,0 +1,17 @@
+鎏灏发布包构建  version=0.1.2
+  来源    安装树 D:\copilot-worktrees\liuhao-c9b-payloadsrc
+  输出    D:\copilot-worktrees\liuhao-c9b-release
+  [跳过] 安装树没有 assets/
+  [跳过] 安装树没有 docs/
+  [跳过] 安装树没有 LiuHao.bat
+  [跳过] 安装树没有 START-HERE.txt
+  输入    683 个文件 / 9.6 MB（未压缩）
+  前端    console 11 个文件，api_contract=1，指纹 7dc9741d1238…
+  产物    liuhao-0.1.2.zip  2961979 字节（2.8 MB）
+  SHA256  ca46fc7664bcea137b787adb3d88cd72c5d0c53dfe1fb3ed8b480c0033945d0a
+  签名    未配置私钥，清单不含 signature 字段（不写空值/假签名）
+  清单    D:\copilot-worktrees\liuhao-c9b-release\LIUHAO_RELEASE.json
+  自检    清单 size/sha256/版本/artifact 与回读 ZIP 一致
+
+完成：D:\copilot-worktrees\liuhao-c9b-release\liuhao-0.1.2.zip
+      D:\copilot-worktrees\liuhao-c9b-release\LIUHAO_RELEASE.json

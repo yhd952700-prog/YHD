@@ -3,7 +3,9 @@ Tests for MemoryManager with Mem0 integration
 """
 import pytest
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -18,24 +20,45 @@ from src.knowledge.memory import (
 )
 
 
+def _clear_memory_file(name):
+    """Remove one memory file from wherever this session is directed to write.
+
+    Was ``os.path.join('memory_data', name)`` -- a CWD-relative path, so the
+    process CWD (the repository root) decided where the delete landed. Two
+    problems, both measured on 2026-10-04:
+
+    1. It deleted a real repository file, not test scratch.
+    2. The host's delete guard (a ``sitecustomize.py`` shim that patches
+       ``os.remove``) raises ``SystemExit(1)`` once a turn has accumulated 50
+       deletions. A ``SystemExit`` inside ``setup_method``/``teardown_method``
+       corrupts pytest's fixture finalizer stack, which makes the session
+       ``tmp_path_factory`` hand the SAME directory to every later test. In a
+       full run that turned into 28 unrelated failures and 16 errors.
+
+    Resolving the directory the same way the code under test does
+    (``MEMORY_PERSIST_DIR``, defaulted) keeps this aligned with the backend
+    instead of guessing a second path. ``unlink(missing_ok=True)`` also drops
+    the exists() check that made the TOCTOU window possible.
+
+    Module level, not a class attribute: a ``staticmethod`` referenced from a
+    class body would still bind on ``self`` when reached through an instance.
+    """
+    import os
+    persist_dir = os.getenv("MEMORY_PERSIST_DIR", "memory_data")
+    os.makedirs(persist_dir, exist_ok=True)
+    (Path(persist_dir) / name).unlink(missing_ok=True)
+
+
 class TestInMemoryBackend:
     """Test the in-memory fallback backend"""
 
     def setup_method(self):
         self.backend = InMemoryBackend(user_id="test_user")
         self.user_id = "test_user"
-        # Clear test data file before each test
-        import os, shutil
-        test_file = os.path.join('memory_data', 'test_user_memories.json')
-        if os.path.exists(test_file):
-            os.remove(test_file)
+        _clear_memory_file("test_user_memories.json")
 
     def teardown_method(self):
-        # Clear test data file after each test
-        import os
-        test_file = os.path.join('memory_data', 'test_user_memories.json')
-        if os.path.exists(test_file):
-            os.remove(test_file)
+        _clear_memory_file("test_user_memories.json")
 
     def test_add_and_get(self):
         item = MemoryItem(
@@ -108,18 +131,10 @@ class TestMemoryManager:
 
     def setup_method(self):
         self.mm = create_memory_manager(user_id="test_manager", use_mem0=False)
-        # Clear test data file before each test
-        import os
-        test_file = os.path.join('memory_data', 'test_manager_memories.json')
-        if os.path.exists(test_file):
-            os.remove(test_file)
+        _clear_memory_file("test_manager_memories.json")
 
     def teardown_method(self):
-        # Clear test data file after each test
-        import os
-        test_file = os.path.join('memory_data', 'test_manager_memories.json')
-        if os.path.exists(test_file):
-            os.remove(test_file)
+        _clear_memory_file("test_manager_memories.json")
 
     def test_remember_and_recall(self):
         mem_id = self.mm.remember(
@@ -232,6 +247,36 @@ class TestMemoryItem:
         assert item.importance == 0.7
         assert item.tags == ["restored"]
         assert item.access_count == 5
+
+
+class TestMem0IsNotImportedOnTheDefaultPath:
+    """钉住"用 ``use_mem0=False`` 的人不该为 mem0 付导入成本"。
+
+    mem0 → qdrant_client/openai 这条链在冷进程里曾要 6 秒以上，而目标执行与
+    员工默认路径都传 ``use_mem0=False``：付了钱却不用那个后端。断言必须放在
+    **全新子进程**里——本进程其它用例可能已经导入过 mem0，同进程断言会假绿。
+    """
+
+    def test_importing_memory_and_goal_graph_does_not_pull_mem0(self):
+        code = (
+            "import sys\n"
+            "import src.knowledge.memory as memory\n"
+            "memory.create_memory_manager(user_id='probe', use_mem0=False)\n"
+            "import src.ai.goal_task_graph  # noqa: F401\n"
+            "import src.ai.langgraph_workflow  # noqa: F401\n"
+            "for name in ('mem0', 'qdrant_client', 'openai'):\n"
+            "    assert name not in sys.modules, f'{name} was imported'\n"
+            "print('ok')\n"
+        )
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 if __name__ == "__main__":

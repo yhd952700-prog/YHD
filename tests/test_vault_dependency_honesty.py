@@ -112,7 +112,10 @@ def _defined_classes(source: str) -> set[str]:
 def test_no_module_imports_the_phantom_dependency():
     offenders = []
     for path in _python_sources():
-        source = path.read_text(encoding="utf-8", errors="replace")
+        # utf-8-sig: a stray UTF-8 BOM is not Python source, and ast.parse dies
+        # with "invalid non-printable character U+FEFF" on it. Reading with the
+        # BOM-aware codec keeps the scanner honest even if a BOM reappears.
+        source = path.read_text(encoding="utf-8-sig", errors="replace")
         if _imports_module(source, PHANTOM):
             offenders.append(str(path.relative_to(REPO_ROOT)))
     assert offenders == [], (

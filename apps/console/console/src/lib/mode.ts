@@ -5,7 +5,10 @@
  * 差别只在断点、导航位置与信息密度。把形态做成权限会立刻制造出"手机端不能
  * 审批"这类假边界 —— 那是产品决策，不该藏在断点里。
  *
- * 判定以视口宽度为准（CSS 断点与之一致）：
+ * 身份先于尺寸：桌面客户端（原生窗口）由自定义 User-Agent 标记
+ * （``LiuHaoDesktopShell/...``，见 ``src/desktop/native_window.py``）识别，
+ * 一旦命中就**固定**为 desktop，不因窗口被拖窄而变成网页版/手机端。
+ * 普通浏览器才按视口宽度判定：
  *   < 768px   → mobile   （底部导航、单列卡片）
  *   < 1280px  → web      （紧凑布局、浅色）
  *   >= 1280px → desktop  （全宽侧边栏、深色、多列网格）
@@ -46,6 +49,20 @@ export const MODE_HINTS: Record<DeviceMode, string> = {
   mobile: '底部导航 · 单列卡片 · 适配安全区',
 }
 
+/**
+ * 布局称呼：只描述排版，不冒充客户端身份。
+ *
+ * 浏览器在宽屏下也走 ``data-mode=desktop`` 的栅格，但它的身份是「网页版」。
+ * 设置页里描述"当前生效的是什么"时必须用这一组词，不能拿 ``MODE_LABELS``
+ * 说成「桌面端（PC 客户端）」——那会让网页端自称桌面端。身份只由
+ * ``CLIENT_LABELS[detectClient()]`` 表达。
+ */
+export const LAYOUT_LABELS: Record<DeviceMode, string> = {
+  desktop: '宽屏布局',
+  web: '紧凑布局',
+  mobile: '窄屏布局',
+}
+
 function readStored(key: string): string | null {
   try {
     return window.localStorage.getItem(key)
@@ -63,18 +80,79 @@ function writeStored(key: string, value: string | null): void {
   }
 }
 
-/** 按当前视口宽度判定形态。 */
-export function detectMode(width?: number): DeviceMode {
+/**
+ * 桌面壳 UA 身份标记。必须与 `src/desktop/native_window.py` 的
+ * `DESKTOP_UA_TOKEN` 完全一致（`tests/desktop` 有用例钉住两边同步）。
+ */
+export const DESKTOP_SHELL_UA_TOKEN = 'LiuHaoDesktopShell/'
+
+/** 当前页面是否运行在桌面壳的原生窗口里（读 UA，不靠窗口尺寸）。 */
+export function isDesktopShell(ua?: string): boolean {
+  const value =
+    ua ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent ?? '')
+  return value.includes(DESKTOP_SHELL_UA_TOKEN)
+}
+
+/** 按身份 + 视口判定形态：桌面壳恒为 desktop，浏览器按宽度。 */
+export function detectMode(width?: number, ua?: string): DeviceMode {
+  if (isDesktopShell(ua)) return 'desktop'
   const w = width ?? (typeof window === 'undefined' ? WEB_MAX_WIDTH : window.innerWidth)
   if (w < MOBILE_MAX_WIDTH) return 'mobile'
   if (w < WEB_MAX_WIDTH) return 'web'
   return 'desktop'
 }
 
+/** 客户端身份（与**布局**分开）：桌面壳 / 浏览器网页 / 手机浏览器。 */
+export type ClientKind = 'desktop' | 'web' | 'mobile'
+
+/**
+ * 判定客户端身份：桌面壳读 UA；浏览器按宽度区分手机与网页。
+ *
+ * 浏览器即使窗口很宽，身份仍是 `web`（不是 desktop）——布局可以借用宽屏
+ * 栅格，但「当前形态」与客户端的自我描述不能冒充桌面客户端。
+ */
+export function detectClient(width?: number, ua?: string): ClientKind {
+  if (isDesktopShell(ua)) return 'desktop'
+  const w = width ?? (typeof window === 'undefined' ? WEB_MAX_WIDTH : window.innerWidth)
+  return w < MOBILE_MAX_WIDTH ? 'mobile' : 'web'
+}
+
+/**
+ * 客户端身份的称呼：与 `MODE_LABELS`（布局）分开。
+ *
+ * 设置页「登录来源端」、登录页底部芯片这类描述"谁在登录"的地方必须用这组词，
+ * 键只能来自 `detectClient()` 或会话里记录的 `client`，不能来自窗口宽度决定的
+ * 布局 `mode` —— 否则宽屏浏览器会自称「桌面端（PC 客户端）」。
+ */
+export const CLIENT_LABELS: Record<ClientKind, string> = {
+  desktop: '桌面端',
+  web: '网页版',
+  mobile: '手机端',
+}
+
 /** 用户手动覆盖的形态；未覆盖返回 null。 */
 export function getModeOverride(): DeviceMode | null {
   const stored = readStored(MODE_KEY)
   return DEVICE_MODES.includes(stored as DeviceMode) ? (stored as DeviceMode) : null
+}
+
+/**
+ * 实际生效的布局。
+ *
+ * 手机浏览器一旦落到窄屏布局，任何历史覆盖值（例如之前在宽屏上选的「宽屏布局」）
+ * 都不能把它拉回桌面栅格：360px 下切过去会得到 725px 的横向溢出、侧栏占掉大半
+ * 屏幕、底栏消失，用户在手机上无法自己退回来。桌面壳与宽屏浏览器仍按覆盖值。
+ */
+export function resolveMode(detected: DeviceMode, override: DeviceMode | null): DeviceMode {
+  if (detected === 'mobile') return 'mobile'
+  return override ?? detected
+}
+
+/**
+ * 设置页可选的布局项。手机端只保留「窄屏布局」，不渲染会导致横向溢出的宽屏选项。
+ */
+export function layoutChoicesFor(detected: DeviceMode): DeviceMode[] {
+  return detected === 'mobile' ? ['mobile'] : [...DEVICE_MODES]
 }
 
 export function setModeOverride(mode: DeviceMode | null): void {
@@ -102,6 +180,9 @@ export function applyDocumentFlags(mode: DeviceMode, theme: Theme): void {
   const root = document.documentElement
   root.dataset.mode = mode
   root.dataset.theme = theme
+  // 身份与形态分开标记：桌面壳即使被用户覆盖成网页版，`data-client` 仍是
+  // `desktop-shell`，便于排查"到底在哪个壳里"。
+  root.dataset.client = isDesktopShell() ? 'desktop-shell' : 'browser'
 
   // 让手机端状态栏 / 桌面端标题栏跟着主题走 —— 只有 `[data-theme]` 能驱动 CSS，
   // 但浏览器 UI 只认 `<meta name="theme-color">`，两者必须手动对齐。
@@ -138,7 +219,7 @@ export function useDeviceMode(): DeviceModeState {
     }
   }, [])
 
-  const mode = override ?? detected
+  const mode = resolveMode(detected, override)
   // 未手动指定主题时，主题跟随形态（桌面/手机深色，网页浅色）。
   const effectiveTheme = themeOverride ?? DEFAULT_THEME[mode]
 

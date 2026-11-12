@@ -12,6 +12,8 @@
  * 身份内核的人类判定）。这里存的只是一个令牌字符串，前端不做任何权限决策。
  */
 
+import { LOCAL_SERVICE_OFFLINE_MANUAL, readErrorMessage, readError } from './errorMessage'
+
 export type ClientMode = 'desktop' | 'web' | 'mobile'
 
 export const CLIENT_MODES: readonly ClientMode[] = ['desktop', 'web', 'mobile']
@@ -26,6 +28,22 @@ export interface Session {
   /** epoch 秒 */
   expiresAt: number
   client: ClientMode
+  /** 是否账号树根。仅用于前端裁剪入口，不构成授权依据。
+   *  不下发 parent/path/depth：子账号不应知道自己被谁创建、在第几层。 */
+  isRoot: boolean
+  /**
+   * 是否 Owner（超级管理员 / 最大权限）。
+   *
+   * 判定规则（与登录/激活/会话解析三处一致）：后端下发的 `is_owner` 为真，
+   * 或账号树根（`is_root`）——当前单根体系里根账号就是 Owner（F 组负责
+   * 后端 Owner 产生与权限过滤）。旧会话里没有这个字段时由 `buildProfile`
+   * 按 `isRoot` 回落。前端绝不写死"谁是 Owner"（不比对 principal/名字），
+   * 只读后端给的角色。
+   */
+  isOwner?: boolean
+  /** 能否自助补发**本账号**的恢复码。根账号与登录页自助注册的账号为真；
+   *  管理员创建的成员为假（由管理员重置密码）。仅用于前端裁剪入口。 */
+  canRotateRecovery?: boolean
 }
 
 /** `GET /v1/auth/config` 的响应：登录页据此解释当前状态。 */
@@ -39,6 +57,32 @@ export interface AuthConfig {
   client_modes: string[]
   token: { ttl_seconds: number }
   message: string
+  /** 是否已存在本机初始账号；决定登录页是否展示"首次使用"。 */
+  root_account_exists?: boolean
+  /** 自助创建初始账号是否开放（存在初始账号后恒为 false）。 */
+  registration_open?: boolean
+  /**
+   * 初始化状态：pending（还没有账号）/ complete / incomplete（可恢复）。
+   * ``recoverable`` 表示"初始账号已落盘但凭据没写成"——重新提交同一名称即可
+   * 补全，不需要另开路径。图形化首启据此决定是否继续显示设置表单。
+   */
+  initialization?: {
+    state: 'pending' | 'complete' | 'incomplete'
+    recoverable: boolean
+    principal: string | null
+  }
+  /**
+   * 恢复码的真实可用状态（后端按根账号是否真的持有恢复码判定）。
+   * ``local`` 表示当前请求来自本机，登录页可展示“在本机生成恢复码”；
+   * ``remote_allowed`` 预留给将来显式放开的远程重置，0.1.2 恒为 false。
+   */
+  recovery?: {
+    available: boolean
+    self_service: boolean
+    rotate_recommended: boolean
+    local?: boolean
+    remote_allowed?: boolean
+  }
 }
 
 /** 登录/接口失败。`status` 直接来自后端，用于区分 401 与 429。 */
@@ -50,10 +94,45 @@ export class AuthError extends Error {
   }
 }
 
+/**
+ * 在正文首行末尾追加下一步，保留"追踪 ID"等附加行不动。
+ *
+ * ``describeFailure`` 会把追踪 ID 单独放一行；直接字符串拼接会得到
+ * "追踪 ID：xxx。请确认账号与密码"，看起来像追踪 ID 的一部分。
+ */
+function withNextStep(message: string, step: string): string {
+  const [first, ...rest] = message.split('\n')
+  const head = /[。！？]$/.test(first) ? first : `${first}。`
+  return [head + step, ...rest].join('\n')
+}
+
 const LOCAL_KEY = 'liuhao.session'
 const TAB_KEY = 'liuhao.session.tab'
 /** 旧版审批面板单独存的令牌键；读到它时认领过来，避免升级即登出。 */
 const LEGACY_TOKEN_KEY = 'liuhao.approval_token'
+
+/**
+ * 上一位置（账号）的本地缓存键。
+ *
+ * 这些键写的是**某个账号的数据**（会话清单、画像身份、模型选择），但历史上
+ * 都用了全局键名。同一浏览器换了账号时，如果不清掉，新账号一进工作台就会
+ * 从 localStorage 先渲染出上一个账号的会话列表（后端接口其实已经按账号过滤，
+ * 界面却还残留着别人的东西）。因此"记住上一位是谁"是换号清缓存的前提。
+ */
+const LAST_PRINCIPAL_KEY = 'liuhao.last_principal'
+const ACCOUNT_SCOPED_KEYS = [
+  'liuhao.sessions',
+  'liuhao.session_meta',
+  'liuhao.session_id',
+  'liuhao.user_id',
+  'liuhao.model_id',
+] as const
+
+/** 换账号时清掉上一位账号留在本机的会话/身份/模型缓存。 */
+function clearAccountScopedState(): void {
+  const store = localStorageSafe()
+  for (const key of ACCOUNT_SCOPED_KEYS) safeSet(store, key, null)
+}
 
 /** 会话失效时广播，App 据此回到登录页。 */
 export const UNAUTHENTICATED_EVENT = 'liuhao:unauthenticated'
@@ -134,6 +213,11 @@ function parseSession(raw: string | null): Session | null {
       client: CLIENT_MODES.includes(parsed.client as ClientMode)
         ? (parsed.client as ClientMode)
         : 'web',
+      isRoot: parsed.isRoot === true,
+      // 与登录/激活一致：is_owner 为真，或 isRoot 为真（旧会话没有该字段时
+      // 靠 isRoot 回落，根账号的 Owner 入口不会被裁掉）。
+      isOwner: parsed.isOwner === true || parsed.isRoot === true,
+      canRotateRecovery: parsed.canRotateRecovery === true,
     }
   } catch {
     return null
@@ -174,6 +258,8 @@ export function getSession(): Session | null {
         permissions: [],
         expiresAt: decoded.expiresAt,
         client: decoded.client ?? 'web',
+        isRoot: false,
+        isOwner: false,
       }
       saveSession(adopted, false)
       safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
@@ -186,6 +272,15 @@ export function getSession(): Session | null {
 
 /** 写入会话。`remember` 决定落在 localStorage 还是 sessionStorage。 */
 export function saveSession(session: Session, remember: boolean): void {
+  const local = localStorageSafe()
+  const principal = String(session.principal || '')
+  const previous = safeGet(local, LAST_PRINCIPAL_KEY) || ''
+  if (principal && previous && principal !== previous) {
+    // 同一浏览器里换了账号：先把上一位账号的会话清单/画像身份/模型选择清掉，
+    // 再写入新会话。否则新账号的界面会先显示上一个账号的本地列表。
+    clearAccountScopedState()
+  }
+  if (principal) safeSet(local, LAST_PRINCIPAL_KEY, principal)
   const payload = JSON.stringify(session)
   if (remember) {
     safeSet(localStorageSafe(), LOCAL_KEY, payload)
@@ -201,6 +296,74 @@ export function clearSession(): void {
   safeSet(localStorageSafe(), LOCAL_KEY, null)
   safeSet(sessionStorageSafe(), TAB_KEY, null)
   safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
+  // 登出即清账号级缓存：共享电脑上"登出后、下一个人登录前"，开发者工具
+  // 不应还能读到上一位的会话清单/身份/模型选择。不能只靠"下次换账号时
+  // 再清"——那段空窗期正好是别人能翻到的窗口。
+  clearAccountScopedState()
+  safeSet(localStorageSafe(), LAST_PRINCIPAL_KEY, null)
+}
+
+/** 首启完成后待展示的恢复材料。 */
+export interface PendingRecovery {
+  account: string
+  code: string
+  /** 可选模型 Key 保存失败时的说明（不阻断进入系统）。 */
+  warning: string | null
+}
+
+const RECOVERY_KEY = 'liuhao.setup.recovery'
+
+/**
+ * 恢复码暂存变化事件：登录页保存后立刻通知已挂载的主界面。
+ *
+ * 主界面只在挂载时读一次 localStorage，注册响应再晚到也不会刷新——用户
+ * 必须手动刷新页面才能看到恢复码。用同标签页事件把“保存”和“展示”接上。
+ */
+export const PENDING_RECOVERY_EVENT = 'liuhao:pending-recovery'
+
+/**
+ * 图形化首启成功后把恢复码暂存在本机，供主界面一次性展示。
+ *
+ * 为什么不在设置页里拦一道"请抄下恢复码"：那会把"提交后直接进入主界面"
+ * 断成两步。恢复码只在注册响应里出现一次，丢掉就没了，所以必须暂存到
+ * 用户真正看到为止（主界面横幅，可下载 / 可关闭）。
+ */
+export function savePendingRecovery(value: PendingRecovery): void {
+  try {
+    localStorageSafe()?.setItem(RECOVERY_KEY, JSON.stringify(value))
+  } catch {
+    // 存储不可用只影响恢复码展示，不影响已经完成的初始化。
+  }
+  // 同一标签页内通知主界面：保存后立即渲染横幅，不需要用户刷新页面。
+  try {
+    window.dispatchEvent(new CustomEvent(PENDING_RECOVERY_EVENT))
+  } catch {
+    // 非浏览器环境（测试/SSR）没有 window，忽略即可。
+  }
+}
+
+export function readPendingRecovery(): PendingRecovery | null {
+  try {
+    const raw = localStorageSafe()?.getItem(RECOVERY_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PendingRecovery>
+    if (!parsed || typeof parsed.code !== 'string' || !parsed.code) return null
+    return {
+      account: String(parsed.account ?? ''),
+      code: parsed.code,
+      warning: typeof parsed.warning === 'string' ? parsed.warning : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function clearPendingRecovery(): void {
+  try {
+    localStorageSafe()?.removeItem(RECOVERY_KEY)
+  } catch {
+    // 清不掉也只是多显示一次，不影响功能。
+  }
 }
 
 /** 承载令牌的头名。
@@ -233,25 +396,66 @@ export function currentToken(): string {
   return getSession()?.token ?? ''
 }
 
-async function readError(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: unknown }
-    if (typeof body?.detail === 'string') return body.detail
-    if (body?.detail) return JSON.stringify(body.detail)
-  } catch {
-    // 非 JSON 响应：退回状态文本。
-  }
-  return response.statusText || `HTTP ${response.status}`
+/** 登录页读取元信息的结果。失败时必须带一句能行动的中文，不能静默 null。
+ *
+ * `status` 是真实的 HTTP 状态（`null` 表示连不上）。登录页靠它区分「服务还没
+ * 起来」（连接失败 / 5xx，值得重试）与「访问层拒绝」（401，重试没有意义）。
+ */
+export interface AuthConfigResult {
+  config: AuthConfig | null
+  error: string | null
+  status: number | null
 }
 
-/** 登录页需要的元信息。任何失败都降级为一份"未配置"的诚实描述。 */
-export async function loadAuthConfig(): Promise<AuthConfig | null> {
+/**
+ * 读取登录页需要的元信息。
+ *
+ * 失败不再静默降级成 ``null``：那会让登录页永远停在"读取中…"，用户既不知道
+ * 后端没起来，也不知道该做什么。这里把统一错误文案带回给界面。
+ */
+export async function loadAuthConfig(): Promise<AuthConfigResult> {
+  let response: Response
   try {
-    const response = await fetch('/v1/auth/config', { cache: 'no-store' })
-    if (!response.ok) return null
-    return (await response.json()) as AuthConfig
+    response = await fetch('/v1/auth/config', {
+      cache: 'no-store',
+      // 没有超时的 fetch 会在网关卡住时永远悬着，登录页的自动重试循环也
+      // 永远等不到下一次（P0 满载：登录挂起）。15 秒足够覆盖正常启动，
+      // 超时后由调用方按既定节奏重试，而不是无限等。
+      signal: AbortSignal.timeout(15_000),
+    })
   } catch {
-    return null
+    return {
+      config: null,
+      error: LOCAL_SERVICE_OFFLINE_MANUAL,
+      status: null,
+    }
+  }
+  if (!response.ok) {
+    // 只起了静态站点时，``/v1/auth/config`` 会被静态服务器当成"文件不存在"
+    // 返回 404。此时说"内容已删除"会把人带偏，直接指向"服务没起来"。
+    if (response.status === 404) {
+      return {
+        config: null,
+        error:
+          '无法获取登录配置。请确认贾维斯仍在运行；如果服务刚启动，请稍等几秒后刷新本页重试。',
+        status: 404,
+      }
+    }
+    const failure = await readError(response)
+    return { config: null, error: failure.message, status: response.status }
+  }
+  try {
+    return {
+      config: (await response.json()) as AuthConfig,
+      error: null,
+      status: response.status,
+    }
+  } catch {
+    return {
+      config: null,
+      error: '服务没有返回正常的数据。请确认贾维斯仍在运行并完成初始化，然后刷新本页重试。',
+      status: response.status,
+    }
   }
 }
 
@@ -259,6 +463,14 @@ export interface LoginOptions {
   remember: boolean
   client: ClientMode
 }
+
+/**
+ * 登录请求超时：与后端 `LIUHAO_LOGIN_TIMEOUT_SECONDS` 默认 30 秒对齐。
+ * 没有超时的 fetch 会在网关满载卡住时永远悬着，界面一直转圈、只能刷新
+ * 甚至重启（P0）。超时后给可重试的「登录超时，请重试」，不谎报"服务没运行"
+ * （那是另一回事：超时也可能是服务端还在排队）。
+ */
+export const LOGIN_TIMEOUT_MS = 30_000
 
 /** 用凭据换一个会话。失败抛 `AuthError`（401 / 403 / 429）。 */
 export async function login(
@@ -272,12 +484,41 @@ export async function login(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ principal, secret, client: options.client }),
+      signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
     })
-  } catch {
-    throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new AuthError(0, '登录超时，请重试')
+    }
+    throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
-    throw new AuthError(response.status, await readError(response))
+    const failure = await readError(response)
+    // 403 有多种来源：停用账号（ACCOUNT_UNAVAILABLE）、不可登录的账号（AUTH_NOT_HUMAN）、
+    // 以及网关来源校验失败（origin_not_allowed）。只有业务码明确表示停用时，
+    // 才给出"账号不可用"；其余一律透传后端中文文案，并补一句可执行的下一步，
+    // 避免把"来源被拒/账号类型不对"误报成"账号被封"。
+    let message = failure.message
+    if (response.status === 403) {
+      if (failure.code === 'ACCOUNT_UNAVAILABLE') {
+        message = '该账号当前不可用，请联系设备管理员启用该账号后重试。'
+      } else if (failure.code === 'AUTH_NOT_HUMAN') {
+        message = withNextStep(
+          failure.message || '该账号不是可登录的账号',
+          '请使用成员账号登录，或联系设备管理员。',
+        )
+      } else if (!failure.code) {
+        // 没有业务码的 403 多为来源/CSRF 校验拒绝（例如开发服务器 5173 不在
+        // 网关 Origin 白名单，响应体只有 origin_not_allowed 这样的英文标识）。
+        // 不能编成“账号被封”，也不能把英文标识铺给用户。
+        message =
+          '当前请求被服务拒绝，登录没有完成。' +
+          '请从桌面客户端或本机地址访问；若仍失败，请联系设备管理员。'
+      } else {
+        message = withNextStep(message, '请确认账号与密码，或联系设备管理员。')
+      }
+    }
+    throw new AuthError(response.status, message)
   }
   const body = (await response.json()) as {
     access_token: string
@@ -287,6 +528,9 @@ export async function login(
     permissions: string[]
     expires_at: number
     client: string
+    is_root?: boolean
+    is_owner?: boolean
+    can_rotate_recovery?: boolean
   }
   const session: Session = {
     token: body.access_token,
@@ -298,6 +542,114 @@ export async function login(
     client: CLIENT_MODES.includes(body.client as ClientMode)
       ? (body.client as ClientMode)
       : options.client,
+    isRoot: body.is_root === true,
+    isOwner: body.is_owner === true || body.is_root === true,
+    canRotateRecovery: body.can_rotate_recovery === true,
+  }
+  saveSession(session, options.remember)
+  return session
+}
+
+/**
+ * 登录页「创建账户」：只用用户名 + 密码自助创建，不发送邀请码或任何归属字段。
+ *
+ * 契约：`POST /v1/accounts/self-register`，请求 `{principal, password, client}`，
+ * 成功返回与激活接口相同的 `token`（兼容 `access_token`）。字段名与后端
+ * `SelfRegisterRequest` 及其余账号接口（注册 / 激活 / 改密）保持一致，都是
+ * `password`；`secret` 只属于登录接口（它可承载密码或恢复码）。
+ * 层级与权限完全由服务端决定，前端不补字段。
+ *
+ * 恢复码：自助注册的账号没有管理员可代发激活码，服务端会在本次响应里
+ * 当场签发一枚（明文只出现这一次）。这里立刻暂存到本机，交给主界面
+ * 横幅一次性展示；用户关掉后仍可在「我的 → 恢复码」重新补发。
+ */
+export async function registerSelf(
+  principal: string,
+  password: string,
+  options: LoginOptions,
+): Promise<Session> {
+  let response: Response
+  try {
+    response = await fetch('/v1/accounts/self-register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ principal, password, client: options.client }),
+    })
+  } catch {
+    throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
+  }
+  if (!response.ok) {
+    throw new AuthError(response.status, await selfRegistrationMessage(response))
+  }
+  const body = (await response.json()) as {
+    token?: string
+    access_token?: string
+    recovery_code?: string
+  }
+  const token = body.token || body.access_token || ''
+  if (!token) throw new AuthError(0, '账户已创建，但未能取得登录状态，请重新登录')
+  const recoveryCode = typeof body.recovery_code === 'string' ? body.recovery_code : ''
+  if (recoveryCode) {
+    savePendingRecovery({ account: principal, code: recoveryCode, warning: null })
+  }
+  return sessionFromToken(token, options)
+}
+
+/** 自助注册失败文案：关闭/未启用一律中性，不透出层级或实现细节。 */
+async function selfRegistrationMessage(response: Response): Promise<string> {
+  const { code, message } = await readError(response)
+  const closed = '当前不允许自行创建账户，请联系设备管理员'
+  if (code && /CLOSED|SELF_REGISTRATION/i.test(code)) return closed
+  if (response.status === 403) return closed
+  if (response.status === 404 || response.status === 501) {
+    return '当前暂时无法创建账户，请稍后再试'
+  }
+  if (response.status === 409) return '该用户名已被使用，请换一个'
+  return message || '创建失败，请稍后再试'
+}
+
+/**
+ * 用后端直接签发的令牌建立会话（激活 / 恢复码重置 / 迁移导入都走这条路）。
+ *
+ * 必须再取一次 `/v1/auth/me`：激活接口只返回 token + account，不返回
+ * display_name/scope/permissions；缺了这些，界面会把"已登录"渲染成空白身份。
+ */
+export async function sessionFromToken(
+  token: string,
+  options: LoginOptions,
+): Promise<Session> {
+  const decoded = decodeToken(token)
+  if (!decoded) throw new AuthError(401, '登录信息不正确。')
+  const response = await fetch('/v1/auth/me', {
+    headers: { [TOKEN_HEADER]: `Bearer ${token}`, Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    if (response.status === 401) throw new AuthError(401, '登录状态已失效，请重新登录')
+    if (response.status === 403) throw new AuthError(403, '该账号当前不可用，无法登录')
+    throw new AuthError(response.status, await readErrorMessage(response))
+  }
+  const body = (await response.json()) as {
+    principal?: string
+    display_name?: string | null
+    scope?: string | null
+    permissions?: string[]
+    expires_at?: number | null
+    is_root?: boolean
+    is_owner?: boolean
+    can_rotate_recovery?: boolean
+  }
+  const session: Session = {
+    token,
+    principal: body.principal || decoded.subject,
+    displayName: body.display_name ?? null,
+    scope: body.scope ?? null,
+    permissions: Array.isArray(body.permissions) ? body.permissions : [],
+    expiresAt: Number(body.expires_at ?? decoded.expiresAt) || decoded.expiresAt,
+    client: options.client,
+    isRoot: body.is_root === true,
+    isOwner: body.is_owner === true || body.is_root === true,
+    canRotateRecovery: body.can_rotate_recovery === true,
   }
   saveSession(session, options.remember)
   return session
@@ -320,6 +672,17 @@ export async function logout(): Promise<void> {
   }
 }
 
+/**
+ * 身份复核没拿到结果时，要不要当成"会话已失效"。
+ *
+ * `refreshIdentity()` 对三种情况都返回 null：本地本来就没有令牌、服务端 401
+ * 后令牌被清掉、网络或服务暂时不可达（令牌还在）。只有**令牌确实消失**才说明
+ * 会话已失效；网络抖动不该把用户踢回登录页，更不该谎称"登录已过期"。
+ */
+export function sessionLossNotice(tokenStillPresent: boolean): 'expired' | null {
+  return tokenStillPresent ? null : 'expired'
+}
+
 /** 用当前令牌向 `/v1/auth/me` 复核身份是否仍有效（可捕获"已被停用"）。 */
 export async function refreshIdentity(): Promise<{
   still_human: boolean
@@ -327,6 +690,8 @@ export async function refreshIdentity(): Promise<{
   display_name: string | null
   scope: string | null
   expires_at: number | null
+  is_root?: boolean
+  is_owner?: boolean
 } | null> {
   const token = currentToken()
   if (!token) return null

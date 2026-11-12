@@ -1,0 +1,104 @@
+"""Regression test: the generated cloud bundle must arm CRITICAL, not HIGH,CRITICAL.
+
+Decision D24 (2026-09-12) narrowed the production deployment enforcement to
+CRITICAL only. The shippable cloud bundle's launcher template
+(``scripts/build_cloud_bundle.py`` -> ``_LAUNCHER``) previously armed
+``HIGH,CRITICAL``; this test proves the *actual* launcher source -- the
+``_LAUNCHER`` template after the same placeholder substitutions ``build()``
+performs -- arms ``CRITICAL`` and contains no ``HIGH,CRITICAL``.
+
+This is a runtime probe of the real artifact content, not a test-expectation
+change: it reads the template directly and (when the console build output is
+present) runs the real ``build()`` and inspects the generated ``serve.py``.
+"""
+import importlib.util
+import os
+import sys
+
+import pytest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+#: Load scripts/build_cloud_bundle.py as a module (scripts/ has no __init__.py).
+_BUNDLE_PATH = os.path.join(REPO_ROOT, "scripts", "build_cloud_bundle.py")
+_spec = importlib.util.spec_from_file_location("build_cloud_bundle", _BUNDLE_PATH)
+bundle = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(bundle)
+
+ARMING_LINE = 'os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "CRITICAL")'
+
+
+def _skip_or_fail(reason: str) -> None:
+    """本地可 skip 并写明原因；CI 上静静跳过等于发布物没人检查，必须红。"""
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
+def _rendered_launcher() -> str:
+    """Apply the same placeholder substitutions build() applies."""
+    source = bundle._LAUNCHER
+    source = source.replace(bundle.LLM_PLACEHOLDER, "")
+    source = source.replace(bundle.JWT_PLACEHOLDER, "")
+    return source
+
+
+def test_bundle_launcher_template_arms_critical_not_high_critical():
+    """The _LAUNCHER template, after build()'s substitutions, arms CRITICAL."""
+    launcher = _rendered_launcher()
+    # (a) the arming line sets exactly "CRITICAL"
+    assert 'LIUHAO_KERNEL_POLICY_ENFORCE' in launcher
+    assert ARMING_LINE in launcher
+    # (b) no HIGH,CRITICAL anywhere in the rendered launcher
+    assert "HIGH,CRITICAL" not in launcher
+
+
+@pytest.mark.gate_contract
+def test_bundle_full_build_arms_critical(tmp_path):
+    """If the console dist exists, run the real build and check generated serve.py.
+
+    Locally the full build requires the frontend
+    (apps/console/console/dist/index.html), so a missing dist is a skip with
+    the reason printed. CI builds the console before pytest runs, so a skip
+    there means the build silently stopped happening -- that must be red.
+    """
+    console_index = bundle.CONSOLE_DIST_SRC / "index.html"
+    if not console_index.is_file():
+        _skip_or_fail(
+            f"console dist missing; full build requires the frontend ({console_index})")
+
+    out = tmp_path / "bundle"
+    rc = bundle.build(out)
+    assert rc == 0, "build_cloud_bundle.py returned non-zero"
+
+    serve_py = out / bundle.LAUNCHER_NAME
+    assert serve_py.is_file(), "generated serve.py missing"
+    text = serve_py.read_text(encoding="utf-8")
+    assert ARMING_LINE in text
+    assert "HIGH,CRITICAL" not in text
+
+
+# ---------------------------------------------------------------------------
+# Regression test for the c4 arming scanner. A gate/verification script may
+# *mention* the arming write pattern in its docstring (scripts/verify_go_readiness.py
+# documents the setdefault form). The scanner is AST-based, so such mentions must
+# NOT be mis-classified as a deployment-arming site. This guards the fix that
+# previously let an untracked verify_go_readiness.py pass and then fail once it
+# was committed (the regex-over-raw-text scanner matched the docstring example).
+# ---------------------------------------------------------------------------
+_C4_PATH = os.path.join(REPO_ROOT, "scripts", "verify_c4_approval_channel.py")
+_c4_spec = importlib.util.spec_from_file_location("verify_c4_approval_channel", _C4_PATH)
+c4 = importlib.util.module_from_spec(_c4_spec)
+_c4_spec.loader.exec_module(c4)
+
+
+def test_c4_scanner_ignores_docstring_mentions_of_arming():
+    """verify_go_readiness.py mentions setdefault(..., "HIGH,CRITICAL") in its
+    docstring; it must NOT appear as an arming site, and the two legitimate
+    surfaces must still resolve to exactly CRITICAL."""
+    armed = c4._armed_specs()
+    assert "scripts/verify_go_readiness.py" not in armed
+    assert armed.get("scripts/build_cloud_bundle.py") == "CRITICAL"
+    assert armed.get("docker-compose.prod.yml") == "CRITICAL"

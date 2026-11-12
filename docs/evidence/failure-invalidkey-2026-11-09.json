@@ -1,0 +1,425 @@
+{
+  "meta": {
+    "run_time": "2026-11-09T05:34:43",
+    "repo": "D:\\LiuHao-AI-OS",
+    "head": "8450009b74f37ef81ee29da7295d876b02b4edf9",
+    "gateway_port": 18760,
+    "stub_port": 11434,
+    "stub_bind": "127.0.0.1:11434",
+    "data_dir": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data",
+    "key_fixture": "sk-invalid-TESTKEY9f2c8b1a4d6e",
+    "note_key_fixture": "夹具 Key，非真实凭据；故意放进上游 401 原文以检验脱敏"
+  },
+  "whitelist_probe": {
+    "11434": "free",
+    "18760": "free"
+  },
+  "steps": {
+    "gateway_ready": {
+      "ready": true,
+      "waited_s": 3.7
+    },
+    "register": {
+      "status": 200,
+      "raw": "{\"account\":{\"principal\":\"probe_root\",\"permissions\":[],\"status\":\"active\",\"created_at\":\"2026-11-09T13:34:48.386084\",\"allow_superior_key_use\":true,\"key_auth_source\":\"root\"},\"recovery_code\":\"RC-ZZMA-ETV9-RGWF-FTDT-4KJP-MGPE\",\"notice\":\"恢复码只显示这一次，请离线保存；它没有有效期，但一经使用即失效。\"}"
+    },
+    "login": {
+      "status": 200,
+      "token_obtained": true,
+      "raw": "(token omitted)"
+    },
+    "test_connection": {
+      "request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18760/v1/models/test",
+        "headers": {
+          "Authorization": "Bearer <token>",
+          "Origin": "http://127.0.0.1:18760",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "provider": "openai",
+          "model": "gpt-4o-mini",
+          "base_url": "http://127.0.0.1:11434/v1",
+          "api_key": "sk-invalid-TESTKEY9f2c8b1a4d6e",
+          "timeout": 15
+        }
+      },
+      "http_status": 200,
+      "elapsed_ms": 3640.6,
+      "raw_response": "{\"ok\":false,\"reason\":\"invalid_key\",\"hint\":\"API Key 无效：请检查是否填错或复制不完整\",\"detail\":\"API Key 无效：请检查是否填错或复制不完整\",\"technical_detail\":\"Incorrect API key provided: sk-*** You can find your API key at https://platform.openai.com/account/api-keys.\",\"notice\":\"\",\"latency_ms\":3328.0,\"provider\":\"openai\",\"vendor\":\"local\",\"model\":\"gpt-4o-mini\"}",
+      "http_error": null
+    }
+  },
+  "stub_received": null,
+  "audit_event": {
+    "found": true,
+    "rows": [
+      {
+        "event_id": "659e0766534d4eecbd3e388643faa3d2",
+        "event_type": "state_change",
+        "principal_id": "capability",
+        "scope": "L1",
+        "timestamp": 1794231292.8909743,
+        "outcome": "failure",
+        "details": "{\"action\": \"ai.model_config.test_connection\", \"layer\": \"capability\", \"model\": \"gpt-4o-mini\", \"module\": \"src.gateway.models\", \"provider\": \"openai\", \"reason\": \"invalid_key\", \"vendor\": \"local\"}"
+      }
+    ]
+  },
+  "key_scan": {
+    "phase": "merged(live+post-shutdown)",
+    "live": {
+      "scanned_files": 21,
+      "results": [
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\audit_store.db",
+          "readable": true,
+          "size": 4096,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\audit_store.db-shm",
+          "readable": true,
+          "size": 32768,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\audit_store.db-wal",
+          "readable": true,
+          "size": 786952,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\auth_secrets.json",
+          "readable": true,
+          "size": 236,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\auth_secrets.json.lock",
+          "readable": true,
+          "size": 1,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\config\\human_identities.json",
+          "readable": true,
+          "size": 862,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\config\\human_identities.json.lock",
+          "readable": true,
+          "size": 1,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\liuhao_jwt_revocation.db",
+          "readable": true,
+          "size": 16384,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\logs\\liuhao.log",
+          "readable": true,
+          "size": 8808,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\logs\\liuhao.log.lock",
+          "readable": true,
+          "size": 1,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\master.key",
+          "readable": true,
+          "size": 44,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\master.key.lock",
+          "readable": true,
+          "size": 1,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\model_registry.sqlite3",
+          "readable": true,
+          "size": 4096,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\model_registry.sqlite3-shm",
+          "readable": true,
+          "size": 32768,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\model_registry.sqlite3-wal",
+          "readable": true,
+          "size": 45352,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\observability\\alerts.json",
+          "readable": true,
+          "size": 6597,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\rbac.json",
+          "readable": true,
+          "size": 2029303,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\rbac.json.lock",
+          "readable": true,
+          "size": 1,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\run\\instance.json",
+          "readable": true,
+          "size": 144,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\run\\instance.lock",
+          "readable": false,
+          "error": "[Errno 13] Permission denied",
+          "hit": null
+        },
+        {
+          "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\temp-sweep.stamp.json",
+          "readable": true,
+          "size": 96,
+          "key_plaintext_hits": [],
+          "utf8_count": 0
+        }
+      ]
+    },
+    "post_shutdown_rescan_files": [
+      "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\run\\instance.lock"
+    ],
+    "results": [
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\audit_store.db",
+        "readable": true,
+        "size": 4096,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\audit_store.db-shm",
+        "readable": true,
+        "size": 32768,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\audit_store.db-wal",
+        "readable": true,
+        "size": 786952,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\auth_secrets.json",
+        "readable": true,
+        "size": 236,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\auth_secrets.json.lock",
+        "readable": true,
+        "size": 1,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\config\\human_identities.json",
+        "readable": true,
+        "size": 862,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\config\\human_identities.json.lock",
+        "readable": true,
+        "size": 1,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\liuhao_jwt_revocation.db",
+        "readable": true,
+        "size": 16384,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\logs\\liuhao.log",
+        "readable": true,
+        "size": 8808,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\logs\\liuhao.log.lock",
+        "readable": true,
+        "size": 1,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\master.key",
+        "readable": true,
+        "size": 44,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\master.key.lock",
+        "readable": true,
+        "size": 1,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\model_registry.sqlite3",
+        "readable": true,
+        "size": 4096,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\model_registry.sqlite3-shm",
+        "readable": true,
+        "size": 32768,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\model_registry.sqlite3-wal",
+        "readable": true,
+        "size": 45352,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\observability\\alerts.json",
+        "readable": true,
+        "size": 6597,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\rbac.json",
+        "readable": true,
+        "size": 2029303,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\rbac.json.lock",
+        "readable": true,
+        "size": 1,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\run\\instance.json",
+        "readable": true,
+        "size": 144,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\run\\instance.lock",
+        "readable": true,
+        "error": "[Errno 13] Permission denied",
+        "hit": null,
+        "size": 1,
+        "key_plaintext_hits": [],
+        "utf8_count": 0,
+        "rescanned": true
+      },
+      {
+        "file": "C:\\Users\\Administrator\\.trae-cn\\assistant\\2026-11-09\\failure-invalidkey\\outputs\\data\\temp-sweep.stamp.json",
+        "readable": true,
+        "size": 96,
+        "key_plaintext_hits": [],
+        "utf8_count": 0
+      }
+    ],
+    "scanned_files": 21,
+    "key_plaintext_hits": [],
+    "unreadable_after_shutdown": []
+  },
+  "assertions": {
+    "a_invalid_key_classification": {
+      "pass": true,
+      "ok_field": false,
+      "reason_field": "invalid_key",
+      "expected": "ok=false, reason=invalid_key"
+    },
+    "b_neutral_message": {
+      "pass": true,
+      "hint_matches_product_hint": true,
+      "expected_hint": "API Key 无效：请检查是否填错或复制不完整",
+      "main_copy_neutral": true,
+      "key_plaintext_in_any_field": [],
+      "user_visible_fields": {
+        "reason": "invalid_key",
+        "hint": "API Key 无效：请检查是否填错或复制不完整",
+        "detail": "API Key 无效：请检查是否填错或复制不完整",
+        "notice": "",
+        "technical_detail": "Incorrect API key provided: sk-*** You can find your API key at https://platform.openai.com/account/api-keys."
+      },
+      "technical_detail_observation": {
+        "contains_sanitized_upstream_excerpt": true,
+        "contains_key_plaintext": false,
+        "key_masked_form_present": true,
+        "note": "产品设计（src/gateway/models.py _probe 注释）：主文案中性，上游原文脱敏后只进可展开「技术详情」(≤120字)。若验收口径要求任何可见字段均不回显上游原文，需产品侧裁决。"
+      }
+    },
+    "c_no_key_plaintext_in_data_dir": {
+      "pass": true,
+      "scanned_files": 21,
+      "key_plaintext_hit_files": [],
+      "unresolved_files": [],
+      "note": "覆盖 <LIUHAO_DATA_DIR> 全部文件的原始字节(UTF-8/UTF-16LE)；运行期被锁文件在网关关停后补扫"
+    },
+    "summary": {
+      "a": true,
+      "b": true,
+      "c": true
+    }
+  },
+  "gateway_output_tail": "server.timeouts.read_seconds/write_seconds are socket-level deadlines not exposed by uvicorn; they are NOT enforced by this process -- configure them at the reverse proxy / socket layer if required\n鎏灏网关启动： http://127.0.0.1:18760  (log_level=info)\n2026-11-09 05:34:46 | WARNING  | src.security.posture | Deployment posture UNDETERMINABLE: none of ('<环境变量>', 'ENVIRONMENT', '<环境变量>') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('<环境变量>', 'ENVIRONMENT', '<环境变量>') explicitly, or set <环境变量>=1 to make an unknown posture a hard failure.\n2026-11-09 05:34:46 | WARNING  | src.security.jwt_handler | no <环境变量> in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set <环境变量> for a durable deployment.\n2026-11-09 05:34:47 | WARNING  | liuhao.kernel.identity | human identity registry 'C:\\\\Users\\\\<用户>\\\\.trae-cn\\\\assistant\\\\2026-11-09\\\\failure-invalidkey\\\\outputs\\\\data\\\\config\\\\human_identities.json' is NOT authenticated: <环境变量> is unset, so every stored row is refused at load (fail-closed) and the registry holds no admitted humans. Anything that can write that store can otherwise create or edit the rows that decide who holds sovereignty (PHASE 3.6 / A3). Set the variable to enable row authentication and admit the registered humans.\n2026-11-09 05:34:47 | WARNING  | liuhao.kernel.identity | <环境变量> is set to 'C:\\\\Users\\\\<用户>\\\\.trae-cn\\\\assistant\\\\2026-11-09\\\\failure-invalidkey\\\\outputs\\\\data\\\\config\\\\human_identities.json' but no such file exists -- no human identity can approve. Create it with <程序文件>\n2026-11-09 05:34:47 | WARNING  | src.gateway.main | Human identity store: file @ <本地路径>\\human_identities.json -- 0 registered humans, so NOBODY CAN APPROVE a HIGH/CRITICAL action (fail-closed, 内部编号). Register one with <程序文件>\n2026-11-09 05:34:47 | WARNING  | src.gateway.main | 开发模式：未设置 <环境变量>=1，首次注册不要求桌面端证明，也不会校验 HTTP 对端是否与网关同用户。请从桌面壳/启动器进入生产使用。\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n!! 警告：开发模式（未设置 LIUHAO_TRUSTED_LAUNCH=1）。\n!! 首次注册不要求桌面端一次性证明，也不校验调用者与本机是否同一\n!! Windows 账户 —— 本机任何进程都可能抢先注册掉第一个账号。\n!! 正式使用请从鎏灏桌面窗口/启动器进入。\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n2026-11-09 05:34:47 | WARNING  | src.gateway.main | AUDIT CHECKPOINTER SKIPPED -- <环境变量> is not set. The audit chain will NOT be checkpointed, so /v1/ready evidence_status stays 'unverified'. Set <环境变量> to a volume path to enable it (the default project-root store is frozen evidence and is never written by this background thread).\n2026-11-09 05:34:47 | WARNING  | src.gateway.accounts | 开发模式：首次注册未校验桌面端证明（设置 <环境变量>=1 可强制启用）\n",
+  "probe_log_lines": [
+    "2026-11-09 05:34:52 | INFO     | src.gateway.models | model probe failed provider=openai model=gpt-4o-mini reason=invalid_key detail=ProviderHTTPError: 模型服务返回 HTTP 401，详情已记录到服务端日志。"
+  ]
+}

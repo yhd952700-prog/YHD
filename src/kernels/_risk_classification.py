@@ -1,18 +1,26 @@
-"""Canonical risk classification for the 44 kernel-layer ``@kernel_action`` actions.
+"""Canonical risk classification for the kernel-layer ``@kernel_action`` actions.
 
 D8 deliverable (Policy C-2 prerequisite). **This module is PURE DATA** -- it
 imports only the standard library and changing it never alters any policy
-decision. It exists so that the (future) C-2 enforcement flip has an
+decision. It exists so that the C-2 enforcement flip has an
 *objective* cut line (``ENFORCED_TIERS``) instead of a hardcoded list, and so
 that the ``risk_level`` parameter -- which every ``@kernel_action`` call site
 left at its inert ``"LOW"`` default -- finally carries real signal.
 
 Why a single registry instead of per-call annotations?
-    The 44 call sites live across 12 kernel modules. Scattering the tier into
-    each decorator call is exactly what let the field drift to a dead default
-    (everyone forgets to set it). One auditable table, cross-checked by an AST
-    completeness guard (``discover_kernel_action_names``), forces a deliberate
-    classification the moment a new kernel action is added.
+    The call sites live across the kernel modules plus ``src/ai/``. Scattering
+    the tier into each decorator call is exactly what let the field drift to a
+    dead default (everyone forgets to set it). One auditable table,
+    cross-checked by an AST completeness guard
+    (``discover_kernel_action_names``), forces a deliberate classification the
+    moment a new kernel action is added. The guard scans **all of ``src/``**
+    (see ``_scan_roots`` below). It used to scan only ``src/kernels/``, which
+    let the real decorated action ``ai.execute_planner_task``
+    (``src/ai/goal_task_graph.py``) escape classification: it hit the
+    ``get_kernel_action_risk`` "unknown -> LOW" fallback, so a code-executing
+    planner action was silently treated as bookkeeping and carried no mandatory
+    audit evidence. The scan root is now the whole of ``src/``, so "unclassified
+    action = test failure" holds everywhere.
 
 Zero execution risk:
     Nothing here calls the policy engine or the decorator. The decorator in
@@ -21,7 +29,7 @@ Zero execution risk:
     input is inert (the only rule that reads ``risk_level`` requires
     ``actor.type == "human"``), so D8 changes what the engine is *told* without
     changing any *verdict*. Once C-2 turns enforcement on, the tiers are
-    already correct -- no second pass over 44 call sites.
+    already correct -- no second pass over the call sites.
 """
 
 from __future__ import annotations
@@ -108,7 +116,7 @@ class ActionRisk(NamedTuple):
 # --------------------------------------------------------------------------- #
 
 KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
-    # ---- LOW (14): query / compute / bookkeeping ------------------------- #
+    # ---- LOW (15): query / compute / bookkeeping ------------------------- #
     "context.compress": ActionRisk(
         RiskTier.LOW, False, False,
         "上下文压缩：计算/簿记，不改变权限、不销毁记录。",
@@ -136,6 +144,15 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
     "event.retry_dead_letter": ActionRisk(
         RiskTier.LOW, False, False,
         "死信重试：重新投递，不改变权限。",
+    ),
+    "policy.evaluate": ActionRisk(
+        RiskTier.LOW, False, False,
+        "策略求值：只读，不修改规则集（policy=False 避免自我裁决嵌套）。",
+    ),
+    "policy.unregister_rule": ActionRisk(
+        RiskTier.LOW, False, False,
+        "策略注销：受哨兵保护（default_deny/human_sovereignty 拒绝注销），"
+        "其余注销为内部簿记，且拒绝本身记为 denied。",
     ),
     "execution.execute": ActionRisk(
         RiskTier.LOW, False, False,
@@ -220,8 +237,24 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
         RiskTier.MEDIUM, True, False,
         "更新信任分：写安全信号，可逆。",
     ),
+    "ai.execute_planner_task": ActionRisk(
+        RiskTier.MEDIUM, False, False,
+        "执行 planner 派发的单个任务：变更任务/记忆状态并委派给 agent_executor。"
+        "不是 LOW——它会驱动真实的 agent/能力执行（局部 blast radius 超出"
+        "「查询/簿记」），也不是 authority grant；定为 MEDIUM 因为它可逆、"
+        "有界、非破坏，且不授予权限。",
+    ),
 
-    # ---- HIGH (15): authority change / destructive / code lifecycle ------ #
+    "memory.delete_by_key": ActionRisk(
+        RiskTier.HIGH, False, True,
+        "精确删除单条记忆（内存 + 持久化，不可逆）：破坏面固定为一个 key，"
+        "用于画像纠正（删除单条事实/偏好）。与批量前缀删同档 HIGH + "
+        "destructive，不预批准内部服务——服务主体不应凭动作名自行删用户记忆。"
+        "外部入口仅 DELETE /v1/profile/facts/{key} 与 "
+        "/v1/profile/preferences/{key}，require_human_principal，"
+        "且 key 前缀由服务端锁到本人命名空间。",
+    ),
+    # ---- HIGH (17): authority change / destructive / code lifecycle ------ #
     "identity.grant_permission": ActionRisk(
         RiskTier.HIGH, True, False,
         "授予权限：权限变更。",
@@ -278,6 +311,17 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
         RiskTier.HIGH, False, True,
         "自动清理记忆：不可逆地销毁已存状态。",
     ),
+    "memory.delete_by_key_prefix": ActionRisk(
+        RiskTier.HIGH, False, True,
+        "按 key 前缀批量删除记忆（内存 + 持久化，不可逆）：是批删而非单 key，"
+        "破坏面比 memory.store 大，故与 auto_cleanup 同档 HIGH + destructive，"
+        "不预批准内部服务。可达路径只有画像删除："
+        "PersonalContextManager.delete_fact / delete_preference / clear 调用它，"
+        "HTTP 入口是 DELETE /v1/profile、/v1/profile/facts/{key}、"
+        "/v1/profile/preferences/{key}，全部经 require_human_principal"
+        "（非 kind=human 令牌 403），且前缀由服务端拼成 "
+        "profile:user-{令牌主体}:，调用方无法指定别人的命名空间。",
+    ),
     "event.clear_history": ActionRisk(
         RiskTier.HIGH, False, True,
         "清空事件历史：不可逆的数据丢失。",
@@ -300,7 +344,7 @@ ALL_CLASSIFIED_ACTIONS: frozenset = frozenset(KERNEL_ACTION_RISK)
 def get_kernel_action_risk(action: str) -> str:
     """Return the canonical ``risk_level`` string for ``action``.
 
-    Falls back to ``"LOW"`` for unknown actions (safe default: the future C-2
+    Falls back to ``"LOW"`` for unknown actions (safe default: the C-2
     gate only escalates HIGH/CRITICAL, so an unclassified action is treated as
     the least dangerous -- and the completeness guard test refuses to let an
     action stay unclassified anyway).
@@ -314,31 +358,51 @@ def get_action_risk(action: str) -> Optional[ActionRisk]:
     return KERNEL_ACTION_RISK.get(action)
 
 
+def _scan_roots() -> tuple:
+    """Directories the completeness guard scans for ``@kernel_action`` usages.
+
+    Historically this was ``src/kernels/`` only, which let a real decorated
+    action -- ``ai.execute_planner_task`` in ``src/ai/goal_task_graph.py`` --
+    escape classification entirely (it fell through to the ``get_kernel_action_risk``
+    "unknown -> LOW" fallback, so a code-executing planner action was silently
+    treated as bookkeeping and carried no mandatory audit evidence). The guard
+    now scans **all of ``src/``**. Kept as a helper (not inlined) so the scan
+    root is a single, auditable fact.
+    """
+    return (KERNELS_DIR.parent,)  # KERNELS_DIR == src/kernels; parent == src/
+
+
 def discover_kernel_action_names() -> set:
-    """Every kernel action name passed to ``@kernel_action("...")`` in src/.
+    """Every kernel action name passed to ``@kernel_action("...")`` anywhere
+    under ``src/`` (see :func:`_scan_roots`).
 
     AST scan (not a keyword scan) so it tracks the real decorator usages and
     can be cross-checked against :data:`KERNEL_ACTION_RISK` -- the completeness
     guard that makes "add a kernel action without classifying it" a test
-    failure instead of silent drift.
+    failure instead of silent drift. The scan root is the whole of ``src/``, so
+    a ``@kernel_action`` outside ``src/kernels/`` is no longer invisible. The
+    callee is matched by a single literal symbol name (``getattr(func, "id",
+    None) or getattr(func, "attr", None) == "kernel_action"``), so a decorator
+    imported under an alias is still not recognised.
     """
     names: set = set()
-    for path in KERNELS_DIR.rglob("*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    for root in _scan_roots():
+        for path in root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except SyntaxError:
                 continue
-            for dec in node.decorator_list:
-                if not isinstance(dec, ast.Call) or not dec.args:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                func = dec.func
-                fname = getattr(func, "id", None) or getattr(func, "attr", None)
-                if fname != "kernel_action":
-                    continue
-                arg0 = dec.args[0]
-                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                    names.add(arg0.value)
+                for dec in node.decorator_list:
+                    if not isinstance(dec, ast.Call) or not dec.args:
+                        continue
+                    func = dec.func
+                    fname = getattr(func, "id", None) or getattr(func, "attr", None)
+                    if fname != "kernel_action":
+                        continue
+                    arg0 = dec.args[0]
+                    if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                        names.add(arg0.value)
     return names

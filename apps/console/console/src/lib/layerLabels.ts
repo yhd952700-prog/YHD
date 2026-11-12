@@ -1,0 +1,122 @@
+/**
+ * 能力层 / 阶段标签的中性化映射。
+ *
+ * 名册接口（`/v1/dashboard/roster`）直接下发注册表里的展示名，其中
+ * `domains[].label` / `bands[].label` / `band_label` 带着实现层术语
+ * （「认知内核」「执行内核」…「内核闭环」）。这些词在总览页会被当成功能分组
+ * 去读，对使用者没有意义。因此统一在展示层换成中性说法，并给未登记的标签
+ * 兜底，保证界面上不会出现「内核」。
+ *
+ * 注意：前端只拿得到标签字符串（不是 key），所以这里按文案匹配，
+ * 不依赖后端的 domain / band 枚举。
+ */
+
+/**
+ * 能力模块中文名。
+ *
+ * 注册表的 `name` 是英文串，直接渲染会把英文摆到界面上。
+ * 这里优先用稳定的 `kernel` 键查中文名，查不到再退回标签清洗。
+ */
+const KERNEL_LABELS: Record<string, string> = {
+  context: '上下文整理',
+  capability: '能力登记',
+  event: '事件总线',
+  execution: '任务执行',
+  resource: '资源配额',
+  policy: '规则边界',
+  network: '网络通信',
+  trust: '信任校验',
+  evaluation: '结果评估',
+  identity: '身份与权限',
+  memory: '记忆存储',
+  security: '安全控制',
+  audit: '审计留痕',
+  plugin: '插件扩展',
+}
+
+/** 注册表已知取值 → 中性说法。 */
+const NEUTRAL_LABELS: Record<string, string> = {
+  // DOMAIN_LABELS
+  认知内核: '能力',
+  执行内核: '任务执行',
+  治理内核: '规则',
+  信任内核: '校验',
+  // BAND_LABELS
+  内核闭环: '运行闭环',
+  组织与任务: '协作与任务',
+  世界与治理: '外部协作',
+  验证与进化: '验证与改进',
+}
+
+/**
+ * 服务端下发的能力层 / 阶段标签 → 界面上可直接展示的中性文案。
+ *
+ * - 空值（`undefined` / 空串 / 纯空白）→「未分组」
+ * - 已登记标签 → 固定中性说法
+ * - 未登记但含「内核」→ 把「内核」替换成「能力」（「网络内核」→「网络能力」）
+ * - 替换后只剩「能力」或为空 →「其他能力」
+ * - 其余原样返回（只去掉首尾空白）
+ */
+export function neutralLayerLabel(label: string | undefined): string {
+  const raw = (label ?? '').trim()
+  if (!raw) return '未分组'
+
+  const known = NEUTRAL_LABELS[raw]
+  if (known) return known
+
+  if (raw.includes('内核')) {
+    const replaced = raw.replace(/内核/g, '能力').trim()
+    // 「内核」单独成词时替换结果没有信息量，归入兜底分组。
+    if (!replaced || replaced === '能力') return '其他能力'
+    return replaced
+  }
+
+  return raw
+}
+
+/**
+ * 能力模块中文名。
+ *
+ * 优先用注册表的稳定键（`identity` / `memory` …）查中文；键未知时清洗 `name`。
+ * 清洗后仍是英文的，归为「能力模块」，绝不让英文原名直接上屏。
+ */
+export function capabilityModuleLabel(key: string | undefined, name?: string): string {
+  const normalized = (key ?? '').trim().toLowerCase()
+  const known = KERNEL_LABELS[normalized]
+  if (known) return known
+
+  const cleaned = neutralLayerLabel(name)
+  if (/^[A-Za-z]/.test(cleaned)) return '能力模块'
+  return cleaned
+}
+
+/**
+ * 注册表状态 → 界面上可读的中文。
+ *
+ * 原始状态值（已实现 / 部分实现 / 未实现）只允许出现在 `title` 里，不直接上屏。
+ */
+export function capabilityStatusLabel(status: string | null | undefined): string {
+  const key = (status ?? '').trim().toLowerCase()
+  if (key === 'implemented' || key === '已实现') return '已具备'
+  if (key === 'partial' || key === 'partially_implemented' || key === 'partial_implemented') {
+    return '部分具备'
+  }
+  if (key === 'not_implemented' || key === 'missing' || key === '未实现') return '未提供'
+  return '状态未知'
+}
+
+/** 与 `capabilityStatusLabel` 同一口径的徽章色调。 */
+export function capabilityStatusTone(status: string | null | undefined): 'ok' | 'warn' | 'muted' {
+  const label = capabilityStatusLabel(status)
+  if (label === '已具备') return 'ok'
+  if (label === '部分具备') return 'warn'
+  return 'muted'
+}
+
+/** `Phase 9` → `第 9 阶段`；其余原样返回。 */
+export function phaseLabel(phase: string | null | undefined): string {
+  const raw = (phase ?? '').trim()
+  if (!raw) return '—'
+  const match = raw.match(/^Phase\s*(\d+)$/i) ?? raw.match(/^第?\s*(\d+)\s*阶段$/)
+  return match ? `第 ${match[1]} 阶段` : raw
+}

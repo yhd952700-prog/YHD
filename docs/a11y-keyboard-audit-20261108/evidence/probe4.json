@@ -1,0 +1,1747 @@
+{
+  "errors": [],
+  "pages": {
+    "overview": {
+      "count": 157,
+      "fails": [],
+      "failCount": 0,
+      "tinyCount": 64,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "AI 员工总数",
+          "cls": "os-kpi-label",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "14 个能力模块 + 14 个能力层",
+          "cls": "os-kpi-foot",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "运行中任务",
+          "cls": "os-kpi-label",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "当前活跃会话",
+          "cls": "os-kpi-foot",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "审计事件",
+          "cls": "os-kpi-label",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "真实审计存储累计",
+          "cls": "os-kpi-foot",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "系统健康度",
+          "cls": "os-kpi-label",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "12/12 项依赖正常 · 1 条新事件待核对（下一轮自",
+          "cls": "os-kpi-foot",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "能力模块按阶段分组；悬停查看名称",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "鎏灏 OS",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "最近的真实运行记录（已隐藏系统内部名称）",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "butler": {
+      "count": 77,
+      "fails": [
+        {
+          "text": "交给管家",
+          "cls": "os-btn os-butler-command-send",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 14,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        },
+        {
+          "text": "派给 所选员工",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 12.5,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 2,
+      "tinyCount": 30,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "说清你要什么，管家拆解后分给合适的员工；不指定员工时，可",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "不知道第一句怎么写？点一条示例，再改成你的事：",
+          "cls": "os-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "把这周的会议记录整理成周报，按项目归档，再给我一份 30",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.89,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "检查本周新增的文档，列出缺少负责人的条目，并给出补齐建议",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.89,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "把最近三次失败的运行整理成一页复盘，写清原因和下一步",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.89,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "范围",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "归属项目（可选）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "指定员工（可选）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "还没有项目；本次按独立目标提交。",
+          "cls": "os-hint os-butler-options-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "提交后管家在后台执行，页面每 2 秒自动确认一次状态。 ",
+          "cls": "os-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "不拆解、不换人：你选一位员工，这件事只由他做",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "my-employees": {
+      "count": 61,
+      "fails": [
+        {
+          "text": "创建员工",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 13,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 1,
+      "tinyCount": 14,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "名字必填；职责与默认能力可稍后再补",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "名字（必填）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "职责",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "本地计算",
+          "cls": "os-emp-meta",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "写本地文件",
+          "cls": "os-emp-meta",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "联网调研",
+          "cls": "os-emp-meta",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "综合整理",
+          "cls": "os-emp-meta",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "名字、职责、默认能力与当前状态",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "空闲",
+          "cls": "os-badge",
+          "color": "rgb(0, 0, 0)",
+          "bg": "rgb(46,230,168)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 13,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "系统默认",
+          "cls": "os-badge",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.84,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "memory": {
+      "count": 47,
+      "fails": [
+        {
+          "text": "检索",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 14,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 1,
+      "tinyCount": 7,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "可检索自己的记忆，也可只读检索整棵范围；导出范围随检索范",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "整棵范围只读检索；导出结果会带上来源账号。",
+          "cls": "os-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "只有你本人可以开启或关闭；变更会记入审计，关闭后立即停止",
+          "cls": "os-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "projects": {
+      "count": 51,
+      "fails": [
+        {
+          "text": "创建项目",
+          "cls": "os-btn os-btn-primary",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 14,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 1,
+      "tinyCount": 7,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "这个视图能证明什么",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "由你命名与描述",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "你创建的真实项目（每 30 秒刷新）",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "knowledge": {
+      "count": 84,
+      "fails": [
+        {
+          "text": "同步入库",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 13,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        },
+        {
+          "text": "检索",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 12.5,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 2,
+      "tinyCount": 18,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "真实状态，每 30 秒自动刷新",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "已启用",
+          "cls": "os-badge",
+          "color": "rgb(0, 0, 0)",
+          "bg": "rgb(46,230,168)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 13,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "向量总数包含所有客户端与 AI 员工写入的分块；文档数来",
+          "cls": "os-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "上传 PDF / Word / 网页 / 纯文本；大文件",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "刷新",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.89,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "支持",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "文档名（文本 / 后台入库在列表里的显示名）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "文档标识（可选；同名会整体替换旧分块）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "或直接粘贴文本",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "尚未输入内容",
+          "cls": "os-hint",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "服务端文档账本 · 共 0 篇 · 第 1 / 1 页",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "audit": {
+      "count": 90,
+      "fails": [
+        {
+          "text": "校验哈希链",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 14,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 1,
+      "tinyCount": 19,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "只读校验 —— 只检查，从不修改",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "按动作名称统计（真实计数）",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "真实结果计数",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "点击关联 ID 可只看这一条链路",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "序号",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "时间",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "账号",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "类型 / 动作",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "结果",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "关联 ID",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "5b2e865de8d244d695c1bbee91cf",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.89,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "data": {
+      "count": 262,
+      "fails": [],
+      "failCount": 0,
+      "tinyCount": 119,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "近 30 天，按天，未做平滑或补齐",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "1.0k",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "750",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "500",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "250",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "10-09",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "10-14",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "10-19",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "10-24",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "10-29",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "11-03",
+          "cls": "[object SVGAnimatedString]",
+          "color": "rgb(232, 238, 252)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 16.2,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "settings": {
+      "count": 151,
+      "fails": [
+        {
+          "text": "添加模型",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 13,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        },
+        {
+          "text": "导出诊断包",
+          "cls": "os-btn",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 14,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 2,
+      "tinyCount": 45,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "去配置模型",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(16,26,46)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.43,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "查看运行说明",
+          "cls": "os-link",
+          "color": "rgb(77, 141, 255)",
+          "bg": "rgb(16,26,46)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 5.43,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "同一份代码的三种呈现 —— 切换只影响布局，不影响权限",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "按视口宽度自动判定（当前",
+          "cls": "os-choice-desc",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(22,37,68)",
+          "size": 11,
+          "bold": false,
+          "ratio": 5.4,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "全宽侧边栏 · 多列网格 · 深色",
+          "cls": "os-choice-desc",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "紧凑布局 · 浅色 · 适合浏览器标签页",
+          "cls": "os-choice-desc",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "底部导航 · 单列卡片 · 适配安全区",
+          "cls": "os-choice-desc",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "当前生效形态：",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(16,26,46)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 6.84,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "桌面端（PC 客户端）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(16,26,46)",
+          "size": 11.5,
+          "bold": true,
+          "ratio": 6.84,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "新增 / 编辑 / 删除模型配置；测试连通并保存后，下一",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "名称（必填）",
+          "cls": "",
+          "color": "rgb(147, 163, 196)",
+          "bg": "rgb(11,17,32)",
+          "size": 11.5,
+          "bold": false,
+          "ratio": 7.42,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    },
+    "identity": {
+      "count": 101,
+      "fails": [
+        {
+          "text": "查询",
+          "cls": "os-btn os-btn-primary",
+          "color": "rgb(6, 18, 31)",
+          "bg": "rgb(11,17,32)",
+          "size": 14,
+          "bold": false,
+          "ratio": 1,
+          "need": 4.5,
+          "fail": true
+        }
+      ],
+      "failCount": 1,
+      "tinyCount": 26,
+      "tiny": [
+        {
+          "text": "LIVE · 鎏灏智能中枢",
+          "cls": "os-brand-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "业务",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "治理",
+          "cls": "os-nav-label",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(5,9,18)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 7.08,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "我的工作空间",
+          "cls": "os-user-role",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(16,26,46)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.17,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "真实身份计数与登记完整性（只读）",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "已登记的真实账号（只读）",
+          "cls": "os-card-sub",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 11,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "名称",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "类型",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "作用域上限",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "是否真人",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "状态",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "权限数",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "创建于",
+          "cls": "",
+          "color": "rgb(138, 154, 192)",
+          "bg": "rgb(11,17,32)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 6.69,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "正常",
+          "cls": "os-badge",
+          "color": "rgb(0, 0, 0)",
+          "bg": "rgb(46,230,168)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 13,
+          "need": 4.5,
+          "fail": false
+        },
+        {
+          "text": "正常",
+          "cls": "os-badge",
+          "color": "rgb(0, 0, 0)",
+          "bg": "rgb(46,230,168)",
+          "size": 10.5,
+          "bold": false,
+          "ratio": 13,
+          "need": 4.5,
+          "fail": false
+        }
+      ],
+      "minSize": 10.5
+    }
+  },
+  "popover": {
+    "beforeFocus": "系统通知，0 条",
+    "afterOpen": {
+      "open": true,
+      "role": null,
+      "ariaModal": null,
+      "active": "系统通知，0 条",
+      "inPopover": false,
+      "ariaControls": null,
+      "focusables": 0
+    },
+    "afterEscape": {
+      "stillOpen": true,
+      "focus": "系统通知，0 条"
+    }
+  },
+  "mobile": {
+    "login": {
+      "hScroll": false,
+      "bodyWidth": 390,
+      "small": [
+        {
+          "t": "账号",
+          "size": "11.5px",
+          "cls": ""
+        },
+        {
+          "t": "密码",
+          "size": "11.5px",
+          "cls": ""
+        },
+        {
+          "t": "忘记密码",
+          "size": "11.5px",
+          "cls": "os-link"
+        },
+        {
+          "t": "桌面端",
+          "size": "10.5px",
+          "cls": ""
+        },
+        {
+          "t": "网页版",
+          "size": "10.5px",
+          "cls": ""
+        },
+        {
+          "t": "手机端",
+          "size": "10.5px",
+          "cls": ""
+        }
+      ]
+    }
+  },
+  "reduced": {
+    "htmlAttr": "true",
+    "animations": [],
+    "transitions": "1e-06s",
+    "scoped": "80ms"
+  }
+}

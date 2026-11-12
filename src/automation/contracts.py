@@ -1,0 +1,426 @@
+"""自动化模块的统一契约。
+
+本模块只定义纯数据结构与协议，不包含任何真实键鼠注入、也不依赖第三方库。
+设计约束见 ``docs/automation-design.md``（本轮地基阶段的硬性要求）：
+
+* 后端按 ``BackendKind`` 区分；本轮只实现 ``fake``。
+* 每个动作是一个 :class:`ActionRequest`，其指纹只由动作语义决定（动作名 /
+  目标 / 参数 / 焦点），**不含** principal、会话或步号 —— 这些由确认票据另行绑定。
+* 观察结果 :class:`Observation` 只保留可哈希摘要所需的最小字段，绝不携带
+  屏幕截图明文或输入文本；窗口与元素明细分别用 :class:`WindowInfo` /
+  :class:`ElementInfo` 表达，读不到的字段留空并附 ``*_error`` / 原因说明，
+  不编造坐标。二者与 :class:`Observation` 一样从这里导出，调用方可直接
+  ``from src.automation.contracts import WindowInfo, ElementInfo``。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, Mapping, Optional, Protocol, Tuple
+
+#: 显式导出契约类型，保证 ``from src.automation.contracts import ...`` 与
+#: ``from src.automation import ...`` 两级入口都能拿到新增的
+#: :class:`WindowInfo` / :class:`ElementInfo`。
+__all__ = [
+    "ActionCapability",
+    "ActionRequest",
+    "ActionResult",
+    "AutomationBackend",
+    "AutomationError",
+    "BackendKind",
+    "CONSECUTIVE_FAILURE_LIMIT",
+    "ConfirmationBroker",
+    "ConfirmationTicket",
+    "ElementInfo",
+    "FORBIDDEN_TARGET_MARKERS",
+    "GuardDecision",
+    "GuardProtocol",
+    "MAX_CONFIRMATION_TTL_SECONDS",
+    "Observation",
+    "RATE_LIMIT_MAX_ACTIONS",
+    "RATE_LIMIT_WINDOW_SECONDS",
+    "Reversibility",
+    "SessionStatus",
+    "TargetScope",
+    "TicketConsumeResult",
+    "WindowInfo",
+    "canonical_json",
+]
+
+
+class BackendKind(str, Enum):
+    """自动化后端类型。本轮仅 ``FAKE`` 可用，其余为下一轮预留。"""
+
+    FAKE = "fake"
+    NATIVE = "native"
+    BROWSER = "browser"
+    ANDROID = "android"
+
+
+class TargetScope(str, Enum):
+    """动作作用范围。"""
+
+    SCREEN = "screen"
+    WINDOW = "window"
+    APPLICATION = "application"
+
+
+class SessionStatus(str, Enum):
+    """自动化会话状态。熔断后进入 ``FROZEN``，不可继续执行。"""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    FROZEN = "frozen"
+
+
+class AutomationError(Exception):
+    """自动化调用被拒绝时的统一异常，``reason`` 可被机器判定。"""
+
+    def __init__(self, reason: str, message: str = "") -> None:
+        self.reason = reason
+        super().__init__(message or reason)
+
+
+class Reversibility(str, Enum):
+    """动作的可逆性。未知动作必须按 ``IRREVERSIBLE`` 处理（fail-closed）。"""
+
+    REVERSIBLE = "reversible"
+    IRREVERSIBLE = "irreversible"
+
+
+@dataclass(frozen=True)
+class ActionCapability:
+    """后端对某个动作的能力声明。
+
+    ``reversibility`` 默认 ``IRREVERSIBLE``：没有显式声明的动作一律不允许回滚，
+    避免"以为能撤"的误判。``reason`` 用于在执行前向人类解释为什么不可逆。
+    """
+
+    action: str
+    reversibility: Reversibility = Reversibility.IRREVERSIBLE
+    reason: str = ""
+
+    @property
+    def reversible(self) -> bool:
+        return self.reversibility is Reversibility.REVERSIBLE
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action": self.action,
+            "reversibility": self.reversibility.value,
+            "reversible": self.reversible,
+            "reason": self.reason,
+        }
+
+
+def canonical_json(value: Any) -> str:
+    """稳定序列化（键排序、紧凑分隔符），用于指纹与摘要。"""
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+@dataclass(frozen=True)
+class ActionRequest:
+    """一个待执行的自动化动作。
+
+    指纹刻意不包含 ``session_id`` / ``step_no``：票据会把二者与指纹一起绑定，
+    这样同一个动作在不同会话里指纹一致，而任何参数变化都会导致指纹变化。
+    """
+
+    session_id: str
+    step_no: int
+    action: str
+    target: TargetScope = TargetScope.SCREEN
+    target_ref: str = ""
+    params: Mapping[str, Any] = field(default_factory=dict)
+    expected_focus: Optional[str] = None
+
+    def fingerprint(self) -> str:
+        payload = {
+            "action": self.action,
+            "target": self.target.value,
+            "target_ref": self.target_ref,
+            "params": dict(self.params),
+            "expected_focus": self.expected_focus,
+        }
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class WindowInfo:
+    """一个顶层窗口的可观察信息。
+
+    这里只放"读得到的事实"，不放任何推测值：
+
+    * ``title`` / ``process_name`` / ``executable_path`` 读不到时为空字符串，
+      并用 ``process_error`` 说明原因，绝不编造；
+    * ``bounds`` 仅在真实取到窗口矩形时才非 None；
+    * ``elements_supported=False`` 表示该窗口的控件树读不到，此时
+      ``element_count`` 必须为 0。
+
+    注意 ``title`` / ``executable_path`` 可能包含文件名、聊天对象名等敏感
+    文本。它们允许回显给人类，但落审计时只记长度与哈希，见
+    :meth:`AutomationAudit.record_observation`。
+    """
+
+    handle: int
+    title: str = ""
+    process_name: str = ""
+    executable_path: str = ""
+    pid: Optional[int] = None
+    foreground: bool = False
+    fullscreen: bool = False
+    visible: bool = True
+    minimized: bool = False
+    bounds: Optional[Tuple[int, int, int, int]] = None
+    elements_supported: bool = False
+    element_count: int = 0
+    process_error: str = ""
+    fullscreen_error: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "handle": self.handle,
+            "title": self.title,
+            "process_name": self.process_name,
+            "executable_path": self.executable_path,
+            "pid": self.pid,
+            "foreground": self.foreground,
+            "fullscreen": self.fullscreen,
+            "visible": self.visible,
+            "minimized": self.minimized,
+            "bounds": list(self.bounds) if self.bounds else None,
+            "elements_supported": self.elements_supported,
+            "element_count": self.element_count,
+            "process_error": self.process_error,
+            "fullscreen_error": self.fullscreen_error,
+        }
+
+
+@dataclass(frozen=True)
+class ElementInfo:
+    """窗口内的一个可枚举控件。
+
+    刻意**不包含控件文本**：控件文本可能是用户输入或聊天内容，读它超出
+    "只读观察窗口结构"的范围。需要内容时由人类显式授权，另行实现。
+    """
+
+    handle: int
+    class_name: str = ""
+    control_id: Optional[int] = None
+    enabled: bool = True
+    visible: bool = True
+    bounds: Optional[Tuple[int, int, int, int]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "handle": self.handle,
+            "class_name": self.class_name,
+            "control_id": self.control_id,
+            "enabled": self.enabled,
+            "visible": self.visible,
+            "bounds": list(self.bounds) if self.bounds else None,
+        }
+
+
+@dataclass(frozen=True)
+class Observation:
+    """当前可观察状态。
+
+    ``summary`` 只放低风险计数；窗口标题、进程名、可执行路径等结构化字段
+    放在 ``foreground`` / ``windows`` / ``elements`` 里，避免把明文塞进
+    ``summary`` 这种自由字典而绕过审计规则。
+    """
+
+    focus: Optional[str] = None
+    scope: TargetScope = TargetScope.SCREEN
+    captured_at: float = field(default_factory=time.time)
+    summary: Mapping[str, Any] = field(default_factory=dict)
+    backend: str = ""
+    foreground: Optional[WindowInfo] = None
+    windows: Tuple[WindowInfo, ...] = ()
+    elements: Tuple[ElementInfo, ...] = ()
+    elements_supported: bool = False
+    elements_reason: str = ""
+    truncated: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "focus": self.focus,
+            "scope": self.scope.value,
+            "captured_at": self.captured_at,
+            "summary": dict(self.summary),
+            "backend": self.backend,
+            "foreground": self.foreground.to_dict() if self.foreground else None,
+            "windows": [item.to_dict() for item in self.windows],
+            "elements": [item.to_dict() for item in self.elements],
+            "elements_supported": self.elements_supported,
+            "elements_reason": self.elements_reason,
+            "truncated": self.truncated,
+        }
+
+    def digest(self) -> str:
+        payload = {
+            "focus": self.focus,
+            "scope": self.scope.value,
+            "summary": dict(self.summary),
+            "backend": self.backend,
+            "foreground": self.foreground.to_dict() if self.foreground else None,
+            "windows": [item.to_dict() for item in self.windows],
+            "elements": [item.to_dict() for item in self.elements],
+            "elements_supported": self.elements_supported,
+            "elements_reason": self.elements_reason,
+            "truncated": self.truncated,
+        }
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+@dataclass
+class ActionResult:
+    """动作执行结果。``status`` ∈ ``executed`` / ``rejected`` / ``failed``。"""
+
+    status: str
+    action: str
+    ok: bool = False
+    observation: Optional[Observation] = None
+    error: Optional[str] = None
+    detail: Dict[str, Any] = field(default_factory=dict)
+    executed_at: float = field(default_factory=time.time)
+
+
+class AutomationBackend(Protocol):
+    """自动化后端协议。实现方只允许在明确授权范围内操作。"""
+
+    kind: BackendKind
+
+    def observe(self, scope: TargetScope = TargetScope.SCREEN) -> Observation:
+        """读取当前可观察状态。"""
+
+    def capability(self, request: ActionRequest) -> ActionCapability:
+        """声明该动作是否可逆；未知动作必须返回不可逆，不得假装能回滚。"""
+
+    def execute(self, request: ActionRequest) -> ActionResult:
+        """执行动作，返回真实结果（失败必须如实返回 ``failed``）。"""
+
+    def rollback(self, *, request: ActionRequest, result: ActionResult) -> ActionResult:
+        """对已执行的可逆动作做补偿；做不到时必须如实返回 ``failed``。"""
+
+
+@dataclass(frozen=True)
+class GuardDecision:
+    """守卫判决。``allowed`` 为 False 时 ``reason`` 与 ``message`` 必须可解释。"""
+
+    allowed: bool
+    reason: str = ""
+    message: str = ""
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ConfirmationTicket:
+    """一次性确认票据（``ticket`` 为调用方持有的随机令牌）。"""
+
+    ticket: str
+    principal: str
+    session_id: str
+    step_no: int
+    action_fingerprint: str
+    preview: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class TicketConsumeResult:
+    """票据消费结果。并发消费时只有一方 ``ok=True``。"""
+
+    ok: bool
+    reason: str = ""
+    ticket: Optional[ConfirmationTicket] = None
+
+
+class GuardProtocol(Protocol):
+    """守卫协议：静态规则 + 频率 + 连续失败熔断。"""
+
+    def check(
+        self,
+        request: ActionRequest,
+        observation: Optional[Observation],
+    ) -> GuardDecision:
+        """执行动作前检查；不允许时必须给出 reason。"""
+
+    def record_attempt(self, now: Optional[float] = None) -> None:
+        """记录一次被放行、即将执行的尝试（用于频率上限）。"""
+
+    def record_success(self) -> None:
+        """记录一次成功，清零连续失败计数。"""
+
+    def record_failure(self) -> None:
+        """记录一次失败；达到阈值触发熔断。"""
+
+    @property
+    def tripped(self) -> bool:
+        """连续失败达到阈值后为 True，会话必须冻结。"""
+
+
+class ConfirmationBroker(Protocol):
+    """确认票据协议：签发、单次消费、过期与绑定校验。"""
+
+    def issue(
+        self,
+        *,
+        principal: str,
+        principal_kind: str,
+        session_id: str,
+        step_no: int,
+        action_fingerprint: str,
+        preview: str,
+        ttl_seconds: float = 30.0,
+    ) -> ConfirmationTicket:
+        """签发票据；非人类主体必须拒绝。"""
+
+    def consume(
+        self,
+        *,
+        ticket: str,
+        principal: str,
+        session_id: str,
+        step_no: int,
+        action_fingerprint: str,
+    ) -> TicketConsumeResult:
+        """一次性消费票据；必须原子地校验 pending / 绑定 / 过期。"""
+
+
+#: 阈值与上限的集中定义，守卫与会话共享，避免两处漂移。
+RATE_LIMIT_MAX_ACTIONS = 30
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+CONSECUTIVE_FAILURE_LIMIT = 3
+MAX_CONFIRMATION_TTL_SECONDS = 30.0
+
+FORBIDDEN_TARGET_MARKERS: Tuple[str, ...] = (
+    # 凭据 / 密码
+    "password", "passwd", "密码", "credential", "凭据",
+    # 安全界面
+    "windows security", "security center", "安全中心", "安全设置",
+    "defender", "firewall", "防火墙", "杀毒",
+    # 终端 / shell
+    "terminal", "powershell", "cmd.exe", "command prompt", "命令提示符",
+    "终端", "shell", "bash",
+    # 系统设置 / 注册表
+    "system settings", "control panel", "设置", "控制面板", "regedit", "注册表",
+    # 任务管理器
+    "task manager", "任务管理器", "taskmgr",
+    # 卸载确认
+    "uninstall", "卸载", "add or remove programs", "程序和功能",
+    # 锁屏 / 安全注意序列
+    "lock screen", "锁屏", "win+l", "ctrl+alt+del", "ctrl+alt+delete",
+)

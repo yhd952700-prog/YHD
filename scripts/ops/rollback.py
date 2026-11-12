@@ -5,15 +5,13 @@ Rollback Script for LiuHao AI OS
 Provides safe rollback capabilities for deployments and configurations.
 """
 
-import os
 import sys
 import json
-import shutil
 import argparse
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -83,7 +81,7 @@ class RollbackManager:
         deployment_file = Path("deployment_info.json")
         if deployment_file.exists():
             try:
-                with open(deployment_file, 'r') as f:
+                with open(deployment_file, 'r', encoding='utf-8') as f:
                     config_data["deployment"] = json.load(f)
             except Exception:
                 pass
@@ -95,7 +93,7 @@ class RollbackManager:
         checkpoints = []
         for cp_file in self.history_dir.glob("*.json"):
             try:
-                with open(cp_file, 'r') as f:
+                with open(cp_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 checkpoints.append({
                     "file": cp_file.name,
@@ -229,7 +227,7 @@ class RollbackManager:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Rollback management for LiuHao AI OS")
+    parser = argparse.ArgumentParser(description="Rollback management for Jarvis")
     parser.add_argument("action", choices=["checkpoint", "list", "rollback", "rollback-deployment"])
     parser.add_argument("--name", help="Checkpoint name")
     parser.add_argument("--description", default="", help="Checkpoint description")

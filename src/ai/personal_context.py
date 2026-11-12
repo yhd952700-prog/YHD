@@ -27,24 +27,63 @@ D 盘默认路径；``principal_id`` 是隔离维度（与 conversation_store �
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
+import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..common.data_paths import resolve_store_path
 from .observability import observe
+
+
+def _request_attribution(requested_by: Optional[str]):
+    """Attribute the kernel deletion, explicitly, to whoever initiated it.
+
+    * a verified request-side human -> ``kind="human"`` (the HTTP caller);
+    * an enclosing agent/sovereign binding -> keep it (do not overwrite);
+    * neither -> ``kind="system"``. Background retention and scheduled cleanup
+      have no human; recording them as the internal service made them look like
+      a service call that *might* have been human-triggered, which is exactly
+      the ambiguity this attribution work removes.
+    """
+    from src.kernels._crosscutting import (
+        acting_principal,
+        bind_request_principal,
+        bind_system_principal,
+    )
+
+    if requested_by:
+        return bind_request_principal(str(requested_by))
+    if acting_principal() is not None:
+        return nullcontext()
+    return bind_system_principal(source="background")
+
+
+logger = logging.getLogger(__name__)
 
 # 默认落在项目根目录，而非写死某台机器的绝对路径（写死会在 CI 工作区造出
 # 名为 "D:" 的目录，导致 upload-artifact 因路径含冒号失败）。
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-DEFAULT_DB_PATH = os.environ.get(
-    "PERSONAL_CONTEXT_DB_PATH",
-    os.path.join(_PROJECT_ROOT, "personal_context.db"),
-)
+_LEGACY_DB_PATH = os.path.join(_PROJECT_ROOT, "personal_context.db")
+
+
+def _default_db_path() -> str:
+    """画像库落盘路径：``PERSONAL_CONTEXT_DB_PATH`` > ``LIUHAO_DATA_DIR`` > 历史默认。"""
+    return resolve_store_path(
+        "personal_context.db",
+        _LEGACY_DB_PATH,
+        env_var="PERSONAL_CONTEXT_DB_PATH",
+    )
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 
 @dataclass
@@ -109,7 +148,7 @@ class PersonalContextManager:
         db_path: Optional[str] = None,
         memory_kernel: Any = None,
     ) -> None:
-        self._db_path = db_path or DEFAULT_DB_PATH
+        self._db_path = db_path or _default_db_path()
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         # memory kernel 引用（可选注入，便于测试替换；None 则懒加载全局单例）。
@@ -123,6 +162,10 @@ class PersonalContextManager:
         os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # 取舍：这里只存可重建的偏好上下文（置信度、来源均可重新学习），
+        # 因此用 NORMAL 换取写入吞吐。进程被杀不会丢已提交数据（WAL 可恢复），
+        # 但**突然断电**可能丢最近几次提交；若以后改为存不可重建的用户设置，
+        # 必须提升到 FULL。
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(
             """
@@ -161,6 +204,17 @@ class PersonalContextManager:
                 value_json TEXT NOT NULL,
                 PRIMARY KEY (principal_id, key)
             );
+            CREATE TABLE IF NOT EXISTS profile_pending_facts (
+                id TEXT PRIMARY KEY,
+                principal_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'assistant',
+                created_at REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+            );
+            CREATE INDEX IF NOT EXISTS idx_profile_pending_principal
+                ON profile_pending_facts(principal_id, status, created_at);
             """
         )
         self._conn.commit()
@@ -173,8 +227,13 @@ class PersonalContextManager:
             self._memory_kernel = get_memory_kernel()
         return self._memory_kernel
 
-    def _sync_to_memory(self, principal_id: str, key: str, value: Any) -> None:
-        """写穿下沉到 memory kernel（尽力而为，失败不阻断画像层）。"""
+    def _sync_to_memory(self, principal_id: str, key: str, value: Any) -> bool:
+        """写穿下沉到 memory kernel，并把结果回给调用方（MEM-011）。
+
+        写穿失败不再静默：返回 ``False`` 并记 warning，调用方可在回执/审计里
+        标 ``kernel_synced=false``。画像层本身仍不阻断（SQLite 已提交），但
+        "数据库有、记忆没有" 从此能在日志与返回值里被看见。
+        """
         try:
             from src.kernels.memory import MemoryScope, MemoryTier
 
@@ -185,9 +244,16 @@ class PersonalContextManager:
                 scope=MemoryScope.L1,
                 tags={"personal", "profile"},
             )
-        except Exception:
-            # memory kernel 不可用（如测试环境无落盘）不阻断画像层功能。
-            pass
+            return True
+        except Exception as exc:  # noqa: BLE001 - 内核不可用不能拖垮画像写入
+            logger.warning(
+                "profile kernel write-through failed principal=%s key=%s: %s",
+                principal_id,
+                key,
+                exc,
+                exc_info=True,
+            )
+            return False
 
     # ------------------------------------------------------------------ #
     # Preference Awareness
@@ -289,6 +355,198 @@ class PersonalContextManager:
                 (principal_id, key),
             ).fetchone()
         return json.loads(row[0]) if row is not None else None
+
+    def delete_fact(
+        self, principal_id: str, key: str, *, requested_by: Optional[str] = None
+    ) -> bool:
+        """删除单条事实，并删穿 memory kernel 里的 PERSISTENT 副本。
+
+        顺序：本地先 DELETE 但**不提交** → 再删穿内核 → 两边都成功才 ``commit``。
+        内核拒绝（``PolicyDeferredError`` / ``PolicyDeniedError``，如武装 HIGH
+        后需人工主权）时 ``rollback`` 并原样上抛，画像层保持原样——用户看到的
+        是一次「需要审批 / 被拒绝」，而不是「报错但数据已经删了一半」。
+
+        为什么选「两边都成功才提交」而不是把内核门控前移：内核策略拒绝是这条
+        路径上唯一可预期的失败点，SQLite 未提交的 DELETE 天然可回滚，因此用本地
+        事务包裹就能让该失败路径两侧完全一致，无需引入「补偿写回」这类会再失败
+        一次的路径。残余风险只剩「内核已删、SQLite 提交失败」（如磁盘满），跨
+        两种存储无法真正两阶段提交。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM profile_facts WHERE principal_id = ? AND key = ?",
+                (principal_id, key),
+            )
+            if not cursor.rowcount:
+                # DELETE 已隐式开启事务，回滚掉以免留下空事务占用写锁。
+                self._conn.rollback()
+                return False
+            try:
+                self._delete_kernel_key(
+                    f"profile:{principal_id}:fact:{key}", requested_by=requested_by
+                )
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
+            return True
+
+    def delete_preference(
+        self, principal_id: str, key: str, *, requested_by: Optional[str] = None
+    ) -> bool:
+        """删除单条偏好，并删穿 memory kernel 里的 PERSISTENT 副本。
+
+        与 :meth:`delete_fact` 相同的两侧一致策略：两边都成功才提交。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM profile_preferences WHERE principal_id = ? AND key = ?",
+                (principal_id, key),
+            )
+            if not cursor.rowcount:
+                self._conn.rollback()
+                return False
+            try:
+                self._delete_kernel_key(
+                    f"profile:{principal_id}:preference:{key}",
+                    requested_by=requested_by,
+                )
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
+            return True
+
+    def _delete_kernel_key(
+        self, key: str, *, requested_by: Optional[str] = None
+    ) -> int:
+        """精确删穿内核单条 key（删除单条事实/偏好必须用它）。
+
+        前缀删会把同前缀的兄弟 key 一起删掉（``...:fact:city`` 命中
+        ``...:fact:city_code``），对用户是静默丢数据，所以单条删除走精确匹配。
+
+        ``requested_by`` 会绑定到内核动作上，使审计记下「谁发起的删除」；
+        策略判定本身不受影响（只加归因，不赋权）。
+        """
+        from src.kernels._crosscutting import PolicyDeniedError
+
+        try:
+            with _request_attribution(requested_by):
+                return int(self._memory().delete_by_key(key))
+        except PolicyDeniedError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"内核记忆删除失败：{exc}") from exc
+
+    def _delete_kernel_prefix(
+        self, prefix: str, *, requested_by: Optional[str] = None
+    ) -> int:
+        """删穿内核；失败抛错（调用方必须把删除失败如实告诉用户）。
+
+        与 :meth:`_delete_kernel_key` 同一口径：策略类异常原样上抛，让网关按类型
+        映射成 409（需人工审批）或 403（被拒绝），而不是被包成 ``RuntimeError``
+        落进 500。:meth:`clear` 已保证「内核成功才提交 SQLite」，因此这两类拒绝
+        到达用户时两侧数据都保持原样。
+
+        ``requested_by`` 只影响审计归因（human / system），不参与策略判定。
+        """
+        from src.kernels._crosscutting import PolicyDeniedError
+
+        try:
+            with _request_attribution(requested_by):
+                return int(self._memory().delete_by_key_prefix(prefix))
+        except PolicyDeniedError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"内核记忆删除失败：{exc}") from exc
+
+    # ------------------------------------------------------------------ #
+    # Pending facts（模型写入长期事实必须先待确认）
+    # ------------------------------------------------------------------ #
+    def propose_fact(
+        self,
+        principal_id: str,
+        key: str,
+        value: Any,
+        source: str = "assistant",
+    ) -> Dict[str, Any]:
+        """把模型提议的事实写进待审区，不直接进入长期记忆。"""
+        pending_id = uuid.uuid4().hex
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO profile_pending_facts "
+                "(id, principal_id, key, value_json, source, created_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+                (
+                    pending_id,
+                    principal_id,
+                    str(key),
+                    json.dumps(value, ensure_ascii=False, default=str),
+                    source,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return {
+            "id": pending_id,
+            "key": str(key),
+            "value": value,
+            "status": "pending",
+            "created_at": now,
+        }
+
+    def list_pending_facts(
+        self, principal_id: str, status: str = "pending"
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, key, value_json, source, created_at, status "
+                "FROM profile_pending_facts "
+                "WHERE principal_id = ? AND status = ? ORDER BY created_at",
+                (principal_id, status),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "key": row[1],
+                "value": json.loads(row[2]),
+                "source": row[3],
+                "created_at": row[4],
+                "status": row[5],
+            }
+            for row in rows
+        ]
+
+    def _resolve_pending(self, principal_id: str, pending_id: str, status: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, key, value_json, status FROM profile_pending_facts "
+                "WHERE id = ? AND principal_id = ?",
+                (pending_id, principal_id),
+            ).fetchone()
+            if row is None or row[3] != "pending":
+                return None
+            self._conn.execute(
+                "UPDATE profile_pending_facts SET status = ? WHERE id = ?",
+                (status, pending_id),
+            )
+            self._conn.commit()
+        return {"id": row[0], "key": row[1], "value": json.loads(row[2])}
+
+    def approve_pending_fact(self, principal_id: str, pending_id: str) -> Optional[Dict[str, Any]]:
+        """用户确认后才真正写入长期事实（来源标记 confirmed）。"""
+        item = self._resolve_pending(principal_id, pending_id, "approved")
+        if item is None:
+            return None
+        self.record_fact(principal_id, item["key"], item["value"], source="confirmed")
+        return {**item, "status": "approved"}
+
+    def reject_pending_fact(self, principal_id: str, pending_id: str) -> Optional[Dict[str, Any]]:
+        item = self._resolve_pending(principal_id, pending_id, "rejected")
+        if item is None:
+            return None
+        return {**item, "status": "rejected"}
 
     # ------------------------------------------------------------------ #
     # Interests / Expertise / Relationships / Behavior
@@ -463,25 +721,43 @@ class PersonalContextManager:
     # ------------------------------------------------------------------ #
     # 维护
     # ------------------------------------------------------------------ #
-    def clear(self, principal_id: str) -> None:
-        """清空该主体的画像（对应 reset 语义，仅影响该 principal）。"""
+    def clear(self, principal_id: str, *, requested_by: Optional[str] = None) -> int:
+        """清空该主体的画像，并同步删穿 memory kernel，返回内核删除条数。
+
+        MEM-002：只清 SQLite 会让 PERSISTENT 副本继续被 ``search_memory``
+        检索到（用户以为删了、其实没删）。这里先做内核删穿，再提交 SQLite；
+        任一失败都回滚 SQLite 并抛错，绝不“假成功”。
+        """
+        kernel_deleted = 0
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM profile_preferences WHERE principal_id = ?", (principal_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM profile_facts WHERE principal_id = ?", (principal_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM profile_lists WHERE principal_id = ?", (principal_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM profile_relationships WHERE principal_id = ?", (principal_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM profile_meta WHERE principal_id = ?", (principal_id,)
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    "DELETE FROM profile_preferences WHERE principal_id = ?", (principal_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM profile_facts WHERE principal_id = ?", (principal_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM profile_lists WHERE principal_id = ?", (principal_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM profile_relationships WHERE principal_id = ?", (principal_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM profile_meta WHERE principal_id = ?", (principal_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM profile_pending_facts WHERE principal_id = ?",
+                    (principal_id,),
+                )
+                kernel_deleted = self._delete_kernel_prefix(
+                    f"profile:{principal_id}:", requested_by=requested_by
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return kernel_deleted
 
     def stats(self, principal_id: Optional[str] = None) -> Dict[str, Any]:
         """返回画像存储统计（给定 principal 时只看该主体）。"""

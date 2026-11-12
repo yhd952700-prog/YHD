@@ -38,27 +38,56 @@ def test_exception_reraises_unchanged():
         t.explode()
 
 
-def test_audit_event_recorded():
+def _latest_details(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    Two things this deliberately does **not** do:
+
+    * It does not filter by ``principal_id``. Before A2 the decorator recorded
+      the literal subject ``"kernel"`` for every action, so a test could find its
+      own row by that string. A2 replaced the constant with the *actual* acting
+      principal, so pinning the literal now finds either nothing or -- worse -- a
+      stale row left in the shared ``audit_store.db`` by an earlier run, which is
+      a green that proves nothing.
+    * It does not treat "the column is non-empty" as attribution. F26: the
+      fingerprint must actually be one (32 hex chars), and the event's
+      ``principal_id`` column must agree with the ``actor_identity_id`` recorded
+      in ``details`` -- the keyspace convergence A2 established.
+    """
     from src.kernels.audit import audit_query
+
+    for ev in audit_query(limit=200, reverse=True):
+        det = ev.get("details") or {}
+        if det.get("action") != action_name:
+            continue
+        fp = det.get("actor_fingerprint")
+        assert isinstance(fp, str) and len(fp) == 32 and all(
+            c in "0123456789abcdef" for c in fp
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fp!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
+    return None
+
+
+def test_audit_event_recorded():
     t = _Thing()
     # Run a wrapped action, then confirm an audit event landed for it.
-    # Query the MOST RECENT events (reverse=True) so this assertion stays
-    # robust even when earlier kernel tests have already written many audit
-    # events into the shared persistent audit_store.db (the default ASC order
-    # + LIMIT would otherwise return only the oldest events).
     t.increment(1)
-    events = audit_query(principal_id="kernel", limit=50, reverse=True)
-    assert any(e.get("details", {}).get("action") == "thing.increment" for e in events)
+    assert _latest_details("thing.increment") is not None, "未写入审计事件"
 
 
 def test_policy_decision_recorded():
-    from src.kernels.audit import audit_query
     t = _Thing()
     t.increment(1)
-    events = audit_query(principal_id="kernel", limit=50, reverse=True)
-    matching = [e for e in events if e.get("details", {}).get("action") == "thing.increment"]
-    assert matching
-    details = matching[0]["details"]
+    details = _latest_details("thing.increment")
+    assert details is not None, "未写入审计事件"
     decision = details.get("policy_decision")
     assert decision in ("allow", "deny", "defer")
     # 判决必须可追溯依据：Policy C-1 起记录命中的规则 id。

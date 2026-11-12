@@ -2628,7 +2628,7 @@ cd <REPO_PATH> && git init && hermes --yolo -z "Step by step via terminal: CI=1 
 #### SEC-05 Prometheus + Alertmanager + Grafana/Loki
 - **关键实现细节**：
   1. `docker-compose.monitoring.yml` 启动 Prometheus + Alertmanager + Grafana + Loki + Promtail
-  2. 导入 `config/monitoring/prometheus_rules.yml`（20+ 规则）
+  2. （已废弃）原 `config/monitoring/prometheus_rules.yml` 在本轮已删除：该文件从未被挂载、属死配置；告警规则现统一位于 `configs/observability/rules/liuhao-ai-os-alerts.yml`，并由 `scripts/verify_alert_rules.py` 门禁保证不出现死规则文件 / scrape 路由 404。
   3. Grafana 导入 `config/monitoring/grafana_dashboards/*.json`（Overview/业务/资源/安全/插件）
   4. Alertmanager 配置 Email/Slack/Webhook 接收器
 - **验收标准**：

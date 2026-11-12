@@ -1,0 +1,100 @@
+# =============================================================================
+# LiuHao AI OS — 日志配置（唯一生效的一份）
+# =============================================================================
+# 加载方式：所有真实入口都按 **UTF-8** 读取本文件，再把解析出的映射交给
+# uvicorn；**不要**直接把路径传给 uvicorn 的 ``--log-config``。uvicorn 的
+# YAML 分支用 ``open()``（不带 encoding），中文 Windows 的 cp936 默认编码
+# 会把这份 UTF-8 文件按错误编码解码，首启在导入 app 前就崩。
+#
+#   * scripts/start_liuhao.py      -> 子进程 ``python -m src.gateway``，经
+#                                     LIUHAO_LOG_CONFIG 指到本文件
+#   * src/desktop/service.py       -> ``python -m src.desktop._runner
+#                                     --log-config <path>``（_runner 按 UTF-8
+#                                     读成映射后交给 uvicorn）
+#   * src/gateway/__main__.py      -> load_uvicorn_log_config(...) + uvicorn.run
+#
+# 读取实现见 src/logging_config.py。
+#
+# 为什么是 uvicorn 而不是在 app 里调用 setup_logging()：
+#   uvicorn 在导入 app 之前应用这份配置，所以它同时覆盖 uvicorn 自身的
+#   access/error logger 与应用 logger（后者没有自己的 handler，向上传播到
+#   root）。若放在 app 模块里，测试导入 app 时也会配置日志、把日志写进仓库。
+#
+# 轮转参数（用户可见的磁盘上限）：
+#   * 单文件上限 10 MiB
+#   * 保留 5 份历史（.1 ~ .5）
+#   * 不压缩：stdlib 不支持 gzip；为压缩而自写 handler 会在日志线程里增加
+#     CPU 与失败面。总量上限 = (5 + 1) × 10 MiB ≈ 60 MiB/文件通道；
+#     liuhao.log 与 error.log 两个通道合计 ≤ 120 MiB。
+#
+# 多进程安全（P1-7）：handler 是 ``MultiProcessRotatingFileHandler``。
+# stdlib RotatingFileHandler 一直持有文件句柄，Windows 上另一个进程持有时
+# 改名必然 ``PermissionError [WinError 32]`` → 该条记录被丢弃、文件越过上限。
+# 本实现每次 emit 才打开文件，并在 OS 文件锁内完成「看大小 → 轮转 → 追加」。
+#
+# 路径（P1-7/P1-10）：``filename`` 的**相对路径**由
+# ``src/logging_config.py::load_uvicorn_log_config`` 解析到用户数据目录
+# （``LIUHAO_LOG_DIR`` > ``LIUHAO_DATA_DIR`` > ``%LOCALAPPDATA%/LiuHao/data``），
+# 不再写仓库根 ``logs/``；安装版的生成副本仍写数据目录绝对路径并照常生效。
+#
+# 控制台只输出 WARNING 及以上：INFO 全量进文件（可轮转），避免桌面壳把子进程
+# stdout 追加到 desktop-gateway.log 时无限增长。
+# =============================================================================
+
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  text:
+    format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: WARNING
+    formatter: text
+    stream: ext://sys.stdout
+
+  app_file:
+    class: src.logging_config.MultiProcessRotatingFileHandler
+    level: INFO
+    formatter: text
+    filename: logs/liuhao.log   # 相对路径 → 用户数据目录/logs（见文件头）
+    maxBytes: 10485760          # 10 MiB
+    backupCount: 5
+    encoding: utf-8
+    delay: true                 # 首次写入才打开，避免空文件
+
+  error_file:
+    class: src.logging_config.MultiProcessRotatingFileHandler
+    level: ERROR
+    formatter: text
+    filename: logs/error.log
+    maxBytes: 10485760          # 10 MiB
+    backupCount: 5
+    encoding: utf-8
+    delay: true
+
+loggers:
+  # 不定义 handler：向上传播到 root，由 root 的轮转文件接住。
+  uvicorn:
+    level: INFO
+    propagate: true
+  uvicorn.access:
+    level: INFO
+    propagate: true
+  # 第三方库降噪
+  sqlalchemy.engine:
+    level: WARNING
+    propagate: true
+  httpx:
+    level: WARNING
+    propagate: true
+  httpcore:
+    level: WARNING
+    propagate: true
+
+root:
+  level: INFO
+  handlers: [console, app_file, error_file]

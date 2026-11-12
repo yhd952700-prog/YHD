@@ -63,10 +63,10 @@ class TestMultiAgentCoordination:
         assert len(distributed) == 3
         assert set(distributed.values()) == {task1, task2, task3}
         
-        # Verify all agents got a task
-        assert "agent_0" in distributed
-        assert "agent_1" in distributed
-        assert "agent_2" in distributed
+        # Verify all agents got a task (ids are globally unique per employee:
+        # "<name>-a<i>"; assert on the actual agent keys, not a hardcoded format)
+        assert set(distributed.keys()) == set(employee.agents.keys())
+        assert len(employee.agents) == 3
     
     def test_agent_result_aggregation(self):
         """Test that employee can aggregate results from multiple agents."""

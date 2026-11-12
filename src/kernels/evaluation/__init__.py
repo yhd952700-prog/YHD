@@ -18,11 +18,48 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 import threading
 
 from src.kernels._crosscutting import kernel_action
+
+
+#: The ONLY re-execution state that counts as a successful replan.
+#:
+#: Deliberately a whitelist. A blacklist ("anything that is not FAILED") cannot
+#: distinguish "succeeded" from "was cancelled by a human" or "is a state this
+#: kernel has never heard of", and conflating those is how a re-plan reports
+#: success while nothing was achieved.
+REPLAN_SUCCESS_STATE = "completed"
+
+
+def _state_value(state: Any) -> Optional[str]:
+    """Reduce a run-state to its comparable string, or ``None`` if unknowable.
+
+    ``AgentRunResult.state`` is ``AgentRunState``, a ``str``-mixin Enum. Two
+    facts make the obvious comparison wrong in opposite directions:
+
+    * ``str(AgentRunState.FAILED)`` is ``"AgentRunState.FAILED"`` because
+      ``Enum`` supplies ``__str__`` — so ``str(state) == "failed"`` never
+      matches a real runtime failure;
+    * ``AgentRunState.FAILED == "failed"`` *is* ``True`` thanks to the ``str``
+      mixin — so a direct ``==`` happens to work but silently depends on the
+      mixin, and would break for a plain ``Enum``.
+
+    Reading ``.value`` when present and comparing the raw value otherwise makes
+    both shapes agree and keeps this kernel from importing the ``ai`` layer
+    (layering stays clean). Anything without a usable value returns ``None``,
+    which the caller's whitelist comparison treats as failure — fail closed.
+    """
+    if state is None:
+        return None
+    value = getattr(state, "value", None)
+    if isinstance(value, str):
+        return value
+    if isinstance(state, str):
+        return state
+    return None
 
 
 class EvaluationOutcome(str, Enum):
@@ -95,6 +132,9 @@ class EvaluationResult:
     escalation_required: bool = False
     human_checkpoint: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: User-facing conclusion synthesized from the REAL task outputs. Empty
+    #: means "not synthesized yet"; consumers must not invent one in that case.
+    summary: str = ""
     evaluated_at: datetime = field(default_factory=utc_now)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -142,12 +182,27 @@ class Evaluator:
     """Evaluates outcomes against criteria."""
     lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
-    def __init__(self, criteria: Optional[EvaluationCriteria] = None):
+    def __init__(
+        self,
+        criteria: Optional[EvaluationCriteria] = None,
+        replan_executor: Optional[Callable[[str], Any]] = None,
+    ) -> None:
         self.criteria = criteria or EvaluationCriteria()
         self._evaluation_history: List[EvaluationResult] = []
         self._feedback_history: List[FeedbackEntry] = []
         self._replan_requests: List[ReplanRequest] = []
+        self._replan_executor = replan_executor
         self._lock = threading.RLock()
+
+    def set_replan_executor(self, executor: Optional[Callable[[str], Any]]) -> None:
+        """Wire the real re-execution path (AgentRuntime.replan) into this kernel.
+
+        Without it ``execute_replan`` cannot re-run anything and must report
+        failure honestly instead of flipping status. This mirrors the
+        ``capability_executor`` injection seam on ``ExecutionEngine``: the
+        evaluation kernel stays layering-clean and depends only on a callable.
+        """
+        self._replan_executor = executor
 
     @kernel_action("evaluation.evaluate")
     def evaluate(
@@ -173,6 +228,23 @@ class Evaluator:
 
         # Determine outcome
         outcome = self._determine_outcome(overall_score, criterion_results, eval_criteria)
+
+        # Alignment reality-check. The criteria comparison above knows nothing
+        # about whether the work actually executed. A goal with no declared
+        # success criteria is "trivially SUCCESS" by _determine_outcome (an
+        # empty criterion set means nothing was violated), but if the actual
+        # execution reported failed tasks the goal did NOT succeed. Reporting
+        # SUCCESS there is exactly the "reports success, did nothing / failed"
+        # failure class this kernel must not have. Reconcile the verdict with
+        # what actually happened -- only when the caller supplied it, so
+        # generic callers that pass no execution state are unaffected.
+        failed = actual_outcome.get("failed") or []
+        completed = actual_outcome.get("completed") or []
+        if failed and outcome == EvaluationOutcome.SUCCESS:
+            outcome = (
+                EvaluationOutcome.FAILED if not completed
+                else EvaluationOutcome.PARTIAL
+            )
 
         # Generate feedback
         feedback, feedback_type = self._generate_feedback(
@@ -520,14 +592,63 @@ class Evaluator:
 
     @kernel_action("evaluation.execute_replan")
     def execute_replan(self, replan_id: str) -> bool:
-        """Mark replan as executed."""
+        """Actually re-execute the failed goal through the wired runtime.
+
+        Previously this only flipped ``r.status = "executed"`` (a status-flip
+        stub that never re-ran the goal). Now it routes to ``_replan_executor``
+        (set by :meth:`set_replan_executor`, normally wired to
+        ``AgentRuntime.replan`), and only marks the request executed — and
+        returns ``True`` — when the re-execution genuinely succeeds. If no
+        executor is wired, or the re-execution fails, it returns ``False``
+        honestly and leaves the status untouched (never claims success while
+        failing).
+        """
         with self._lock:
+            target: Optional[ReplanRequest] = None
             for r in self._replan_requests:
                 if r.id == replan_id:
-                    r.status = "executed"
-                    r.executed_at = utc_now()
-                    return True
-        return False
+                    target = r
+                    break
+            if target is None:
+                return False
+
+            executor = self._replan_executor
+            if executor is None:
+                # No runtime wired: re-execution is impossible. Honest failure.
+                return False
+
+            try:
+                result = executor(target.goal_id)
+            except Exception:
+                return False
+
+            # Success is a WHITELIST, not a blacklist.
+            #
+            # The previous test was ``str(state) == "failed"`` with a comment
+            # claiming a str-Enum compares robustly. It does not:
+            # ``str(AgentRunState.FAILED)`` is ``"AgentRunState.FAILED"`` (Enum
+            # defines ``__str__``), while ``AgentRunState.FAILED == "failed"`` is
+            # True (str mixin). So the real runtime's FAILED result sailed past
+            # the check and ``execute_replan`` returned True with
+            # ``status="executed"`` for a goal that failed again and did no
+            # work -- the exact "reports success, did nothing" class this method
+            # was written to prevent. The regression test missed it because it
+            # fed a bare string ``"failed"``, never the enum the runtime
+            # actually returns.
+            #
+            # A blacklist also cannot express the other half of the contract:
+            # CANCELLED means a human stopped the goal, so re-running it would
+            # override a sovereign decision, and it must not read as success.
+            # Only an explicit COMPLETED -- extracted via ``.value`` so a
+            # str-Enum and a plain string agree -- counts, and anything this
+            # kernel does not recognise fails closed.
+            state = getattr(result, "state", None)
+            if _state_value(state) != REPLAN_SUCCESS_STATE:
+                return False
+
+            target.status = "executed"
+            target.executed_at = utc_now()
+            return True
 
     def stats(self) -> Dict[str, Any]:
         """Get evaluator statistics."""

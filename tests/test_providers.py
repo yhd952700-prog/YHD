@@ -13,6 +13,8 @@
 - ``OpenAIProvider`` 把 ``self.timeout`` 真的交给 SDK 客户端
 """
 
+import pytest
+
 
 def _clear_env(monkeypatch):
     for k in (
@@ -194,7 +196,183 @@ def test_openai_client_honors_configured_timeout(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", _FakeClient)
     p = OpenAIProvider(name="t", model="m", api_key="sk-test", timeout=123.0)
     p._get_client()
+    # 用户显式配置的超时是硬约束：传输层读超时必须正好是 123 秒，
+    # 不能被任何默认值盖过（那样用户设的超时就成了空话）。
+    assert p.timeout == 123.0
+    assert p.first_token_timeout == 123.0
     assert captured.get("timeout") == 123.0
+
+
+def test_openai_client_disables_redirects(monkeypatch):
+    """运行时必须关闭自动重定向，302 不能把请求带去内网。"""
+    _isolate(monkeypatch)
+    import httpx
+    import openai
+
+    from src.ai.providers import OpenAIProvider
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeClient)
+    p = OpenAIProvider(
+        name="t",
+        model="m",
+        api_key="sk-test",
+        base_url="https://api.openai.com/v1",
+        timeout=5,
+    )
+    p._get_client()
+    http_client = captured.get("http_client")
+    assert isinstance(http_client, httpx.Client)
+    assert http_client.follow_redirects is False
+
+
+def test_openai_redirect_maps_to_neutral_error(monkeypatch):
+    """3xx 一律拒绝；用户可见消息不含内网地址/上游原文。"""
+    _isolate(monkeypatch)
+    from types import SimpleNamespace
+
+    from src.ai.providers import OpenAIProvider, ProviderHTTPError
+
+    class _Redirect(Exception):
+        status_code = 302
+
+    class _Completions:
+        def create(self, **kwargs):
+            raise _Redirect("302 -> http://169.254.169.254/latest/meta-data/")
+
+    p = OpenAIProvider(name="t", model="m", api_key="sk-test", timeout=5)
+    p._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions())
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        p.chat([{"role": "user", "content": "hi"}])
+    assert exc_info.value.status_code == 302
+    assert "重定向" in str(exc_info.value)
+    assert "169.254" not in str(exc_info.value)
+
+
+def test_ollama_redirect_is_not_followed(monkeypatch):
+    """Ollama 路径同样不跟随重定向，且错误消息中性。"""
+    _isolate(monkeypatch)
+    import requests
+
+    from src.ai.providers import OllamaProvider, ProviderHTTPError
+
+    captured = {}
+
+    class _Response:
+        status_code = 302
+        text = "Found: http://169.254.169.254/latest/meta-data/"
+
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response()
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    p = OllamaProvider(
+        name="o", model="qwen2.5:3b", base_url="http://127.0.0.1:11434", timeout=5
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        p.generate("hi")
+    assert captured["allow_redirects"] is False
+    assert "重定向" in str(exc_info.value)
+    assert "169.254" not in str(exc_info.value)
+
+
+def test_runtime_guard_rejects_private_and_rebinding(monkeypatch):
+    """每次请求前重新解析：解析结果变私网即拒绝；公网解析仍放行。"""
+    from src.ai import net_guard
+
+    public = [(2, 1, 6, "", ("93.184.216.34", 443))]
+    private = [(2, 1, 6, "", ("169.254.169.254", 443))]
+    answers = [public, private]
+    calls = {"n": 0}
+
+    def _fake_getaddrinfo(*args, **kwargs):
+        answer = answers[min(calls["n"], len(answers) - 1)]
+        calls["n"] += 1
+        return answer
+
+    monkeypatch.setattr(net_guard.socket, "getaddrinfo", _fake_getaddrinfo)
+    net_guard.assert_safe_runtime_target("https://rebind.example.com/v1")
+    with pytest.raises(net_guard.RuntimeTargetRejected) as exc_info:
+        net_guard.assert_safe_runtime_target("https://rebind.example.com/v1")
+    assert "内网" in str(exc_info.value)
+    assert "169.254" not in str(exc_info.value)
+
+    monkeypatch.setattr(
+        net_guard.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("10.0.0.7", 80))],
+    )
+    with pytest.raises(net_guard.RuntimeTargetRejected):
+        net_guard.assert_safe_runtime_target("http://internal.example.com")
+
+
+def test_openai_public_endpoint_still_generates(monkeypatch):
+    """加了运行时校验与"不跟随重定向"后，正常公网端点必须照常可用。"""
+    _isolate(monkeypatch)
+    from types import SimpleNamespace
+
+    from src.ai import net_guard
+    from src.ai.providers import OpenAIProvider
+
+    monkeypatch.setattr(
+        net_guard.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    class _Completions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="pong"))]
+            )
+
+    p = OpenAIProvider(
+        name="t",
+        model="m",
+        api_key="sk-test",
+        base_url="https://api.openai.com/v1",
+        timeout=5,
+    )
+    p._client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    assert p.generate("ping") == "pong"
+
+
+def test_ollama_successful_response_still_returned(monkeypatch):
+    """Ollama 正常 200 不受重定向策略影响，仍照常返回正文。"""
+    _isolate(monkeypatch)
+    import requests
+
+    from src.ai.providers import OllamaProvider
+
+    captured = {}
+
+    class _Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"response": "pong", "prompt_eval_count": 1, "eval_count": 1}
+
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response()
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    p = OllamaProvider(
+        name="o", model="qwen2.5:3b", base_url="http://127.0.0.1:11434", timeout=5
+    )
+    assert p.generate("ping") == "pong"
+    assert captured["allow_redirects"] is False
 
 
 def test_provider_timeout_env_applied(monkeypatch):
@@ -216,8 +394,9 @@ def test_provider_timeout_env_applied(monkeypatch):
         reset_provider()
 
 
-def test_provider_timeout_env_invalid_keeps_default(monkeypatch, capsys):
-    """非法值不静默改行为：回落类默认超时，并打印提示（不抛异常）。"""
+def test_provider_timeout_env_invalid_keeps_default(monkeypatch, caplog):
+    """非法值不静默改行为：回落类默认超时，并在日志里留下提示（不抛异常）。"""
+    caplog.set_level("WARNING", logger="liuhao.ai.providers")
     _isolate(
         monkeypatch,
         env={
@@ -231,7 +410,83 @@ def test_provider_timeout_env_invalid_keeps_default(monkeypatch, capsys):
     reset_provider()
     try:
         p = get_provider()
-        assert p.timeout == 30.0
-        assert "AI_PROVIDER_TIMEOUT" in capsys.readouterr().out
+        # 类默认值已从 30 秒提高到 120 秒：30 秒会把本地模型冷启动误判成超时。
+        assert p.timeout == 120.0
+        assert "AI_PROVIDER_TIMEOUT" in caplog.text
     finally:
         reset_provider()
+
+
+# ==================== ProviderFactory 插件式注册 ====================
+
+
+@pytest.fixture
+def registry():
+    """暴露真实注册表，并在用例结束后恢复内置 7 种，避免污染其它测试。"""
+    from src.ai.providers import ProviderFactory
+
+    snapshot = dict(ProviderFactory._providers)
+    try:
+        yield ProviderFactory
+    finally:
+        ProviderFactory._providers.clear()
+        ProviderFactory._providers.update(snapshot)
+
+
+def test_register_provider_makes_it_creatable_without_editing_factory(registry):
+    from src.ai.providers import BaseProvider
+
+    class EchoProvider(BaseProvider):
+        def generate(self, prompt, **kwargs):
+            return f"echo:{prompt}"
+
+    registry.register_provider("echo", EchoProvider)
+    provider = registry.create_provider("echo", name="t", model="m")
+    assert isinstance(provider, EchoProvider)
+    assert provider.generate("hi") == "echo:hi"
+
+
+def test_registered_name_is_case_insensitive(registry):
+    from src.ai.providers import BaseProvider
+
+    class VendorProvider(BaseProvider):
+        def generate(self, prompt, **kwargs):
+            return "vendor"
+
+    registry.register_provider("  VenDor ", VendorProvider)
+    assert "vendor" in registry.get_supported_providers()
+    assert isinstance(registry.create_provider("VENDOR", name="t", model="m"), VendorProvider)
+
+
+def test_register_provider_can_override_a_builtin(registry):
+    from src.ai.providers import BaseProvider
+
+    class ReplacementProvider(BaseProvider):
+        def generate(self, prompt, **kwargs):
+            return "replacement"
+
+    registry.register_provider("mock", ReplacementProvider)
+    assert isinstance(registry.create_provider("mock", name="t", model="m"), ReplacementProvider)
+
+
+def test_unknown_provider_type_still_fails_and_lists_supported(registry):
+    """新规则不能让未知类型变成静默回落：仍是显式 ValueError，且带候选。"""
+    with pytest.raises(ValueError) as info:
+        registry.create_provider("not-a-provider", name="t", model="m")
+    message = str(info.value)
+    assert "Unknown provider type: not-a-provider" in message
+    assert "supported:" in message
+    assert "mock" in message
+
+
+def test_register_provider_rejects_a_non_provider_class(registry):
+    with pytest.raises(TypeError) as info:
+        registry.register_provider("bad", object)  # type: ignore[arg-type]
+    assert "BaseProvider" in str(info.value)
+
+
+def test_register_provider_rejects_an_empty_name(registry):
+    from src.ai.providers import MockProvider
+
+    with pytest.raises(ValueError):
+        registry.register_provider("   ", MockProvider)

@@ -1,0 +1,176 @@
+"""Backend linkage test: a goal that writes a file records it as an artifact.
+
+Honesty principle: this test proves REAL side effects through the real
+production code path (``AIStateManager.create_and_execute_goal`` -> AgentRuntime
+-> ExecutionEngine -> file_write). No mocks, no faked artifacts.
+
+What it proves (and how):
+  1. A natural-language goal that routes to ``file_write`` (via the deterministic
+     decomposer, ``src/kernels/execution/__init__.py``) really writes a file into
+     the workspace (proven by ``tests/integration/test_execution_loop_e2e.py``).
+  2. The goal entry returned by ``create_and_execute_goal`` carries
+     ``artifacts`` containing the produced file as a WORKSPACE-RELATIVE path.
+  3. The same artifact is surfaced by ``GET /v1/goals/{id}`` (the real endpoint
+     handler in ``src/gateway/ai_management.py``).
+  4. A goal that writes NO file records an EMPTY ``artifacts`` list — fail-closed,
+     never inventing a path.
+
+This mirrors ``tests/integration/test_execution_loop_e2e.py``: a synchronous
+``create_and_execute_goal(..., background=False)`` is driven directly, avoiding
+the HTTP TestClient lifespan wiring (which can hang teardown via a thread leak).
+The ``GET`` handler is exercised by calling the real FastAPI endpoint function
+directly.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from types import SimpleNamespace
+
+import pytest
+
+from src.gateway.ai_management import (
+    AIStateManager,
+    _outcome_label,
+    get_goal as get_goal_endpoint,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace_and_audit(monkeypatch):
+    """Redirect the workspace and the audit DB to throwaway temp paths."""
+    ws = tempfile.mkdtemp(prefix="lh_ws_art_")
+    aud_dir = tempfile.mkdtemp(prefix="lh_aud_art_")
+    aud_path = os.path.join(aud_dir, "audit_store.db")
+
+    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", ws)
+    monkeypatch.setenv("AUDIT_DB_PATH", aud_path)
+    monkeypatch.setenv("HTTP_PROXY", "")
+    monkeypatch.setenv("HTTPS_PROXY", "")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+
+    # Force the singletons to rebuild against the redirected env.
+    import src.kernels.audit as _audit_mod
+    import src.gateway.ai_management as _aim_mod
+    _audit_mod._audit_store = None
+    _aim_mod.AIStateManager._instance = None
+
+    yield {"workspace": ws, "audit_db": aud_path}
+
+    # No cleanup of temp dirs on purpose: a passing run leaves the proof on disk.
+
+
+def _mgr() -> AIStateManager:
+    return AIStateManager()
+
+
+def test_goal_that_writes_file_records_artifact_and_surfaces_via_api():
+    """A file-producing goal records its artifact in the entry AND the GET API."""
+    entry = _mgr().create_and_execute_goal(
+        "write a file named hello.txt containing 'Hello World'",
+        background=False,
+    )
+
+    # 1) Terminal state, non-empty task list (sanity, same as the e2e test).
+    assert entry["state"] in ("completed", "failed"), entry
+    assert isinstance(entry["tasks"], list) and len(entry["tasks"]) > 0, entry
+
+    # 2) The entry carries the produced file as a workspace-relative artifact.
+    #    "hello.txt" is the relative path; the real file sits at <ws>/hello.txt.
+    artifacts = entry.get("artifacts", [])
+    assert isinstance(artifacts, list), entry
+    assert "hello.txt" in artifacts, (
+        f"expected 'hello.txt' in artifacts, got {artifacts}; entry={entry}"
+    )
+    # No absolute paths leak into the artifact list (must be workspace-relative).
+    assert all(not os.path.isabs(a) for a in artifacts), artifacts
+    # The real file actually exists on disk.
+    target = os.path.join(os.environ["LIUHAO_WORKSPACE_ROOT"], "hello.txt")
+    assert os.path.exists(target), f"expected real file at {target}"
+
+    # 3) GET /v1/goals/{id} surfaces the same artifact list.
+    served = get_goal_endpoint(entry["goal_id"])
+    served_artifacts = served.get("artifacts", [])
+    assert "hello.txt" in served_artifacts, (
+        f"GET /v1/goals/{entry['goal_id']} did not return the artifact; "
+        f"got {served_artifacts}"
+    )
+
+
+def _result(**overrides):
+    base = dict(
+        goal_id="goal-source",
+        correlation_id="corr-source",
+        state="completed",
+        context=None,
+        evaluation=None,
+        trace=None,
+        memory_keys=[],
+        persist_errors=[],
+        replan_count=0,
+        replan_suggested=False,
+        error=None,
+        preflight_notices=[],
+        decomposition_source=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_result_entry_carries_decomposition_source():
+    entry = AIStateManager._result_to_dict(
+        _result(decomposition_source="model_retry"), "整理周报", "L1"
+    )
+    assert entry["decomposition_source"] == "model_retry"
+
+
+def test_result_entry_without_source_stays_none_never_model():
+    """A retry/blocked run that never planned must not be recorded as model."""
+    result = _result()
+    del result.decomposition_source
+    entry = AIStateManager._result_to_dict(result, "整理周报", "L1")
+    assert entry["decomposition_source"] is None
+
+
+def test_goal_that_writes_no_file_has_empty_artifacts():
+    """A goal that produces no workspace file records an empty artifact list."""
+    entry = _mgr().create_and_execute_goal("compute 2+2", background=False)
+
+    assert isinstance(entry.get("artifacts", None), list), entry
+    assert entry["artifacts"] == [], (
+        f"a file-less goal must have empty artifacts, got {entry.get('artifacts')}"
+    )
+
+    # The GET API agrees.
+    served = get_goal_endpoint(entry["goal_id"])
+    assert served.get("artifacts", []) == [], served
+
+
+def test_task_payload_carries_verification_and_score():
+    """验证结论必须上屏：不能只藏在 trace 里，否则「已完成」分不出真假。"""
+    entry = _mgr().create_and_execute_goal(
+        "write a file named verify.txt containing 'ok'",
+        background=False,
+    )
+    tasks = entry.get("tasks") or []
+    assert tasks, entry
+
+    for task in tasks:
+        assert "verification" in task, task
+        assert "score" in task, task
+
+    verified = [task for task in tasks if task["verification"]]
+    assert verified, "内核应给每个执行过的任务写入验证结论"
+    for task in verified:
+        assert isinstance(task["score"], float), task
+        assert task["verification"] in ("success", "partial", "failed", "unverified")
+
+
+def test_outcome_is_serialized_as_enum_value():
+    """串到前端的 outcome 必须是 ``partial``，不是 ``EvaluationOutcome.PARTIAL``。"""
+    assert _outcome_label("success") == "success"
+    assert _outcome_label("partial") == "partial"
+    assert _outcome_label("failed") == "failed"
+    # 未知/历史值原样返回，不能抛错打断整个目标序列化。
+    assert _outcome_label("legacy_value") == "legacy_value"

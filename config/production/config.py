@@ -252,7 +252,12 @@ class ProductionConfig:
         if os.getenv("LOG_LEVEL"):
             self.observability.log_level = os.getenv("LOG_LEVEL")
         if os.getenv("METRICS_ENABLED"):
-            self.observability.metrics_enabled = os.getenv("METRICS_ENABLED").lower() == "true"
+            # 接受 1/true/yes/on：env 文件与 compose 全用 1/0 约定
+            # （METRICS_PERSIST=1 也是按 "1" 判的）；此前只认 "true"，
+            # 导致 docker.env 的 METRICS_ENABLED=1 被静默判成关闭。
+            self.observability.metrics_enabled = os.getenv("METRICS_ENABLED").strip().lower() in (
+                "1", "true", "yes", "on",
+            )
         
         # Deployment
         if os.getenv("DOCKER_IMAGE"):
@@ -355,9 +360,25 @@ def get_production_config() -> ProductionConfig:
 
 
 def get_config(environment: Optional[str] = None) -> ProductionConfig:
-    """Get configuration for specified environment."""
-    env = environment or os.getenv("ENVIRONMENT", "development")
-    
+    """Get configuration for specified environment.
+
+    When no explicit ``environment`` is given, the production decision is routed
+    through the unified posture resolver (``src.security.posture``, honoring
+    LIUHAO_ENV > ENVIRONMENT > APP_ENV) rather than reading ENVIRONMENT alone —
+    otherwise a deployment that sets LIUHAO_ENV/APP_ENV but not ENVIRONMENT would
+    silently fall through to a development config. An explicit ``environment``
+    string still wins (e.g. staging), and an unset ENVIRONMENT falls back to
+    development.
+    """
+    if environment is None:
+        from src.security.posture import is_production
+        if is_production():
+            environment = "production"
+        else:
+            environment = os.getenv("ENVIRONMENT", "development")
+
+    env = environment
+
     if env == "production":
         return get_production_config()
     elif env == "staging":

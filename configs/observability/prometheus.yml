@@ -1,4 +1,36 @@
 # Prometheus Configuration for LiuHao AI OS
+#
+# ⚠️ 2026-09 修正说明（请读完再改这个文件）
+# ---------------------------------------------------------------------------
+# 修改前的配置**从未抓到过任何一条 LIUHAO 自有指标**，原因有三，都已修掉：
+#   1. `metrics_path: '/metrics'` —— 仓库里没有 `/metrics` 这个路由。真实路由是
+#      `/v1/metrics/prometheus`（Prometheus 文本格式，见
+#      src/gateway/observability.py）与 `/v1/metrics`（JSON，见
+#      src/gateway/health.py）。原来是 404，抓取必然失败。
+#   2. target `liuhao-ai-os:8000` —— 没有任何 compose 服务叫 `liuhao-ai-os`，
+#      也没有任何服务监听 8000。真实服务名/端口见下。
+#   3. `ai-providers` job 抓的 `provider_*` 指标族（provider_up、
+#      provider_requests_total …）在 src/ 下**零发射点**，抓到了也永远是空。
+#      该 job 已删除；等 provider 指标真正接线后再加回。
+#
+# 真实服务名（实测 docker-compose 文件）：
+#   * docker-compose.prod.yml  → service `api`，容器 liuhao-api，端口 8080
+#   * docker-compose.yml       → service `app`，容器 liuhao-app，端口 8080
+# 下面默认指向生产 `api:8080`。
+#
+# ⚠️ 仍然存在的网络前提（未在本文件内解决，必须读）
+# ---------------------------------------------------------------------------
+# 本栈（docker-compose.observability.yml）默认只挂 `observability` 网络，而应用
+# 栈挂的是 `liuhao-network`（prod）/ `liuhao`（dev）。**两个 compose 工程的网络
+# 不互通**时，`api` 这个 DNS 名在 prometheus 容器里根本解析不到，抓取会以
+# "no such host" 失败 —— 即使 path 和端口全对。为了让抓取真能成功，
+# docker-compose.observability.yml 里的 prometheus 服务已额外挂上
+# `liuhao-network`（同名即复用、缺失即创建，所以单独 up 本栈也不会失败）。
+# 若你改用 dev 栈（`app`），需要把 `app` 也接到同一个网络上，或把下面的 target
+# 换成能从 prometheus 容器解析到的主机名。
+#
+# Rollback: 改回 metrics_path + target 即可，无代码依赖；
+#           scripts/verify_alert_rules.py 会校验 metrics_path 是否仍是真实路由。
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -23,23 +55,19 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # LiuHao AI OS application metrics
+  # LiuHao AI OS application metrics.
+  #
+  # metrics_path 必须是真实存在的路由：/v1/metrics/prometheus。
+  # 若 LIUHAO_PROMETHEUS_METRICS 被设为 0/false/off/no，该端点返回 404
+  # （src/observability/production.py），抓取会失败 —— 这是运维显式关闭导出，
+  # 不是配置错误。docker-compose.prod.yml 未设置该变量，故默认导出。
   - job_name: 'liuhao-ai-os'
-    metrics_path: '/metrics'
+    metrics_path: '/v1/metrics/prometheus'
     static_configs:
-      - targets: ['liuhao-ai-os:8000']
+      - targets: ['api:8080']
         labels:
           service: 'liuhao-ai-os'
           component: 'api'
-
-  # Provider metrics
-  - job_name: 'ai-providers'
-    metrics_path: '/metrics'
-    static_configs:
-      - targets: ['liuhao-ai-os:8000']
-        labels:
-          service: 'liuhao-ai-os'
-          component: 'providers'
 
   # Node exporter for system metrics
   - job_name: 'node-exporter'

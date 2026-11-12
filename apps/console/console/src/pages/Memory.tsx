@@ -1,0 +1,513 @@
+/**
+ * 记忆（所有账号可见，范围不同）。
+ *
+ * 根：自己的 + 整棵范围（只读检索、可导出整棵范围）。
+ * 非根：只有自己的；不出现范围切换。
+ *
+ * 端点全部是真实实现（`src/gateway/account_memory.py`）：
+ * `GET /v1/memory/entries`、`POST /v1/memory/export`、
+ * `GET|POST /v1/memory/custody`。没有契约桩，也没有"待联调"分支。
+ * 无数据与无权限都只给中性文案，不出现任何层级措辞。
+ */
+
+import { useState } from 'react'
+import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
+import {
+  deleteMemoryEntry,
+  exportMemory,
+  loadMemory,
+  loadMemoryCustody,
+  neutralDenial,
+  setMemoryCustody,
+  updateMemoryEntry,
+  useAccountData,
+} from '../lib/accounts'
+import { useApi } from '../lib/api'
+import type { EmployeesPayload } from '../lib/contracts'
+import { employeeDisplayName, employeesOf } from '../lib/employees'
+import type { EmployeeMemoriesPayload } from '../lib/employees'
+import { Card, Guard } from '../components/ui'
+
+/** 记忆来源的内部工程名 → 中文标签；未收录的原样显示（不猜语义）。 */
+const SOURCE_LABELS: Record<string, string> = {
+  legacymemory_store: '旧版记忆库',
+  'agent.turn': '智能体轮次',
+  conversation: '对话',
+  task: '任务',
+  knowledge: '知识库',
+  manual: '人工录入',
+}
+
+function sourceLabel(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return '—'
+  return SOURCE_LABELS[text] ?? text
+}
+
+/**
+ * 后端 `created_at` 是 ISO 原文（含微秒）；直接上屏会看到
+ * `2026-11-07T01:55:15.871806` 这类机器时间，必须按本机时区本地化。
+ */
+/**
+ * 记忆条目客户端分页大小。
+ *
+ * `/v1/memory/entries` 没有 offset / limit，也不返回分页游标；改契约会同时
+ * 牵动网关与成员端，因此沿用现有接口，在客户端按页切片。检索仍走服务端 query。
+ */
+const MEMORY_PAGE_SIZE = 50
+
+function entryTime(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return '—'
+  const parsed = new Date(text)
+  if (Number.isNaN(parsed.getTime())) return text
+  return parsed.toLocaleString('zh-CN', { hour12: false })
+}
+
+export function Memory({
+  profile,
+  caps,
+  readOnly,
+}: {
+  profile: AccountProfile
+  caps: AccountCaps
+  readOnly: boolean
+}) {
+  const [query, setQuery] = useState('')
+  const [applied, setApplied] = useState('')
+  const [scope, setScope] = useState<'self' | 'subtree'>('self')
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [custodyBusy, setCustodyBusy] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [pageIndex, setPageIndex] = useState(0)
+  const [employeeName, setEmployeeName] = useState('')
+  // 员工名册只为「按员工看记忆」这张表服务；名册读不到时这一块如实降级，
+  // 不影响上面属于你自己的记忆。
+  const roster = useApi<EmployeesPayload>('/v1/employees', 0)
+  const employees = employeesOf(roster.data)
+  const employeeMemory = useApi<EmployeeMemoriesPayload>(
+    employeeName ? `/v1/employees/${encodeURIComponent(employeeName)}/memories` : null,
+    0,
+  )
+
+  const memory = useAccountData(() =>
+    loadMemory({ principal: profile.principal, isRoot: profile.isRoot }, scope, applied),
+  )
+  const custody = useAccountData(() => loadMemoryCustody())
+
+  const allEntries = memory.data?.entries ?? []
+  const memoryPageCount = Math.max(1, Math.ceil(allEntries.length / MEMORY_PAGE_SIZE))
+  // 删除或检索后条目变少时，当前页会越界；夹到最后一页，绝不渲染空白页。
+  const safeMemoryPage = Math.min(pageIndex, memoryPageCount - 1)
+  const pageEntries = allEntries.slice(
+    safeMemoryPage * MEMORY_PAGE_SIZE,
+    (safeMemoryPage + 1) * MEMORY_PAGE_SIZE,
+  )
+
+  const doExport = async () => {
+    if (readOnly) {
+      setNotice({ tone: 'error', text: '只读查看中，写操作已禁用' })
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      const result = await exportMemory(scope, 'json')
+      const blob = new Blob([result.data.content], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = result.data.filename
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setNotice({ tone: 'ok', text: `导出完成，共 ${result.data.entries} 条` })
+    } catch (error) {
+      setNotice({ tone: 'error', text: neutralDenial(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleCustody = async (next: boolean) => {
+    if (readOnly) {
+      setNotice({ tone: 'error', text: '只读查看中，写操作已禁用' })
+      return
+    }
+    setCustodyBusy(true)
+    setNotice(null)
+    try {
+      await setMemoryCustody(next)
+      custody.reload()
+      setNotice({ tone: 'ok', text: next ? '已开启记忆代管' : '已关闭记忆代管' })
+    } catch (error) {
+      setNotice({ tone: 'error', text: neutralDenial(error) })
+    } finally {
+      setCustodyBusy(false)
+    }
+  }
+
+  const startEdit = (entry: { id: string; text: string }) => {
+    if (readOnly) {
+      setNotice({ tone: 'error', text: '只读查看中，写操作已禁用' })
+      return
+    }
+    setEditingId(entry.id)
+    setEditText(entry.text)
+    setNotice(null)
+  }
+
+  const saveEdit = async () => {
+    if (!editingId) return
+    const text = editText.trim()
+    if (!text) {
+      setNotice({ tone: 'error', text: '记忆内容不能为空' })
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      await updateMemoryEntry(editingId, { text })
+      setEditingId(null)
+      memory.reload()
+      setNotice({ tone: 'ok', text: '记忆已纠正' })
+    } catch (error) {
+      setNotice({ tone: 'error', text: neutralDenial(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeEntry = async (entry: { id: string; text: string }) => {
+    if (readOnly) {
+      setNotice({ tone: 'error', text: '只读查看中，写操作已禁用' })
+      return
+    }
+    if (!window.confirm(`删除这条记忆？删除后检索不到，且不可恢复。\n\n${entry.text}`)) {
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      await deleteMemoryEntry(entry.id)
+      memory.reload()
+      setNotice({ tone: 'ok', text: '记忆已删除' })
+    } catch (error) {
+      setNotice({ tone: 'error', text: neutralDenial(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="os-grid">
+      <Card
+        title="记忆"
+        sub={
+          caps.canSubtreeMemory
+            ? '可检索自己的记忆，也可只读检索整棵范围；导出范围随检索范围。'
+            : '这里只显示属于你自己的记忆。'
+        }
+        span={12}
+      >
+        {notice && (
+          <div className={notice.tone === 'ok' ? 'os-note' : 'os-alert'} role="status">
+            {notice.text}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <input
+            className="os-input-plain"
+            style={{ flex: 1, minWidth: 200 }}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索记忆内容、来源或标签"
+            aria-label="搜索记忆"
+          />
+          {caps.canSubtreeMemory && (
+            <select
+              aria-label="检索范围"
+              className="os-input-plain"
+              style={{ width: 'auto' }}
+              value={scope}
+              onChange={(event) => {
+                setScope(event.target.value as 'self' | 'subtree')
+                setPageIndex(0)
+                memory.reload()
+              }}
+            >
+              <option value="self">仅自己</option>
+              <option value="subtree">整棵范围</option>
+            </select>
+          )}
+          <button
+            className="os-btn"
+            style={{ width: 'auto' }}
+            onClick={() => {
+              setApplied(query.trim())
+              setPageIndex(0)
+              memory.reload()
+            }}
+          >
+            检索
+          </button>
+          <button
+            className="os-btn os-btn-ghost"
+            style={{ width: 'auto' }}
+            disabled={readOnly || busy}
+            onClick={() => void doExport()}
+          >
+            导出{scope === 'subtree' ? '整棵范围' : '我的记忆'}
+          </button>
+        </div>
+
+        <Guard
+          loading={memory.loading}
+          error={memory.error}
+          data={memory.data}
+          isEmpty={(data) => data.entries.length === 0}
+          emptyTitle={applied ? '没有命中的记忆' : '还没有记忆'}
+          emptyHint={
+            applied
+              ? '换个关键词试试。'
+              : '对话与任务产生的记忆会出现在这里。'
+          }
+          onRetry={memory.reload}
+        >
+          {() => (
+            <div className="os-table-wrap">
+              <table className="os-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>来源账号</th>
+                    <th>来源</th>
+                    <th>标签</th>
+                    <th>内容</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageEntries.map((entry) => {
+                    const mine = entry.account_id === profile.principal
+                    return (
+                      <tr key={entry.id}>
+                        <td>{entryTime(entry.created_at)}</td>
+                        <td>{entry.account_id}</td>
+                        <td>{sourceLabel(entry.source)}</td>
+                        <td>{entry.tags.length > 0 ? entry.tags.join('、') : '—'}</td>
+                        <td>
+                          {editingId === entry.id ? (
+                            <input
+                              className="os-input-plain"
+                              value={editText}
+                              onChange={(event) => setEditText(event.target.value)}
+                              aria-label="修改记忆内容"
+                              style={{ width: '100%' }}
+                            />
+                          ) : (
+                            entry.text
+                          )}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {editingId === entry.id ? (
+                            <>
+                              <button
+                                className="os-btn"
+                                style={{ width: 'auto', marginRight: 6 }}
+                                disabled={busy}
+                                onClick={() => void saveEdit()}
+                              >
+                                保存
+                              </button>
+                              <button
+                                className="os-btn os-btn-ghost"
+                                style={{ width: 'auto' }}
+                                disabled={busy}
+                                onClick={() => setEditingId(null)}
+                              >
+                                取消
+                              </button>
+                            </>
+                          ) : mine && !readOnly ? (
+                            <>
+                              <button
+                                className="os-btn os-btn-ghost"
+                                style={{ width: 'auto', marginRight: 6 }}
+                                disabled={busy}
+                                onClick={() => startEdit(entry)}
+                              >
+                                纠正
+                              </button>
+                              <button
+                                className="os-btn os-btn-ghost"
+                                style={{ width: 'auto' }}
+                                disabled={busy}
+                                onClick={() => void removeEntry(entry)}
+                              >
+                                删除
+                              </button>
+                            </>
+                          ) : (
+                            <span className="os-hint">只读</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+              {memoryPageCount > 1 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    justifyContent: 'flex-end',
+                    marginTop: 8,
+                  }}
+                >
+                  <button
+                    className="os-btn os-btn-ghost"
+                    style={{ width: 'auto' }}
+                    disabled={safeMemoryPage === 0}
+                    onClick={() => setPageIndex(safeMemoryPage - 1)}
+                  >
+                    上一页
+                  </button>
+                  <span className="os-hint">
+                    第 {safeMemoryPage + 1} / {memoryPageCount} 页 · 共 {allEntries.length} 条
+                  </span>
+                  <button
+                    className="os-btn os-btn-ghost"
+                    style={{ width: 'auto' }}
+                    disabled={safeMemoryPage >= memoryPageCount - 1}
+                    onClick={() => setPageIndex(safeMemoryPage + 1)}
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </Guard>
+
+        {caps.canSubtreeMemory && (
+          <p className="os-hint">整棵范围只读检索；导出结果会带上来源账号。</p>
+        )}
+      </Card>
+
+      <Card
+        title="按员工看记忆"
+        sub="选中一位员工，看它自己记住了什么；这里只读"
+        span={12}
+      >
+        {roster.error ? (
+          <p className="os-hint">
+            员工名册暂时读不到，这一块先空着。
+            <button
+              className="os-btn os-btn-ghost"
+              style={{ width: 'auto', marginLeft: 8 }}
+              onClick={roster.reload}
+            >
+              重试
+            </button>
+          </p>
+        ) : roster.loading && employees.length === 0 ? (
+          <p className="os-hint">正在读取员工名册…</p>
+        ) : employees.length === 0 ? (
+          <p className="os-hint">还没有员工。先到「我的员工」创建，再回这里看它记住了什么。</p>
+        ) : (
+          <>
+            <select
+              aria-label="选择员工"
+              className="os-input-plain"
+              style={{ width: 'auto', minWidth: 200 }}
+              value={employeeName}
+              onChange={(event) => setEmployeeName(event.target.value)}
+            >
+              <option value="">选择一位员工</option>
+              {employees.map((employee) => (
+                <option key={employee.name} value={employee.name}>
+                  {employeeDisplayName(employee)}
+                </option>
+              ))}
+            </select>
+
+            {employeeName && (
+              <Guard
+                loading={employeeMemory.loading}
+                error={employeeMemory.error}
+                data={employeeMemory.data}
+                isEmpty={(data) => data.memories.length === 0}
+                emptyTitle="这位员工还没有记忆"
+                emptyHint="它执行任务或对话后产生的记忆会出现在这里。"
+                onRetry={employeeMemory.reload}
+              >
+                {(data) => (
+                  <>
+                    <div className="os-table-wrap" style={{ marginTop: 8 }}>
+                      <table className="os-table">
+                        <thead>
+                          <tr>
+                            <th>时间</th>
+                            <th>来源</th>
+                            <th>标签</th>
+                            <th>内容</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.memories.map((entry) => (
+                            <tr key={entry.id}>
+                              <td>{entryTime(entry.created_at)}</td>
+                              <td>{sourceLabel(entry.source)}</td>
+                              <td>
+                                {Array.isArray(entry.tags) && entry.tags.length > 0
+                                  ? entry.tags.join('、')
+                                  : '—'}
+                              </td>
+                              <td>{entry.text}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="os-hint">
+                      共 {data.memories.length} 条。要纠正某一条，请在上面的记忆表里按内容找到它再改。
+                    </p>
+                  </>
+                )}
+              </Guard>
+            )}
+          </>
+        )}
+      </Card>
+
+      <Card title="记忆代管" span={12}>
+        <Guard
+          loading={custody.loading}
+          error={custody.error}
+          data={custody.data}
+          onRetry={custody.reload}
+        >
+          {(data) => (
+            <label className="os-check">
+              <input
+                type="checkbox"
+                checked={data.enabled}
+                disabled={readOnly || custodyBusy}
+                onChange={(event) => void toggleCustody(event.target.checked)}
+              />
+              <span>允许协作处理我的记忆</span>
+            </label>
+          )}
+        </Guard>
+        <p className="os-hint">
+          只有你本人可以开启或关闭；变更会记入审计，关闭后立即停止。
+        </p>
+      </Card>
+    </div>
+  )
+}

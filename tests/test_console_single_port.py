@@ -21,8 +21,11 @@ Two failure modes are pinned here, both measured rather than imagined:
    absent from the reserved set, so an unknown ``/knowledge/...`` path answered
    200 ``text/html``. ``TestReservedPrefixesCoverTheWholeApi`` derives the
    prefixes from the live OpenAPI schema, so the list cannot rot silently.
-3. **Missing build output must not change anything.** CI runs the test suite
-   with no console bundle on disk; the gateway has to stay API-only there.
+3. **Missing build output must not change API behaviour -- and must explain
+   itself.** A deployment without a bundle stays API-only, but a browser
+   navigation gets an explicit Chinese 404 naming the build command, never a
+   500 and never a bare ``Not Found``. CI builds the bundle before pytest, so
+   this branch is exercised on every run.
 4. **The PWA surface is served, and typed correctly.** The console installs on
    a desktop (independent window) and on a phone (home-screen icon) through the
    same manifest + service worker. A wrong ``Content-Type`` on ``sw.js``, or an
@@ -40,6 +43,7 @@ import struct
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.gateway import console_static
@@ -66,10 +70,10 @@ def client(auth_headers):
 
     Deliberately does **not** require a console bundle. The "API is not
     shadowed" assertions below are exactly what must keep working in an
-    API-only deployment, and CI never builds the console -- so hanging this
-    fixture off the bundle would silently skip that coverage in CI, which is
-    precisely how a shadowing regression would slip through. Console-specific
-    tests ask for ``console_dist`` explicitly instead.
+    API-only deployment, so hanging this fixture off the bundle would skip
+    that coverage on any source checkout without a build. Console-specific
+    tests ask for ``console_dist`` explicitly instead. CI now builds the
+    bundle before pytest, so those tests do run there as well.
     """
     # `with` runs lifespan; the health endpoints are registered inside it.
     # `auth_headers`: the API routers now sit behind the console auth gate, and
@@ -192,6 +196,28 @@ class TestConsoleIsServed:
         assert response.status_code == 200
         assert "javascript" in response.headers["content-type"]
 
+    def test_a_missing_asset_is_a_real_404_and_logs_a_warning(
+        self, client, console_dist, caplog
+    ):
+        """故障 6 的回归：缺失 JS 曾被兜底成 200 text/html（白屏却日志全绿）。
+
+        现在必须返回真 404（JSON，带 code），并留下一条 WARNING，说明缺的是
+        哪个资源、下一步该做什么。
+        """
+        missing = "/assets/__definitely-missing__.js"
+        with caplog.at_level("WARNING", logger="src.gateway.console_static"):
+            response = client.get(missing)
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json()["detail"]["code"] == "CONSOLE_ASSET_NOT_FOUND"
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "src.gateway.console_static"
+        ]
+        assert any("evt=console.asset.missing" in line for line in warnings), warnings
+        assert any(missing in line for line in warnings), warnings
+
     def test_only_navigation_methods_fall_back_to_the_shell(self, client, console_dist):
         # A POST under an unknown path is an API call that missed, not a page
         # to render: it must keep its JSON 404.
@@ -202,6 +228,76 @@ class TestConsoleIsServed:
         api_call = client.post("/no-such-client-route")
         assert api_call.status_code == 404
         assert api_call.headers["content-type"].startswith("application/json")
+
+
+class TestStaticCacheControl:
+    """静态资源缓存策略：带指纹的长缓存、入口 HTML 不缓存。
+
+    "升级后界面没变"与"每次启动重新下载整包 JS"是同一对矛盾的两端：入口
+    HTML 引用的哈希文件名必须每次重新拿，而哈希资源本身不可变。这组断言
+    钉住这两端，避免以后有人为了"快"把 ``index.html`` 也套上 long cache。
+    """
+
+    @pytest.fixture
+    def cache_client(self, tmp_path):
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<!doctype html><html><body>console</body></html>", encoding="utf-8"
+        )
+        (dist / "assets" / "index-AbCd1234.js").write_text(
+            "console.log(1)", encoding="utf-8"
+        )
+        (dist / "assets" / "logo.svg").write_text("<svg/>", encoding="utf-8")
+        (dist / "sw.js").write_text(
+            "self.addEventListener('install', () => {})", encoding="utf-8"
+        )
+        app = FastAPI()
+        console_static.mount_console(app, dist)
+        with TestClient(app) as client:
+            yield client
+
+    def test_hashed_assets_are_immutable_and_long_lived(self, cache_client):
+        response = cache_client.get("/assets/index-AbCd1234.js")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == (
+            "public, max-age=31536000, immutable"
+        )
+
+    def test_the_entry_html_is_never_stored(self, cache_client):
+        for path in ("/", "/approvals"):
+            response = cache_client.get(path)
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store", path
+
+    def test_the_service_worker_is_revalidated(self, cache_client):
+        # 强缓存 sw.js 会让浏览器继续用旧 SW 回放旧外壳。
+        response = cache_client.get("/sw.js")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache, must-revalidate"
+
+    def test_unhashed_assets_are_not_given_immutable(self, cache_client):
+        response = cache_client.get("/assets/logo.svg")
+        assert response.status_code == 200
+        assert "immutable" not in response.headers["cache-control"]
+
+    def test_cache_control_classification_is_not_vacuous(self):
+        # 直接钉分类函数：正则/比较写错时上面的 HTTP 断言会一起"通过"。
+        assert console_static.cache_control_for("") == "no-store"
+        assert console_static.cache_control_for("/") == "no-store"
+        assert console_static.cache_control_for("/index.html") == "no-store"
+        assert console_static.cache_control_for("/sw.js") == (
+            "no-cache, must-revalidate"
+        )
+        assert console_static.cache_control_for("/assets/logo.svg") == (
+            "no-cache, must-revalidate"
+        )
+        assert console_static.cache_control_for("/assets/index-AbCd1234.js") == (
+            "public, max-age=31536000, immutable"
+        )
+        assert console_static.cache_control_for("/favicon.svg") == (
+            "no-cache, must-revalidate"
+        )
 
 
 class TestTheFallbackCannotShadowLaterRoutes:
@@ -236,10 +332,23 @@ class TestNoBuildOutputKeepsApiOnlyBehaviour:
 
     def test_the_fallback_is_installed_with_a_bundle(self, console_dist):
         # Guard the guard: the assertion above would pass for the wrong reason
-        # if the handler were never installed at all. Skips in CI, where the
-        # console is never built -- the same API-only environment the check
-        # above is protecting.
+        # if nothing were installed at all. CI builds the bundle before pytest,
+        # so this runs there too; it only skips on a checkout with no build.
         assert is_installed(get_app()) is True
+
+    def test_navigation_without_a_bundle_returns_a_chinese_hint(
+        self, monkeypatch, tmp_path
+    ):
+        """没有构建产物时，浏览器导航必须拿到能照做的中文 404，而不是 500。"""
+        monkeypatch.setenv(CONSOLE_DIST_ENV, str(tmp_path / "absent"))
+        with TestClient(get_app()) as client:
+            response = client.get("/goals")
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+        detail = response.json()["detail"]
+        assert detail["code"] == "CONSOLE_NOT_BUILT"
+        assert re.search(r"[\u4e00-\u9fff]", detail["message"])
+        assert "npm run build" in detail["message"]
 
     def test_the_api_still_works_without_a_bundle(self, monkeypatch, tmp_path):
         monkeypatch.setenv(CONSOLE_DIST_ENV, str(tmp_path / "absent"))
@@ -275,6 +384,23 @@ class TestBuildOutputIsAValidBundle:
         assert "localhost:8080" not in index
 
 
+class TestMalformedAbsoluteUriRequestTarget:
+    """绝对 URI 请求行不能变成 500。
+
+    实测：``GET http://127.0.0.1:8081/v1/health HTTP/1.1`` 命中控制台的 404
+    回落，``StaticFiles`` 把 ``http://...`` 当成本地路径去 stat，Windows 上
+    路径里的 ``:`` 抛 ``OSError [WinError 123]``，网关返回 500。请求行畸形是
+    客户端错误，必须是 400，而不是让服务端故障日志收噪音。
+    """
+
+    def test_absolute_uri_request_target_is_400_not_500(self, pwa_client):
+        # 前导 "/" 与 ASGI 里真实的 ``scope["path"]`` 形状一致（见模块内的
+        # ``_ABSOLUTE_URI_RE``）；httpx 原样保留路径中的 ``http://``。
+        response = pwa_client.get("/http://evil.example.com/v1/health")
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["code"] == "INVALID_REQUEST_TARGET"
+
+
 # ---------------------------------------------------------------------------
 # PWA 表面（桌面端独立窗口 / 手机端主屏图标）
 # ---------------------------------------------------------------------------
@@ -288,15 +414,26 @@ CONSOLE_APP = Path(__file__).resolve().parents[1] / "apps" / "console" / "consol
 def pwa_bundle(tmp_path, monkeypatch) -> Path:
     """由**已提交的源文件**拼出一个最小发布包。
 
-    刻意不用 `resolve_console_dist()`：CI 不跑 `npm run build`，把 PWA 断言挂在
-    构建产物上会导致它们在 CI 里全部 skip —— 而那恰恰是最需要它们的地方。
-    `public/` 与入口 `index.html` 都在版本库中，用它们拼出的文件集与构建产物在
-    PWA 这个面上的文件集完全一致（构建只是额外产出 `assets/`）。
+    刻意不用 `resolve_console_dist()`：CI 现在会跑 `npm run build`，但把 PWA
+    断言挂在一个本地可能不存在的 `dist/` 上，会让源码检出的环境整组 skip ——
+    而那恰恰是最需要它们的地方。`public/` 与入口 `index.html` 都在版本库中，
+    用它们拼出的文件集与构建产物在 PWA 这个面上的文件集完全一致（构建只是
+    额外产出 `assets/`）。
     """
     bundle = tmp_path / "dist"
     bundle.mkdir()
     shutil.copytree(CONSOLE_APP / "public", bundle, dirs_exist_ok=True)
     shutil.copy2(CONSOLE_APP / "index.html", bundle / "index.html")
+    # Service Worker 构建产物不在 `public/` 里：vite 插件读取 `sw.template.js`
+    # 并生成 `dist/sw.js`（见 vite.config.ts）。这里沿用同一条规则，否则
+    # `/sw.js` 的 MIME 断言会因为文件根本不存在而失败。
+    (bundle / "sw.js").write_text(
+        (CONSOLE_APP / "sw.template.js")
+        .read_text(encoding="utf-8")
+        .replace("__BUILD_VERSION__", "test")
+        .replace("__PRECACHE_ASSETS__", "[]"),
+        encoding="utf-8",
+    )
     monkeypatch.setenv(CONSOLE_DIST_ENV, str(bundle))
     return bundle
 
@@ -391,10 +528,23 @@ class TestManifestCannotPointAtAPageThatDoesNotExist:
     不存在页面的快捷方式，点开就是空白。
     """
 
+    def _known_page_keys(self) -> set[str]:
+        """页面 key 的登记处：导航表 + 各页面导出的 PAGE 常量。
+
+        页面常量（如 ``ENTERPRISE_OVERVIEW_PAGE.key``）是计算属性，不能只扫
+        nav.ts 的字符串字面量；否则会把合法的规范 key 误判成"不存在"。
+        """
+        sources = [CONSOLE_APP / "src" / "lib" / "nav.ts"]
+        sources.extend(sorted((CONSOLE_APP / "src" / "pages").glob("*.tsx")))
+        keys: set[str] = set()
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            keys.update(re.findall(r"key:\s*'([a-z0-9-]+)'", text))
+        return keys
+
     def test_every_shortcut_page_exists(self, pwa_bundle):
-        nav = (CONSOLE_APP / "src" / "lib" / "nav.ts").read_text(encoding="utf-8")
-        known = set(re.findall(r"key:\s*'([a-z]+)'", nav))
-        assert known, "未能从 lib/nav.ts 解析出任何页面 key"
+        known = self._known_page_keys()
+        assert known, "未能从 nav.ts / pages 解析出任何页面 key"
 
         urls = [str(shortcut.get("url", "")) for shortcut in _manifest(pwa_bundle).get("shortcuts") or []]
         assert urls, "manifest 没有声明任何 shortcuts"
@@ -404,8 +554,9 @@ class TestManifestCannotPointAtAPageThatDoesNotExist:
 
     def test_the_parser_is_not_vacuous(self, pwa_bundle):
         # 没有这一条，上面的断言会在"一个 key 都没解析出来"时以另一种方式通过。
-        nav = (CONSOLE_APP / "src" / "lib" / "nav.ts").read_text(encoding="utf-8")
-        assert {"overview", "settings"} <= set(re.findall(r"key:\s*'([a-z]+)'", nav))
+        known = self._known_page_keys()
+        assert {"enterprise-overview", "settings"} <= known
+        assert len(known) >= 20, f"页面 key 解析明显不完整：{sorted(known)}"
 
 
 class TestClientModesAgreeAcrossTheWire:
@@ -435,3 +586,29 @@ class TestClientModesAgreeAcrossTheWire:
 
         # 三个端就是这次的交付目标本身；数量变了应当先怀疑词表而不是先改断言。
         assert tuple(gateway_auth.CLIENT_MODES) == ("desktop", "web", "mobile")
+
+
+def test_api_docs_are_closed_by_default_and_open_only_with_dev_switch(monkeypatch):
+    """/docs 与 /openapi.json 默认按生产处理，只有显式开发开关才开放。"""
+    monkeypatch.delenv("LIUHAO_HTTP_DOCS", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    with TestClient(
+        get_app(), base_url="http://127.0.0.1:8080", client=("127.0.0.1", 50000)
+    ) as default_app:
+        assert default_app.get("/docs").status_code == 404
+        assert default_app.get("/openapi.json").status_code == 404
+
+    monkeypatch.setenv("LIUHAO_HTTP_DOCS", "1")
+    with TestClient(
+        get_app(), base_url="http://127.0.0.1:8080", client=("127.0.0.1", 50000)
+    ) as dev_app:
+        assert dev_app.get("/docs").status_code == 200
+        assert dev_app.get("/openapi.json").status_code == 200
+
+    # 显式生产仍强制关闭，即使开发开关还留在环境里。
+    monkeypatch.setenv("APP_ENV", "production")
+    with TestClient(
+        get_app(), base_url="http://127.0.0.1:8080", client=("127.0.0.1", 50000)
+    ) as prod_app:
+        assert prod_app.get("/docs").status_code == 404
+        assert prod_app.get("/openapi.json").status_code == 404

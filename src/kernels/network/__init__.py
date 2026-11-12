@@ -5,13 +5,28 @@ for inter-kernel and inter-agent messaging.
 
 依据 Definition Lock §112: Network Kernel 必须能够
 - Route messages between kernels/agents
-- Adapt multiple protocols (A2A, MCP, gRPC, HTTP, WebSocket)
+- Adapt protocols (see REALITY CHECK below for what actually ships)
 - Maintain correlation IDs across protocol boundaries
 - Support message serialization/deserialization
 - Handle protocol-specific error mapping
+
+REALITY CHECK — protocol surface (do not overstate):
+  * Internal  — REAL in-process transport (registered, works).
+  * HTTP      — REAL transport via httpx (registered, works).
+  * WebSocket — registered, but ``send()`` is an HONEST refusal
+                (marks the message FAILED and returns False; no WS client
+                dependency ships).
+  * A2A / MCP / GRPC — declared in :class:`ProtocolType` but have NO
+                transport adapter registered in this kernel. Messages tagged
+                with these protocols are downgraded to Internal and the
+                downgrade is recorded in ``message.metadata`` (never silently
+                dropped). The AI gateway layer provides local-delivery
+                A2A/MCP adapters whose ``send()`` returns False rather than
+                fabricate success; real wire transports are NOT implemented.
+                Treat A2A/MCP/GRPC as PLANNED / not-implemented here.
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,19 +39,31 @@ import os
 import threading
 import uuid
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import (
+    kernel_action,
+    mark_action_denied,
+    mark_action_failed,
+)
 
 logger = logging.getLogger("liuhao.kernel.network")
 
 
 class ProtocolType(str, Enum):
-    """Supported communication protocols."""
-    A2A = "a2a"           # Agent-to-Agent
-    MCP = "mcp"           # Model Context Protocol
-    GRPC = "grpc"         # gRPC
-    HTTP = "http"         # HTTP/REST
-    WEBSOCKET = "websocket"  # WebSocket
-    INTERNAL = "internal"  # In-process
+    """Declared communication protocols.
+
+    NOTE: membership here is a DECLARATION, not a claim that a transport
+    adapter exists. Only INTERNAL, HTTP and WEBSOCKET are registered as
+    working adapters in :meth:`NetworkBus._register_builtin_adapters`.
+    A2A / MCP / GRPC have NO transport in this kernel -- they are declared
+    for compatibility (the AI gateway and tests reference them) but are
+    PLANNED / not-implemented as real transports.
+    """
+    A2A = "a2a"           # PLANNED / not implemented: no transport adapter
+    MCP = "mcp"           # PLANNED / not implemented: no transport adapter
+    GRPC = "grpc"         # PLANNED / not implemented: no transport adapter
+    HTTP = "http"         # HTTP/REST — REAL transport (httpx)
+    WEBSOCKET = "websocket"  # WebSocket — registered; send() is honest refusal
+    INTERNAL = "internal"  # In-process — REAL transport
 
 
 class MessageStatus(str, Enum):
@@ -586,13 +613,17 @@ class NetworkBus:
         with self._lock:
             # Lifecycle gate: PAUSED / STOPPED must actually refuse traffic.
             # Previously ``pause()`` only flipped the flag and routing carried
-            # on, so "paused" was a label, not a behaviour.
-            if self.lifecycle in (KernelLifecycle.PAUSED, KernelLifecycle.STOPPED):
+            # on, so "paused" was a label, not a behaviour. This is the
+            # reference implementation the other kernels were aligned to;
+            # ``is_servable`` is the single source of truth for the state
+            # matrix (see ``src/kernels/_base.py``).
+            if not is_servable(self):
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = (
                     f"network bus is {self.lifecycle.value}; route()/send() "
                     "are refused while paused or stopped"
                 )
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Find route (protocol-aware: see _match_route).
@@ -601,6 +632,7 @@ class NetworkBus:
             if not route:
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"No route found for {message.destination}"
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Scope enforcement (Permissioned): the message may only be
@@ -609,12 +641,14 @@ class NetworkBus:
             if not _is_valid_scope(msg_scope):
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"Invalid message scope: {msg_scope!r}"
+                mark_action_denied(message.metadata["error"])
                 return message
             if _scope_rank(msg_scope) > _scope_rank(route.scope):
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = (
                     f"Message scope {msg_scope} exceeds route scope {route.scope}"
                 )
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Get adapter
@@ -622,6 +656,7 @@ class NetworkBus:
             if not adapter:
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"No adapter for protocol {route.protocol}"
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Update message with route info. The route's protocol is the
@@ -657,6 +692,15 @@ class NetworkBus:
                 message.delivered_at = utc_now()
             else:
                 message.status = MessageStatus.FAILED
+                # Audit truthfulness: the route matched and the body ran, but the
+                # delivery did not complete. Previously this fell through to
+                # outcome="success" -- a message that was never delivered read as a
+                # successful routing. Signal the failure so the chain records
+                # outcome="failed" instead of a false success.
+                mark_action_failed(
+                    f"route {route.id!r} adapter {route.adapter!r} "
+                    f"send() returned False (message not delivered)"
+                )
 
             return message
 

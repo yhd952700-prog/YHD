@@ -17,17 +17,36 @@ import type {
 import type { AuthConfig } from '../lib/auth'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
-import { eventLabel, humanDuration, outcomeLabel, outcomeTone } from '../lib/format'
+import { componentLabel, eventLabel, humanDuration, numberText, outcomeLabel, outcomeTone, safeText } from '../lib/format'
+import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { DonutChart, LineChart } from '../components/charts'
+import { providerLabel } from '../components/ModelManager'
 import { Card, Dot, Guard } from '../components/ui'
+import { MaintenanceData } from '../components/MaintenanceData'
 
 const REFRESH = 30_000
+
+/** 探针状态值 → 中文。未知值不猜，统一显示「未知」。 */
+function healthText(status: string | undefined): string {
+  switch (status) {
+    case 'healthy':
+    case 'ok':
+      return '正常'
+    case 'degraded':
+      return '降级'
+    case 'unhealthy':
+    case 'error':
+      return '异常'
+    default:
+      return '未知'
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 数据中心
 // ---------------------------------------------------------------------------
 
-export function DataCenter({ query }: { query: string }) {
+export function DataCenter({ query, isRoot }: { query: string; isRoot: boolean }) {
   const analytics = useApi<AnalyticsPayload>('/v1/dashboard/analytics?days=30', 60_000)
   const summary = useApi<DashboardSummary>('/v1/dashboard/summary', REFRESH)
   const need = query.trim().toLowerCase()
@@ -39,9 +58,9 @@ export function DataCenter({ query }: { query: string }) {
     if (!need) return items
     return items.filter(
       (item) =>
-        item.type.toLowerCase().includes(need) ||
+        safeText(item.type).toLowerCase().includes(need) ||
         eventLabel(item.type).toLowerCase().includes(need) ||
-        item.outcome.toLowerCase().includes(need),
+        safeText(item.outcome).toLowerCase().includes(need),
     )
   }, [analytics.data, need])
 
@@ -96,7 +115,7 @@ export function DataCenter({ query }: { query: string }) {
                   tone="muted"
                   label={
                     <>
-                      内核噪声（未计入）{' '}
+                      背景噪声（未计入）{' '}
                       <span className="os-legend-value">
                         {formatCompact(points.reduce((sum, point) => sum + point.noise, 0))}
                       </span>
@@ -109,7 +128,7 @@ export function DataCenter({ query }: { query: string }) {
         </Guard>
       </Card>
 
-      <Card title="事件构成" sub="真实 event_type × outcome 分布" span={4}>
+      <Card title="事件构成" sub="真实事件类型与结果分布" span={4}>
         <Guard
           loading={analytics.loading}
           error={analytics.error}
@@ -128,7 +147,7 @@ export function DataCenter({ query }: { query: string }) {
                     label: eventLabel(item.type),
                     value: item.count,
                   }))}
-                  centerValue={formatCompact(data.breakdown.total_events ?? 0)}
+                  centerValue={formatCompact(data.breakdown.total_events)}
                   centerLabel="总事件"
                 />
                 <div className="os-legend">
@@ -145,8 +164,8 @@ export function DataCenter({ query }: { query: string }) {
                 </div>
                 <div className="os-note" style={{ marginTop: 12 }}>
                   <span>
-                    已排除 kernel 噪声 <strong>{formatCompact(data.breakdown.excluded_noise_events ?? 0)}</strong> 条
-                    （state_change，占比通常 &gt;99%，对业务无意义）。
+                    已排除后台状态变更 <strong>{formatCompact(data.breakdown.excluded_noise_events)}</strong> 条
+                    （后台状态变更类事件，占比通常 &gt;99%，对业务无意义）。
                   </span>
                 </div>
               </>
@@ -219,6 +238,9 @@ export function DataCenter({ query }: { query: string }) {
           )}
         </Guard>
       </Card>
+
+      {/* 历史数据处置只给根账号：成员连这一块都不渲染，后端接口也固定 404。 */}
+      {isRoot && <MaintenanceData />}
     </div>
   )
 }
@@ -245,7 +267,7 @@ interface MetricsPayload {
   }
 }
 
-export function SystemStatus() {
+export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
   // 503 必须接受：降级响应用的是同一个 body，丢掉它就等于把最关键的信息丢了。
   const ready = useApi<HealthPayload>('/v1/ready', REFRESH, [503])
   const metrics = useApi<MetricsPayload>('/v1/metrics', 60_000)
@@ -255,7 +277,7 @@ export function SystemStatus() {
 
   return (
     <div className="os-grid">
-      <Card title="依赖健康" sub="来自就绪探针的真实五项检查" span={7}>
+      <Card title="依赖健康" sub="来自就绪探针的真实依赖检查" span={7}>
         <Guard
           loading={ready.loading}
           error={ready.error}
@@ -269,27 +291,46 @@ export function SystemStatus() {
               <div className="os-list">
                 {Object.entries(data.checks ?? {}).map(([name, detail]) => {
                   const healthy = detail?.status === 'healthy'
+                  // blocks_readiness=false 是告警级检查（如监控链路）：它让总览
+                  // 看见问题，但不会让 /v1/ready 返回 503。别把告警标成"断服"。
+                  const blocking = detail?.blocks_readiness !== false
+                  const tone = healthy ? 'ok' : blocking ? 'danger' : 'warn'
                   return (
                     <div className="os-row" key={name}>
                       <span
                         className="os-dot"
-                        style={{ background: healthy ? 'var(--os-ok)' : 'var(--os-danger)' }}
+                        style={{
+                          background: healthy
+                            ? 'var(--os-ok)'
+                            : blocking
+                              ? 'var(--os-danger)'
+                              : 'var(--os-warn)',
+                        }}
                       />
                       <div className="os-row-main">
-                        <div className="os-row-title">{name}</div>
-                        {!healthy && detail?.error && (
-                          <div className="os-row-sub">{detail.error}</div>
+                        <div className="os-row-title">
+                          {safeText(detail?.display_name) || componentLabel(name)}
+                        </div>
+                        {!healthy && (
+                          <div className="os-row-sub">
+                            {safeText(detail?.user_message) ||
+                              '这项检查没有通过，请重试；持续出现时可导出诊断包。'}
+                          </div>
                         )}
                       </div>
-                      <span className="os-badge" data-tone={healthy ? 'ok' : 'danger'}>
-                        {detail?.status ?? '未知'}
+                      <span className="os-badge" data-tone={tone}>
+                        {healthy ? healthText(detail?.status) : blocking ? healthText(detail?.status) : '告警'}
                       </span>
                     </div>
                   )
                 })}
               </div>
               {data.status === 'degraded' && (
-                <div className="os-alert" style={{ marginTop: 12, marginBottom: 0 }}>
+                <div
+                  className="os-alert"
+                  role="alert"
+                  style={{ marginTop: 12, marginBottom: 0 }}
+                >
                   <span>
                     服务处于降级状态，就绪探针返回 503。上面标红的就是原因。
                   </span>
@@ -311,21 +352,23 @@ export function SystemStatus() {
           {(data) => (
             <dl className="os-kv">
               <dt>运行时长</dt>
-              <dd>{humanDuration(data.uptime_seconds ?? 0)}</dd>
+              <dd>
+                {data.uptime_seconds == null ? '—' : humanDuration(data.uptime_seconds)}
+              </dd>
               <dt>API 密钥总数</dt>
-              <dd>{data.components?.api_key_manager?.total_keys ?? 0}</dd>
+              <dd>{numberText(data.components?.api_key_manager?.total_keys)}</dd>
               <dt>已过期密钥</dt>
-              <dd>{data.components?.api_key_manager?.expired_count ?? 0}</dd>
+              <dd>{numberText(data.components?.api_key_manager?.expired_count)}</dd>
               <dt>RBAC 角色数</dt>
-              <dd>{data.components?.rbac_manager?.total_roles ?? 0}</dd>
+              <dd>{numberText(data.components?.rbac_manager?.total_roles)}</dd>
               <dt>限流桶</dt>
-              <dd>{data.components?.rate_limiter?.active_buckets ?? 0}</dd>
+              <dd>{numberText(data.components?.rate_limiter?.active_buckets)}</dd>
             </dl>
           )}
         </Guard>
       </Card>
 
-      <Card title="拦截配置" sub="Policy 内核动作拦截（需人类令牌）" span={6}>
+      <Card title="拦截配置" sub="动作拦截开关与范围（只读）" span={6}>
         <Guard
           loading={enforcement.loading}
           error={enforcement.error}
@@ -346,10 +389,10 @@ export function SystemStatus() {
               <dd>
                 <code>{data.env_var ?? '—'}</code>
               </dd>
-              <dt>生效等级</dt>
+              <dt>生效动作</dt>
               <dd>
-                {Array.isArray(data.enforced_tiers) && data.enforced_tiers.length > 0
-                  ? (data.enforced_tiers as string[]).join(' / ')
+                {Array.isArray(data.enforced_actions) && data.enforced_actions.length > 0
+                  ? data.enforced_actions.join(' / ')
                   : '—'}
               </dd>
             </dl>
@@ -369,21 +412,21 @@ export function SystemStatus() {
             <dl className="os-kv">
               <dt>凭据存储</dt>
               <dd>
-                <span className="os-badge" data-tone={data.secret_store.configured ? 'ok' : 'warn'}>
-                  {data.secret_store.configured ? '已配置' : '未配置'}
+                <span className="os-badge" data-tone={data.secret_store?.configured ? 'ok' : 'warn'}>
+                  {data.secret_store?.configured ? '已配置' : '未配置'}
                 </span>
               </dd>
-              <dt>已登记人类</dt>
-              <dd>{data.registered_humans}</dd>
-              <dt>可登录主体</dt>
-              <dd>{data.login_eligible_humans}</dd>
+              <dt>已登记账号</dt>
+              <dd>{numberText(data.registered_humans)}</dd>
+              <dt>可登录账号</dt>
+              <dd>{numberText(data.login_eligible_humans)}</dd>
               <dt>会话有效期</dt>
-              <dd>{humanDuration(data.token.ttl_seconds)}</dd>
+              <dd>{data.token ? humanDuration(data.token.ttl_seconds) : '—'}</dd>
               <dt>第三方登录</dt>
               <dd>
-                {Object.entries(data.oauth).every(([, enabled]) => !enabled)
+                {Object.entries(data.oauth ?? {}).every(([, enabled]) => !enabled)
                   ? '未接入（仅账号密码）'
-                  : Object.entries(data.oauth)
+                  : Object.entries(data.oauth ?? {})
                       .filter(([, enabled]) => enabled)
                       .map(([name]) => name)
                       .join(' / ')}
@@ -409,22 +452,163 @@ export function SystemStatus() {
               </dd>
               <dt>版本</dt>
               <dd>{data.version ?? '—'}</dd>
-              <dt>内核 / 能力层</dt>
+              <dt>能力模块 / 能力层</dt>
               <dd>
-                {data.totals.kernels} / {data.totals.layers}
+                {numberText(data.totals?.kernels)} / {numberText(data.totals?.layers)}
               </dd>
               <dt>声明总数</dt>
               <dd>
                 {data.declared_totals?.capabilities ?? '—'} / {data.declared_totals?.layers ?? '—'}
               </dd>
-              <dt>声明测试用例</dt>
-              <dd>{formatCompact(data.totals.declared_test_cases)}</dd>
-              <dt>当前 provider</dt>
-              <dd>{data.providers.active?.type ?? '—'}</dd>
+              <dt>注册表条目</dt>
+              <dd>{formatCompact(data.totals?.registry_entries)}</dd>
+              <dt>当前模型服务</dt>
+              <dd>
+                {provider.provider?.type ? providerLabel(provider.provider.type) : '—'}
+                {provider.provider && (
+                  <>
+                    {' '}
+                    <span className="os-badge" data-tone={provider.posture.tone}>
+                      {provider.posture.badge}
+                    </span>
+                  </>
+                )}
+              </dd>
             </dl>
           )}
         </Guard>
       </Card>
+
+      <SystemAlerts />
     </div>
+  )
+}
+
+// ─── 运维告警（只读读取面） ─────────────────────────────────
+//
+// 端点 `/v1/alerts` 与 `/v1/alerts/rules` 由 `src/gateway/observability.py` 暴露，
+// 只读，需人类令牌。这是把"只写不读"的告警库变成操作员可见的关键一步：
+// 执行失败告警（真实路径）此前只落日志/JSON，没有任何 API 或 UI 能读取。
+//
+// 诚实优先：
+// * firing_count=0 时如实显示"当前没有正在触发的告警"，不伪装成"一切正常"的绿勾。
+// * 规则注册表如实展示：系统健康规则当前全部停用（对应指标发射器尚未接线，启用即
+//   装饰性失效）；执行失败告警规则已启用（真实可用路径）。不美化这一分裂。
+
+interface AlertItem {
+  id: string
+  name: string
+  severity: string
+  state: string
+  source: string
+  message: string
+  fired_at: number | null
+}
+
+interface AlertsResponse {
+  count: number
+  firing_count: number
+  alerts: AlertItem[]
+}
+
+interface AlertRuleItem {
+  id: string
+  name: string
+  enabled: boolean
+  severity: string
+  metric_name: string | null
+}
+
+interface AlertRulesResponse {
+  count: number
+  rules: AlertRuleItem[]
+}
+
+function SystemAlerts() {
+  const alerts = useApi<AlertsResponse>('/v1/alerts', REFRESH)
+  const rules = useApi<AlertRulesResponse>('/v1/alerts/rules', REFRESH)
+
+  const firing = (alerts.data?.alerts ?? []).filter((a) => a.state === 'FIRING')
+  const disabledHealth = (rules.data?.rules ?? []).filter((r) => !r.enabled)
+  const enabledExec = (rules.data?.rules ?? []).filter((r) => r.enabled)
+
+  return (
+    <Card
+      title="运维告警"
+      sub="真实告警库只读视图（执行失败告警为真实可用路径）"
+      span={12}
+    >
+      <Guard
+        loading={alerts.loading}
+        error={alerts.error}
+        data={alerts.data}
+        emptyTitle="告警库为空"
+        emptyHint="还没有任何告警被记录；执行失败时这里会出现条目。"
+        onRetry={alerts.reload}
+      >
+        {(data) => (
+          <>
+            <div className="os-kv">
+              <div className="os-kv-row">
+                <span className="os-kv-key">正在触发</span>
+                <span className="os-kv-value">
+                  <span
+                    className={`os-dot os-tone-${
+                      numberText(data.firing_count) === '—'
+                        ? 'muted'
+                        : data.firing_count > 0
+                          ? 'danger'
+                          : 'ok'
+                    }`}
+                  />
+                  {numberText(data.firing_count)}
+                </span>
+              </div>
+              <div className="os-kv-row">
+                <span className="os-kv-key">历史告警总数</span>
+                <span className="os-kv-value">{numberText(data.count)}</span>
+              </div>
+            </div>
+
+            {firing.length === 0 ? (
+              <p className="os-hint">当前没有正在触发的告警。</p>
+            ) : (
+              <div className="os-table-wrap" style={{ marginTop: 12 }}>
+                <table className="os-table">
+                  <thead>
+                    <tr>
+                      <th>严重度</th>
+                      <th>名称</th>
+                      <th>来源</th>
+                      <th>信息</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {firing.map((a) => (
+                      <tr key={a.id}>
+                        <td>
+                          <span className={`os-dot os-tone-${a.severity === 'CRITICAL' || a.severity === 'HIGH' ? 'danger' : 'warn'}`} />
+                          {a.severity}
+                        </td>
+                        <td>{a.name}</td>
+                        <td>{a.source || '—'}</td>
+                        <td>{a.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {rules.data && (
+              <p className="os-hint" style={{ marginTop: 12 }}>
+                规则注册表：{disabledHealth.length} 条系统健康规则全部停用（指标发射器未接线，启用即失效）；
+                {enabledExec.length} 条执行失败告警规则已启用（真实可用）。
+              </p>
+            )}
+          </>
+        )}
+      </Guard>
+    </Card>
   )
 }

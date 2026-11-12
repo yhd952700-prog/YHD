@@ -17,11 +17,49 @@ Features:
 
 import json
 import importlib
+import threading
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
+
 from ..plugins.base import Plugin, PluginMetadata, PluginLoadError, PluginStatus
 from ..config_manager import ConfigManager
+
+#: 同进程内多个 manager 实例（以及多 worker 进程）的写入串行锁。
+_PROCESS_WRITE_LOCK = threading.Lock()
+
+
+def _friendly_plugin_error(
+    plugin_name: str, exc: BaseException, stage: str = "加载"
+) -> str:
+    """把插件失败原因翻成中文可操作提示（保留异常类型便于排查）。"""
+    if isinstance(exc, ModuleNotFoundError):
+        missing = getattr(exc, "name", "") or plugin_name
+        return (
+            f"插件 {plugin_name} {stage}失败：找不到模块 {missing}。"
+            "请确认插件目录含 __init__.py，且已安装所需依赖后重试。"
+        )
+    if isinstance(exc, ImportError):
+        return (
+            f"插件 {plugin_name} {stage}失败：依赖导入错误（{exc}）。"
+            "请安装插件依赖或检查版本后重试。"
+        )
+    if isinstance(exc, PluginLoadError):
+        return (
+            f"插件 {plugin_name} {stage}失败：{exc}。"
+            "请检查插件入口是否定义了 Plugin 子类。"
+        )
+    if isinstance(exc, AttributeError):
+        return (
+            f"插件 {plugin_name} {stage}失败：插件入口缺少必需属性（{exc}）。"
+            "请检查插件类是否实现 initialize/start/stop。"
+        )
+    return f"插件 {plugin_name} {stage}失败：{type(exc).__name__}: {exc}"
 
 
 class PluginManager:
@@ -65,7 +103,7 @@ class PluginManager:
         """Load plugin state from persistent storage."""
         if self._state_file.exists():
             try:
-                data = json.loads(self._state_file.read_text())
+                data = json.loads(read_text_with_retry(str(self._state_file)))
                 for name, meta_data in data.get("metadata", {}).items():
                     # Reconstruct metadata - simplified
                     self._metadata[name] = PluginMetadata(
@@ -80,20 +118,35 @@ class PluginManager:
                 print(f"Warning: Failed to load plugin state: {e}")
 
     def _save_state(self) -> None:
-        """Persist plugin state to storage."""
-        data = {
-            "version": 1,
-            "saved_at": __import__('time').time(),
-            "metadata": {name: {
-                "name": m.name,
-                "version": m.version,
-                "description": m.description,
-                "author": m.author,
-                "license": m.license,
-                "scopes": m.scopes,
-            } for name, m in self._metadata.items()},
-        }
-        self._state_file.write_text(json.dumps(data, indent=2))
+        """Persist plugin state to storage.
+
+        读-改-写事务：进程锁 → OS 文件锁 → 锁内重读磁盘 → 按插件名合并
+        （同 id 以内存为准，磁盘上其它进程刚写入的插件保留）→ 原子替换。
+        """
+        state_file = str(self._state_file)
+        with _PROCESS_WRITE_LOCK:
+            with exclusive_file_lock(f"{state_file}.lock", description="插件状态"):
+                metadata: Dict[str, Any] = {}
+                if self._state_file.exists():
+                    disk = json.loads(read_text_with_retry(state_file))
+                    if isinstance(disk, dict):
+                        metadata.update(disk.get("metadata", {}) or {})
+                metadata.update({
+                    name: {
+                        "name": m.name,
+                        "version": m.version,
+                        "description": m.description,
+                        "author": m.author,
+                        "license": m.license,
+                        "scopes": m.scopes,
+                    } for name, m in self._metadata.items()
+                })
+                data = {
+                    "version": 1,
+                    "saved_at": __import__('time').time(),
+                    "metadata": metadata,
+                }
+                atomic_write_text(state_file, json.dumps(data, indent=2))
 
     # ==================== Plugin Discovery ====================
 
@@ -185,14 +238,16 @@ class PluginManager:
             return True
 
         except PluginLoadError as e:
-            self._errors[plugin_name] = str(e)
+            message = _friendly_plugin_error(plugin_name, e, "加载")
+            self._errors[plugin_name] = message
             self._status[plugin_name] = PluginStatus.ERROR
-            print(f"Failed to load plugin {plugin_name}: {e}")
+            print(f"Failed to load plugin {plugin_name}: {message}")
             return False
         except Exception as e:
-            self._errors[plugin_name] = str(e)
+            message = _friendly_plugin_error(plugin_name, e, "加载")
+            self._errors[plugin_name] = message
             self._status[plugin_name] = PluginStatus.ERROR
-            print(f"Unexpected error loading plugin {plugin_name}: {e}")
+            print(f"Unexpected error loading plugin {plugin_name}: {message}")
             return False
 
     def _discover_metadata(self, plugin_name: str) -> None:
@@ -266,10 +321,11 @@ class PluginManager:
             return True
 
         except Exception as e:
-            plugin.error = str(e)
+            message = _friendly_plugin_error(plugin_name, e, "初始化")
+            plugin.error = message
             self._status[plugin_name] = PluginStatus.ERROR
-            self._errors[plugin_name] = str(e)
-            print(f"Failed to initialize plugin {plugin_name}: {e}")
+            self._errors[plugin_name] = message
+            print(f"Failed to initialize plugin {plugin_name}: {message}")
             return False
 
     async def start_plugin(self, plugin_name: str) -> bool:
@@ -301,10 +357,11 @@ class PluginManager:
             return True
 
         except Exception as e:
-            plugin.error = str(e)
+            message = _friendly_plugin_error(plugin_name, e, "启动")
+            plugin.error = message
             self._status[plugin_name] = PluginStatus.ERROR
-            self._errors[plugin_name] = str(e)
-            print(f"Failed to start plugin {plugin_name}: {e}")
+            self._errors[plugin_name] = message
+            print(f"Failed to start plugin {plugin_name}: {message}")
             return False
 
     async def stop_plugin(self, plugin_name: str) -> bool:
@@ -330,10 +387,11 @@ class PluginManager:
             return True
 
         except Exception as e:
-            plugin.error = str(e)
+            message = _friendly_plugin_error(plugin_name, e, "停止")
+            plugin.error = message
             self._status[plugin_name] = PluginStatus.ERROR
-            self._errors[plugin_name] = str(e)
-            print(f"Failed to stop plugin {plugin_name}: {e}")
+            self._errors[plugin_name] = message
+            print(f"Failed to stop plugin {plugin_name}: {message}")
             return False
 
     async def reload_plugin(self, plugin_name: str) -> bool:
@@ -376,7 +434,9 @@ class PluginManager:
         # Remove from tracking
         del self._plugins[plugin_name]
         del self._status[plugin_name]
-        del self._errors[plugin_name]
+        # 插件从未报错时 ``_errors`` 里没有这个 key；旧的 ``del`` 会让正常卸载
+        # 抛 KeyError（且此时插件已从 _plugins 移除，重试也无从恢复）。
+        self._errors.pop(plugin_name, None)
         if plugin_name in self._metadata:
             del self._metadata[plugin_name]
 

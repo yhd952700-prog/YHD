@@ -50,22 +50,18 @@ class PluginStatus:
 
 class PluginError(Exception):
     """Base exception for plugin-related errors."""
-    pass
 
 
 class PluginLoadError(PluginError):
     """Raised when a plugin fails to load."""
-    pass
 
 
 class PluginInitError(PluginError):
     """Raised when a plugin fails to initialize."""
-    pass
 
 
 class PluginStartError(PluginError):
     """Raised when a plugin fails to start."""
-    pass
 
 
 class Plugin(ABC):

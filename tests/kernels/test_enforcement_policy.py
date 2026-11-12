@@ -21,6 +21,7 @@ which runs in CI's ``guardrails`` job.
 
 from __future__ import annotations
 
+
 import pytest
 
 from src.kernels import _enforcement as enf
@@ -33,6 +34,13 @@ CRITICAL_ACTIONS = frozenset(
     a for a, r in KERNEL_ACTION_RISK.items() if r.tier is RiskTier.CRITICAL
 )
 HIGH_ACTIONS = frozenset(a for a, r in KERNEL_ACTION_RISK.items() if r.tier is RiskTier.HIGH)
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 @pytest.fixture(autouse=True)
@@ -75,12 +83,12 @@ class TestParseSpec:
         assert len(enf.parse_spec("CRITICAL")) == 2
 
     def test_high_tier_expands_to_its_actions(self):
-        # The HIGH tier holds 15 actions; one of them (capability.register) is
+        # The HIGH tier holds 17 actions; one of them (capability.register) is
         # exempted because production reaches it during startup, so a tier token
-        # expands to 14. See EXEMPT_ACTIONS.
-        assert len(HIGH_ACTIONS) == 15
+        # expands to 16. See EXEMPT_ACTIONS.
+        assert len(HIGH_ACTIONS) == 17
         assert enf.parse_spec("HIGH") == HIGH_ACTIONS - set(enf.EXEMPT_ACTIONS)
-        assert len(enf.parse_spec("HIGH")) == 14
+        assert len(enf.parse_spec("HIGH")) == 16
 
     def test_tier_expansion_never_arms_an_exempt_action(self):
         for tier in ("HIGH", "CRITICAL", "HIGH,CRITICAL"):
@@ -89,7 +97,7 @@ class TestParseSpec:
     def test_full_expansion_is_the_gated_surface_minus_exemptions(self):
         expected = (HIGH_ACTIONS | CRITICAL_ACTIONS) - set(enf.EXEMPT_ACTIONS)
         assert enf.parse_spec("HIGH,CRITICAL") == expected
-        assert len(expected) == 16
+        assert len(expected) == 18
 
     def test_naming_an_exempt_action_is_rejected_loudly(self):
         assert enf.EXEMPT_ACTIONS, "expected at least one documented exemption"
@@ -205,8 +213,8 @@ class TestSwitchArmsProductionCallSites:
         def retire():
             return "ran-under-grant"
 
-        grant = issue_grant(human.id, ["capability.retire"], reason="ops approval")
-        with grant_window(grant):
+        grant = issue_grant(human.id, ["capability.retire"], reason="ops approval", target=_TARGET)
+        with grant_window(grant, target=_TARGET):
             assert retire() == "ran-under-grant"
 
     def test_switch_does_not_leak_to_other_actions(self, human_env, monkeypatch):
@@ -219,3 +227,33 @@ class TestSwitchArmsProductionCallSites:
 
         # Not selected -> still record-only, even though it is CRITICAL.
         assert set_rule() == "ran"
+
+
+class TestCriticalSpecNoBootstrapDeadlock:
+    """D24: arming CRITICAL alone must NOT self-lock kernel bootstrap.
+
+    EXEMPT_ACTIONS (``capability.register``) keeps the registry bootstrap off the
+    enforcement cut line, so a fresh capability-kernel initialisation with
+    ``LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL`` must not raise
+    ``PolicyDeferredError``. This is the regression gate for "narrowing the
+    deployment to CRITICAL only": if an exempted startup action were ever dropped
+    from ``EXEMPT_ACTIONS``, this proves it would self-lock at bootstrap.
+    """
+
+    def test_critical_spec_does_not_raise_at_bootstrap(self, monkeypatch):
+        import src.kernels.capability as cap_mod
+
+        monkeypatch.setenv(enf.ENV_VAR, "CRITICAL")
+        enf.reload()
+        prior = cap_mod._global_registry
+        cap_mod._global_registry = None
+        try:
+            reg = cap_mod.get_capability_registry()
+        except PolicyDeferredError as exc:
+            pytest.fail(
+                f"CRITICAL spec self-locked capability-kernel bootstrap: {exc}"
+            )
+        finally:
+            cap_mod._global_registry = prior
+            enf.reload()
+        assert reg is not None

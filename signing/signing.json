@@ -1,0 +1,11 @@
+﻿{
+    "subject":  "CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN",
+    "thumbprint":  "AE398F094E7662E3B55A49F3BD728D4F742E5A16",
+    "not_after":  "2036-11-08T01:05:52-08:00",
+    "created_at":  "2026-11-08T01:18:59-08:00",
+    "pfx_path":  "signing/private/liuhao-codesign.pfx",
+    "pfx_password":  "signing/private/liuhao-codesign.pfx.dpapi (DPAPI CurrentUser)",
+    "cer_path":  "signing/LiuHao-CodeSigning.cer",
+    "trust_script":  "signing/trust-liuhao-signing.ps1",
+    "note":  "自签名证书，非公开权威 CA；未安装信任脚本前 Windows 仍可能提示未知发布者。"
+}

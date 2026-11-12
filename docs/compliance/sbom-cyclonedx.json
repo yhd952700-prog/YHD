@@ -1,0 +1,4763 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:0ebf5458-3516-5e8e-9596-4223c8b8b29c",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-10T21:37:19+00:00",
+    "tools": [
+      {
+        "vendor": "LiuHao AI OS",
+        "name": "sbom_audit.py",
+        "version": "1.0.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/liuhao-ai-os@0.2.0",
+      "name": "鎏灏 LiuHao AI OS",
+      "version": "0.2.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "Proprietary"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:audit-source-tree",
+          "value": "."
+        },
+        {
+          "name": "liuhao:installer-sha256",
+          "value": ""
+        },
+        {
+          "name": "liuhao:python-distributions",
+          "value": "94"
+        },
+        {
+          "name": "liuhao:embedded-components",
+          "value": "22"
+        },
+        {
+          "name": "liuhao:frontend-components",
+          "value": "3"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "liuhao:notices-sha256",
+        "value": "89bf4eeb98466210a4c429f97c38f89ffcc827f9d65296e221832eb529aed2ba"
+      },
+      {
+        "name": "liuhao:notices-exact-match",
+        "value": "true"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/aiohappyeyeballs@2.7.1",
+      "name": "aiohappyeyeballs",
+      "version": "2.7.1",
+      "purl": "pkg:pypi/aiohappyeyeballs@2.7.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/aio-libs/aiohappyeyeballs"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "aiohappyeyeballs-2.7.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "aiohappyeyeballs-2.7.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/aiohttp@3.14.4",
+      "name": "aiohttp",
+      "version": "3.14.4",
+      "purl": "pkg:pypi/aiohttp@3.14.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/aio-libs/aiohttp"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "aiohttp-3.14.4.dist-info/licenses/LICENSE.txt, aiohttp-3.14.4.dist-info/licenses/vendor/llhttp/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "aiohttp-3.14.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/aiosignal@1.4.0",
+      "name": "aiosignal",
+      "version": "1.4.0",
+      "purl": "pkg:pypi/aiosignal@1.4.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gitter.im/aio-libs/Lobby"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "aiosignal-1.4.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "aiosignal-1.4.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/aiosqlite@0.22.1",
+      "name": "aiosqlite",
+      "version": "0.22.1",
+      "purl": "pkg:pypi/aiosqlite@0.22.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://aiosqlite.omnilib.dev"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "aiosqlite-0.22.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "aiosqlite-0.22.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/annotated-doc@0.0.5",
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "purl": "pkg:pypi/annotated-doc@0.0.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/fastapi/annotated-doc"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "annotated_doc-0.0.5.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "annotated_doc-0.0.5.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/annotated-types@0.8.0",
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "purl": "pkg:pypi/annotated-types@0.8.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/annotated-types/annotated-types"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "annotated_types-0.8.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "annotated_types-0.8.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/anthropic@1.3.0",
+      "name": "anthropic",
+      "version": "1.3.0",
+      "purl": "pkg:pypi/anthropic@1.3.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/anthropics/anthropic-sdk-python"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "anthropic-1.3.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "anthropic-1.3.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/anyio@4.15.1",
+      "name": "anyio",
+      "version": "4.15.1",
+      "purl": "pkg:pypi/anyio@4.15.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/agronholm/anyio"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "anyio-4.15.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "anyio-4.15.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/attrs@26.1.0",
+      "name": "attrs",
+      "version": "26.1.0",
+      "purl": "pkg:pypi/attrs@26.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.attrs.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "attrs-26.1.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "attrs-26.1.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/bcrypt@5.0.0",
+      "name": "bcrypt",
+      "version": "5.0.0",
+      "purl": "pkg:pypi/bcrypt@5.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyca/bcrypt/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "bcrypt-5.0.0.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "bcrypt-5.0.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/bottle@0.13.4",
+      "name": "bottle",
+      "version": "0.13.4",
+      "purl": "pkg:pypi/bottle@0.13.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/bottlepy/bottle"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "bottle-0.13.4.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "bottle-0.13.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/certifi@2026.10.23",
+      "name": "certifi",
+      "version": "2026.10.23",
+      "purl": "pkg:pypi/certifi@2026.10.23",
+      "licenses": [
+        {
+          "license": {
+            "id": "MPL-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/certifi/python-certifi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "weak-copyleft"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "certifi-2026.10.23.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "certifi-2026.10.23.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/cffi@2.1.1",
+      "name": "cffi",
+      "version": "2.1.1",
+      "purl": "pkg:pypi/cffi@2.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT-0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-cffi/cffi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "cffi-2.1.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "cffi-2.1.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/charset-normalizer@3.5.1",
+      "name": "charset-normalizer",
+      "version": "3.5.1",
+      "purl": "pkg:pypi/charset-normalizer@3.5.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://charset-normalizer.readthedocs.io/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "charset_normalizer-3.5.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "charset_normalizer-3.5.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/click@8.5.0",
+      "name": "click",
+      "version": "8.5.0",
+      "purl": "pkg:pypi/click@8.5.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pallets/click/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "click-8.5.0.dist-info/licenses/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "click-8.5.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/clr-loader@0.3.1",
+      "name": "clr_loader",
+      "version": "0.3.1",
+      "purl": "pkg:pypi/clr-loader@0.3.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pythonnet/clr-loader"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "clr_loader-0.3.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "clr_loader-0.3.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/cryptography@50.0.1",
+      "name": "cryptography",
+      "version": "50.0.1",
+      "purl": "pkg:pypi/cryptography@50.0.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSD-3-Clause"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyca/cryptography"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "cryptography-50.0.1.dist-info/licenses/LICENSE, cryptography-50.0.1.dist-info/licenses/LICENSE.APACHE, cryptography-50.0.1.dist-info/licenses/LICENSE.BSD"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "cryptography-50.0.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/docstring-parser@0.18.0",
+      "name": "docstring_parser",
+      "version": "0.18.0",
+      "purl": "pkg:pypi/docstring-parser@0.18.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/rr-/docstring_parser"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "docstring_parser-0.18.0.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "docstring_parser-0.18.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/email-validator@2.3.0",
+      "name": "email-validator",
+      "version": "2.3.0",
+      "purl": "pkg:pypi/email-validator@2.3.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Unlicense"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/JoshData/python-email-validator"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "email_validator-2.3.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "email_validator-2.3.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/fastapi@0.141.1",
+      "name": "fastapi",
+      "version": "0.141.1",
+      "purl": "pkg:pypi/fastapi@0.141.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/fastapi/fastapi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "fastapi-0.141.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "fastapi-0.141.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/fastmcp-slim@4.0.3",
+      "name": "fastmcp-slim",
+      "version": "4.0.3",
+      "purl": "pkg:pypi/fastmcp-slim@4.0.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gofastmcp.com"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "fastmcp_slim-4.0.3.dist-info/licenses/fastmcp-slim-Apache-2.0.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "fastmcp_slim-4.0.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/frozenlist@1.8.0",
+      "name": "frozenlist",
+      "version": "1.8.0",
+      "purl": "pkg:pypi/frozenlist@1.8.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://matrix.to/#/#aio-libs:matrix.org"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "frozenlist-1.8.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "frozenlist-1.8.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/google-auth@2.57.1",
+      "name": "google-auth",
+      "version": "2.57.1",
+      "purl": "pkg:pypi/google-auth@2.57.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/googleapis/google-cloud-python/tree/main/packages/google-auth"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "google_auth-2.57.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "google_auth-2.57.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/google-genai@2.22.0",
+      "name": "google-genai",
+      "version": "2.22.0",
+      "purl": "pkg:pypi/google-genai@2.22.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/googleapis/python-genai"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "google_genai-2.22.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "google_genai-2.22.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/googleapis-common-protos@1.75.3",
+      "name": "googleapis-common-protos",
+      "version": "1.75.3",
+      "purl": "pkg:pypi/googleapis-common-protos@1.75.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/googleapis/google-cloud-python/tree/main/packages/googleapis-common-protos"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "googleapis_common_protos-1.75.3.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "googleapis_common_protos-1.75.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/greenlet@3.5.5",
+      "name": "greenlet",
+      "version": "3.5.5",
+      "purl": "pkg:pypi/greenlet@3.5.5",
+      "licenses": [
+        {
+          "expression": "MIT AND PSF-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://greenlet.readthedocs.io"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "greenlet-3.5.5.dist-info/licenses/LICENSE, greenlet-3.5.5.dist-info/licenses/LICENSE.PSF"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "greenlet-3.5.5.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/h11@0.16.0",
+      "name": "h11",
+      "version": "0.16.0",
+      "purl": "pkg:pypi/h11@0.16.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-hyper/h11"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "h11-0.16.0.dist-info/licenses/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "h11-0.16.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/h2@4.4.1",
+      "name": "h2",
+      "version": "4.4.1",
+      "purl": "pkg:pypi/h2@4.4.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-hyper/h2/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "h2-4.4.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "h2-4.4.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/hpack@4.2.0",
+      "name": "hpack",
+      "version": "4.2.0",
+      "purl": "pkg:pypi/hpack@4.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-hyper/hpack/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "hpack-4.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "hpack-4.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/httpcore@1.0.9",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "purl": "pkg:pypi/httpcore@1.0.9",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.encode.io/httpcore/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "httpcore-1.0.9.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "httpcore-1.0.9.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/httpcore2@2.12.0",
+      "name": "httpcore2",
+      "version": "2.12.0",
+      "purl": "pkg:pypi/httpcore2@2.12.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/httpx2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "httpcore2-2.12.0.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "httpcore2-2.12.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/httpx@0.28.1",
+      "name": "httpx",
+      "version": "0.28.1",
+      "purl": "pkg:pypi/httpx@0.28.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/encode/httpx"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "httpx-0.28.1.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "httpx-0.28.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/httpx2@2.12.0",
+      "name": "httpx2",
+      "version": "2.12.0",
+      "purl": "pkg:pypi/httpx2@2.12.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/httpx2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "httpx2-2.12.0.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "httpx2-2.12.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/hyperframe@6.1.0",
+      "name": "hyperframe",
+      "version": "6.1.0",
+      "purl": "pkg:pypi/hyperframe@6.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/hyperframe/6.1.0/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "hyperframe-6.1.0.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "hyperframe-6.1.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/idna@3.19",
+      "name": "idna",
+      "version": "3.19",
+      "purl": "pkg:pypi/idna@3.19",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/kjd/idna"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "idna-3.19.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "idna-3.19.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/jiter@0.16.0",
+      "name": "jiter",
+      "version": "0.16.0",
+      "purl": "pkg:pypi/jiter@0.16.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/jiter/0.16.0/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "jiter-0.16.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "jiter-0.16.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/lxml@6.1.3",
+      "name": "lxml",
+      "version": "6.1.3",
+      "purl": "pkg:pypi/lxml@6.1.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/lxml/lxml"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "lxml-6.1.3.dist-info/licenses/LICENSE.txt, lxml-6.1.3.dist-info/licenses/LICENSES.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "lxml-6.1.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/mcp@2.2.0",
+      "name": "mcp",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/mcp@2.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://modelcontextprotocol.io"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "mcp-2.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "mcp-2.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/mcp-types@2.2.0",
+      "name": "mcp-types",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/mcp-types@2.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://modelcontextprotocol.io"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "mcp_types-2.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "mcp_types-2.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/multidict@6.9.1",
+      "name": "multidict",
+      "version": "6.9.1",
+      "purl": "pkg:pypi/multidict@6.9.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://matrix.to/#/#aio-libs:matrix.org"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "multidict-6.9.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "multidict-6.9.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/openai@3.13.0",
+      "name": "openai",
+      "version": "3.13.0",
+      "purl": "pkg:pypi/openai@3.13.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/openai/openai-python"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "openai-3.13.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "openai-3.13.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-api@1.44.0",
+      "name": "opentelemetry-api",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-api@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_api-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_api-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+      "name": "opentelemetry-exporter-otlp",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+      "name": "opentelemetry-exporter-otlp-proto-common",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-common"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp_proto_common-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp_proto_common-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+      "name": "opentelemetry-exporter-otlp-proto-grpc",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp_proto_grpc-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp_proto_grpc-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+      "name": "opentelemetry-exporter-otlp-proto-http",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-http"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_exporter_otlp_proto_http-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_exporter_otlp_proto_http-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation@0.65b0",
+      "name": "opentelemetry-instrumentation",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/opentelemetry-instrumentation"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
+      "name": "opentelemetry-instrumentation-asgi",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-asgi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation_asgi-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation_asgi-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
+      "name": "opentelemetry-instrumentation-fastapi",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-fastapi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_instrumentation_fastapi-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_instrumentation_fastapi-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-proto@1.44.0",
+      "name": "opentelemetry-proto",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-proto@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-proto"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_proto-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_proto-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-sdk@1.44.0",
+      "name": "opentelemetry-sdk",
+      "version": "1.44.0",
+      "purl": "pkg:pypi/opentelemetry-sdk@1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-sdk"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_sdk-1.44.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_sdk-1.44.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+      "name": "opentelemetry-semantic-conventions",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-semantic-conventions"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_semantic_conventions-0.65b0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_semantic_conventions-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/opentelemetry-util-http@0.65b0",
+      "name": "opentelemetry-util-http",
+      "version": "0.65b0",
+      "purl": "pkg:pypi/opentelemetry-util-http@0.65b0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/util/opentelemetry-util-http"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "opentelemetry_util_http-0.65b0.dist-info/licenses/opentelemetry-util-http-Apache-2.0.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "opentelemetry_util_http-0.65b0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/orjson@3.12.0",
+      "name": "orjson",
+      "version": "3.12.0",
+      "purl": "pkg:pypi/orjson@3.12.0",
+      "licenses": [
+        {
+          "expression": "MPL-2.0 AND (Apache-2.0 OR MIT)"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/ijl/orjson"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "weak-copyleft"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "orjson-3.12.0.dist-info/licenses/LICENSE-APACHE, orjson-3.12.0.dist-info/licenses/LICENSE-MIT, orjson-3.12.0.dist-info/licenses/LICENSE-MPL-2.0"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "orjson-3.12.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/packaging@26.3",
+      "name": "packaging",
+      "version": "26.3",
+      "purl": "pkg:pypi/packaging@26.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSD-2-Clause"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pypa/packaging"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "packaging-26.3.dist-info/licenses/LICENSE, packaging-26.3.dist-info/licenses/LICENSE.APACHE, packaging-26.3.dist-info/licenses/LICENSE.BSD"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "packaging-26.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/platformdirs@4.11.7",
+      "name": "platformdirs",
+      "version": "4.11.7",
+      "purl": "pkg:pypi/platformdirs@4.11.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/tox-dev/platformdirs"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "platformdirs-4.11.7.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "platformdirs-4.11.7.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/prometheus-client@0.26.0",
+      "name": "prometheus_client",
+      "version": "0.26.0",
+      "purl": "pkg:pypi/prometheus-client@0.26.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND BSD-2-Clause"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/prometheus/client_python"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "prometheus_client-0.26.0.dist-info/licenses/LICENSE, prometheus_client-0.26.0.dist-info/licenses/NOTICE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "prometheus_client-0.26.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/propcache@0.5.2",
+      "name": "propcache",
+      "version": "0.5.2",
+      "purl": "pkg:pypi/propcache@0.5.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://matrix.to/#/#aio-libs:matrix.org"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "propcache-0.5.2.dist-info/licenses/LICENSE, propcache-0.5.2.dist-info/licenses/NOTICE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "propcache-0.5.2.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/protobuf@6.33.6",
+      "name": "protobuf",
+      "version": "6.33.6",
+      "purl": "pkg:pypi/protobuf@6.33.6",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://developers.google.com/protocol-buffers/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "protobuf-6.33.6.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "protobuf-6.33.6.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/proxy-tools@0.1.0",
+      "name": "proxy_tools",
+      "version": "0.1.0",
+      "purl": "pkg:pypi/proxy-tools@0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://github.com/jtushman/proxy_tools"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "proxy_tools-0.1.0.dist-info/licenses/proxy_tools-BSD.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "proxy_tools-0.1.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/psutil@7.2.2",
+      "name": "psutil",
+      "version": "7.2.2",
+      "purl": "pkg:pypi/psutil@7.2.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/giampaolo/psutil"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "psutil-7.2.2.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "psutil-7.2.2.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pycparser@3.0",
+      "name": "pycparser",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/eliben/pycparser"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pycparser-3.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pycparser-3.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pydantic@2.13.5",
+      "name": "pydantic",
+      "version": "2.13.5",
+      "purl": "pkg:pypi/pydantic@2.13.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/pydantic"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pydantic-2.13.5.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pydantic-2.13.5.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pydantic-settings@2.15.0",
+      "name": "pydantic-settings",
+      "version": "2.15.0",
+      "purl": "pkg:pypi/pydantic-settings@2.15.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/pydantic-settings"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pydantic_settings-2.15.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pydantic_settings-2.15.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pydantic-core@2.46.5",
+      "name": "pydantic_core",
+      "version": "2.46.5",
+      "purl": "pkg:pypi/pydantic-core@2.46.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pydantic_core-2.46.5.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pydantic_core-2.46.5.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pygments@2.21.0",
+      "name": "Pygments",
+      "version": "2.21.0",
+      "purl": "pkg:pypi/pygments@2.21.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pygments.org"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pygments-2.21.0.dist-info/licenses/AUTHORS, pygments-2.21.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pygments-2.21.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyjwt@2.15.1",
+      "name": "PyJWT",
+      "version": "2.15.1",
+      "purl": "pkg:pypi/pyjwt@2.15.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/jpadilla/pyjwt"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pyjwt-2.15.1.dist-info/licenses/AUTHORS.rst, pyjwt-2.15.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pyjwt-2.15.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pypdf@6.21.4",
+      "name": "pypdf",
+      "version": "6.21.4",
+      "purl": "pkg:pypi/pypdf@6.21.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/py-pdf/pypdf"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pypdf-6.21.4.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pypdf-6.21.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-docx@1.2.0",
+      "name": "python-docx",
+      "version": "1.2.0",
+      "purl": "pkg:pypi/python-docx@1.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-openxml/python-docx"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "python_docx-1.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "python_docx-1.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-dotenv@1.2.3",
+      "name": "python-dotenv",
+      "version": "1.2.3",
+      "purl": "pkg:pypi/python-dotenv@1.2.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/theskumar/python-dotenv"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "python_dotenv-1.2.3.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "python_dotenv-1.2.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-multipart@0.0.32",
+      "name": "python-multipart",
+      "version": "0.0.32",
+      "purl": "pkg:pypi/python-multipart@0.0.32",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/Kludex/python-multipart"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "python_multipart-0.0.32.dist-info/licenses/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "python_multipart-0.0.32.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pythonnet@3.2.1",
+      "name": "pythonnet",
+      "version": "3.2.1",
+      "purl": "pkg:pypi/pythonnet@3.2.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pythonnet.github.io/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pythonnet-3.2.1.dist-info/licenses/AUTHORS.md, pythonnet-3.2.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pythonnet-3.2.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pywebview@6.2.1",
+      "name": "pywebview",
+      "version": "6.2.1",
+      "purl": "pkg:pypi/pywebview@6.2.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD 3-Clause License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/pywebview/6.2.1/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "unknown"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pywebview-6.2.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pywebview-6.2.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pywin32@311",
+      "name": "pywin32",
+      "version": "311",
+      "purl": "pkg:pypi/pywin32@311",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/mhammond/pywin32"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "win32/license.txt, win32com/License.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pywin32-311.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyyaml@6.0.3",
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "purl": "pkg:pypi/pyyaml@6.0.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/yaml/pyyaml"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "pyyaml-6.0.3.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "pyyaml-6.0.3.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/requests@2.34.2",
+      "name": "requests",
+      "version": "2.34.2",
+      "purl": "pkg:pypi/requests@2.34.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/psf/requests"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "requests-2.34.2.dist-info/licenses/LICENSE, requests-2.34.2.dist-info/licenses/NOTICE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "requests-2.34.2.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/restrictedpython@8.5",
+      "name": "RestrictedPython",
+      "version": "8.5",
+      "purl": "pkg:pypi/restrictedpython@8.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "ZPL-2.1"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/zopefoundation/RestrictedPython"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "restrictedpython-8.5.dist-info/licenses/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "restrictedpython-8.5.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/rich@15.0.0",
+      "name": "rich",
+      "version": "15.0.0",
+      "purl": "pkg:pypi/rich@15.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/Textualize/rich"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "rich-15.0.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "rich-15.0.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/sniffio@1.3.1",
+      "name": "sniffio",
+      "version": "1.3.1",
+      "purl": "pkg:pypi/sniffio@1.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-trio/sniffio"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "sniffio-1.3.1.dist-info/LICENSE, sniffio-1.3.1.dist-info/LICENSE.APACHE2, sniffio-1.3.1.dist-info/LICENSE.MIT"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "sniffio-1.3.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/sqlalchemy@2.0.52",
+      "name": "SQLAlchemy",
+      "version": "2.0.52",
+      "purl": "pkg:pypi/sqlalchemy@2.0.52",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://docs.sqlalchemy.org"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "sqlalchemy-2.0.52.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "sqlalchemy-2.0.52.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/sse-starlette@3.4.11",
+      "name": "sse-starlette",
+      "version": "3.4.11",
+      "purl": "pkg:pypi/sse-starlette@3.4.11",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/sysid/sse-starlette"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "sse_starlette-3.4.11.dist-info/licenses/AUTHORS, sse_starlette-3.4.11.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "sse_starlette-3.4.11.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/starlette@1.6.0",
+      "name": "starlette",
+      "version": "1.6.0",
+      "purl": "pkg:pypi/starlette@1.6.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/Kludex/starlette"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "starlette-1.6.0.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "starlette-1.6.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/taskiq@0.13.0",
+      "name": "taskiq",
+      "version": "0.13.0",
+      "purl": "pkg:pypi/taskiq@0.13.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://taskiq-python.github.io/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "taskiq-0.13.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "taskiq-0.13.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/taskiq-dependencies@1.5.7",
+      "name": "taskiq-dependencies",
+      "version": "1.5.7",
+      "purl": "pkg:pypi/taskiq-dependencies@1.5.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/taskiq-dependencies/1.5.7/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "taskiq_dependencies-1.5.7.dist-info/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "taskiq_dependencies-1.5.7.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/tenacity@9.1.4",
+      "name": "tenacity",
+      "version": "9.1.4",
+      "purl": "pkg:pypi/tenacity@9.1.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/jd/tenacity"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "tenacity-9.1.4.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "tenacity-9.1.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/truststore@0.10.4",
+      "name": "truststore",
+      "version": "0.10.4",
+      "purl": "pkg:pypi/truststore@0.10.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/sethmlarson/truststore"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "truststore-0.10.4.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "truststore-0.10.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/typing-inspection@0.4.4",
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "purl": "pkg:pypi/typing-inspection@0.4.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/typing-inspection"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "typing_inspection-0.4.4.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "typing_inspection-0.4.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/typing-extensions@4.16.0",
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "purl": "pkg:pypi/typing-extensions@4.16.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python/typing_extensions"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "typing_extensions-4.16.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/urllib3@2.8.0",
+      "name": "urllib3",
+      "version": "2.8.0",
+      "purl": "pkg:pypi/urllib3@2.8.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://urllib3.readthedocs.io"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "urllib3-2.8.0.dist-info/licenses/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "urllib3-2.8.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/uvicorn@0.52.4",
+      "name": "uvicorn",
+      "version": "0.52.4",
+      "purl": "pkg:pypi/uvicorn@0.52.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://uvicorn.dev/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "uvicorn-0.52.4.dist-info/licenses/LICENSE.md"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "uvicorn-0.52.4.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/watchfiles@1.2.0",
+      "name": "watchfiles",
+      "version": "1.2.0",
+      "purl": "pkg:pypi/watchfiles@1.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/samuelcolvin/watchfiles"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "watchfiles-1.2.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "watchfiles-1.2.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/websockets@16.1.1",
+      "name": "websockets",
+      "version": "16.1.1",
+      "purl": "pkg:pypi/websockets@16.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-websockets/websockets"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "websockets-16.1.1.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "websockets-16.1.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/yarl@1.25.1",
+      "name": "yarl",
+      "version": "1.25.1",
+      "purl": "pkg:pypi/yarl@1.25.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://matrix.to/#/#aio-libs:matrix.org"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "yarl-1.25.1.dist-info/licenses/LICENSE, yarl-1.25.1.dist-info/licenses/NOTICE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "yarl-1.25.1.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/zstandard@0.25.0",
+      "name": "zstandard",
+      "version": "0.25.0",
+      "purl": "pkg:pypi/zstandard@0.25.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/indygreg/python-zstandard"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "zstandard-0.25.0.dist-info/licenses/LICENSE"
+        },
+        {
+          "name": "liuhao:dist-info",
+          "value": "zstandard-0.25.0.dist-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/bzip2-libbzip2@1.0.8",
+      "name": "bzip2 / libbzip2",
+      "version": "1.0.8",
+      "licenses": [
+        {
+          "license": {
+            "name": "bzip2-1.0.8"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://sourceware.org/bzip2/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "runtime/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "runtime/LICENSE.txt 第 326 行起含 bzip2 1.0.8 全文"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/cpython@3.12.14",
+      "name": "CPython",
+      "version": "3.12.14",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://docs.python.org/3/license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "runtime/LICENSE.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "runtime/python.exe 的 PE FileVersion；runtime/LICENSE.txt 为 PSF License v2"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/httpx-aiohttp-anthropic-1.3.0@0.2.0",
+      "name": "httpx-aiohttp（anthropic 1.3.0 内置）",
+      "version": "0.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/karpetrosyan/httpx-aiohttp"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "runtime/Lib/site-packages/anthropic/_vendor/httpx_aiohttp/LICENSE"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "anthropic 1.3.0"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "NOTICE.md 声明 0.2.0 / BSD-3-Clause，LICENSE 随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/libexpat-pyexpat.pyd@2.8.3",
+      "name": "libexpat（pyexpat.pyd 静态链接）",
+      "version": "2.8.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://libexpat.github.io/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/expat-MIT.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "pyexpat.EXPAT_VERSION=expat_2.8.3；全文已补齐到 licenses/expat-MIT.txt"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/libffi@8（ABI，无",
+      "name": "libffi",
+      "version": "8（ABI，无 PE 版本资源）",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/libffi/libffi/blob/master/LICENSE"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/libffi-MIT.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "runtime/DLLs/libffi-8.dll 存在；无 FileVersion"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/liblzma-xz-utils-lzma.pyd@未标注（随",
+      "name": "liblzma / XZ Utils（_lzma.pyd）",
+      "version": "未标注（随 CPython 3.12.14）",
+      "licenses": [
+        {
+          "license": {
+            "name": "Public-Domain"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://tukaani.org/xz/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "false"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "(none)"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "liblzma 主体为公版；无许可证文本随包，公版不强制署名"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/libmpdec-decimal.pyd@2.5.1",
+      "name": "libmpdec（_decimal.pyd）",
+      "version": "2.5.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.bytereef.org/mpdecimal/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/libmpdec-BSD-2-Clause.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "decimal.__libmpdec_version__=2.5.1；全文已补齐到 licenses/libmpdec-BSD-2-Clause.txt"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/libxml2-lxml@2.11.9",
+      "name": "libxml2（lxml 内置）",
+      "version": "2.11.9",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gitlab.gnome.org/GNOME/libxml2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "runtime/Lib/site-packages/lxml-6.1.3.dist-info/licenses/LICENSES.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "etree.LIBXML_COMPILED_VERSION 已实测；LICENSES.txt 含 MIT 全文"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/libxslt-libexslt-lxml@1.1.45",
+      "name": "libxslt/libexslt（lxml 内置）",
+      "version": "1.1.45",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://gitlab.gnome.org/GNOME/libxslt"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "runtime/Lib/site-packages/lxml-6.1.3.dist-info/licenses/LICENSES.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "etree.LIBXSLT_COMPILED_VERSION 已实测；LICENSES.txt 含 MIT 全文"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/llhttp-aiohttp-3.14.4@未标注",
+      "name": "llhttp（aiohttp 3.14.4 内置）",
+      "version": "未标注",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/nodejs/llhttp"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "runtime/Lib/site-packages/aiohttp-3.14.4.dist-info/licenses/vendor/llhttp/LICENSE"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "aiohttp 3.14.4"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "vendor/llhttp/LICENSE 为 MIT 全文；版本未标注"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/msvc-vcruntime140-vcruntime140-1@14.44.35211.0",
+      "name": "MSVC 运行库 vcruntime140/vcruntime140_1",
+      "version": "14.44.35211.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "MS-VS-2022-Redistributable"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Microsoft-VC-Runtime.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "PE FileVersion 14.44.35211.0；可再发行组件声明随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/openssl-libcrypto-libssl@3.5.8",
+      "name": "OpenSSL libcrypto/libssl",
+      "version": "3.5.8",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.openssl.org/source/license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Apache-2.0.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "PE FileVersion 3.5.8；ssl.OPENSSL_VERSION=OpenSSL 3.5.8"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/sqlite@3.53.1",
+      "name": "SQLite",
+      "version": "3.53.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "Public-Domain"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.sqlite.org/copyright.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/SQLite-Public-Domain.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "sqlite3.sqlite_version 与 PE FileVersion 均为 3.53.1；公版声明随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/tcl@8.6.12",
+      "name": "Tcl",
+      "version": "8.6.12",
+      "licenses": [
+        {
+          "license": {
+            "name": "Tcl/Tk-License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.tcl.tk/software/tcltk/license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Tcl-Tk-license.terms, runtime/tcl/tk8.6/license.terms"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "tcl86t.dll FileVersion=8.6.12；Tcl/Tk license.terms 随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/tcl-tcldde14-tclreg13@未标注",
+      "name": "Tcl 扩展 tcldde14/tclreg13",
+      "version": "未标注",
+      "licenses": [
+        {
+          "license": {
+            "name": "Tcl/Tk-License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.tcl.tk/software/tcltk/license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Tcl-Tk-license.terms"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "随 Tcl 发行版；license.terms 覆盖"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/tix@8.4.3",
+      "name": "Tix",
+      "version": "8.4.3",
+      "licenses": [
+        {
+          "license": {
+            "name": "Tix-License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://sourceforge.net/projects/tix/files/Tix/8.4.3/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Tix-License.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "runtime/tcl/tix8.4.3/tix84.dll 随包；全文取自上游 Tix 8.4.3 源码包 license.terms"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/tk@8.6.12",
+      "name": "Tk",
+      "version": "8.6.12",
+      "licenses": [
+        {
+          "license": {
+            "name": "Tcl/Tk-License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.tcl.tk/software/tcltk/license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Tcl-Tk-license.terms, runtime/tcl/tk8.6/license.terms"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "tk86t.dll FileVersion=8.6.12；license.terms 随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/unicode-unicodedata.pyd@15.0.0",
+      "name": "Unicode 数据（unicodedata.pyd）",
+      "version": "15.0.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "Unicode-License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.unicode.org/license.txt"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/Unicode-License.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "unicodedata.unidata_version 已实测；全文已补齐到 licenses/Unicode-License.txt"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/zlib-cpython@1.3.2",
+      "name": "zlib（CPython 静态链接）",
+      "version": "1.3.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.zlib.net/zlib_license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/zlib-License.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "runtime"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "zlib.ZLIB_RUNTIME_VERSION 已实测；全文已补齐到 licenses/zlib-License.txt"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/zlib-lxml@未标注",
+      "name": "zlib（lxml 内置）",
+      "version": "未标注",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.zlib.net/zlib_license.html"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/zlib-License.txt, runtime/Lib/site-packages/lxml-6.1.3.dist-info/licenses/LICENSES.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "lxml 6.1.3"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "LICENSES.txt 声明 **zlib**: zlib-license；全文已补齐到 licenses/zlib-License.txt"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/adodbapi-pywin32-311@2.6.2.0",
+      "name": "adodbapi（pywin32 311 内置）",
+      "version": "2.6.2.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "LGPL-2.1"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/mhammond/pywin32/tree/main/adodbapi"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "weak-copyleft"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/adodbapi-LGPL-2.1.txt, licenses/LGPL-2.1.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "pywin32 311"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "adodbapi/adodbapi.py __version__=2.6.2.0；license.txt 首行为 GNU LGPL v2.1；19 个 .py 源文件随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/iconv-lxml-6.1.3-wheel@未标注（参考上游",
+      "name": "iconv（lxml 6.1.3 二进制 wheel 内置，静态链接）",
+      "version": "未标注（参考上游 libiconv 1.17）",
+      "licenses": [
+        {
+          "license": {
+            "name": "LGPL-2.1"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.gnu.org/software/libiconv/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "weak-copyleft"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/LGPL-2.1.txt, licenses/libiconv-NOTICE.txt, licenses/LGPL-SOURCE-OFFER.txt"
+        },
+        {
+          "name": "liuhao:embedded-in",
+          "value": "lxml 6.1.3"
+        },
+        {
+          "name": "liuhao:evidence",
+          "value": "LICENSES.txt 声明 **iconv**: LGPL 2.1；etree.pyd 内含 libiconv 字符串，随包无 libiconv DLL，判定静态链接；LGPL 全文 + 源码要约 + 重链接步骤已随包"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/react@19.3.1",
+      "name": "react",
+      "version": "19.3.1",
+      "purl": "pkg:npm/react@19.3.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/facebook/react"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/React-MIT.txt"
+        },
+        {
+          "name": "liuhao:bundle",
+          "value": "console/assets/index-*.js"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/react-dom@19.3.1",
+      "name": "react-dom",
+      "version": "19.3.1",
+      "purl": "pkg:npm/react-dom@19.3.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/facebook/react"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/React-MIT.txt"
+        },
+        {
+          "name": "liuhao:bundle",
+          "value": "console/assets/index-*.js"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/scheduler@0.28.0",
+      "name": "scheduler",
+      "version": "0.28.0",
+      "purl": "pkg:npm/scheduler@0.28.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/facebook/react"
+        }
+      ],
+      "properties": [
+        {
+          "name": "liuhao:license-class",
+          "value": "permissive"
+        },
+        {
+          "name": "liuhao:license-text-present",
+          "value": "true"
+        },
+        {
+          "name": "liuhao:license-files",
+          "value": "licenses/React-MIT.txt"
+        },
+        {
+          "name": "liuhao:bundle",
+          "value": "console/assets/index-*.js"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/liuhao-ai-os@0.2.0",
+      "dependsOn": [
+        "pkg:pypi/aiohappyeyeballs@2.7.1",
+        "pkg:pypi/aiohttp@3.14.4",
+        "pkg:pypi/aiosignal@1.4.0",
+        "pkg:pypi/aiosqlite@0.22.1",
+        "pkg:pypi/annotated-doc@0.0.5",
+        "pkg:pypi/annotated-types@0.8.0",
+        "pkg:pypi/anthropic@1.3.0",
+        "pkg:pypi/anyio@4.15.1",
+        "pkg:pypi/attrs@26.1.0",
+        "pkg:pypi/bcrypt@5.0.0",
+        "pkg:pypi/bottle@0.13.4",
+        "pkg:pypi/certifi@2026.10.23",
+        "pkg:pypi/cffi@2.1.1",
+        "pkg:pypi/charset-normalizer@3.5.1",
+        "pkg:pypi/click@8.5.0",
+        "pkg:pypi/clr-loader@0.3.1",
+        "pkg:pypi/cryptography@50.0.1",
+        "pkg:pypi/docstring-parser@0.18.0",
+        "pkg:pypi/email-validator@2.3.0",
+        "pkg:pypi/fastapi@0.141.1",
+        "pkg:pypi/fastmcp-slim@4.0.3",
+        "pkg:pypi/frozenlist@1.8.0",
+        "pkg:pypi/google-auth@2.57.1",
+        "pkg:pypi/google-genai@2.22.0",
+        "pkg:pypi/googleapis-common-protos@1.75.3",
+        "pkg:pypi/greenlet@3.5.5",
+        "pkg:pypi/h11@0.16.0",
+        "pkg:pypi/h2@4.4.1",
+        "pkg:pypi/hpack@4.2.0",
+        "pkg:pypi/httpcore@1.0.9",
+        "pkg:pypi/httpcore2@2.12.0",
+        "pkg:pypi/httpx@0.28.1",
+        "pkg:pypi/httpx2@2.12.0",
+        "pkg:pypi/hyperframe@6.1.0",
+        "pkg:pypi/idna@3.19",
+        "pkg:pypi/jiter@0.16.0",
+        "pkg:pypi/lxml@6.1.3",
+        "pkg:pypi/mcp@2.2.0",
+        "pkg:pypi/mcp-types@2.2.0",
+        "pkg:pypi/multidict@6.9.1",
+        "pkg:pypi/openai@3.13.0",
+        "pkg:pypi/opentelemetry-api@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+        "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+        "pkg:pypi/opentelemetry-instrumentation@0.65b0",
+        "pkg:pypi/opentelemetry-instrumentation-asgi@0.65b0",
+        "pkg:pypi/opentelemetry-instrumentation-fastapi@0.65b0",
+        "pkg:pypi/opentelemetry-proto@1.44.0",
+        "pkg:pypi/opentelemetry-sdk@1.44.0",
+        "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+        "pkg:pypi/opentelemetry-util-http@0.65b0",
+        "pkg:pypi/orjson@3.12.0",
+        "pkg:pypi/packaging@26.3",
+        "pkg:pypi/platformdirs@4.11.7",
+        "pkg:pypi/prometheus-client@0.26.0",
+        "pkg:pypi/propcache@0.5.2",
+        "pkg:pypi/protobuf@6.33.6",
+        "pkg:pypi/proxy-tools@0.1.0",
+        "pkg:pypi/psutil@7.2.2",
+        "pkg:pypi/pycparser@3.0",
+        "pkg:pypi/pydantic@2.13.5",
+        "pkg:pypi/pydantic-settings@2.15.0",
+        "pkg:pypi/pydantic-core@2.46.5",
+        "pkg:pypi/pygments@2.21.0",
+        "pkg:pypi/pyjwt@2.15.1",
+        "pkg:pypi/pypdf@6.21.4",
+        "pkg:pypi/python-docx@1.2.0",
+        "pkg:pypi/python-dotenv@1.2.3",
+        "pkg:pypi/python-multipart@0.0.32",
+        "pkg:pypi/pythonnet@3.2.1",
+        "pkg:pypi/pywebview@6.2.1",
+        "pkg:pypi/pywin32@311",
+        "pkg:pypi/pyyaml@6.0.3",
+        "pkg:pypi/requests@2.34.2",
+        "pkg:pypi/restrictedpython@8.5",
+        "pkg:pypi/rich@15.0.0",
+        "pkg:pypi/sniffio@1.3.1",
+        "pkg:pypi/sqlalchemy@2.0.52",
+        "pkg:pypi/sse-starlette@3.4.11",
+        "pkg:pypi/starlette@1.6.0",
+        "pkg:pypi/taskiq@0.13.0",
+        "pkg:pypi/taskiq-dependencies@1.5.7",
+        "pkg:pypi/tenacity@9.1.4",
+        "pkg:pypi/truststore@0.10.4",
+        "pkg:pypi/typing-inspection@0.4.4",
+        "pkg:pypi/typing-extensions@4.16.0",
+        "pkg:pypi/urllib3@2.8.0",
+        "pkg:pypi/uvicorn@0.52.4",
+        "pkg:pypi/watchfiles@1.2.0",
+        "pkg:pypi/websockets@16.1.1",
+        "pkg:pypi/yarl@1.25.1",
+        "pkg:pypi/zstandard@0.25.0",
+        "pkg:generic/bzip2-libbzip2@1.0.8",
+        "pkg:generic/cpython@3.12.14",
+        "pkg:generic/httpx-aiohttp-anthropic-1.3.0@0.2.0",
+        "pkg:generic/libexpat-pyexpat.pyd@2.8.3",
+        "pkg:generic/libffi@8（ABI，无",
+        "pkg:generic/liblzma-xz-utils-lzma.pyd@未标注（随",
+        "pkg:generic/libmpdec-decimal.pyd@2.5.1",
+        "pkg:generic/libxml2-lxml@2.11.9",
+        "pkg:generic/libxslt-libexslt-lxml@1.1.45",
+        "pkg:generic/llhttp-aiohttp-3.14.4@未标注",
+        "pkg:generic/msvc-vcruntime140-vcruntime140-1@14.44.35211.0",
+        "pkg:generic/openssl-libcrypto-libssl@3.5.8",
+        "pkg:generic/sqlite@3.53.1",
+        "pkg:generic/tcl@8.6.12",
+        "pkg:generic/tcl-tcldde14-tclreg13@未标注",
+        "pkg:generic/tix@8.4.3",
+        "pkg:generic/tk@8.6.12",
+        "pkg:generic/unicode-unicodedata.pyd@15.0.0",
+        "pkg:generic/zlib-cpython@1.3.2",
+        "pkg:generic/zlib-lxml@未标注",
+        "pkg:generic/adodbapi-pywin32-311@2.6.2.0",
+        "pkg:generic/iconv-lxml-6.1.3-wheel@未标注（参考上游",
+        "pkg:npm/react@19.3.1",
+        "pkg:npm/react-dom@19.3.1",
+        "pkg:npm/scheduler@0.28.0"
+      ]
+    }
+  ]
+}

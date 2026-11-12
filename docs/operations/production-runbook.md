@@ -61,13 +61,13 @@ cd deploy/cloud && PORT=8080 python serve.py
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-> ⚠️ 生产清单会**默认武装 `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（见 §4）。
+> ⚠️ 生产清单会**默认武装 `LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL`**（见 §4；D24 已由 HIGH,CRITICAL 收窄为 CRITICAL）。
 
 ### 2.3 本机（开发/自托管）
 
 ```bash
-.venv/Scripts/python.exe scripts/start_liuhao.py --single-port          # 单端口
-.venv/Scripts/python.exe scripts/start_liuhao.py --single-port --https  # 叠加本地 TLS
+.venv/Scripts/python.exe scripts/start_liuhao.py                     # 单端口（默认，网关同时托管驾驶舱）
+.venv/Scripts/python.exe scripts/start_liuhao.py --https             # 叠加本地 TLS
 ```
 
 ---
@@ -102,14 +102,21 @@ python scripts/register_human_identity.py ...
 LIUHAO_HUMAN_IDENTITIES_FILE=<path>        # file 后端（默认）
 LIUHAO_HUMAN_IDENTITIES_BACKEND=file|sqlite
 LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
+LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY=<key>  # 行级校验密钥（HMAC-SHA256）
 ```
+
+> **身份表已 fail-closed（2026-09-25 起，HC-11 / U6）**：缺少上面那行 KEY 时校验无法进行，
+> 于是**表中每一行都会被拒绝**，系统承认的人类数为 **0**——不是「降级」，是**无人能登录、
+> 无人能审批**。因此：新部署先设 KEY 再登记；存量升级**必须重新登记每一个人**（旧行无法追溯补验）。
+> 体检用 `python scripts/verify_human_registry_integrity_state.py`，看 `refused_rows`，
+> 不要只看 `integrity_state`。
 
 **内核层策略执法的默认与开关**：
 
 - `LIUHAO_KERNEL_POLICY_ENFORCE`（**默认空 = 不拦截**，只记录 / L1）。
   取值形如 `HIGH,CRITICAL` 或具体动作名。**只有 HIGH/CRITICAL 层可被武装**；LOW/MEDIUM
   不在执法切割线内。typo 会**大声失败**，不会静默变成「未武装」。
-- 43 个生产 `@kernel_action` 调用点**一律 `enforce=False`**（由 AST 护栏锁定，不许散开写死）。
+- 44 个生产 `@kernel_action` 调用点**一律 `enforce=False`**（由 AST 护栏锁定，不许散开写死）。
 - 裁决：**生产是否 arm 属部署决定**（前置条件：身份表已挂）。arm/回滚 = 改一个环境变量 + 重启，
   零代码改动、零成本回滚。
 
@@ -122,9 +129,10 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 | `PORT` | 单端口监听端口 | `8080` |
 | `LIUHAO_CONSOLE_DIST` | 驾驶舱静态产物目录 | 包内 `console/` |
 | `LIUHAO_HUMAN_IDENTITIES_FILE` | 身份表文件（file 后端） | — |
+| `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` | 身份表行级校验密钥；**未设 ⇒ 每行被拒 ⇒ 承认的人类数为 0**（见 §4 的 fail-closed 说明） | — |
 | `LIUHAO_KERNEL_POLICY_ENFORCE` | 内核层真拦截层选择 | 空（L1 记录） |
 | `AI_PROVIDER_TYPE` / `*_API_KEY` | LLM provider 与密钥（默认 `mock`） | `mock` |
-| `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256）。**不设则每进程现生成** | 未设（发布包由构建期烘焙） |
+| `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256）。**不设则每进程现生成** | 未设（构建器**设计上**会在构建期把密钥写进发布包的 `serve.py`；⚠️ 2026-09-21 实测：磁盘上的当前产物**不含**该变量，见 `LAUNCH-CRITERIA.md` §4 第 12 条） |
 | `JWT_SECRET_KEY` / `JWT_SECRET` | 同上密钥的兼容旧名（生产 compose 用前者） | 未设 |
 | `LIUHAO_JWT_PRIVATE_KEY` / `_PUBLIC_KEY` | 改用 RS256 时的 PEM 对（两者必须同时给） | 未设 |
 | `LIUHAO_JWT_ALGORITHM` | 显式指定算法（默认：有 secret 走 HS256，有 PEM 对走 RS256） | — |

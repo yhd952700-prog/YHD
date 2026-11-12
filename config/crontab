@@ -1,0 +1,77 @@
+# =============================================================================
+# LiuHao AI OS — 定时任务配置 (crontab)
+# =============================================================================
+# 用途：
+#   裸机部署的周期性运维任务。安装方式：
+#     sudo crontab -u liuhao config/crontab
+#   或写入 /etc/cron.d/liuhao（需每行加用户字段）。
+#
+# 注意：
+#   1. 若已启用 supervisor 的 liuhao-scheduler 进程内调度，
+#      请只保留系统级任务（备份/日志清理），应用级任务删除，避免重复执行。
+#   2. 所有任务输出追加到 /var/log/liuhao/cron.log，失败经 MAILTO 通知。
+#   3. 时间均为服务器本地时区（生产建议 TZ=UTC，此处按 Asia/Shanghai 注释）。
+#
+# 格式：分 时 日 月 周  命令
+# =============================================================================
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=ops@liuhao.example.com
+LIUHAO_HOME=/opt/liuhao
+LIUHAO_VENV=/opt/liuhao/.venv/bin
+
+# -----------------------------------------------------------------------------
+# 备份：每日 03:30 全量备份（DB + 记忆库 + 知识库 + 审计日志），
+#       成功后上传 S3 并更新 backup_last_success_timestamp 指标
+# -----------------------------------------------------------------------------
+30 3 * * *  $LIUHAO_VENV/python -m scripts.backup --full --upload --metrics-push >> /var/log/liuhao/cron.log 2>&1
+
+# 每小时增量备份（仅 WAL/变更数据），保留 48 小时
+15 * * * *  $LIUHAO_VENV/python -m scripts.backup --incremental --retain-hours 48 >> /var/log/liuhao/cron.log 2>&1
+
+# -----------------------------------------------------------------------------
+# 记忆固化：每 2 小时把短期记忆压缩固化到长期记忆
+#   （若使用 supervisor scheduler，请删除本行）
+# -----------------------------------------------------------------------------
+7 */2 * * *  $LIUHAO_VENV/python -m src.memory.consolidate --min-importance 0.4 >> /var/log/liuhao/cron.log 2>&1
+
+# -----------------------------------------------------------------------------
+# 知识库重建索引：每日 04:30 校验向量索引完整性并增量重建
+# -----------------------------------------------------------------------------
+30 4 * * *  $LIUHAO_VENV/python -m src.knowledge.reindex --incremental >> /var/log/liuhao/cron.log 2>&1
+
+# 每周日 05:00 全量重建（向量库压缩 + 孤儿 chunk 清理）
+0 5 * * 0   $LIUHAO_VENV/python -m src.knowledge.reindex --full --vacuum >> /var/log/liuhao/cron.log 2>&1
+
+# -----------------------------------------------------------------------------
+# 数据保留：清理过期数据，控制磁盘增长
+# -----------------------------------------------------------------------------
+# 过期会话与 idempotency key（每日 02:00）
+0 2 * * *   $LIUHAO_VENV/python -m scripts.cleanup --sessions --idempotency >> /var/log/liuhao/cron.log 2>&1
+
+# 审计日志按保留策略归档（每日 02:30，保留期见 security.audit.retention_days）
+30 2 * * *  $LIUHAO_VENV/python -m scripts.cleanup --audit-archive >> /var/log/liuhao/cron.log 2>&1
+
+# 压缩并删除 30 天前的应用日志（每日 03:00）
+0 3 * * *   find /var/log/liuhao -name "*.log" -mtime +7 -exec gzip {} \; >> /var/log/liuhao/cron.log 2>&1
+30 3 * * *  find /var/log/liuhao -name "*.log.gz" -mtime +30 -delete >> /var/log/liuhao/cron.log 2>&1
+
+# 过期备份清理（每日 06:00，保留 90 天）
+0 6 * * *   $LIUHAO_VENV/python -m scripts.backup --prune --retention-days 90 >> /var/log/liuhao/cron.log 2>&1
+
+# -----------------------------------------------------------------------------
+# 成本月报：每月 1 日 08:00 生成上月成本报告并推送
+# -----------------------------------------------------------------------------
+0 8 1 * *   $LIUHAO_VENV/python -m scripts.cost_report --last-month --notify >> /var/log/liuhao/cron.log 2>&1
+
+# -----------------------------------------------------------------------------
+# 证书续期：每周一/四 04:00 尝试续期（certbot 仅在临期时实际更新），
+#           更新成功后 reload Nginx
+# -----------------------------------------------------------------------------
+0 4 * * 1,4 certbot renew --quiet --deploy-hook "nginx -s reload" >> /var/log/liuhao/cron.log 2>&1
+
+# -----------------------------------------------------------------------------
+# 健康自检：每 10 分钟一次端到端探测，失败时写指标供 Prometheus 告警
+# -----------------------------------------------------------------------------
+*/10 * * * * $LIUHAO_VENV/python -m scripts.selfcheck --endpoint https://ai.liuhao.example.com/readyz >> /var/log/liuhao/cron.log 2>&1

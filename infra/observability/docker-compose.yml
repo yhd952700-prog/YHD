@@ -1,0 +1,82 @@
+# =============================================================================
+# LIUHAO AI OS — Observability Closed-Loop Verification Stack
+# =============================================================================
+#
+# PURPOSE
+#   Prove the FULL chain, not just "the app answers 200 on /metrics":
+#     application -> exporter -> collector -> storage -> alert rule
+#       -> ACTUAL FIRING -> operator visibility
+#
+# HOW THE TARGET IS REACHED
+#   The gateway runs on the DOCKER HOST at port 8010 (port discipline: 8000 /
+#   9090 / 9093 / 18000 are reserved for other work). A container cannot reach
+#   the host as `localhost`; it needs `host.docker.internal`, which on Linux
+#   engines requires `extra_hosts: host-gateway`. That is why every service
+#   below declares it.
+#
+# PORT MAP
+#   9090  Prometheus UI/API      (allowed for this stack)
+#   9093  Alertmanager UI/API    (allowed for this stack)
+#   8010  gateway under test     (host process, NOT part of this compose)
+#   18010 webhook sink           (host process run by the verify script)
+#
+# RUN
+#   docker compose -f infra/observability/docker-compose.yml up -d
+#   python scripts/verify_observability_loop.py --mode docker
+#
+# STATUS AS OF THIS COMMIT
+#   UNRUN. No Docker daemon was reachable on the machine where this file was
+#   authored (`docker info` -> "failed to connect to the docker API"), so these
+#   definitions are shipped as ready-but-unexecuted config. The same chain was
+#   proven with native binaries via `--mode local`; see
+#   docs/autonomous/G8-observability-closed-loop.md for the real evidence and
+#   for what remains unverified in this compose file.
+# =============================================================================
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.3
+    container_name: liuhao-loop-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../configs/observability/alert_rules.yml:/etc/prometheus/rules/alert_rules.yml:ro
+      - ./prometheus.docker.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_loop_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - obs-loop
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: liuhao-loop-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.docker.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_loop_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - obs-loop
+    depends_on:
+      - prometheus
+
+networks:
+  obs-loop:
+    driver: bridge
+
+volumes:
+  prometheus_loop_data: {}
+  alertmanager_loop_data: {}

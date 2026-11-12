@@ -1,0 +1,720 @@
+"""Regression tests for the deployment-gate-variable checker's own judgement.
+
+``scripts/verify_deployment_gate_vars.py`` is the gate that says "a control is
+gated on an env var no deployment artifact sets". On 2026-10-04 it was found to
+be wrong about its own subject in three ways, two of which failed in the
+dangerous direction. These tests exist so the next person editing it cannot
+reintroduce the same errors -- and, just as importantly, so the gate itself
+cannot drift into being decorative.
+
+The three defects, in the order they were fixed:
+
+G1  ``expect="absent"`` ignored ``aliases`` while ``expect="set"`` honoured
+    them, so a dev-only control shipped under its alias name was reported as
+    clean. That fails OPEN: a control that must never leave development reaches
+    production undetected.
+
+G2  ``scan_literal_mentions`` had a full implementation and a docstring
+    promising it prevented a seed entry from being misreported as stale. It had
+    zero callers. Its promise was documentation of a feature that never existed.
+    Wiring it removed two false accusations against live security entries
+    (LIUHAO_POSTURE_STRICT, LIUHAO_ENV -- both read through constants in
+    posture.py, so no literal ``os.environ.get`` exists for the scanner to find).
+
+G4  ``refs`` were emitted as evidence and never checked. 5 of them had drifted:
+    e.g. ``src/kernels/_crosscutting.py:676`` now reads
+    ``if len(parts) == 3 and parts[0] == "RULE":`` and says nothing about
+    LIUHAO_EXECUTOR_FENCE. A wrong pointer is worse than no pointer, because it
+    looks checkable.
+
+What these tests deliberately do NOT assert: that the gate exits 0 for the
+mere sake of a green tick. The residual red is a human decision, recorded in
+the task list. Measured 2026-10-07: **11** findings (8 seed gates unset or
+read-indirectly, 3 scan-detected variables unclassified); it was 16 before the
+two drifted-ref findings were fixed in ``2b8f802b``, then 13 after
+``AUDIT_DB_PATH`` was adjudicated into SEED_GATES (dropping the unclassified
+count from 4 to 3), then 11 when the two gitignored untracked artifacts --
+``.env`` and ``LiuHao-O/docker-compose.yml`` -- stopped being findings. A
+gitignored path is local state by the repo's own declared intent, so letting it
+move the exit code made the verdict depend on which files a machine happens to
+have.
+
+2026-11-04: the project owner adjudicated all 11 and armed them in
+``docker-compose.prod.yml`` with fail-closed defaults (fence on + required,
+strict posture, sandbox enforcement, a conservative executor cap, persistent
+lease/audit-backup/API-key/workspace/console paths, and simulated execution
+explicitly 0). The gate now exits 0, and the real-run test below asserts that
+-- not because a green was requested, but because arming each control is the
+only thing that makes it true.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import pathlib
+import subprocess
+
+import pytest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SCRIPT = REPO_ROOT / "scripts" / "verify_deployment_gate_vars.py"
+
+
+def _load():
+    """Import the gate script as a module without installing it as a package."""
+    spec = importlib.util.spec_from_file_location("_liuhao_gate_vars", SCRIPT)
+    assert spec and spec.loader, "cannot load %s" % SCRIPT
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def gate():
+    return _load()
+
+
+# --------------------------------------------------------------------------- #
+# G1 -- aliases must be honoured on BOTH branches
+# --------------------------------------------------------------------------- #
+class TestAliasSymmetry:
+    """``expect="set"`` and ``expect="absent"`` must agree on what "set" means."""
+
+    @staticmethod
+    def _entry(expect, var="PROBE_CANON", alias="PROBE_ALIAS"):
+        return ({"var": var, "aliases": (alias,), "expect": expect,
+                 "why": "probe entry", "refs": ()},)
+
+    def test_dev_only_var_shipped_under_its_alias_is_caught(self, gate, monkeypatch):
+        # Precondition the earlier version of this test got wrong: the entry
+        # must have a real read on file, or the staleness check fires first and
+        # the alias branch is never reached -- the test then "passes" for the
+        # wrong reason, which is how a real defect survives.
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + self._entry("absent"),
+        )
+        reads = {"PROBE_CANON": [("src/app.py", 10)]}
+        findings = gate.evaluate({"PROBE_ALIAS": ["docker-compose.prod.yml"]},
+                                 reads, {}, {})
+        ours = [f.kind for f in findings if f.var == "PROBE_CANON"]
+        assert "dev-only-var-set-in-artifact" in ours, (
+            "a dev-only control shipped under its alias name must be reported; "
+            "before the fix this list was empty, i.e. the gate failed OPEN")
+
+    def test_dev_only_var_shipped_under_its_canonical_name_is_caught(self, gate, monkeypatch):
+        """Control: the canonical path was already correct and must stay so."""
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + self._entry("absent"),
+        )
+        reads = {"PROBE_CANON": [("src/app.py", 10)]}
+        findings = gate.evaluate({"PROBE_CANON": ["docker-compose.prod.yml"]},
+                                 reads, {}, {})
+        assert "dev-only-var-set-in-artifact" in [
+            f.kind for f in findings if f.var == "PROBE_CANON"]
+
+    def test_dev_only_var_absent_everywhere_is_not_reported(self, gate, monkeypatch):
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + self._entry("absent"),
+        )
+        reads = {"PROBE_CANON": [("src/app.py", 10)]}
+        findings = gate.evaluate({}, reads, {}, {})
+        assert not [f for f in findings if f.var == "PROBE_CANON"], (
+            "a dev-only var that ships nowhere must not be reported")
+
+    def test_gate_var_satisfied_by_alias_is_not_reported(self, gate, monkeypatch):
+        """``expect="set"`` honours aliases; pin that so G1 is not 'fixed' by
+        deleting alias support from both branches."""
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + self._entry("set"),
+        )
+        findings = gate.evaluate({"PROBE_ALIAS": ["docker-compose.prod.yml"]},
+                                 {"PROBE_CANON": [("src/app.py", 10)]}, {}, {})
+        assert not [f for f in findings if f.var == "PROBE_CANON"]
+
+
+# --------------------------------------------------------------------------- #
+# G2 -- the literal-mention scanner must actually be wired in
+# --------------------------------------------------------------------------- #
+class TestLiteralMentionScannerIsLive:
+    def test_scan_literal_mentions_has_a_caller(self, gate):
+        import inspect
+        src = inspect.getsource(gate)
+        # A defined-but-uncalled helper is how G2 survived: the docstring
+        # promised behaviour, the behaviour did not exist.
+        assert "scan_literal_mentions(" in src.replace(
+            "def scan_literal_mentions(", ""), (
+            "scan_literal_mentions is never called -- its docstring promises it "
+            "prevents a false 'stale' report and nothing delivers on that")
+
+    def test_evaluate_accepts_mentions(self, gate):
+        import inspect
+        params = inspect.signature(gate.evaluate).parameters
+        assert "mentions" in params, (
+            "evaluate() must be able to receive literal-mention evidence")
+
+    def test_indirectly_read_entry_is_not_called_rotten(self, gate, monkeypatch):
+        """A var read through a constant must not be reported as removed.
+
+        This is the exact case that made the old output dangerous: it told the
+        reader that LIUHAO_POSTURE_STRICT had rotted, and acting on that would
+        mean deleting a live security entry.
+        """
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + ({"var": "PROBE_INDIRECT", "aliases": (),
+                                "expect": "set", "why": "probe", "refs": ()},),
+        )
+        # No entry in `reads`, but the name IS spelled in src/.
+        mentions = {"PROBE_INDIRECT": [("src/security/posture.py", 68)]}
+        findings = gate.evaluate({}, {}, {}, mentions)
+        ours = [f.kind for f in findings if f.var == "PROBE_INDIRECT"]
+        assert "stale-seed-entry" not in ours, (
+            "an entry whose name is still present in src/ must not be accused "
+            "of having rotted")
+        assert "seed-entry-read-indirectly" in ours
+
+    def test_genuinely_absent_entry_is_still_called_stale(self, gate, monkeypatch):
+        """Control: the fix must not make the staleness check unreachable."""
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + ({"var": "PROBE_GONE", "aliases": (),
+                                "expect": "set", "why": "probe", "refs": ()},),
+        )
+        findings = gate.evaluate({}, {}, {}, {})
+        assert "stale-seed-entry" in [
+            f.kind for f in findings if f.var == "PROBE_GONE"]
+
+
+# --------------------------------------------------------------------------- #
+# G4 -- cited evidence must still point at the variable
+# --------------------------------------------------------------------------- #
+class TestRefIntegrity:
+    def test_correct_ref_is_accepted(self, gate):
+        assert gate.drifted_refs("LIUHAO_SANDBOX_ENFORCE",
+                                 ["src/plugins/sandbox/assurance.py:72"], ()) == []
+
+    def test_ref_to_unrelated_line_is_reported(self, gate):
+        bad = gate.drifted_refs("LIUHAO_SANDBOX_ENFORCE",
+                                ["src/plugins/sandbox/assurance.py:1"], ())
+        assert bad, "a line that never mentions the variable is drift"
+
+    def test_ref_to_missing_file_is_reported(self, gate):
+        assert gate.drifted_refs("X", ["src/does/not/exist.py:1"], ())
+
+    def test_ref_beyond_eof_is_reported(self, gate):
+        assert gate.drifted_refs("X", ["src/gateway/roster.py:999999"], ())
+
+    def test_table_driven_read_is_not_called_drift(self, gate):
+        """posture.py:123 reads ``source.get(STRICT_ENV)``.
+
+        The line mentions neither the env var nor a declared alias, so a naive
+        substring check reports a good citation as drift. Accepting the
+        constant name is what keeps this checker from crying wolf -- a checker
+        that cries wolf gets ignored, which is worse than not having one.
+        """
+        consts = gate.constant_aliases(["LIUHAO_POSTURE_STRICT"])
+        assert "STRICT_ENV" in consts.get("LIUHAO_POSTURE_STRICT", []), (
+            "constant_aliases must map the env var to the CONSTANT holding it")
+        assert gate.drifted_refs("LIUHAO_POSTURE_STRICT",
+                                 ["src/security/posture.py:123"], (),
+                                 consts.get("LIUHAO_POSTURE_STRICT", ())) == []
+
+    def test_drifted_finding_lists_only_the_still_valid_refs(self, gate, monkeypatch):
+        """A drifted ref must not reappear under the finding's ``read at:`` list.
+
+        ``drifted_refs`` returns a *formatted* description ("<ref> (line
+        reads: ...)"). The exclusion filter compared that description against
+        the raw ref, so it never matched and the finding printed -- as if it
+        were good evidence -- the very pointer it had just called drifted. The
+        reader then sees the bad ref twice: once condemned, once presented.
+        """
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + ({
+            "var": "LIUHAO_SANDBOX_ENFORCE",
+            "aliases": (),
+            "expect": "set",
+            "why": "probe: one drifted ref, one valid ref",
+            "refs": ("src/plugins/sandbox/assurance.py:1",     # drifted
+                     "src/plugins/sandbox/assurance.py:72"),   # valid
+        },))
+        findings = gate.evaluate(
+            {}, {"LIUHAO_SANDBOX_ENFORCE": [("src/plugins/sandbox/assurance.py", 72)]},
+            {}, {})
+        drift = [f for f in findings
+                 if f.var == "LIUHAO_SANDBOX_ENFORCE" and f.kind == "seed-ref-drifted"]
+        assert len(drift) == 1, [f.kind for f in findings]
+        assert drift[0].refs == ["src/plugins/sandbox/assurance.py:72"], (
+            "the drifted ref must be excluded from the finding's evidence list; "
+            "got %r" % (drift[0].refs,))
+
+    def test_every_shipped_ref_is_currently_valid(self, gate):
+        """The gate's own table must be clean, or it is citing fiction.
+
+        If this starts failing, the right response is to re-point the ref at the
+        line that now reads the variable -- not to relax the check.
+        """
+        consts = gate.constant_aliases(sorted(
+            {str(e["var"]) for e in gate.SEED_GATES}
+            | {str(a) for e in gate.SEED_GATES for a in (e.get("aliases") or ())}
+        ))
+        drifted = []
+        for entry in gate.SEED_GATES:
+            var = str(entry["var"])
+            aliases = tuple(entry.get("aliases") or ())
+            bad = gate.drifted_refs(var, tuple(entry.get("refs") or ()),
+                                    aliases, consts.get(var, ()))
+            if bad:
+                drifted.append("%s: %s" % (var, "; ".join(bad)))
+        assert not drifted, (
+            "SEED_GATES cites evidence that no longer points at the variable:\n  "
+            + "\n  ".join(drifted))
+
+
+# --------------------------------------------------------------------------- #
+# The gate must not be able to pass by being broken
+# --------------------------------------------------------------------------- #
+class TestGateIsNotDecorative:
+    def test_no_seed_entry_lacks_a_reason(self, gate):
+        for entry in gate.SEED_GATES:
+            assert str(entry.get("why", "")).strip(), (
+                "%s has no why; an unexplained gate cannot be reviewed"
+                % entry["var"])
+
+    def test_no_allowlist_entry_lacks_a_reason(self, gate):
+        for var, reason in gate.ALLOWLIST.items():
+            assert str(reason or "").strip(), (
+                "%s is allowlisted with an empty reason; implicit leniency is "
+                "not permitted" % var)
+
+    def test_eval_rejects_an_unknown_expect(self, gate, monkeypatch):
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + ({"var": "PROBE_BAD", "aliases": (), "expect": "maybe",
+                                "why": "probe", "refs": ()},),
+        )
+        findings = gate.evaluate({}, {"PROBE_BAD": [("src/app.py", 1)]}, {}, {})
+        assert "bad-seed-entry" in [f.kind for f in findings if f.var == "PROBE_BAD"]
+
+
+# --------------------------------------------------------------------------- #
+# G5 -- evidence must be version-controlled, or the verdict is local state
+# --------------------------------------------------------------------------- #
+class TestEvidenceIsVersionControlled:
+    """A file no commit contains is not a description of the deployment.
+
+    Measured on 2026-10-04: 2 of the 21 collected artifacts were untracked, and
+    one was ``.env`` -- gitignored, containing SECRET_KEY and JWT_SECRET. Had a
+    gate variable been set only there, this gate would have reported "set in the
+    artifact" on the machine that happened to create the file, and "never set"
+    on every other machine and on CI. That is a false green whose cause is
+    invisible: nothing about the run looks different.
+    """
+
+    @pytest.mark.gate_contract
+    def test_env_is_excluded_from_the_evidence_set(self, gate, tmp_path, monkeypatch):
+        """Scenario is built in tmp_path: no dependence on this machine's files.
+
+        Previously this skipped when the developer happened to have no
+        untracked ``.env`` -- so the one machine that could reproduce the
+        defect was the only one that checked it.
+        """
+        (tmp_path / ".env").write_text("SECRET_KEY=probe\n", encoding="utf-8")
+        # A real (empty) git repo makes ``git ls-files`` answer "not tracked"
+        # for .env instead of "not a repository" (which would be None).
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path),
+                       capture_output=True, check=False)
+        monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(gate, "WORKFLOWS_DIR", tmp_path / ".github" / "workflows")
+
+        artifacts = gate.collect_artifacts()
+        assert {gate._label(p) for p in artifacts} == {".env"}, (
+            "the tmp scenario must contain exactly the .env artifact")
+        untracked = {gate._label(p) for p in gate.untracked_artifacts(artifacts)}
+        assert ".env" in untracked, (
+            ".env is gitignored and holds secrets; it must never count as "
+            "deployment evidence")
+
+    def test_every_collected_artifact_is_either_tracked_or_reported(self, gate):
+        """No artifact may be quietly ignored: tracked, or surfaced some way."""
+        artifacts = gate.collect_artifacts()
+        untracked = {gate._label(p) for p in gate.untracked_artifacts(artifacts)}
+        # Untracked files are no longer findings by default: since 2026-10-07 a
+        # gitignored one is surfaced as an INFO line instead (local state, not
+        # deployment). Either way the split must be total -- nothing may vanish
+        # silently -- which is the only thing this test pins.
+        tracked = {gate._label(p) for p in artifacts} - untracked
+        assert tracked | untracked == {gate._label(p) for p in artifacts}
+
+    def test_artifact_collection_is_deterministic(self, gate):
+        """Same inputs, same order -- twice.
+
+        A gate whose own evidence set reorders between runs produces findings
+        that reorder too, which makes a diff of two runs unreadable and hides
+        real changes among cosmetic ones.
+        """
+        a = gate.collect_artifacts()
+        b = gate.collect_artifacts()
+        assert [str(p) for p in a] == [str(p) for p in b]
+
+    def test_scan_is_deterministic(self, gate):
+        va = gate.scan_artifact_vars(gate.collect_artifacts())
+        vb = gate.scan_artifact_vars(gate.collect_artifacts())
+        assert json.dumps(va, sort_keys=True) == json.dumps(vb, sort_keys=True)
+
+    def test_python_setter_forms_in_an_artifact_are_recognised(self, gate, tmp_path):
+        """A deployment that ships its env via a Python setter must count.
+
+        ``scripts/build_cloud_bundle.py`` sets its whole deployment contract with
+        ``os.environ.setdefault`` (LIUHAO_CONSOLE_DIST at :128,
+        LIUHAO_HUMAN_IDENTITIES_FILE at :142, LIUHAO_AUTH_SECRETS_FILE at :146,
+        LIUHAO_KERNEL_POLICY_ENFORCE at :163), and it is a declared artifact. The
+        ``NAME=value`` / ``"NAME":`` regexes cannot see either Python form (a
+        "(" or a "]" sits between the name and the "="), so before 2026-10-07 the
+        cloud bundle looked like it set nothing and a variable it really sets
+        would be reported "never set in a deployment artifact".
+
+        A subscript *read* must still not count as a set.
+        """
+        probe = tmp_path / "probe_bundle.py"
+        probe.write_text(
+            "import os\n"
+            'os.environ.setdefault("PROBE_BUNDLE_VAR", "x")\n'
+            'os.environ["PROBE_SUBSCRIPT_VAR"] = "y"\n'
+            'read = os.environ["PROBE_READ_VAR"]\n',
+            encoding="utf-8")
+        found = gate.scan_artifact_vars([probe])
+        assert "PROBE_BUNDLE_VAR" in found, found
+        assert "PROBE_SUBSCRIPT_VAR" in found, found
+        assert "PROBE_READ_VAR" not in found, (
+            "a subscript read is not a set; counting it would let evidence the "
+            "artifact merely reads satisfy a gate: %r" % (found,))
+
+
+# --------------------------------------------------------------------------- #
+# Evidence determinism -- a gitignored path must not move the exit code
+# --------------------------------------------------------------------------- #
+class TestIgnoredPathsAreDeterministic:
+    """A gitignored path is local state, not deployment, and must not gate.
+
+    Before 2026-10-07 the gate reported ``.env`` and ``LiuHao-O/docker-compose.yml``
+    as findings, so its exit code answered "does this machine happen to have a
+    .env?". That is the "passes on my box, fails on the runner" defect the gate
+    exists to remove -- a locally-created file deciding a security verdict. The
+    fix is narrow: an artifact VCS deliberately ignores is informational; one
+    that is untracked and NOT ignored stays a finding.
+    """
+
+    def test_tracked_file_is_not_ignored(self, gate):
+        assert gate._is_git_ignored(
+            REPO_ROOT / "scripts" / "verify_deployment_gate_vars.py") is False
+
+    def test_gitignored_artifacts_are_ignored(self, gate):
+        # `git check-ignore` answers on the path name, whether or not the file
+        # exists, so this is stable across machines.
+        assert gate._is_git_ignored(REPO_ROOT / ".env") is True
+        assert gate._is_git_ignored(
+            REPO_ROOT / "LiuHao-O" / "docker-compose.yml") is True
+
+    def test_partition_splits_ignored_from_genuinely_untracked(self, gate, monkeypatch):
+        """The other half of the rule: untracked AND not ignored is STILL a finding."""
+        monkeypatch.setattr(
+            gate, "_is_git_ignored",
+            lambda p: True if p.name == "ignored_one" else False)
+        ignored, real = gate.partition_untracked(
+            [pathlib.Path("ignored_one"), pathlib.Path("real_one")])
+        assert [p.name for p in ignored] == ["ignored_one"]
+        assert [p.name for p in real] == ["real_one"]
+
+    @pytest.mark.slow
+    def test_real_run_reports_ignored_artifacts_as_info_not_findings(self, gate):
+        # 真实跑部署门禁子进程，实测远超普通单测预算；只在发版门禁显式开启。
+        import subprocess
+        import sys
+        # 仓库增长后这次端到端运行实测已超过 180s；原值会把"慢"误报成"挂"。
+        proc = subprocess.run([sys.executable, str(SCRIPT)], cwd=str(REPO_ROOT),
+                              capture_output=True, text=True, timeout=420)
+        findings_part, sep, info_part = proc.stdout.partition("INFO --")
+        assert "ARTIFACT:.env" not in findings_part, (
+            "a gitignored artifact must not be a finding -- that made the exit "
+            "code depend on local files:\n%s" % findings_part)
+        assert proc.returncode == 0, (
+            "every adjudicated gate variable is armed with a fail-closed "
+            "default; an unresolved one is a real finding, not expected red:\n%s"
+            % proc.stdout)
+        if (REPO_ROOT / ".env").is_file():
+            assert sep, "the ignored artifacts must still be surfaced as INFO"
+            assert ".env" in info_part
+
+
+# --------------------------------------------------------------------------- #
+# A CI-only setter must not count as deployment arming
+# --------------------------------------------------------------------------- #
+class TestCiOnlyArming:
+    """A variable only a CI workflow sets is not armed in the deployment.
+
+    ``ARTIFACT_GLOBS`` includes ``.github/workflows/*.yml``, so a control that
+    no deployment sets but CI does would otherwise look armed. A CI runner is
+    thrown away after every run: a value set there arms the *test job*, not the
+    shipped system, so counting it as "the deployment sets this" is the false
+    green this gate exists to catch.
+    """
+
+    @staticmethod
+    def _entry(var):
+        return ({"var": var, "aliases": (), "expect": "set",
+                 "why": "probe", "refs": ()},)
+
+    def test_ci_only_setter_does_not_satisfy_a_seed_gate(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "SEED_GATES",
+                            gate.SEED_GATES + self._entry("PROBE_CI_ONLY"))
+        findings = gate.evaluate(
+            {"PROBE_CI_ONLY": [".github/workflows/ci.yml"]},
+            {"PROBE_CI_ONLY": [("src/app.py", 10)]}, {}, {})
+        kinds = [f.kind for f in findings if f.var == "PROBE_CI_ONLY"]
+        assert kinds == ["seed-armed-only-in-ci"], kinds
+
+    def test_a_deploy_setter_alongside_a_ci_setter_still_satisfies(self, gate, monkeypatch):
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + self._entry("PROBE_DEPLOY_AND_CI"))
+        findings = gate.evaluate(
+            {"PROBE_DEPLOY_AND_CI": [".github/workflows/ci.yml",
+                                     "docker-compose.prod.yml"]},
+            {"PROBE_DEPLOY_AND_CI": [("src/app.py", 10)]}, {}, {})
+        assert not [f for f in findings if f.var == "PROBE_DEPLOY_AND_CI"]
+
+    def test_no_setter_at_all_is_still_gate_var_never_set(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "SEED_GATES",
+                            gate.SEED_GATES + self._entry("PROBE_NO_SETTER"))
+        findings = gate.evaluate({}, {"PROBE_NO_SETTER": [("src/app.py", 10)]}, {}, {})
+        kinds = [f.kind for f in findings if f.var == "PROBE_NO_SETTER"]
+        assert kinds == ["gate-var-never-set"], kinds
+
+    def test_alias_armed_only_in_ci_is_also_ci_only(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + (
+            {"var": "PROBE_ALIAS_CI", "aliases": ("PROBE_ALIAS_CI_ALT",),
+             "expect": "set", "why": "probe", "refs": ()},))
+        findings = gate.evaluate(
+            {"PROBE_ALIAS_CI_ALT": [".github/workflows/ci.yml"]},
+            {"PROBE_ALIAS_CI": [("src/app.py", 10)]}, {}, {})
+        kinds = [f.kind for f in findings if f.var == "PROBE_ALIAS_CI"]
+        assert kinds == ["seed-armed-only-in-ci"], kinds
+
+    def test_is_ci_artifact_recognises_workflows(self, gate):
+        assert gate._is_ci_artifact(".github/workflows/ci.yml")
+        assert gate._is_ci_artifact(".github/workflows/ci-cd.yml")
+        assert not gate._is_ci_artifact("docker-compose.prod.yml")
+        assert not gate._is_ci_artifact("infra/staging/docker-compose.yml")
+
+
+# --------------------------------------------------------------------------- #
+# AUDIT_DB_PATH -- the decision must be recorded AND the entry must have teeth
+# --------------------------------------------------------------------------- #
+#: The sites the entry's `why` claims. Kept next to the assertions so a reworded
+#: `why` that quietly drops one of them is caught.
+_AUDIT_DB_PATH_EVIDENCE = (
+    "src/gateway/main.py:419",
+    "src/gateway/health.py:280",
+    "src/kernels/audit/__init__.py:398",
+    "docker-compose.prod.yml:72",
+    "infra/staging/docker-compose.yml:59",
+    ".github/workflows/ci.yml:806",
+)
+
+
+@pytest.fixture(scope="module")
+def tracked_artifact_vars(gate):
+    """What the *tracked* artifacts set -- the same set the real run uses."""
+    artifacts = gate.collect_artifacts()
+    untracked = {str(p) for p in gate.untracked_artifacts(artifacts)}
+    tracked = [p for p in artifacts if str(p) not in untracked]
+    return gate.scan_artifact_vars(tracked)
+
+
+class TestAuditDbPathIsAdjudicated:
+    """Its absence is permissive, so it is a SEED entry -- not an exemption.
+
+    ``src/gateway/main.py:419-427`` logs "AUDIT CHECKPOINTER SKIPPED" and keeps
+    serving; ``src/gateway/health.py:280-298`` calls unset a "configuration
+    state" (healthy, note only). Only ``src/kernels/audit/__init__.py:398-407``
+    fails closed. A variable whose absence is the permissive branch in two of
+    its three readers is what SEED_GATES exists for, and an entry there must be
+    satisfied by a shipped artifact. ALLOWLIST would be the weaker choice: just
+    free text, with nothing to go red if someone deletes the arming line.
+
+    Measured 2026-10-07: before, the run reported it as
+    ``unclassified-gate-candidate``; after, it produces no finding at all.
+    """
+
+    def test_it_is_a_seed_gate_and_not_an_allowlist_entry(self, gate):
+        entries = {str(e["var"]): e for e in gate.SEED_GATES}
+        assert "AUDIT_DB_PATH" in entries, (
+            "absence is the permissive branch at main.py:314 and health.py:280, "
+            "so the decision has to be recorded in SEED_GATES")
+        assert str(entries["AUDIT_DB_PATH"]["expect"]) == "set", (
+            "if absence selects a permissive branch, the safe state is SET")
+        assert "AUDIT_DB_PATH" not in gate.ALLOWLIST, (
+            "ALLOWLIST means 'this is not a control gate' -- the opposite of "
+            "the adjudication recorded in SEED_GATES")
+
+    def test_the_reason_still_names_every_read_site_and_arming_point(self, gate):
+        """The `why` is the reviewable artefact; it must keep its evidence."""
+        why = next(str(e.get("why", "")) for e in gate.SEED_GATES
+                   if str(e["var"]) == "AUDIT_DB_PATH")
+        for needle in _AUDIT_DB_PATH_EVIDENCE:
+            assert needle in why, (
+                "the AUDIT_DB_PATH entry no longer mentions %s -- the polarity "
+                "claim is only checkable while its sites are named" % needle)
+
+    def test_a_deployment_that_does_not_set_it_is_still_a_finding(self, gate):
+        """Teeth: an entry must not be satisfiable by existing on paper."""
+        reads = {"AUDIT_DB_PATH": [("src/gateway/main.py", 314)]}
+        findings = gate.evaluate({}, reads, {}, {})  # no artifact sets it
+        kinds = [f.kind for f in findings if f.var == "AUDIT_DB_PATH"]
+        assert "gate-var-never-set" in kinds, (
+            "with no artifact setting it the gate must still fail; got %r"
+            % (kinds,))
+
+    def test_the_shipped_artifacts_do_satisfy_it(self, gate, tracked_artifact_vars):
+        """Counterweight: it must currently be resolved, not merely declared."""
+        where = tracked_artifact_vars.get("AUDIT_DB_PATH")
+        assert where, (
+            "AUDIT_DB_PATH is adjudicated expect='set' but no tracked artifact "
+            "sets it, so the entry would itself be a finding")
+        assert any("docker-compose" in w for w in where), where
+
+    def test_the_compose_setters_not_the_ci_pin_are_what_arm_it(
+        self, gate, tracked_artifact_vars
+    ):
+        """A CI-only setter must not count: the deployment setters do the arming.
+
+        Measured 2026-10-07 in an isolated worktree: with only the CI pin
+        (``.github/workflows/ci.yml:793``) standing -- the two compose lines
+        commented out -- the entry now reddens as ``seed-armed-only-in-ci``, and
+        the two compose setters are what keep it green. Before that tightening
+        the CI pin alone kept it green, which was the false green the tightening
+        removes: a value set on a throwaway runner is not the deployment.
+        """
+        setters = tracked_artifact_vars.get("AUDIT_DB_PATH", [])
+        ci = [s for s in setters if gate._is_ci_artifact(s)]
+        deploy = [s for s in setters if not gate._is_ci_artifact(s)]
+        assert ci == [".github/workflows/ci.yml"], ci
+        assert deploy, (
+            "the compose setters are the actual arming of this entry; "
+            "setters=%r" % (setters,))
+
+
+# --------------------------------------------------------------------------- #
+# Safe-value lock -- "armed" is not the same as "armed on the strict side"
+# --------------------------------------------------------------------------- #
+#: The eleven variables the owner adjudicated as "safe-first" plus the posture
+#: inputs that decide what "production" means. Exact literals on purpose: a
+#: looser assertion would let a future edit quietly flip the value back.
+_PRODUCTION_SAFE_VALUES = {
+    "LIUHAO_ENV": "production",
+    "LIUHAO_EXECUTOR_FENCE": "on",
+    "LIUHAO_REQUIRE_EXECUTOR_FENCE": "1",
+    "LIUHAO_POSTURE_STRICT": "1",
+    "LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS": "4",
+    "LIUHAO_EXECUTOR_FENCE_LEASE_DIR": "/app/data/executor_fence_leases",
+    "LIUHAO_SANDBOX_ENFORCE": "on",
+    "LIUHAO_ALLOW_SIMULATED_EXECUTION": "0",
+    "AUDIT_DB_PATH": "/app/data/audit_store.db",
+    "AUDIT_DB_BACKUP_PATH": "/app/data/audit_store.db.backup",
+    "LIUHAO_API_KEY_STORE": "/app/data/api_keys.json",
+    "LIUHAO_CONSOLE_DIST": "/app/apps/console/console/dist",
+    "LIUHAO_WORKSPACE_ROOT": "/app/data/workspace",
+}
+
+
+class TestSafeValueLock:
+    """Pin the shipped defaults so a "make CI green" edit cannot flip them.
+
+    Presence-only arming was the original hole: ``LIUHAO_POSTURE_STRICT=0`` or
+    ``LIUHAO_ALLOW_SIMULATED_EXECUTION=1`` satisfies "the variable is set"
+    while re-opening the exact branch the control was added to close. The gate
+    now carries a ``safe`` rule per entry; these tests pin both the rule table
+    and the concrete values in ``docker-compose.prod.yml``.
+    """
+
+    def test_production_compose_locks_the_adjudicated_values(self, gate):
+        values = gate.scan_artifact_values(
+            [REPO_ROOT / "docker-compose.prod.yml"])
+        for var, expected in _PRODUCTION_SAFE_VALUES.items():
+            hits = [v for label, v in values.get(var, [])
+                    if gate._is_production_artifact(label)]
+            assert hits == [expected], (
+                "%s must be exactly %r in the production bundle (and exactly "
+                "once); got %r" % (var, expected, hits))
+
+    def test_production_defaults_are_off_not_silent(self, gate):
+        """The safety switches default to the strict side, not to "unset=allow"."""
+        values = gate.scan_artifact_values(
+            [REPO_ROOT / "docker-compose.prod.yml"])
+        sim = [v for _, v in values.get("LIUHAO_ALLOW_SIMULATED_EXECUTION", [])]
+        fence = [v for _, v in values.get("LIUHAO_EXECUTOR_FENCE", [])]
+        assert sim == ["0"], sim
+        assert fence == ["on"], fence
+
+    def test_unsafe_production_value_is_a_finding(self, gate, monkeypatch):
+        """Teeth: presence with the permissive value must go red."""
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + ({
+            "var": "PROBE_SAFE_LOCK", "aliases": (), "expect": "set",
+            "safe": "falsy", "why": "probe", "refs": (),
+        },))
+        findings = gate.evaluate(
+            {"PROBE_SAFE_LOCK": ["docker-compose.prod.yml"]},
+            {"PROBE_SAFE_LOCK": [("src/app.py", 10)]}, {}, {},
+            {"PROBE_SAFE_LOCK": [("docker-compose.prod.yml", "1")]})
+        kinds = [f.kind for f in findings if f.var == "PROBE_SAFE_LOCK"]
+        assert "gate-var-unsafe-value" in kinds, kinds
+
+    def test_staging_laxness_is_not_judged_as_production(self, gate, monkeypatch):
+        """Staging is allowed to run on the laxer side by design."""
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + ({
+            "var": "PROBE_SAFE_STAGING", "aliases": (), "expect": "set",
+            "safe": "production", "why": "probe", "refs": (),
+        },))
+        findings = gate.evaluate(
+            {"PROBE_SAFE_STAGING": ["infra/staging/docker-compose.yml"]},
+            {"PROBE_SAFE_STAGING": [("src/app.py", 10)]}, {}, {},
+            {"PROBE_SAFE_STAGING": [
+                ("infra/staging/docker-compose.yml", "staging")]})
+        assert not [f for f in findings if f.var == "PROBE_SAFE_STAGING"]
+
+    def test_every_safe_rule_in_the_table_is_implemented(self, gate):
+        rules = {str(e["safe"]) for e in gate.SEED_GATES if e.get("safe")}
+        assert rules, "no entry carries a safe rule -- the value lock is off"
+        probes = {"truthy": "on", "falsy": "0", "production": "production",
+                  "positive_int_leq_4": "4", "path_app_data": "/app/data/x",
+                  "console_dist": "/app/apps/console/console/dist"}
+        for rule in rules:
+            assert rule in probes, "safe rule %r has no probe; add a test" % rule
+            assert gate.value_is_safe(rule, probes[rule]), rule
+
+    def test_executor_cap_rejects_zero_and_unbounded(self, gate):
+        assert gate.value_is_safe("positive_int_leq_4", "4")
+        assert not gate.value_is_safe("positive_int_leq_4", "0")
+        assert not gate.value_is_safe("positive_int_leq_4", "999")
+        assert not gate.value_is_safe("positive_int_leq_4", "no-cap")
+
+    def test_path_variables_point_at_directories_the_image_creates(self, gate):
+        """A path pointing at a directory the image never creates is paper-only."""
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        assert "mkdir -p /app/data" in dockerfile, (
+            "/app/data must be created in the image or every path variable "
+            "below points at nothing")
+        assert "apps/console/console/dist/" in dockerfile, (
+            "LIUHAO_CONSOLE_DIST must match the Dockerfile COPY target")
+        for var in ("AUDIT_DB_PATH", "AUDIT_DB_BACKUP_PATH",
+                    "LIUHAO_EXECUTOR_FENCE_LEASE_DIR", "LIUHAO_API_KEY_STORE",
+                    "LIUHAO_WORKSPACE_ROOT"):
+            rule = {str(e["var"]): str(e.get("safe") or "")
+                    for e in gate.SEED_GATES}.get(var)
+            assert rule == "path_app_data", (var, rule)
+            assert gate.value_is_safe(rule, _PRODUCTION_SAFE_VALUES[var]), var
+

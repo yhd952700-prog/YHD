@@ -8,7 +8,11 @@ services:
       - "8080:8080"
     environment:
       APP_ENV: ${APP_ENV:-staging}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://liuhao:liuhao@postgres:5432/liuhao}
+      # Canonical posture signal (src/security/posture.py reads this alias too).
+      # Keeps the LIUHAO-native variable present so a future refactor that reads
+      # ONLY LIUHAO_ENV cannot silently flip this deployment to non-production.
+      LIUHAO_ENV: ${APP_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-liuhao}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-liuhao}}
       SECRET_KEY: ${SECRET_KEY:-replace-me}
       # JWT 签名密钥。留空 → 每个进程各生成一把：重启即全端登出，多 worker
       # 还会让登录「成功」而下一个请求 401。生成一把再填：
@@ -17,6 +21,23 @@ services:
       LIUHAO_JWT_SECRET: ${LIUHAO_JWT_SECRET:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       METRICS_PERSIST: ${METRICS_PERSIST:-1}
+      # 审计数据库路径 —— 必须显式设置，默认路径被 HC-01 冻结保护
+      AUDIT_DB_PATH: /app/data/audit_store.db
+      # 人类身份注册表完整性密钥 —— 不设则所有注册行被拒绝（fail-closed）
+      LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY: ${LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY:-dev-integrity-key-change-in-production}
+      # 身份与凭据文件路径 —— 指向持久卷，容器重建后身份不丢失
+      LIUHAO_HUMAN_IDENTITIES_FILE: /app/data/human_identities.json
+      LIUHAO_AUTH_SECRETS_FILE: /app/data/auth_secrets.json
+      # 对话历史数据库 —— 默认在 /app 根目录（非 root 不可写），必须指向持久卷
+      CONVERSATION_DB_PATH: /app/data/conversation_store.db
+      # Memory kernel 数据库
+      MEMORY_DB_PATH: /app/data/memory_store.db
+      # 个人画像数据库
+      PERSONAL_CONTEXT_DB_PATH: /app/data/personal_context.db
+      # 执行日志路径 —— AgentRuntime 的 journal 落点
+      LIUHAO_WORKSPACE_ROOT: /app/data
+    volumes:
+      - app_data:/app/data
     env_file:
       - .env
     depends_on:
@@ -27,19 +48,23 @@ services:
       - liuhao
 
   postgres:
-    image: postgres:16-alpine
+    # 与 docker-compose.infra.yml / docker-compose.prod.yml 一致钉在 15：
+    # 15 是生产与 infra 已在用的版本，31 张表已在 PG 15.19 上验证通过；
+    # 升 16 需对已有卷做 pg_upgrade/dump-restore，直接改镜像号会让旧卷起不来。
+    image: postgres:15-alpine
     container_name: liuhao-postgres
     environment:
-      POSTGRES_USER: liuhao
-      POSTGRES_PASSWORD: liuhao
-      POSTGRES_DB: liuhao
+      POSTGRES_USER: ${POSTGRES_USER:-liuhao}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env — no default for security}
+      POSTGRES_DB: ${POSTGRES_DB:-liuhao}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
-    ports:
-      - "5432:5432"
+    # 不暴露到主机 —— 仅容器网络内可达，通过 app 服务中转
+    expose:
+      - "5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U liuhao -d liuhao"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-liuhao} -d ${POSTGRES_DB:-liuhao}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -53,3 +78,4 @@ networks:
 
 volumes:
   postgres_data:
+  app_data:

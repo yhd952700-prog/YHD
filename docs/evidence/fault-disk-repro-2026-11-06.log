@@ -1,0 +1,29 @@
+﻿.\.venv\Scripts\python.exe : D:\cache\temp\repro_disk.py:48: DeprecationWarning: src.audit is a deprecated legacy compa
+tibility layer and is NOT the tamper-evident audit chain. Use src.kernels.audit (SQLite + hash chain) for authoritative
+, evidence-grade audit logging.
+所在位置 行:15 字符: 1410
++ ... M = 'dumb'; .\.venv\Scripts\python.exe D:\cache\temp\repro_disk.py 2> ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\cache\temp\r... audit logging.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  from src.audit.models import AuditEvent
+2026-11-06 00:54:05,001 INFO liuhao.store [tid=6bc4d8ffbefa409d cid=-] EXIT  audit.store.emit ok=ok elapsed_ms=77.0
+2026-11-06 00:54:05,006 ERROR liuhao.store [tid=5353f7344a0f429a cid=-] ERROR audit.store.emit exc=PermissionError elap
+sed_ms=3.9
+2026-11-06 00:54:05,016 INFO liuhao.store [tid=3cd634b968b24d8c cid=-] EXIT  audit.store.emit ok=ok elapsed_ms=7.9
+2026-11-06 00:54:05,019 ERROR liuhao.store [tid=5c9fc2777b2040af cid=-] ERROR audit.store.emit exc=OSError elapsed_ms=2
+.7
+2026-11-06 00:54:05,027 INFO liuhao.store [tid=2d9a735b7bee4ca0 cid=-] EXIT  audit.store.emit ok=ok elapsed_ms=6.8
+2026-11-06 00:54:05,031 ERROR liuhao.store [tid=f4211e9712af4a65 cid=-] ERROR audit.store.emit exc=PermissionError elap
+sed_ms=2.6
+2026-11-06 00:54:05,224 INFO liuhao.store [tid=1dcf6133542047d2 cid=-] EXIT  kernels.memory.store.persist ok=none elaps
+ed_ms=0.2
+2026-11-06 00:54:10,696 ERROR liuhao.store [tid=df2d108864c743a6 cid=-] ERROR kernels.memory.store.persist exc=MemorySt
+oreError elapsed_ms=5470.2
+{"case": "audit-readonly", "rejected": true, "error": "PermissionError: [WinError 5] 拒绝访问。: 'D:\\\\cache\\\\temp\\\\liuhao-disk-repro\\\\audit-ro\\\\audit.json.r4nasqiy.tmp' -> 'D:\\\\cache\\\\temp\\\\liuhao-", "previous_file_intact": true, "in_memory_event_rolled_back": true}
+{"case": "audit-enospc", "rejected": true, "error": "OSError: [Errno 28] No space left on device (simulated)", "previous_file_intact": true, "in_memory_event_rolled_back": true}
+{"case": "audit-locked", "rejected": true, "error": "PermissionError: [WinError 5] 拒绝访问。: 'D:\\\\cache\\\\temp\\\\liuhao-disk-repro\\\\audit-locked\\\\audit.json.0p2hkjtq.tmp' -> 'D:\\\\cache\\\\temp\\\\liu", "previous_file_intact": true}
+{"case": "model-config-readonly-dir", "acl_applied": true, "rejected": true, "status": 503, "message": "无法打开模型配置库 D:\\cache\\temp\\liuhao-disk-repro\\config-ro\\model_registry.sqlite3：unable to open database file。磁盘可能已满、数据目录只读，或文件被其它程序独占；为避免写坏已有配置，本次操作已拒绝。"}
+{"case": "launcher-readonly", "acl_applied": true, "rejected": true, "message": "无法创建数据目录 D:\\cache\\temp\\liuhao-disk-repro\\launcher-ro（PermissionError: [WinError 5] 拒绝访问。: 'D:\\\\cache\\\\temp\\\\liuhao-disk-repro\\\\launcher-ro\\\\config'）。请确认磁盘没有写满、路径没有被只读挂载，或用环境变量 LIUHAO_DATA_DIR 指向另一个可写目录。"}
+{"case": "memory-locked", "rejected": true, "error": "无法写入记忆库 D:\\cache\\temp\\liuhao-disk-repro\\memory-locked\\memory_store.db（磁盘可能已满、数据目录只读或文件被占用）：database is locked。本次记忆未保存，已有记忆保持不变。", "hint": "MemoryStoreError（可读）", "old_row_intact": true}

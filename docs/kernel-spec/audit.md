@@ -9,7 +9,7 @@
 
 ## 1. 定义
 
-Audit Kernel 是 Human-Sovereign Agent OS 的**防篡改审计内核**，提供基于 SHA256 哈希链的不可变审计日志（SQLite 后端），支持 `correlation_id` 关联查询、完整性校验与完整事件生命周期管理。它依据 Definition Lock §113，是系统合规与可追溯性的最终事实来源（sink），仅依赖标准库（`json/hashlib/sqlite3`），被 `_crosscutting` 织入层懒导入以记录全部 kernel action 判决（`src/kernels/audit/__init__.py:104`）。
+Audit Kernel 是 Human-Sovereign Agent OS 的**防篡改审计内核（设计为防篡改；运行时链完整性当前 UNVERIFIED，链存在分叉，待 F1–F6 修复+独立验证）**，提供基于 SHA256 哈希链的不可变审计日志（SQLite 后端），支持 `correlation_id` 关联查询、完整性校验与完整事件生命周期管理。它依据 Definition Lock §113，是系统合规与可追溯性的设计目标事实来源（sink；当前因链分叉，运行时完整性 UNVERIFIED，见 GOVERNANCE.md §7），仅依赖标准库（`json/hashlib/sqlite3`），被 `_crosscutting` 织入层懒导入以记录全部 kernel action 判决（`src/kernels/audit/__init__.py:104`）。
 
 ## 2. 目标（现状可实现的能力）
 
@@ -42,7 +42,7 @@ Audit Kernel 是 Human-Sovereign Agent OS 的**防篡改审计内核**，提供�
 - `AuditEvent`（:59）：单条已签名事件，`event_hash` 由 `compute_hash` 生成。
 - `get_event(event_id) → Optional[Dict]`（`src/kernels/audit/__init__.py:493`）。
 - `get_stats() → Dict`（事件类型/结果分布、`db_path`，:519）。
-- **持久化**：SQLite（WAL 模式，:139），`audit_events` + `chain_state` 双表（:141-165）；由 `AUDIT_DB_PATH` 控制路径（默认仓库根 `audit_store.db`，:117）。
+- **持久化**：SQLite（WAL 模式，:139），`audit_events` + `chain_state` 双表（:141-165）；路径由 `AUDIT_DB_PATH` 控制。**`AUDIT_DB_PATH` 未设置且未显式传入 `db_path` 时 `AuditStore()` 直接 fail-closed 报错**（不再默认落到仓库根 `audit_store.db`——那是冻结的 HC-01 证据库，曾被无配置进程静默污染；见 `scripts/forensics_evidence_store_pollution.py`）。生产在 docker-compose 显式设为 `/app/data/audit_store.db`，测试经 `tests/conftest.py` 重定向到临时文件。
 - **全局单例**：`get_audit_store()`（:560）。
 
 ## 6. 错误处理（对齐 `src/kernels/_base.py`）

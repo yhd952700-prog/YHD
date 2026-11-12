@@ -88,18 +88,27 @@ def _ensure_configured() -> None:
     global _CONFIGURED
     if _CONFIGURED:
         return
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)s %(name)s [tid=%(trace_id)s cid=%(correlation_id)s] %(message)s"
-        )
-    )
-    # 关键：把 _TraceFilter 挂到 handler 上（而不是仅 logger）—— 任何 propagate
-    # 路径走过的 record 都会被注入 trace_id/correlation_id，避免根 Formatter
-    # 在非 liuhao.* logger（如 src.kernels.*）冒泡时抛 Formatting field not found。
-    handler.addFilter(_TraceFilter())
     root = logging.getLogger(_ROOT_NAME)
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+    # 只有在"全局日志根本没配"（脚本 / 单测直接调用）时才补一个兜底
+    # console。网关与桌面壳已经由 ``config/logging.yaml`` 给 root 配好
+    # handler：这时再往 ``liuhao`` 上挂一个，会让每条记录向 stdout 输出
+    # 两份（一份绕过 RedactingFormatter），桌面壳又把 stdout 原样写入
+    # ``desktop-gateway.log`` —— 完整 API Key 就是这样变成明文的。
+    # 兜底通道同样必须走 RedactingFormatter，否则只是把泄漏挪到脚本场景。
+    if not logging.getLogger().handlers:
+        from ..logging_config import RedactingFormatter
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            RedactingFormatter(
+                "%(asctime)s %(levelname)s %(name)s [tid=%(trace_id)s cid=%(correlation_id)s] %(message)s"
+            )
+        )
+        # 关键：把 _TraceFilter 挂到 handler 上（而不是仅 logger）—— 任何
+        # propagate 路径走过的 record 都会被注入 trace_id/correlation_id，
+        # 避免根 Formatter 在非 liuhao.* logger（如 src.kernels.*）冒泡时抛
+        # Formatting field not found。
+        handler.addFilter(_TraceFilter())
         root.addHandler(handler)
     root.setLevel(logging.INFO)
     _CONFIGURED = True

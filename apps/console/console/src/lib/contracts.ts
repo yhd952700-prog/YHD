@@ -6,7 +6,26 @@
  * 空壳，前端必须能承受，而不是假设形状永远完整。
  */
 
-export interface ProviderInfo {
+/** 当前生效的 provider 的诚实性判据（后端 `ai_provider_status()` 的形状）。
+ *
+ * 这三个字段回答的是**"我看到的输出是真的吗"**，与 `ProviderItem.configured`
+ * （"环境变量/密钥到位了吗"）是两个不同的问题，不可互相替代。
+ *
+ * 为什么它们必须在类型里：接口一开始只声明 `{type, model, name, error}`，
+ * 于是 `mode` / `simulated` 在 TS 层面就不存在 —— 前端**想显示也显示不出来**。
+ * 加上它们之前，控制台把内置 mock provider 渲染成"已配置，可用于真实调用"+
+ * 绿色"就绪"（`Overview` 的 provider 卡片），而后端在这三个字段里一直如实
+ * 区分 mock/real（`providers.py` 的注释："Never silently pretends a
+ * simulation is real"）。缺这三个字段不是"少显示一点"，是**界面给假绿灯**。
+ */
+export interface ProviderHonesty {
+  /** `mock` = 不调用真实模型，返回编造结果；`real` = 真实调用。 */
+  mode?: 'mock' | 'real' | string
+  /** 执行内核是否走模拟路径（`LIUHAO_ALLOW_SIMULATED_EXECUTION`）。 */
+  simulated?: boolean
+}
+
+export interface ProviderInfo extends ProviderHonesty {
   type?: string
   model?: string | null
   name?: string | null
@@ -31,6 +50,16 @@ export interface DashboardSummary {
   }
   audit?: {
     total_events?: number
+    /** 全库业务事件（已扣除内核 state_change 噪声），事件页展示的就是它。 */
+    business_events?: number
+    /** 当前账号子树可读的事件数（成员看不到他人活动的聚合数字）。 */
+    visible_events?: number
+    visible_business_events?: number
+    noise_events?: number
+    scope?: string
+    scope_principals?: string[]
+    /** 每个数字的口径说明，界面应逐字展示，避免三处读数互相矛盾。 */
+    definition?: Record<string, string>
     breakdown?: Record<string, number>
     db_path?: string
     error?: string
@@ -51,7 +80,7 @@ export interface ActivityPayload {
   limit?: number
 }
 
-export interface RegistryKernel {
+export interface RegistryModule {
   id: string
   legacy_id?: string | null
   name: string
@@ -76,6 +105,24 @@ export interface RegistryLayer {
   band_label: string
 }
 
+/** 名册 payload 中的真实员工条目（与后端 `build_roster_payload().real_employees` 一一对应）。
+ *
+ * 这是**真实持久化**员工（来自 `EmployeeStore`），与 `layers` / `kernels` 那种静态注册表
+ * 条目是两回事——后者是"注册信息"，前者是"真有人/真有 agent 在跑"。
+ *
+ * Overview 的「能力层分布」卡片**有意不**把它渲染成"员工协作网络"——那曾是虚假宣称
+ * （静态 capability-registry 分带 + 伪辐条，零员工、零协作、零边）。这里只把真实数据契约
+ * 声明出来，供未来按需消费；绝不默认它已被画成一张"协作网络"图。
+ */
+export interface RosterEmployee {
+  name: string
+  agent_count: number
+  agents: { id: string; agent_type: string; status: string }[]
+  total_tasks_submitted: number
+  total_tasks_completed: number
+  total_tasks_failed: number
+}
+
 export interface ProviderItem {
   type: string
   label: string
@@ -83,6 +130,10 @@ export interface ProviderItem {
   configured: boolean
   active: boolean
   required_env: string[]
+  /** 接上去也不会产生真实调用的 provider（内置 mock / 空 / none）。 */
+  is_mock?: boolean
+  /** 这一项是不是**当前生效的那个**假 provider（"你正在被 mock 服务"）。 */
+  is_active_provider_mock?: boolean
 }
 
 export interface RosterPayload {
@@ -92,22 +143,36 @@ export interface RosterPayload {
   error?: string | null
   version?: string
   declared_totals?: { capabilities?: number; layers?: number }
+  // Mirrors build_roster_payload() in src/ai/roster_payload.py exactly.
+  // `declared_test_cases` used to be declared here and rendered by the
+  // operations panel, but the backend has never produced it -- the payload
+  // carries `declared_totals.{capabilities,layers}` instead. A field the server
+  // does not send renders as undefined, so the panel was displaying a number
+  // that did not exist. Do not add a field here without checking the payload
+  // builder: this type is the only thing standing between the two.
   totals: {
     kernels: number
     layers: number
+    /** kernel modules + capability layers. NOT an employee count. */
+    registry_entries: number
+    /** real persisted employees only -- see real_employees */
     employees: number
-    declared_test_cases: number
   }
-  kernels: RegistryKernel[]
+  kernels: RegistryModule[]
   layers: RegistryLayer[]
   domains: { key: string; label: string }[]
   bands: { key: string; label: string }[]
+  /** 真实持久化员工（来自 EmployeeStore）。后端会发送；Overview 当前不把它渲染成网络图。 */
+  real_employees?: RosterEmployee[]
   providers: {
     registered_count: number
     configured_count: number
     active: ProviderInfo
     items: ProviderItem[]
     error?: string
+    /** 全系统级诚实性判据（不必翻 `active` 就能回答"现在是真跑还是模拟"）。 */
+    mode?: 'mock' | 'real' | string
+    simulated?: boolean
   }
 }
 
@@ -132,6 +197,7 @@ export interface AnalyticsPayload {
     error?: string
     days: TimeseriesPoint[]
     sampled_events?: number
+    actual_events?: number
     truncated?: boolean
   }
   breakdown: {
@@ -146,6 +212,22 @@ export interface AnalyticsPayload {
 export interface HealthCheckEntry {
   status?: string
   error?: string
+  /**
+   * 审计证据链判据（`/v1/ready` 的 `checks.audit_store`）。
+   *
+   * 与 `status` 是**两个不同的问题**，不可互相替代：
+   *   - `status` = 可用性：这份依赖能不能提供服务（决定 readiness 是否 503）；
+   *   - `evidence_status` = 证据完整性：哈希链是否真被重新推导过。
+   *
+   * 曾经只有 `status` 且它被硬编码为 `healthy`，于是 `errors` 说"审计链不完整"
+   * 而 `checks` 说"全好"—— 同一份 payload 自相矛盾。分字段后两者可以同时为真。
+   */
+  availability?: 'available' | 'unavailable'
+  /**
+   * `pending` = 历史已被覆盖，只有两次检查点之间的新尾部待核对（正常尾差，
+   * 不影响就绪）。它与 `broken`（中间空洞/覆盖回退）必须分开说。
+   */
+  evidence_status?: 'verified' | 'unverified' | 'pending' | 'broken' | 'unknown'
   [key: string]: unknown
 }
 
@@ -154,17 +236,45 @@ export interface HealthPayload {
   checks?: Record<string, HealthCheckEntry>
   errors?: string[]
   timestamp?: number
+  /**
+   * `/v1/health` 的 `ai_provider`（后端 `ai_provider_status()` 原样返回）。
+   *
+   * 模型状态的**单一事实源**：总览的 provider 面板、对话页的"是否真实模型"、
+   * 运维页的"当前 provider"都读这一份，不再各自从名册或 summary 推导 ——
+   * 三处曾经互相矛盾，是因为三处各算各的。
+   */
+  ai_provider?: ProviderInfo
 }
 
+/** `/v1/ready` 的就绪载荷。
+ *
+ * 此前这里只声明了 `status?: string` —— 一个会让调用方以为"就绪载荷只有一句话"的
+ * 契约：既没有 `checks`（机器/KPI 真正读的那份），也没有 `errors`（给人看的那份）。
+ * 两个字段都补上，前端才有路径消费审计证据链判据。
+ */
 export interface ReadyPayload {
   status?: string
+  checks?: Record<string, HealthCheckEntry>
+  errors?: string[]
+  timestamp?: number
 }
 
+/**
+ * 内核层拦截配置快照（`GET /v1/policy/enforcement`）。
+ *
+ * 字段名以**后端实际返回**为准（`src/kernels/_enforcement.py::describe`）：
+ * `enforced_actions` 是**被拦截的动作名**（如 `tool.execute`），不是风险等级；
+ * 风险等级在审批侧另有概念（`RiskTier`）。此前前端读 `enforced_tiers`，
+ * 后端从未返回该字段，于是"生效等级"恒为空。
+ */
 export interface EnforcementPayload {
   enabled?: boolean
   env_var?: string
-  intercepting?: boolean
-  enforced_tiers?: string[]
+  spec?: string
+  enforced_actions?: string[]
+  count?: number
+  exempt_actions?: string[]
+  config_error?: string | null
   [key: string]: unknown
 }
 
@@ -172,4 +282,180 @@ export interface EnforcementPayload {
 export interface ApprovalSummary {
   count: number
   grants: { id: string; remaining_seconds?: number; is_active?: boolean }[]
+}
+
+// ─── AI Employee / Goal / Workflow 契约 ─────────────────────
+
+export interface AgentInfo {
+  id: string
+  agent_type: string
+  name: string
+  status: string
+  current_task: string | null
+  completed_tasks: number
+  failed_tasks: number
+  total_latency_ms: number
+}
+
+export interface EmployeeStats {
+  name: string
+  agent_count: number
+  total_tasks_submitted: number
+  total_tasks_completed: number
+  total_tasks_failed: number
+  /** 后端 `_summarize_employee` 还会给出目标级计数；缺失时按 0 读。 */
+  total_goals_submitted?: number
+  total_goals_completed?: number
+  total_goals_failed?: number
+  task_queue_length: number
+}
+
+/** 按名员工名册中的单条摘要（与后端 GET /v1/employees 的 employees[] 对应）。
+ *
+ * `role_description` / `default_capabilities` / `employment_status` / `read_only`
+ * 都来自 `_summarize_employee` 的真实字段。`read_only=true` 表示登录者能看到
+ * 但**不能改**（例如设备负责人查看其他账号名下的员工）——界面必须据此隐藏
+ * 编辑与删除入口，而不是让按钮点下去才吃 404。
+ */
+export interface EmployeeSummary {
+  name: string
+  agent_count: number
+  agents: AgentInfo[]
+  role_description: string
+  /** 已注册执行器的 capability id 列表（创建时只能从该清单选）。 */
+  default_capabilities: string[]
+  owner_account_id?: string
+  /** `active`（在职）/ `disabled`（停用）。停用员工不能接受派活。 */
+  employment_status: 'active' | 'disabled' | string
+  /** 当前登录者只能看、不能改。 */
+  read_only: boolean
+  stats: EmployeeStats
+}
+
+/** GET /v1/employees/capabilities 的响应（只能从已注册且 ACTIVE 的能力里选）。 */
+export interface EmployeeCapability {
+  id: string
+  name: string
+  tool_id: string
+  description?: string
+  risk?: string
+}
+
+export interface EmployeeCapabilitiesPayload {
+  capabilities: EmployeeCapability[]
+  count: number
+  ids?: string[]
+}
+
+export interface EmployeesPayload {
+  /** 默认员工的 agent pool（向后兼容运行时 Tab）。 */
+  agents: AgentInfo[]
+  count: number
+  stats: EmployeeStats
+  /** 全员真实员工列表（P1 按名生命周期的真实契约）。 */
+  employees?: EmployeeSummary[]
+  employee_count?: number
+  error?: string
+}
+
+export interface GoalSummary {
+  goal_id: string
+  state: string
+  natural_language: string
+  scope: string
+  created_at?: number | null
+  error?: string | null
+  /** 后端保留的原始失败原因，折叠展示；主位置只显示中文结论。 */
+  technical_detail?: string | null
+  replan_suggested: boolean
+  task_count: number
+  completed_tasks: number
+  failed_tasks: number
+}
+
+export interface GoalTraceEntry {
+  task_id: string | null
+  event_type: string
+  ts?: string | null
+  capability?: string | null
+  decision: string
+  output?: unknown
+  error?: string | null
+  correlation_id?: string
+}
+
+export interface GoalDetail {
+  goal_id: string
+  state: string
+  natural_language: string
+  scope: string
+  correlation_id: string
+  error?: string | null
+  /** 后端保留的原始失败原因，折叠展示；主位置只显示中文结论。 */
+  technical_detail?: string | null
+  replan_count: number
+  replan_suggested: boolean
+  trace: GoalTraceEntry[]
+  tasks: Record<string, unknown>[]
+  evaluation?: {
+    outcome?: string
+    replan_required?: boolean
+    replan_triggered?: boolean
+    summary?: string
+  } | null
+  created_at?: number
+}
+
+export interface GoalsPayload {
+  goals: GoalSummary[]
+  count: number
+}
+
+export interface WorkflowSummary {
+  goal_id: string
+  state: string
+  task_count: number
+  completed_tasks: number
+  failed_tasks: number
+}
+
+export interface WorkflowsPayload {
+  workflows: WorkflowSummary[]
+  count: number
+}
+
+/** `/v1/production/preflight` 的单条配置发现。
+ *
+ * 后端 `ConfigFinding.to_dict()`（`src/observability/production.py`）逐字对应。
+ * `severity` 只有两种取值：`critical` / `warning` —— 这不是自由文本，后端用它
+ * 统计 `critical_count` / `warning_count`，所以前端也按这两个值分色，不猜。
+ */
+export interface PreflightFinding {
+  /** 被检查的环境变量名，例如 `SECRET_KEY`。 */
+  key: string
+  severity: 'critical' | 'warning' | string
+  /** 机器可读判据，例如 `secret_key_missing`。 */
+  code: string
+  /** 给人看的中文说明，后端原文。 */
+  message: string
+}
+
+/** `/v1/production/preflight` 的响应（`PreflightReport.to_dict()`）。
+ *
+ * 端点受 `require_human_principal` 保护：令牌必须带 `sub`，否则 401。
+ * **报告只含键名 / 代码 / 严重级别，绝不含任何配置值** —— 前端因此不需要
+ * （也不允许）在这里"顺手显示一下密钥"。
+ */
+export interface PreflightPayload {
+  /** 无 critical 即通过。等价于 `critical_count === 0`，不是独立判据。 */
+  ok: boolean
+  /** `APP_ENV` 原值；空串表示未声明，**不等于** production。 */
+  app_env: string
+  critical_count: number
+  warning_count: number
+  /** 界面可读状态标签（只增不改，后端 `PreflightReport.to_dict()` 同名下发）。 */
+  status_label?: string
+  /** 给人看的一句话结论；不含任何配置值。 */
+  user_message?: string
+  findings: PreflightFinding[]
 }

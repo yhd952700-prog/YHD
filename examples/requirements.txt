@@ -1,0 +1,28 @@
+# LiuHao AI OS 示例依赖
+#
+# 安装方式: pip install -r examples/requirements.txt
+#
+# 注意：核心依赖请安装项目根目录的 requirements.txt
+# 本文件仅包含示例特有的额外依赖
+
+# ---- 数据处理与分析 ----
+numpy>=1.24.0          # 数值计算
+pandas>=2.0.0          # 数据分析
+
+# ---- 可视化 ----
+matplotlib>=3.7.0      # 数据可视化
+
+# ---- 集成 SDK ----
+# slack-sdk>=3.0.0     # Slack 集成 (可选)
+# PyGithub>=2.0.0       # GitHub 集成 (可选)
+
+# ---- 异步编程 ----
+# aiohttp>=3.8.0       # 异步 HTTP (可选)
+
+# ---- 测试 ----
+pytest>=7.0.0          # 测试框架
+
+# ---- 工具库 ----
+python-dotenv>=1.0.0   # 环境变量加载
+rich>=13.0.0           # 终端富文本输出 (演示用)
+tqdm>=4.65.0           # 进度条 (演示用)

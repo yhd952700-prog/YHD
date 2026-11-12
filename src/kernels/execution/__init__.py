@@ -19,22 +19,508 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+import json
 import uuid
+import os
+import re
+import hashlib
+import inspect
+import logging
+import threading
+import time
+import contextvars
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 
 # Import dependencies
 from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel  # noqa: F401
 from src.kernels.capability import get_capability_registry, CapabilityScope, check_capability_scope
 from src.kernels.event import get_event_bus, publish_event, EventScope, EventPriority
 from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, kernel_action_correlation_id, task_attribution
 from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
+
+logger = logging.getLogger("liuhao.kernel.execution")
+
+#: 执行器接线错误（resolver 返回了非 callable，如员工名字符串）时，任务结果里
+#: 只给人能照着做的提示；Python 异常原文只写日志，不写进用户可见的任务结果。
+EXECUTOR_NOT_WIRED_MESSAGE = (
+    "执行器没有接上，请联系管理员（执行器配置错误，详细异常已写入日志）"
+)
+
+
+def humanize_executor_error(error: Any) -> str:
+    """把执行器抛出的异常/错误文本转成人能读懂的一句话。"""
+    text = str(error or "").strip()
+    if not text:
+        return "未知错误"
+    if "object is not callable" in text:
+        return EXECUTOR_NOT_WIRED_MESSAGE
+    return text
+
+
+def _json_safe_inputs(value: Any) -> Dict[str, Any]:
+    """任务快照会写入 JSON，inputs 必须可序列化；异常值降级为字符串。
+
+    崩溃恢复要靠快照里的 inputs 原样重建任务（重启后拆解器可能给出不同
+    的任务名），因此这里不能把整个快照写成不可序列化而丢失。
+    """
+    if not isinstance(value, dict):
+        return {}
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return {str(k): str(v) for k, v in value.items()}
+
+
+def task_result_text(value: Any) -> Optional[str]:
+    """把工具返回的结构化结果渲染成给人读的文本，而不是 Python repr。
+
+    直接 ``str(dict)`` 会把 ``{'success': True, 'result': '...'}`` 原样贴到
+    管家页面上，用户看到的是数据结构而不是答案（验收第 5 项明确禁止）。
+    这里优先取业务字段，并把检索来源与抓取时间排成可点击的
+    ``- 标题: URL`` 行，保证真实链接和时间戳不会淹没在 repr 里。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        text = ""
+        for key in ("result", "summary", "text", "message", "output"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                text = candidate.strip()
+                break
+        if not text:
+            try:
+                text = json.dumps(value, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                text = str(value)
+        lines = [text]
+        sources = value.get("sources")
+        if isinstance(sources, list):
+            for source in sources[:8]:
+                if not isinstance(source, dict):
+                    continue
+                url = source.get("url")
+                if not isinstance(url, str) or not url.strip():
+                    continue
+                title = source.get("title") or source.get("site") or "来源"
+                lines.append(f"- {title}: {url}")
+        fetched = value.get("fetched_at")
+        if isinstance(fetched, str) and fetched.strip():
+            lines.append(f"抓取时间：{fetched.strip()}")
+        # ACTION-01：重复投递被幂等账本拦下时，回放结果必须让人看得见。
+        # 否则二次执行与否在界面上完全无法区分（都显示同一段结果）。
+        replayed_from = value.get("replayed_from")
+        if isinstance(replayed_from, str) and replayed_from.strip():
+            lines.append(
+                f"（已复用首次执行结果 {replayed_from.strip()}，未重复执行副作用）"
+            )
+        return "\n".join(lines)
+    if isinstance(value, (list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
 
 
 # Seam for real capability execution. The Execution Kernel must not depend on
 # the ai layer (strict layering: spec -> kernels -> ai -> gateway/console), so
 # the actual executor is injected at assembly time by an upper layer.
-CapabilityExecutor = Callable[[str, Dict[str, Any]], Any]
+#
+# 执行器契约（ACTION-01 定稿，2026-11-08）
+# ----------------------------------------
+# 稳定幂等键必须到达真正产生副作用的那一层。此前 ``Action.id``（同一次执行的所有
+# 重试都相同，例如 ``act-20a9c9d9767f-0``）只在 journal / 事件里成立，执行器根本
+# 收不到 —— 下游工具不去重时，发消息、调外部接口这类副作用仍会被重放。
+#
+# 新签名（推荐，显式关键字参数，不塞进 ``inputs``，避免被业务字段覆盖）::
+#
+#     def executor(capability_id, inputs, *, action_id: str | None = None) -> Any: ...
+#
+# 旧签名 ``executor(capability_id, inputs)`` 继续可用：调用前会做签名内省，
+# 老执行器不会因为多传一个关键字参数而 TypeError。
+CapabilityExecutor = Callable[..., Any]
+
+#: 天然幂等（重放安全）：重复执行得到同一结果，重试无需去重。
+#: * ``file_write`` 同路径覆盖写、``python_compute`` 纯计算；
+#: * ``file.read`` / ``file.list`` / ``memory.search`` / ``audit.query`` /
+#:   ``system.status`` 是只读；
+#: * ``preview_stop`` 对已停止的服务是 no-op。
+REENTRANT_CAPABILITIES = frozenset({
+    "file_write",
+    "python_compute",
+    "file.read",
+    "file.list",
+    "memory.search",
+    "audit.query",
+    "system.status",
+    "preview_stop",
+})
+
+#: 硬副作用能力清单（显式白名单，按仓库里真实存在的 capability id 列出）。
+#:
+#: 判定标准是「重放会产生不可撤销的外部后果」，不是按名字猜：
+#: * ``network_bus``       外发联网检索 / 调外部接口，并消耗模型额度；
+#: * ``personal.write``    写用户可见的持久画像、称呼、待确认事实（后续行为随之改变）；
+#: * ``multi_tier_memory`` 写持久记忆（污染长期上下文，且会被后续回答引用）；
+#: * ``preview_start``     启动对外可见的预览服务/进程（占端口、对外暴露文件）；
+#: * ``execution_pipeline`` 调模型生成，按量计费时产生真实外部成本。
+#:
+#: 这五个 id 都来自真实注册点：
+#: ``src/kernels/capability/__init__.py``（前四个）与
+#: ``src/ai/tools/kernel_tools.py``（``personal.write``）。
+#:
+#: 维护义务：新增「不可撤销外部后果」的能力时**必须**加进这里；否则在账本缺席的
+#: 部署里它会被当作可安全重入而放行（见 :func:`capability_has_hard_side_effects`）。
+HARD_SIDE_EFFECT_CAPABILITIES = frozenset({
+    "network_bus",
+    "personal.write",
+    "multi_tier_memory",
+    "preview_start",
+    "execution_pipeline",
+})
+
+#: 历史名字，保留供文档/旧代码引用；语义等同硬副作用清单。
+#: 注意：**去重判定**仍以 ``REENTRANT_CAPABILITIES`` 白名单为准 —— 名单之外
+#: （含未知能力）一律不可重入，宁可多问一次人工，也不重放无法回滚的副作用。
+NON_REENTRANT_CAPABILITIES = HARD_SIDE_EFFECT_CAPABILITIES
+
+
+def capability_is_reentrant(capability_id: str) -> bool:
+    """能力是否「天然幂等」——只有显式列入白名单的才算。"""
+    return (capability_id or "").strip() in REENTRANT_CAPABILITIES
+
+
+def capability_has_hard_side_effects(capability_id: str) -> bool:
+    """能力是否在**显式**硬副作用清单里（不在清单内 → 按可安全重入处理）。"""
+    return (capability_id or "").strip() in HARD_SIDE_EFFECT_CAPABILITIES
+
+
+def make_action_id(goal_id: str, task_name: str, attempt: int = 0) -> str:
+    """跨进程稳定的 action id（= 幂等键）。
+
+    task id 是 ``uuid4()[:8]``，每次重跑都会变，不能用作键；goal id + task name
+    由拆解器/重试快照稳定保留。同一次执行的所有重试复用同一个 action id，
+    这正是幂等账本能识别「重复投递」的前提。
+    """
+    digest = hashlib.sha1(
+        f"{goal_id}:{task_name}".encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:12]
+    return f"act-{digest}-{attempt}"
+
+
+def executor_accepts_action_id(executor: Callable[..., Any]) -> bool:
+    """执行器是否声明了 ``action_id`` 关键字参数（或 ``**kwargs``）。"""
+    try:
+        params = inspect.signature(executor).parameters
+    except (TypeError, ValueError):
+        # 内省失败（C 扩展、某些 callable）时按旧签名调用，保持兼容。
+        return False
+    if "action_id" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def invoke_capability_executor(
+    executor: Callable[..., Any],
+    capability_id: str,
+    inputs: Dict[str, Any],
+    action_id: Optional[str] = None,
+) -> Any:
+    """按执行器声明的签名调用，新执行器拿到 action_id，老执行器不受影响。"""
+    if executor_accepts_action_id(executor):
+        return executor(capability_id, inputs, action_id=action_id)
+    return executor(capability_id, inputs)
+
+
+# 幂等去重能力的运行时可见性（ACTION-01 后续，2026-11-08）
+# ---------------------------------------------------------
+# 「journal 没注入就不去重」不能是静默的：用户看到一切正常，但不可重入动作
+# （发消息、调外部接口、发邮件）在崩溃重试后仍可能产生第二次副作用。
+#
+# 采取的分档策略（刻意选定，不是默认）：
+#   * **硬副作用能力**（``HARD_SIDE_EFFECT_CAPABILITIES``）→ **fail-closed**，
+#     拒绝执行。理由：消息发出去、钱花出去、文件删掉之后无法撤销；只写一行
+#     健康告警挡不住已经发生的外部后果。代价：没有接入 journal 的嵌入/库用法
+#     跑不动这些能力，必须先装配 ``ExecutionJournal``（网关部署默认已装配）。
+#   * **只读 / 明确可安全重入能力 / 名单外能力** → 不阻断执行，但留一条可被
+#     健康/就绪面读取的 advisory（``blocks_readiness=False``），并在首次发生时
+#     打一条中文告警。理由：这些能力重放不会产生额外外部后果，fail-closed 只会
+#     让没接账本的部署连只读动作都跑不动，代价大于收益。
+#   * journal 已接入但**写不进去**（磁盘只读/权限不足）→ **fail-closed**，
+#     拒绝执行不可重入动作。理由：账本不可写时无法证明「这次只执行一次」，
+#     执行下去就是拿外部副作用赌磁盘，代价比拒绝一次更高。
+_DEDUPE_ADVISORY_LOCK = threading.Lock()
+_DEDUPE_ADVISORIES: Dict[str, Dict[str, Any]] = {}
+
+_DEDUPE_ADVISORY_TEXT: Dict[str, Dict[str, str]] = {
+    "hard_side_effect_without_ledger": {
+        "display_status": "硬副作用已拒绝（账本未接入）",
+        "message": (
+            "执行引擎没有接入幂等账本（journal），已拒绝执行硬副作用能力"
+            "（network_bus 外发检索/调外部接口、personal.write 写用户画像、"
+            "multi_tier_memory 写持久记忆、preview_start 启动外部可见服务、"
+            "execution_pipeline 消耗模型额度）。这些动作重放会产生第二次不可撤销"
+            "后果。解决方式：在装配执行引擎时注入 ExecutionJournal（构造参数 "
+            "journal= 或 set_journal()），或通过网关部署运行（网关默认已接入账本）；"
+            "只读与可安全重入能力不受影响。"
+        ),
+        "consequence": "硬副作用已被拒绝执行（fail-closed），没有产生副作用",
+    },
+    "ledger_missing_safe_replay": {
+        "display_status": "幂等账本未接入（安全能力已放行）",
+        "message": (
+            "执行引擎没有接入幂等账本（journal）：当前只读/可安全重入能力的重复"
+            "执行不会产生额外外部副作用，已放行；但硬副作用能力（外发、外部写、"
+            "写持久记忆、启动外部可见服务、消耗额度）会被拒绝执行。解决方式：注入 "
+            "ExecutionJournal，或通过网关部署运行（网关默认已接入账本）。"
+        ),
+        "consequence": "安全能力可重复执行；硬副作用能力会被拒绝，不会产生副作用",
+    },
+    "journal_write_failed": {
+        "display_status": "幂等账本不可写",
+        "message": (
+            "幂等账本写入失败（磁盘只读或权限不足）：不可重入动作已被拒绝执行，"
+            "避免重复副作用；请修复 journal 写入权限后重试。"
+        ),
+        "consequence": "不可重入动作已拒绝执行（fail-closed），没有重复副作用",
+    },
+}
+
+
+def _record_dedupe_advisory(code: str, capability_id: str = "") -> Dict[str, Any]:
+    """记录一条幂等去重告警；同一 code 只告警一次，occurrences 持续累加。"""
+    texts = _DEDUPE_ADVISORY_TEXT.get(code)
+    if texts is None:
+        return {}
+    now = utc_now().isoformat()
+    with _DEDUPE_ADVISORY_LOCK:
+        item = _DEDUPE_ADVISORIES.get(code)
+        first = item is None
+        if item is None:
+            item = {
+                "code": code,
+                "status": "degraded",
+                "advisory": True,
+                "blocks_readiness": False,
+                "display_name": "幂等去重",
+                "display_status": texts["display_status"],
+                "user_message": texts["message"],
+                "consequence": texts["consequence"],
+                "capability": capability_id,
+                "capabilities": [capability_id] if capability_id else [],
+                "occurrences": 1,
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+            _DEDUPE_ADVISORIES[code] = item
+        else:
+            item["occurrences"] = int(item.get("occurrences") or 0) + 1
+            item["last_seen_at"] = now
+            if capability_id and not item.get("capability"):
+                item["capability"] = capability_id
+            if capability_id:
+                caps = item.setdefault("capabilities", [])
+                if capability_id not in caps:
+                    caps.append(capability_id)
+    if first:
+        logger.warning(
+            "evt=idempotency_dedupe_unavailable code=%s capability=%s consequence=%s",
+            code,
+            capability_id or "-",
+            texts["consequence"],
+        )
+    return dict(_DEDUPE_ADVISORIES[code])
+
+
+@dataclass(frozen=True)
+class LedgerGateDecision:
+    """账本闸门判定结果（执行内核与 L-Core 直路由共用）。
+
+    ``ActionExecutor``（经 ``ExecutionEngine``）和 ``LCore.handle_intent``（直接
+    ``ToolRouter.execute``）都必须在**真正产生副作用之前**调用
+    :func:`evaluate_ledger_gate`，避免两条路径的判定分叉：一条拒绝、另一条放行。
+    """
+
+    allowed: bool
+    advisory_code: str = ""
+    status: str = ""
+    error: str = ""
+
+
+def _hard_side_effect_refusal_error(capability_id: str) -> str:
+    """账本缺席时拒绝硬副作用的中文原因（含解决办法，用户可直接照做）。"""
+    return (
+        "执行引擎没有接入幂等账本（journal），已拒绝执行硬副作用能力"
+        f"「{capability_id}」（外发/外部写/写持久记忆/启动外部可见服务/"
+        "消耗额度），避免重复产生不可撤销后果；解决方式：为执行引擎注入 "
+        "ExecutionJournal（构造参数 journal= 或 set_journal()），"
+        "或通过网关部署运行（网关默认已接入账本）；"
+        "只读与可安全重入能力不受影响"
+    )
+
+
+def evaluate_ledger_gate(
+    capability_id: str, *, journal_available: bool
+) -> LedgerGateDecision:
+    """执行前判定：没有账本时，硬副作用拒绝，其余放行并留 advisory。
+
+    判定依据只有两份显式清单：``HARD_SIDE_EFFECT_CAPABILITIES``（拒绝）与
+    ``REENTRANT_CAPABILITIES``（天然幂等，放行）；名单外能力默认按可安全重入，
+    因此这里只看「是否在硬副作用清单里」。
+
+    返回值只描述闸门决策，不构造 ``ActionResult``：执行内核与 L-Core 各自用
+    自己的结果类型承载 ``status`` / ``error``，判定逻辑保持单一来源。
+    """
+    if journal_available:
+        return LedgerGateDecision(allowed=True)
+    if capability_has_hard_side_effects(capability_id):
+        _record_dedupe_advisory("hard_side_effect_without_ledger", capability_id)
+        return LedgerGateDecision(
+            allowed=False,
+            advisory_code="hard_side_effect_without_ledger",
+            status="idempotency_ledger_missing",
+            error=_hard_side_effect_refusal_error(capability_id),
+        )
+    _record_dedupe_advisory("ledger_missing_safe_replay", capability_id)
+    return LedgerGateDecision(
+        allowed=True, advisory_code="ledger_missing_safe_replay"
+    )
+
+
+#: 占坑成功但结果没落账（崩溃/超时）时的用户可见文案。两处（执行内核与
+#: L-Core 直路由）必须一致：这描述的是「副作用可能已经发生」，不能当作失败
+#: 放行重试，也不能当作成功。
+IDEMPOTENCY_UNKNOWN_MESSAGE = (
+    "该动作已执行过但结果未落账（结果未知），已停止重复执行；"
+    "请人工确认后再决定是否重试"
+)
+
+
+def ledger_unavailable_error(capability_id: str) -> str:
+    """账本存在但写不进去时的中文原因（与「没有账本」区分成因）。"""
+    return (
+        "幂等账本不可写（磁盘只读或权限不足），已拒绝执行不可重入动作"
+        f"「{capability_id}」，避免重复副作用；请修复 journal 写入权限后重试"
+    )
+
+
+def replay_from_journal(
+    journal: ExecutionJournal, idem_key: str
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """读取已占坑动作的首次结果，返回 ``(输出, 是否结果未知)``。
+
+    调用方必须**先** ``claim_idempotency`` 且失败，才能调用本函数——否则会把
+    「从未执行」误读成「结果未知」。判定逻辑只有这一份：执行内核与 L-Core
+    直路由都从这里取，避免一条路径把「结果未知」当成功回放。
+    """
+    prior = journal.idempotent_result(idem_key)
+    if isinstance(prior, dict) and isinstance(prior.get("output"), dict):
+        return dict(prior["output"]), False
+    if prior is not None:
+        return {"result": prior}, False
+    return None, True
+
+
+def settle_idempotency(
+    journal: ExecutionJournal,
+    idem_key: Optional[str],
+    *,
+    ok: bool,
+    output: Any,
+    raw: Any,
+    timed_out: bool = False,
+) -> None:
+    """把副作用结果写进账本（或保留「结果未知」）。
+
+    规则与执行内核完全一致：
+    - 超时 → 不落结果也不释放（工具可能已经做完，保持占坑）；
+    - 成功 → 写入首次结果，后续重复投递直接回放；
+    - 工具**明确**说 ``success: False`` → 释放占坑，允许真重试；
+    - 其余（缺 success / 非结构化 / 抛异常）→ 保留占坑。
+    """
+    if journal is None or idem_key is None:
+        return
+    if timed_out:
+        return
+    if ok:
+        try:
+            payload = output if isinstance(output, dict) else {"result": output}
+            journal.remember_idempotent_result(idem_key, output=payload)
+        except Exception as exc:
+            # 写失败（磁盘只读/权限不足）时结果没有落账：占坑仍在，后续重复
+            # 投递会按"结果未知"回放而不会重跑，因此不重做副作用；但必须让人看见。
+            _record_dedupe_advisory("journal_write_failed")
+            logger.warning(
+                "evt=idempotency_remember_failed action_id=%s error=%s",
+                idem_key,
+                exc,
+            )
+        return
+    if isinstance(raw, dict) and raw.get("success") is False:
+        try:
+            journal.release_idempotency(idem_key)
+        except Exception as exc:
+            _record_dedupe_advisory("journal_write_failed")
+            logger.warning(
+                "evt=idempotency_release_failed action_id=%s error=%s",
+                idem_key,
+                exc,
+            )
+
+
+def dedupe_advisories() -> List[Dict[str, Any]]:
+    """幂等去重告警快照（供健康/就绪面展示；不改变执行语义）。"""
+    with _DEDUPE_ADVISORY_LOCK:
+        return [dict(item) for item in _DEDUPE_ADVISORIES.values()]
+
+
+def reset_dedupe_advisories() -> None:
+    """清空告警状态（仅测试/诊断使用）。"""
+    with _DEDUPE_ADVISORY_LOCK:
+        _DEDUPE_ADVISORIES.clear()
+
+
+#: Opt-in switch for the **simulated** capability path.
+#:
+#: Why it exists (the real defect fixed here)
+#: ----------------------------------------
+#: Previously, when no ``capability_executor`` was injected, :meth:`ActionExecutor.execute`
+#: fell through to ``_simulate_capability`` and returned ``status="simulated"`` while
+#: marking the action **success**. So the production path (gateway -> AgentRuntime ->
+#: ExecutionEngine) could report a goal as ``completed`` / ``SUCCESS`` without doing
+#: anything. Reporting success while doing nothing is *worse* than failing, so an
+#: unwired kernel must fail closed. The simulated path is retained for demo /
+#: benchmark / unit tests, but only when this env var is explicitly set, and the
+#: result still carries ``status="simulated"`` / ``simulated=True`` so it can never
+#: be mistaken for a real execution.
+SIMULATION_OPT_IN_ENV = "LIUHAO_ALLOW_SIMULATED_EXECUTION"
+
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def simulated_execution_enabled() -> bool:
+    """Whether the simulated capability path has been explicitly opted in.
+
+    Read from the environment on **every call** (not cached at import) so tests /
+    demos can flip it for the duration of a single run.
+    """
+    return (os.environ.get(SIMULATION_OPT_IN_ENV) or "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+class GoalCancelled(Exception):
+    """Raised when a running goal is aborted via its stop flag.
+
+    The AgentRuntime / gateway set a :class:`threading.Event` keyed by goal_id;
+    the execution loop checks it between tasks (and before each retry) and raises
+    this so the goal terminates cleanly as CANCELLED instead of running to
+    completion. This is a real, cooperative cancellation -- never a silent
+    success or a faked stop.
+    """
 
 
 class TaskStatus(str, Enum):
@@ -43,6 +529,24 @@ class TaskStatus(str, Enum):
     PLANNED = "planned"
     RUNNING = "running"
     COMPLETED = "completed"
+    #: The work ran and its side effects are real, but it was CLAIMED for an
+    #: agent that could not be resolved -- so it is deliberately NOT recorded as
+    #: an ordinary completed task. Added for ARM1: an ``assigned_agent`` that no
+    #: registered agent answers to must not be able to silently read as
+    #: "completed, performed by that agent". The bytes on disk are unchanged; the
+    #: attribution is what is refused.
+    #:
+    #: DECISION (A) -- this status means "the work is complete; only the
+    #: attribution could not be established". It must therefore be treated AS
+    #: COMPLETED everywhere the question is "did the work finish?":
+    #:   * the task stays in ``completed_tasks`` (so the goal still completes);
+    #:   * its artifacts are still collected and reported;
+    #:   * it is still counted as completed in summaries.
+    #: Rejecting a false attribution must never be allowed to escalate into
+    #: "real, finished work is reported as not done" -- that would be trading one
+    #: false report for another. The attribution failure is carried separately
+    #: (``result["agent_attribution"] == "unattributed"``) so it stays auditable.
+    COMPLETED_UNATTRIBUTED = "completed_unattributed"
     FAILED = "failed"
     SKIPPED = "skipped"
     RETRYING = "retrying"
@@ -58,12 +562,26 @@ class PlanStatus(str, Enum):
 
 
 class VerifyResult(str, Enum):
-    """Verification outcome."""
+    """Verification outcome.
+
+    ``UNVERIFIED`` is a first-class honesty state: it means "the action ran and
+    reported success, but nothing here PROVES it". It is deliberately NOT
+    ``SUCCESS``. Before this existed, a task with no verification criteria fell
+    into a "no criteria -> assume success" branch that returned
+    ``SUCCESS``/``1.0`` -- so an executor that simply claimed success without
+    producing any artifact was graded as a fully verified pass. Absence of
+    evidence was being reported as evidence of success.
+    """
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
     OFF_TRACK = "off_track"
     NEEDS_HUMAN = "needs_human"
+    #: Action reported success but no independent evidence could confirm it.
+    #: Score is 0.0 because nothing was proven; ``replan_required`` stays False
+    #: because retrying an unverifiable-but-not-failed task is not obviously
+    #: useful (and would risk a replan loop). It is UNPROVEN, not PROVEN.
+    UNVERIFIED = "unverified"
 
 
 @dataclass
@@ -96,6 +614,12 @@ class Task:
     retry_count: int = 0
     timeout_seconds: int = 300
     assigned_agent: Optional[str] = None
+    #: True when ``assigned_agent`` names an agent the caller EXPLICITLY injected
+    #: (a real claim about who performs this work), vs. a synthetic id the
+    #: decomposer derived when no pool was supplied. Only explicit claims are
+    #: fail-closed on: a dangling explicit id must not read as "that agent did
+    #: it", whereas a synthetic placeholder makes no such claim.
+    agent_claimed: bool = False
     result: Optional[Any] = None
     error: Optional[str] = None
     started_at: Optional[datetime] = None
@@ -143,6 +667,20 @@ class Action:
     correlation_id: str
     scope: str
     timeout_seconds: int
+    #: The agent this action is attributed to (ARM1). Optional with a default so
+    #: every existing construction site keeps working unchanged. When set and the
+    #: agent cannot be resolved to a real executor, the action still runs its
+    #: capability -- but the task is recorded as UNATTRIBUTED rather than as
+    #: work that agent performed.
+    assigned_agent: Optional[str] = None
+    #: Mirrors ``Task.agent_claimed``: True when ``assigned_agent`` is an
+    #: EXPLICIT claim about who performs the work (vs. a synthetic placeholder).
+    #: Defaults False so every existing Action construction site is unaffected.
+    agent_claimed: bool = False
+    #: 本次 action 所属的 execution id。幂等账本按 ``(execution_id, action_id)``
+    #: 记账，让「同一次执行的所有重试」命中同一条记录。默认 None 表示未接入账本
+    #: （旧构造点/无 journal 场景保持历史行为）。
+    execution_id: Optional[str] = None
 
 
 @dataclass
@@ -154,6 +692,13 @@ class ActionResult:
     error: Optional[str] = None
     duration_ms: int = 0
     retry_count: int = 0
+    #: True when the capability was cut off by ``timeout_seconds``. Timeouts are
+    #: NOT retried: retrying a hung tool multiplies the wall-clock cost.
+    timed_out: bool = False
+    #: True when this result was served from the idempotency ledger because the
+    #: same ``action_id`` already succeeded — the capability was NOT invoked
+    #: again. ``output["replayed_from"]`` carries the original action id.
+    replayed: bool = False
 
 
 @dataclass
@@ -179,25 +724,237 @@ class ExecutionContext:
     task_results: Dict[str, ActionResult] = field(default_factory=dict)
     verification_results: Dict[str, VerificationResult] = field(default_factory=dict)
     checkpoints: List[Dict[str, Any]] = field(default_factory=list)
+    # 本次执行的归属 id（= goal.id）。必须放在 ctx 里而不是引擎实例上：
+    # 两个目标并发跑时，实例字段会被后启动的目标覆盖，先启动的目标后续
+    # 事件就会写到别人的 execution_id 下（串号）。
+    execution_id: Optional[str] = None
+    #: 整条目标执行的墙钟预算（time.monotonic 截止点）；None = 未启用。
+    deadline_monotonic: Optional[float] = None
+    #: 跨所有任务累计的尝试次数上限，防止 8 任务 × 4 次重试无限放大。
+    attempts_used: int = 0
+    max_total_attempts: int = 16
+    #: 显式单任务重试：这些任务即使 journal 里只有 task_started 也允许再跑。
+    explicit_retry_names: Set[str] = field(default_factory=set)
+    budget_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
 
 class GoalDecomposer:
     """Decomposes natural language goals into structured tasks."""
 
-    def __init__(self):
+    # Explicit file-write phrasings the decomposer recognises. These are
+    # *shapes*, not understanding: the goal must state a filename and (optionally)
+    # the content, because downstream tools need tool-shaped inputs
+    # (``path`` / ``content``), not a prose sentence. Anything that does not match
+    # gets no file task at all -- inventing a path or content from prose would be
+    # exactly the "reports success without knowing what to do" failure mode this
+    # kernel must not have.
+    _FILE_WRITE_A = re.compile(
+        r"(?:create|write|save|make|generate)\s+(?:a\s+|an\s+)?(?:new\s+)?file\s+"
+        r"(?:named|called|at|as)?\s*"
+        r"(?P<path>[\w./\\-]+\.[A-Za-z0-9]+)"
+        r"(?:\s*(?:containing|that\s+contains|with\s+content|with)\s*"
+        r"(?:['\"](?P<quoted>.*?)['\"]|(?P<bare>.+)))?",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _FILE_WRITE_B = re.compile(
+        r"(?:write|save)\s+['\"](?P<content>.*?)['\"]\s+"
+        r"(?:to|into|in)\s+(?:the\s+)?(?:file\s+)?"
+        r"(?P<path>[\w./\\-]+\.[A-Za-z0-9]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def __init__(self, agent_ids: Optional[List[str]] = None):
         self.capability_registry = get_capability_registry()
+        # Real agent ids (from the persisted Employee) injected by the gateway so
+        # a goal's tasks are observably assigned to distinct real agents. When
+        # unset (e.g. unit tests / headless), we fall back to synthetic ids.
+        self.agent_ids = agent_ids
+
+    @classmethod
+    def _extract_file_write(cls, text: str) -> Optional[Dict[str, str]]:
+        """Return ``{"path": ..., "content": ...}`` for an explicit file-write
+        goal, else ``None`` (no file task is invented)."""
+        m = cls._FILE_WRITE_B.search(text)
+        if m:
+            return {"path": m.group("path"), "content": m.group("content")}
+        m = cls._FILE_WRITE_A.search(text)
+        if m:
+            content = m.group("quoted")
+            if content is None:
+                content = m.group("bare") or ""
+            return {"path": m.group("path"), "content": content}
+        return None
+
+    #: Multi-word keywords, kept as phrases so word-boundary matching applies to
+    #: the whole phrase rather than to each word independently.
+    _MULTIWORD_KEYWORDS = ("run code",)
+
+    #: An explicitly requested numeric/arithmetic computation, e.g.
+    #: "calculate the sum of 2 and 3" / "compute 2+3" / "求 2*3 的值".
+    #: Matched ONLY when the goal names a calculation AND carries an expression
+    #: built from digits and arithmetic operators. Anything vaguer produces no
+    #: compute task at all -- inventing an expression from prose would be the
+    #: "reports success without knowing what to do" failure mode, and
+    #: ``tools_local._resolve_code`` deliberately refuses to guess from prose
+    #: too. Both sides must agree on that contract, so both refuse.
+    _ARITH_EXPR = re.compile(
+        r"(?P<expr>[-+]?\d+(?:\.\d+)?(?:\s*[-+*/%]\s*[-+]?\d+(?:\.\d+)?)+"
+        r"|\(\s*[-+*/%\d.\s()]+\))"
+    )
+    #: "the sum of 2 and 3" / "sum 2 and 3" -- the most natural English phrasing
+    #: for an arithmetic request, and one the operator-expression regex alone
+    #: cannot see. Requires BOTH a number AND the word "and", so ordinary prose
+    #: containing two unrelated numbers is not turned into an expression.
+    _WORD_ARITH = re.compile(
+        r"(?:sum|total|product|difference|plus|minus|times|divided\s+by|"
+        r"divide|add(?:ition)?|multiply|subtract|averag\w+|"
+        r"求和|总和|差|积|商|加|乘|减|除|平均|"
+        r"加上|减去|乘以|除以)"
+        r"[^0-9\-+*/%]{0,24}?"
+        r"(?P<a>[-+]?\d+(?:\.\d+)?)"
+        r"[^0-9\-+*/%]{0,12}?"
+        r"(?:and|to|by|加|乘|减|除以|加上|减去|除)"
+        r"\s*"
+        r"(?P<b>[-+]?\d+(?:\.\d+)?)",
+        re.IGNORECASE,
+    )
+    # 中文关键词不能用 \b 包住：Python 的 \b 只在 \w 与非 \w 之间成立，
+    # 而中文字符本身就是 \w，"同时计算…" 里 "时/计" 之间没有边界，会导致
+    # 整句中文夹带的算式被漏掉（多任务场景就踩过：算出了空结果）。
+    _COMPUTE_REQUEST = re.compile(
+        r"(?:\b(?:calculat\w*|comput\w*|evaluat\w+|sum|total|difference|product|"
+        r"arithmetic|math\b|multiply|subtract|divide|averag\w+)\b|"
+        r"计算|求和|差|积|商|算|数学)",
+        re.IGNORECASE,
+    )
+    _CODE_DIRECTIVE = re.compile(
+        r"(?:python|code)\s*:\s*(?P<code>.+)", re.IGNORECASE | re.DOTALL
+    )
+
+    @classmethod
+    def _extract_compute(cls, text: str) -> Optional[Dict[str, Any]]:
+        """Return ``{"expression": ...}`` or ``{"code": ...}`` for a compute goal.
+
+        Two accepted shapes, in priority order:
+
+        1. an explicit ``python:`` / ``code:`` directive -- passed through as
+           ``code`` verbatim, exactly what ``tools_local._resolve_code`` wants;
+        2. a stated arithmetic request (``calculate`` / ``计算`` / ...) that
+           carries a well-formed numeric expression -- passed as ``expression``.
+
+        Returns ``None`` when neither shape is present, so a vague goal such as
+        "run some code" yields NO compute task rather than a fabricated one.
+        """
+        m = cls._CODE_DIRECTIVE.search(text)
+        if m:
+            return {"code": m.group("code").strip()}
+
+        if not cls._COMPUTE_REQUEST.search(text):
+            return None
+
+        # "sum of 2 and 3" -> the operator is in the WORDS, not the digits.
+        w = cls._WORD_ARITH.search(text)
+        if w:
+            verb = w.group(0).lower()
+            a, b = w.group("a"), w.group("b")
+            if any(k in verb for k in ("averag", "平均")):
+                # Average is (a+b)/2, NOT a sum. Getting this wrong would
+                # return a confidently WRONG number, which is worse than
+                # refusing -- so it is handled explicitly.
+                expr = f"(({a}+{b})/2)"
+            elif any(k in verb for k in ("difference", "minus", "subtract",
+                                         "减去", "差")):
+                expr = f"({a}-{b})"
+            elif any(k in verb for k in ("times", "multiply", "product",
+                                         "乘", "积")):
+                expr = f"({a}*{b})"
+            elif any(k in verb for k in ("divided", "divide", "除以", "商")):
+                expr = f"({a}/{b})"
+            else:
+                expr = f"({a}+{b})"
+            return {"expression": expr}
+
+        e = cls._ARITH_EXPR.search(text)
+        if not e:
+            return None
+        return {"expression": re.sub(r"\s+", "", e.group("expr"))}
+
+    @classmethod
+    def _mentions(cls, text: str, keywords: Iterable[str]) -> bool:
+        """True iff any keyword appears in ``text`` as a **whole word/phrase**.
+
+        Why this is not ``any(kw in text for kw in keywords)``:
+        substring matching cannot tell a keyword from a word that merely
+        contains it, so it invented work the user never asked for. Measured on
+        the real decomposer before this fix::
+
+            "write a file named replan.txt containing done"
+                -> ['Plan', 'WriteFile', 'WriteChecksum']
+            "write a file named airplane.txt containing x"
+                -> ['Plan', 'WriteFile', 'WriteChecksum']
+
+        ``replan``/``airplane`` contain the substring "plan", so a phantom
+        ``Plan`` task (``capability_id="execution_pipeline"``) was appended to a
+        pure file-write goal. Two things then went wrong at once:
+
+        1. **Intent drift** -- the plan executed a capability the user never
+           asked for. The goal was not what the user said it was.
+        2. **A false terminal state** -- no local tool serves
+           ``execution_pipeline``, so that phantom task always fails, the
+           context lands in ``PARTIAL`` with a failed task, and the runtime
+           reports ``AgentRunState.FAILED`` even though the file the user asked
+           for was written correctly. A goal that genuinely succeeded was
+           reported as a failure.
+
+        ASCII keywords are matched on word boundaries. CJK keywords have no word
+        boundaries, so they keep substring semantics (Chinese has no spaces);
+        multi-word ASCII keywords are matched as the whole phrase.
+        """
+        for kw in keywords:
+            if not kw:
+                continue
+            # CJK (and any other non-ASCII) keyword: substring is the best
+            # available test, since \b is defined against [a-zA-Z0-9_] only.
+            if any(ord(ch) > 0x7F for ch in kw):
+                if kw in text:
+                    return True
+                continue
+            pattern = "|".join(
+                re.escape(part)
+                for part in kw.split()
+            )
+            if re.search(rf"(?<![A-Za-z0-9_])(?:{pattern})(?![A-Za-z0-9_])", text):
+                return True
+        return False
 
     def decompose(self, goal: Goal) -> List[Task]:
         """Decompose goal into tasks using capability registry."""
         # This is a simplified decomposition - in production would use LLM
         tasks = []
 
-        # Analyze goal for keywords to determine required capabilities
+        # Analyze goal for keywords to determine required capabilities.
+        # Lower-cased for matching only; the original text is what tasks carry.
         goal_lower = goal.natural_language.lower()
+        # A file path in the goal is a literal ARGUMENT, not an instruction.
+        # "write a file named plan.txt" asks for a file, not for a plan, so the
+        # path is masked out before keyword matching -- otherwise the filename
+        # alone would conjure a Plan task the user never mentioned.
+        file_write_inputs = self._extract_file_write(goal.natural_language)
+        search_text = goal_lower
+        if file_write_inputs and file_write_inputs.get("path"):
+            search_text = goal_lower.replace(file_write_inputs["path"].lower(), " ")
+        mentions = lambda kws: self._mentions(search_text, kws)  # noqa: E731
 
         # Example decomposition patterns
-        if any(kw in goal_lower for kw in ["search", "find", "lookup", "query"]):
-            tasks.append(Task(
+        search_task: Optional[Task] = None
+        plan_task: Optional[Task] = None
+        if mentions((
+            "search", "find", "lookup", "query",
+            "查一下", "查询", "搜索", "搜一搜", "检索", "调研", "了解一下",
+        )):
+            search_task = Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
                 name="Search",
@@ -206,22 +963,46 @@ class GoalDecomposer:
                 capability_namespace="kernel",
                 inputs={"query": goal.natural_language},
                 scope=goal.scope,
-            ))
+            )
+            tasks.append(search_task)
 
-        if any(kw in goal_lower for kw in ["plan", "schedule", "organize"]):
-            tasks.append(Task(
+        if mentions((
+            "plan", "schedule", "organize",
+            "整理", "汇总", "总结", "归纳", "要点", "大纲", "梳理",
+        )):
+            plan_task = Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
                 name="Plan",
-                description="Create execution plan",
+                description="Organize upstream findings into the final deliverable",
                 capability_id="execution_pipeline",
                 capability_namespace="kernel",
                 inputs={"goal": goal.natural_language},
                 scope=goal.scope,
-            ))
+            )
+            # "Research, then organize" is a real data dependency: the
+            # organization step consumes the research output. Without it the
+            # two tasks would race and the conclusion would be ungrounded.
+            if search_task is not None:
+                plan_task.dependencies.append(search_task.id)
+            tasks.append(plan_task)
 
-        if any(kw in goal_lower for kw in ["remember", "store", "save", "memory"]):
-            tasks.append(Task(
+        # "save" is AMBIGUOUS: it is a FILE verb here (``_FILE_WRITE_A`` /
+        # ``_FILE_WRITE_B`` match "save a file named X") and a MEMORY verb
+        # ("save this to memory"). Treating it as a memory verb unconditionally
+        # meant every file-save goal silently grew a second task the user never
+        # asked for -- and memory was written with the raw sentence as content:
+        #     "save a file named report.txt containing 'hello'"
+        #         -> [Memory Store(content="save a file named report.txt ..."),
+        #             WriteFile, WriteChecksum]
+        # When the goal is recognised as a file write, "save" is spent on the
+        # file task; memory still fires on the UNAMBIGUOUS memory verbs
+        # (remember / store / memory), so "save x.txt and remember it" works.
+        memory_keywords = ("remember", "store", "memory")
+        if not (file_write_inputs and file_write_inputs.get("path")):
+            memory_keywords = memory_keywords + ("save",)
+        if mentions(memory_keywords):
+            memory_task = Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
                 name="Memory Store",
@@ -230,13 +1011,40 @@ class GoalDecomposer:
                 capability_namespace="kernel",
                 inputs={"content": goal.natural_language},
                 scope=goal.scope,
-            ))
+            )
+            # "store the result" stores what the previous steps produced, so it
+            # is a real downstream consumer. Making that dependency explicit also
+            # keeps crash-recovery semantics deterministic: Search -> Plan ->
+            # Memory is a chain, so a process killed during Plan has exactly the
+            # already-completed Search on disk.
+            if plan_task is not None:
+                memory_task.dependencies.append(plan_task.id)
+            elif search_task is not None:
+                memory_task.dependencies.append(search_task.id)
+            tasks.append(memory_task)
 
         # Local computation: route to the real RestrictedPython-backed tool.
-        if any(kw in goal_lower for kw in [
+        #
+        # The task's INPUTS are tool-shaped (`expression` / `code`) whenever the
+        # goal actually yields one. Previously the whole sentence was forwarded
+        # as `{"goal": ...}`, which matches none of the three shapes
+        # `tools_local._resolve_code` accepts, so EVERY compute-shaped goal
+        # failed with an honest "needs executable code" rejection and the
+        # capability was unreachable. Extracting the expression is what makes it
+        # real.
+        #
+        # When NO expression can be extracted, we still ROUTE the task -- the
+        # keyword contract is unchanged and narrowing it here would silently
+        # break goals that legitimately need a human/LLM to supply the code.
+        # Such a task keeps the previous `{"goal": ...}` shape and therefore
+        # still fails honestly at the tool, which is the correct outcome: better
+        # a visible, explained failure than a silent mis-route.
+        compute_inputs = self._extract_compute(goal.natural_language)
+        if compute_inputs is not None or mentions((
             "compute", "calculate", "calc", "transform", "run code", "python",
-            "evaluate", "执行代码", "数学", "计算", "求和", "算",
-        ]):
+            "evaluate", "sum", "total", "difference", "product",
+            "执行代码", "数学", "计算", "求和", "算", "差", "积", "商",
+        )):
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
@@ -244,7 +1052,24 @@ class GoalDecomposer:
                 description="Run a local computation",
                 capability_id="python_compute",
                 capability_namespace="kernel",
-                inputs={"goal": goal.natural_language},
+                inputs=compute_inputs or {"goal": goal.natural_language},
+                scope=goal.scope,
+            ))
+
+        # File write: route to the real, workspace-contained local tool.
+        # Inputs are TOOL-SHAPED (path/content), not the whole sentence -- the
+        # previous "pass the goal through as {"goal": ...}" shape is why a
+        # realistic goal could never actually execute.
+        # (``file_write_inputs`` was already extracted above, for path masking.)
+        if file_write_inputs is not None:
+            tasks.append(Task(
+                id=str(uuid.uuid4())[:8],
+                goal_id=goal.id,
+                name="WriteFile",
+                description="Write a file inside the workspace",
+                capability_id="file_write",
+                capability_namespace="kernel",
+                inputs=file_write_inputs,
                 scope=goal.scope,
             ))
 
@@ -261,6 +1086,38 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
+        # Multi-agent observability: for a real file-write goal, append a DERIVED
+        # integrity sidecar task so the goal is observably worked by >=2 distinct
+        # agents and a combined result (the file + its sha256 sidecar) is
+        # observable end to end. Both tasks are REAL file_write actions executed
+        # by the local tool path -- no LLM, no simulation. The sidecar depends on
+        # the primary write so it runs second (the plan honours the dependency).
+        fw_inputs = self._extract_file_write(goal.natural_language)
+        if fw_inputs is not None and tasks and tasks[-1].capability_id == "file_write":
+            try:
+                digest = hashlib.sha256(
+                    fw_inputs["content"].encode("utf-8")
+                ).hexdigest()
+            except Exception:
+                digest = ""
+            sidecar = Task(
+                id=str(uuid.uuid4())[:8],
+                goal_id=goal.id,
+                name="WriteChecksum",
+                description="Write an integrity sidecar (sha256) for the produced file",
+                capability_id="file_write",
+                capability_namespace="kernel",
+                inputs={"path": fw_inputs["path"] + ".sha256", "content": digest},
+                scope=goal.scope,
+            )
+            sidecar.dependencies.append(tasks[-1].id)
+            tasks.append(sidecar)
+
+        # Assign distinct agent ids so the goal is observably worked by multiple
+        # agents. Real ids (from the persisted Employee) are injected by the
+        # gateway; absent that we fall back to deterministic synthetic ids.
+        self._assign_agents(goal, tasks)
+
         # Emit event
         publish_event(
             type="goal_decomposed",
@@ -271,6 +1128,30 @@ class GoalDecomposer:
         )
 
         return tasks
+
+    def _assign_agents(self, goal: "Goal", tasks: List[Task]) -> None:
+        """Assign distinct agent ids to every task in the plan.
+
+        Uses the injected real agent pool when present, otherwise deterministic
+        synthetic ids derived from the goal id. Never overwrites an agent id a
+        caller already set.
+        """
+        if not tasks:
+            return
+        # ARM1: only an EXPLICITLY injected pool is a claim about who performs
+        # the work. The synthetic fallback is a placeholder and makes no claim,
+        # so it is not fail-closed -- otherwise every unpooled run would be
+        # flagged, which would say nothing true about agent causality.
+        if self.agent_ids:
+            for i, t in enumerate(tasks):
+                if t.assigned_agent is None:
+                    t.assigned_agent = self.agent_ids[i % len(self.agent_ids)]
+                    t.agent_claimed = True
+        else:
+            for i, t in enumerate(tasks):
+                if t.assigned_agent is None:
+                    t.assigned_agent = "%s-a%d" % (goal.id, i)
+                    t.agent_claimed = False
 
 
 class PlanBuilder:
@@ -324,14 +1205,55 @@ class PlanBuilder:
 class ActionExecutor:
     """Executes actions via capability registry."""
 
-    def __init__(self, capability_executor: Optional[CapabilityExecutor] = None) -> None:
+    def __init__(
+        self,
+        capability_executor: Optional[CapabilityExecutor] = None,
+        journal: Optional[ExecutionJournal] = None,
+    ) -> None:
         self.capability_registry = get_capability_registry()
         self.event_bus = get_event_bus()
         self._capability_executor = capability_executor
+        #: 幂等账本（与执行 journal 同一个 SQLite 文件）。None 时不做任何去重，
+        #: 与不注入 journal 的历史行为完全一致。
+        self._journal: Optional[ExecutionJournal] = journal
+        # ARM1: optional resolver mapping an assigned_agent id -> a callable that
+        # performs the capability FOR that agent. When absent (the default), agent
+        # attribution cannot be substantiated, so an action carrying an
+        # assigned_agent is reported as UNATTRIBUTED rather than silently
+        # credited to the named agent. Injecting a resolver is what makes
+        # "assigned to agent X" a causal claim rather than a label.
+        self._agent_resolver: Optional[Callable[[str], Optional[Callable[..., Any]]]] = None
 
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
         """Inject (or clear) the real capability executor after construction."""
         self._capability_executor = capability_executor
+
+    def set_journal(self, journal: Optional[ExecutionJournal]) -> None:
+        """Attach (or detach) the idempotency ledger used for non-reentrant tools."""
+        self._journal = journal
+
+    def set_agent_resolver(
+        self,
+        resolver: Optional[Callable[[str], Optional[Callable[..., Any]]]],
+    ) -> None:
+        """Inject a resolver that maps an agent id to that agent's own executor.
+
+        ``resolver(agent_id)`` returns a callable ``(capability_id, inputs) ->
+        output`` that genuinely performs the work for that agent, or ``None`` if
+        the agent is unknown. Returning ``None`` is what makes a dangling agent
+        reference fail loudly instead of silently succeeding.
+        """
+        self._agent_resolver = resolver
+
+    def resolve_agent_executor(self, agent_id: str) -> Optional[Callable[..., Any]]:
+        """Return the agent-specific executor, or None when unresolvable."""
+        if self._agent_resolver is None or not agent_id:
+            return None
+        try:
+            return self._agent_resolver(agent_id)
+        except Exception:
+            # A resolver that blows up must not be read as "agent exists".
+            return None
 
     @property
     def has_capability_executor(self) -> bool:
@@ -367,20 +1289,112 @@ class ActionExecutor:
         # explicit ``success: False``. We honour that explicit verdict instead
         # of masking it — a rejected/failed capability must never surface as a
         # successful action (the Verifier keys off ``ActionResult.success``).
-        # Legacy executors that return a dict *without* a ``success`` key keep
-        # the previous behaviour (assumed successful), preserving backward
-        # compatibility.
+        # A dict *without* a ``success`` key is NOT assumed successful: if an
+        # executor cannot state success, the action is recorded as unconfirmed
+        # and treated as failed (fail-closed).
         try:
-            if self._capability_executor is not None:
-                raw = self._capability_executor(action.capability_id, action.inputs)
-                if isinstance(raw, dict):
+            simulated = False
+            timed_out = False
+            # ARM1: when the action is attributed to an agent, the agent's own
+            # executor performs the capability -- this is what makes the pool
+            # causal instead of decorative. An unresolvable agent does NOT block
+            # the work (the gate forbids "passing" by refusing to execute at all),
+            # but it must not be recorded as agent-performed either: we fall back
+            # to the shared executor and flag the result as unattributed so the
+            # task is not silently credited to an agent that does not exist.
+            agent_executor = (
+                self.resolve_agent_executor(action.assigned_agent)
+                if action.assigned_agent and action.agent_claimed
+                else None
+            )
+            # Only an EXPLICIT claim that cannot be substantiated is fail-closed.
+            # A synthetic placeholder (agent_claimed=False) makes no claim, so it
+            # is not flagged -- flagging it would be noise, not honesty.
+            agent_unattributed = (
+                bool(action.assigned_agent)
+                and bool(action.agent_claimed)
+                and agent_executor is None
+            )
+
+            executor = agent_executor if agent_executor is not None else self._capability_executor
+
+            if executor is not None:
+                # ACTION-01 后续：账本缺席时分档处理。
+                # 硬副作用能力（外发/外部写/写持久记忆/启动外部可见服务/消耗额度）
+                # 重放无法撤销，必须在执行前拒绝；只读与可安全重入能力照常放行，
+                # 但留一条健康/就绪面可见的告警（不阻断）。
+                # 判定抽到 ``evaluate_ledger_gate``：``LCore.handle_intent`` 也走
+                # 同一个函数，避免一条路径拒绝、另一条路径放行。
+                gate = evaluate_ledger_gate(
+                    action.capability_id,
+                    journal_available=self._journal is not None,
+                )
+                if not gate.allowed:
+                    return self._ledger_missing_refusal(action, start_time, gate)
+                # ACTION-01: 不可重入工具的稳定幂等键在此生效。先原子占坑再执行，
+                # 重试/重启命中同一 action id 时直接返回首次结果，绝不再执行一次。
+                idem_key = self._action_idempotency_key(action)
+                if idem_key is not None and self._journal is not None:
+                    try:
+                        claimed = self._journal.claim_idempotency(
+                            idem_key, action.execution_id or "", task_name=None
+                        )
+                    except Exception as exc:
+                        # 账本存在但写不进去（磁盘只读/权限不足）：无法证明
+                        # "只执行一次"，不可重入动作一律 fail-closed 拒绝执行。
+                        return self._ledger_unavailable_result(action, exc, start_time)
+                    if not claimed:
+                        return self._replay_action(action, idem_key, start_time)
+                # Real timeout enforcement: ``timeout_seconds`` used to be
+                # metadata only, so a hung tool kept the whole goal hostage and
+                # retries multiplied the wait. The worker cannot be killed in
+                # Python, but the caller gets a verdict at the deadline and this
+                # attempt is never retried (see ``ActionResult.timed_out``).
+                timeout_seconds = max(1, int(action.timeout_seconds or 300))
+                pool = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="action-timeout"
+                )
+                try:
+                    future = pool.submit(
+                        invoke_capability_executor,
+                        executor,
+                        action.capability_id,
+                        action.inputs,
+                        action.id,
+                    )
+                    try:
+                        raw = future.result(timeout=timeout_seconds)
+                    except FuturesTimeout:
+                        raw = None
+                        timed_out = True
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
+
+                if timed_out:
+                    output = {
+                        "capability": action.capability_id,
+                        "status": "timeout",
+                        "timeout_seconds": timeout_seconds,
+                        "executed": False,
+                    }
+                    ok = False
+                    error = f"执行超时（{timeout_seconds} 秒），已中止本次尝试"
+                elif isinstance(raw, dict):
                     output = dict(raw)
                     output.setdefault("capability", action.capability_id)
+                    if agent_unattributed:
+                        output["agent_attribution"] = "unattributed"
+                        output["unattributed_agent"] = action.assigned_agent
                     explicit = raw.get("success", None)
                     if explicit is None:
-                        output["status"] = "executed"
-                        ok = True
-                        error = None
+                        # FAIL CLOSED: 没有 success 就无法证明成功，不得默认成功。
+                        output["status"] = "unconfirmed"
+                        output["executed"] = False
+                        ok = False
+                        error = (
+                            "执行器返回结果缺少 success 字段，无法确认执行成功"
+                            "（按失败处理）"
+                        )
                     else:
                         ok = bool(explicit)
                         output.setdefault("status", "executed" if ok else "failed")
@@ -390,15 +1404,48 @@ class ActionExecutor:
                 else:
                     output = {
                         "capability": action.capability_id,
-                        "status": "executed",
+                        "status": "unconfirmed",
+                        "executed": False,
                         "result": raw,
                     }
-                    ok = True
-                    error = None
-            else:
+                    ok = False
+                    error = "执行器返回了非结构化结果，无法确认执行成功（按失败处理）"
+
+                # 账本结清：成功 -> 立刻把首次结果落盘（崩溃后重试可直接复用）；
+                # 明确失败 -> 释放占坑（工具明确说没做成）；超时/缺 success /
+                # 异常抛出 -> 结果未知，保留占坑，绝不再执行一次。
+                self._settle_idempotency(
+                    idem_key,
+                    ok=bool(ok),
+                    output=output,
+                    raw=raw,
+                    timed_out=timed_out,
+                )
+            elif simulated_execution_enabled():
                 output = self._simulate_capability(action.capability_id, action.inputs)
+                simulated = True
                 ok = True
                 error = None
+            else:
+                # FAIL CLOSED -- an unwired kernel did not execute anything and
+                # must not be allowed to say otherwise.
+                output = {
+                    "capability": action.capability_id,
+                    "status": "unwired",
+                    "executed": False,
+                    "inputs_received": list(action.inputs.keys()),
+                    "timestamp": utc_now().isoformat(),
+                }
+                simulated = False
+                ok = False
+                error = (
+                    "no capability executor wired: the Execution Kernel cannot "
+                    f"execute capability '{action.capability_id}'. Inject a real "
+                    "capability_executor at assembly time to execute for real, or "
+                    f"set {SIMULATION_OPT_IN_ENV}=1 to request the simulated path "
+                    "explicitly (demo/test only -- a simulated result is NOT a real "
+                    "execution)."
+                )
 
             duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
@@ -407,7 +1454,7 @@ class ActionExecutor:
                 publish_event(
                     type="action_completed",
                     source="execution_kernel",
-                    data={"action_id": action.id, "task_id": action.task_id, "success": True},
+                    data={"action_id": action.id, "task_id": action.task_id, "success": True, "simulated": simulated},
                     correlation_id=action.correlation_id,
                     scope=EventScope(action.scope),
                 )
@@ -427,15 +1474,24 @@ class ActionExecutor:
                 output=output,
                 error=error,
                 duration_ms=duration_ms,
+                timed_out=timed_out,
             )
 
         except Exception as e:
             duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+            # 原文（含 traceback）只进日志；任务结果只给人话。
+            logger.exception(
+                "evt=capability_executor_crashed capability=%s action_id=%s",
+                action.capability_id,
+                action.id,
+            )
+            human_error = humanize_executor_error(e)
 
             publish_event(
                 type="action_failed",
                 source="execution_kernel",
-                data={"action_id": action.id, "task_id": action.task_id, "error": str(e)},
+                data={"action_id": action.id, "task_id": action.task_id,
+                      "error": human_error},
                 correlation_id=action.correlation_id,
                 scope=EventScope(action.scope),
                 priority=EventPriority.HIGH,
@@ -444,19 +1500,249 @@ class ActionExecutor:
             return ActionResult(
                 action_id=action.id,
                 success=False,
-                error=str(e),
+                error=human_error,
                 duration_ms=duration_ms,
             )
 
+    def _action_idempotency_key(self, action: Action) -> Optional[str]:
+        """The key that dedupes side effects, or ``None`` when dedupe does not apply.
+
+        Only non-reentrant capabilities are deduped. ``file_write`` / pure
+        computation / read-only tools are naturally idempotent, so forcing them
+        through the ledger would turn a harmless retry into a false "replay".
+        """
+        if self._journal is None:
+            return None
+        if not action.execution_id or not action.id:
+            return None
+        if capability_is_reentrant(action.capability_id):
+            return None
+        return action.id
+
+    def _ledger_missing_refusal(
+        self,
+        action: Action,
+        start_time: datetime,
+        decision: LedgerGateDecision,
+    ) -> ActionResult:
+        """账本未装配：拒绝执行硬副作用动作，并给出中文可读的解决办法。
+
+        与 ``_ledger_unavailable_result`` 的区别是成因：这里根本没有账本
+        （未注入），那里是账本存在但写不进去。两种都 fail-closed，因为都无法
+        证明「这次只会执行一次」。
+
+        文案与判定由 :func:`evaluate_ledger_gate` 统一提供（advisory 已在闸门里
+        记录），这里只负责记录事件并转换成 ``ActionResult``。
+        """
+        logger.warning(
+            "evt=idempotency_hard_side_effect_refused capability=%s action_id=%s",
+            action.capability_id,
+            action.id,
+        )
+        duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+        error = decision.error
+        publish_event(
+            type="action_failed",
+            source="execution_kernel",
+            data={
+                "action_id": action.id,
+                "task_id": action.task_id,
+                "capability_id": action.capability_id,
+                "status": decision.status,
+                "error": error,
+            },
+            correlation_id=action.correlation_id,
+            scope=EventScope(action.scope),
+            priority=EventPriority.HIGH,
+        )
+        return ActionResult(
+            action_id=action.id,
+            success=False,
+            output={
+                "success": False,
+                "status": decision.status,
+                "executed": False,
+                "capability": action.capability_id,
+            },
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    def _ledger_unavailable_result(
+        self, action: Action, exc: Exception, start_time: datetime
+    ) -> ActionResult:
+        """账本存在但写不进去：拒绝执行不可重入动作，并给出中文可读原因。
+
+        技术异常只写日志；返回给用户的是"发生了什么 + 为什么拒绝 + 怎么修"。
+        """
+        _record_dedupe_advisory("journal_write_failed", action.capability_id)
+        logger.warning(
+            "evt=idempotency_ledger_write_failed capability=%s action_id=%s error=%s",
+            action.capability_id,
+            action.id,
+            exc,
+        )
+        duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+        error = ledger_unavailable_error(action.capability_id)
+        publish_event(
+            type="action_failed",
+            source="execution_kernel",
+            data={
+                "action_id": action.id,
+                "task_id": action.task_id,
+                "capability": action.capability_id,
+                "status": "idempotency_ledger_unavailable",
+            },
+            correlation_id=action.correlation_id,
+            scope=EventScope(action.scope),
+            priority=EventPriority.HIGH,
+        )
+        return ActionResult(
+            action_id=action.id,
+            success=False,
+            output={
+                "success": False,
+                "status": "idempotency_ledger_unavailable",
+                "executed": False,
+                "capability": action.capability_id,
+            },
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    def _replay_action(
+        self, action: Action, idem_key: str, start_time: datetime
+    ) -> ActionResult:
+        """Serve a previously settled side effect instead of running it again."""
+        output, unknown = replay_from_journal(self._journal, idem_key)
+        duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
+        if unknown:
+            # Claimed but the result never landed (crash between the side effect
+            # and the ledger write): the effect may already exist, so re-running
+            # is forbidden. This is "结果未知", not a success and not a clean fail.
+            publish_event(
+                type="action_replayed_unknown",
+                source="execution_kernel",
+                data={"action_id": action.id, "task_id": action.task_id},
+                correlation_id=action.correlation_id,
+                scope=EventScope(action.scope),
+                priority=EventPriority.HIGH,
+            )
+            return ActionResult(
+                action_id=action.id,
+                success=False,
+                output={
+                    "success": False,
+                    "status": "replayed_unknown",
+                    "replayed_from": action.id,
+                    "capability": action.capability_id,
+                },
+                error=IDEMPOTENCY_UNKNOWN_MESSAGE,
+                duration_ms=duration_ms,
+                replayed=True,
+            )
+        output["replayed_from"] = action.id
+        output.setdefault("success", True)
+        output["replayed"] = True
+        publish_event(
+            type="action_replayed",
+            source="execution_kernel",
+            data={"action_id": action.id, "task_id": action.task_id},
+            correlation_id=action.correlation_id,
+            scope=EventScope(action.scope),
+        )
+        return ActionResult(
+            action_id=action.id,
+            success=bool(output.get("success", True)),
+            output=output,
+            duration_ms=duration_ms,
+            replayed=True,
+        )
+
+    def _settle_idempotency(
+        self,
+        idem_key: Optional[str],
+        *,
+        ok: bool,
+        output: Any,
+        raw: Any,
+        timed_out: bool,
+    ) -> None:
+        """Write the side-effect outcome into the ledger (or keep it unknown).
+
+        结清规则本身抽到 :func:`settle_idempotency`，与 ``LCore.handle_intent``
+        共用：只读/可重入路径不走账本，但一旦走了，两条路径的「成功落账 /
+        明确失败释放 / 超时保留占坑」必须完全一致。
+        """
+        settle_idempotency(
+            self._journal,
+            idem_key,
+            ok=ok,
+            output=output,
+            raw=raw,
+            timed_out=timed_out,
+        )
+
     def _simulate_capability(self, capability_id: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Simulate capability execution (replace with real invocation)."""
-        # This would call the actual capability implementation
+        """Simulate capability execution -- **never** a real side effect.
+
+        Only reachable when the caller explicitly opted in via
+        ``LIUHAO_ALLOW_SIMULATED_EXECUTION=1`` (see :meth:`execute`). The output
+        is labelled ``status="simulated"`` *and* ``simulated=True`` so that no
+        consumer can mistake it for a real execution.
+        """
         return {
             "capability": capability_id,
             "status": "simulated",
+            "simulated": True,
+            "executed": False,
             "inputs_received": list(inputs.keys()),
             "timestamp": utc_now().isoformat(),
         }
+
+
+#: Output-dict keys whose string value names a file the capability wrote.
+#: Kept identical to ``Verifier._FILE_WRITE_KEYS`` on purpose: "what counts as a
+#: claimed artifact" must not have two different answers in one kernel.
+_FILE_WRITE_KEYS = ("written", "path", "file")
+
+
+def artifact_path_from_output(output: Any) -> Optional[str]:
+    """Best-effort extraction of the file a capability claims to have written.
+
+    Returns ``None`` when the output declares no artifact -- which is a
+    *statement about the contract*, not proof that nothing was produced. Used by
+    Defect-E journal verification: only a task that DECLARES an artifact can have
+    that artifact checked later.
+    """
+    if not isinstance(output, dict):
+        return None
+    for key in _FILE_WRITE_KEYS:
+        value = output.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def artifact_currently_exists(path: Optional[str]) -> Optional[bool]:
+    """Prove a declared artifact still exists, or report that it cannot be proven.
+
+    Returns:
+      * ``True``  -- the file exists and is non-empty (proof it is still there).
+      * ``False`` -- the file is absent or empty (proof the side effect is GONE).
+      * ``None``  -- no artifact was declared, so there is nothing to prove.
+
+    ``None`` is deliberately NOT ``True``: "cannot be checked" must never be
+    silently upgraded to "verified". Callers decide what an unprovable claim
+    means; they cannot mistake it for evidence.
+    """
+    if not path:
+        return None
+    try:
+        return os.path.exists(path) and os.path.getsize(path) > 0
+    except OSError:
+        # A path we cannot even stat is not a path we can vouch for.
+        return False
 
 
 class Verifier:
@@ -505,21 +1791,56 @@ class Verifier:
                 replan_required=True,
             )
 
+        # Independent file-side-effect verification (additive).
+        # A capability that merely *claims* success (e.g. returns
+        # {"written": path}) must not self-prove verification. When the
+        # outcome looks like a file write, re-read the disk to confirm the
+        # artifact actually exists (and, optionally, matches expected content).
+        file_failure = self._verify_file_side_effect(task, action_result, expected)
+        if file_failure is not None:
+            return file_failure
+
         if not expected:
-            # No criteria - assume success if action succeeded
+            # HONESTY FIX (was: "No criteria - assume success if action
+            # succeeded" -> SUCCESS/1.0).
+            #
+            # The defect: with no criteria there is nothing to check the output
+            # against, so this branch could only ever return SUCCESS/1.0. An
+            # executor that merely *claimed* success -- returning
+            # {"success": True} and writing nothing -- therefore received a
+            # fully-verified pass. "Nothing was proven" was reported as
+            # "everything was proven".
+            #
+            # The fix: absence of criteria is NOT evidence of success. Report
+            # UNVERIFIED (score 0.0) so the gap is visible and cannot be read
+            # as a verified pass. We deliberately do NOT invent criteria here and
+            # we do NOT fail the task -- the action may well have succeeded; it
+            # simply is not provable from what this kernel can observe. Callers
+            # that need a hard guarantee must supply expected_outputs.
             return VerificationResult(
                 task_id=task.id,
-                result=VerifyResult.SUCCESS,
-                score=1.0,
-                feedback="Action completed successfully (no verification criteria)",
+                result=VerifyResult.UNVERIFIED,
+                score=0.0,
+                feedback=(
+                    "action reported success but NO verification criteria were "
+                    "defined, so its outcome cannot be independently confirmed; "
+                    "reported as UNVERIFIED rather than a verified success"
+                ),
+                replan_required=False,
             )
 
-        # Simple matching
+        # Simple matching. The "content" key (when present) is consumed by the
+        # independent file-side-effect check above and is not a dict-match
+        # criterion, so exclude it from the remaining criteria set to avoid a
+        # spurious "missing" detail against the action output.
+        match_expected = dict(expected)
+        match_expected.pop("content", None)
+
         matches = 0
-        total = len(expected)
+        total = len(match_expected)
         details = {}
 
-        for key, expected_value in expected.items():
+        for key, expected_value in match_expected.items():
             if key in actual:
                 actual_value = actual[key]
                 if self._values_match(expected_value, actual_value):
@@ -568,6 +1889,100 @@ class Verifier:
             pass
         return False
 
+    # Keys whose string value is treated as a filesystem path for a file write.
+    _FILE_WRITE_KEYS = ("written", "path", "file")
+
+    def _verify_file_side_effect(
+        self,
+        task: "Task",
+        action_result: "ActionResult",
+        expected: Dict[str, Any],
+    ) -> Optional["VerificationResult"]:
+        """Independently confirm a claimed file write actually hit the disk.
+
+        This is the anti-self-proving check: verification must not trust the
+        executor's returned ``output`` dict. When the outcome looks like a file
+        write (a path under a write-key in the output or in the expected
+        criteria), we re-read the disk.
+
+        Returns:
+          * ``None`` if no file-write outcome is detected (so the normal
+            dict-matching in :meth:`verify` proceeds unchanged), or if the
+            artifact exists and any requested content check passes.
+          * a FAILED ``VerificationResult`` (``replan_required=True``) when the
+            claimed artifact is missing or its content does not match.
+        """
+        output = action_result.output
+
+        # 1) Detect a claimed path: prefer a write-key in the action output.
+        claimed_path: Optional[str] = None
+        if isinstance(output, dict):
+            for key in self._FILE_WRITE_KEYS:
+                value = output.get(key)
+                if isinstance(value, str) and value:
+                    claimed_path = value
+                    break
+
+        # 2) Fall back to a path under a write-key in the expected criteria
+        #    (e.g. task.expected_outputs carrying the intended artifact path).
+        if claimed_path is None:
+            for key in self._FILE_WRITE_KEYS:
+                value = expected.get(key)
+                if isinstance(value, str) and value:
+                    claimed_path = value
+                    break
+
+        if claimed_path is None:
+            return None
+
+        # 3) Independent disk check. The capability claimed to write a file;
+        #    prove it. A missing artifact means success was self-proclaimed.
+        if not os.path.exists(claimed_path):
+            return VerificationResult(
+                task_id=task.id,
+                result=VerifyResult.FAILED,
+                score=0.0,
+                feedback=(
+                    f"file not present on disk: action claimed success "
+                    f"but no artifact at {claimed_path}"
+                ),
+                replan_required=True,
+            )
+
+        # 4) Optional content verification. ``content`` is the file's expected
+        #    contents (not an output-dict key), provided via criteria.
+        expected_content = expected.get("content")
+        if expected_content is not None:
+            try:
+                with open(claimed_path, "r", encoding="utf-8") as f:
+                    actual_content = f.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                return VerificationResult(
+                    task_id=task.id,
+                    result=VerifyResult.FAILED,
+                    score=0.0,
+                    feedback=(
+                        f"could not read back written file {claimed_path}: {exc}"
+                    ),
+                    replan_required=True,
+                )
+            if actual_content != expected_content:
+                return VerificationResult(
+                    task_id=task.id,
+                    result=VerifyResult.FAILED,
+                    score=0.0,
+                    feedback=(
+                        f"content mismatch for {claimed_path}: "
+                        f"expected {len(str(expected_content))} chars, "
+                        f"got {len(actual_content)} chars"
+                    ),
+                    replan_required=True,
+                )
+
+        # Artifact exists (and content matches, if requested). Let normal
+        # dict-matching proceed for any remaining non-file criteria.
+        return None
+
 
 class ExecutionEngine:
     """Main execution engine orchestrating the full pipeline."""
@@ -578,17 +1993,27 @@ class ExecutionEngine:
         scope: str = "L1",
         capability_executor: Optional[CapabilityExecutor] = None,
         journal: Optional[ExecutionJournal] = None,
+        artifact_index: Any = None,
     ) -> None:
         self.scope = scope
         self.decomposer = GoalDecomposer()
         self.planner = PlanBuilder()
-        self.executor = ActionExecutor(capability_executor=capability_executor)
+        self.executor = ActionExecutor(
+            capability_executor=capability_executor, journal=journal
+        )
         self.verifier = Verifier()
         self.context_kernel = create_context_kernel(scope=scope)
         # journal=None 时行为与历史完全逐字节一致（不注入即不生效），
         # 与 capability_executor 那条接缝同一哲学 —— 见 Round 83。
         self.journal: Optional[ExecutionJournal] = journal
+        # 产物索引同样是可选旁路：None 时不做任何事，不改变执行语义。
+        # 类型刻意留 Any —— 内核层不得反向依赖 ai/gateway 层（见上方分层注释）。
+        self.artifact_index: Any = artifact_index
         self._execution_id: Optional[str] = None
+        # Progress callbacks are called from parallel worker threads; serialising
+        # them keeps a gateway observer from racing on its own snapshot list while
+        # still letting the tasks themselves run concurrently.
+        self._progress_lock = threading.Lock()
 
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
         """Inject (or clear) the real capability executor used by the pipeline."""
@@ -597,101 +2022,213 @@ class ExecutionEngine:
     def set_journal(self, journal: Optional[ExecutionJournal]) -> None:
         """Attach (or detach) the durable journal that enables crash recovery."""
         self.journal = journal
+        # 幂等账本与 journal 是同一个 SQLite 文件，必须同步切换。
+        self.executor.set_journal(journal)
 
     def execute_goal(
         self,
         goal: Goal,
         plan_mode: str = "auto",
-        verification_criteria: Optional[Dict[str, Any]] = None
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        pinned_agent: Optional[str] = None,
+        only_task_name: Optional[str] = None,
+        only_task_names: Optional[Sequence[str]] = None,
+        pinned_tasks: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> ExecutionContext:
-        """Execute a goal through the full pipeline."""
+        """Execute a goal through the full pipeline.
+
+        ``pinned_tasks`` 用于崩溃后的单任务重试：重启后拆解器可能给出与
+        原计划不同的任务名，按名重试会找不到目标。调用方传入**原计划快照**
+        时，这里原样重建任务（保留 id/依赖/inputs），不再重新拆解。
+
+        ``only_task_names`` 是重试范围：目标任务 + 因中断而从未执行的
+        下游任务（它们的依赖刚被补跑）。范围内的任务会执行，其余排队任务
+        一律 SKIPPED —— 绝不顺带重跑已完成任务。
+        """
         ctx = ExecutionContext(goal=goal, plan=None, context_kernel=self.context_kernel)
-
-        # Step 1: Decompose
-        publish_event(
-            type="execution_started",
-            source="execution_kernel",
-            data={"goal_id": goal.id, "goal": goal.natural_language},
-            correlation_id=goal.correlation_id,
-            scope=EventScope(goal.scope),
-        )
-
-        tasks = self.decomposer.decompose(goal)
-
-        # Step 2: Plan
-        plan = self.planner.build(goal, tasks, mode=plan_mode)
-        ctx.plan = plan
-        plan.status = PlanStatus.ACTIVE
-        plan.started_at = utc_now()
-
-        # Step 2.5: Adopt durable progress (crash recovery)
-        # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
-        # 才能对上上一次执行留下来的那串事件。
-        resumed_count = 0
-        if self.journal is not None:
-            self._execution_id = goal.id
-            self.journal.record(
-                self._execution_id,
-                "execution_started",
-                goal=goal.natural_language,
-                plan_id=plan.id,
-                task_count=len(plan.tasks),
+        # Audit traceability: thread the goal's correlation id into every
+        # kernel-action audit event so the hash-chain audit can tie each action
+        # back to the goal that ran it (goal -> action link). Backward compatible:
+        # a direct action outside any goal still gets a per-action random id.
+        with kernel_action_correlation_id(goal.correlation_id):
+            # Step 1: Decompose
+            publish_event(
+                type="execution_started",
+                source="execution_kernel",
+                data={"goal_id": goal.id, "goal": goal.natural_language},
+                correlation_id=goal.correlation_id,
+                scope=EventScope(goal.scope),
             )
-            resumed_count = self._adopt_journaled_progress(ctx)
-            if resumed_count:
-                publish_event(
-                    type="execution_resumed",
-                    source="execution_kernel",
-                    data={
-                        "goal_id": goal.id,
-                        "resumed_tasks": resumed_count,
-                        "total_tasks": len(plan.tasks),
-                    },
-                    correlation_id=goal.correlation_id,
-                    scope=EventScope(goal.scope),
+
+            # A single-task retry needs the *same* task names as the original
+            # plan (the gateway retries by name). The hint is proxied to the
+            # innermost decomposer so an LLM planner can defer to the deterministic
+            # one when it has no cached plan for this goal.
+            if pinned_tasks:
+                tasks = self._tasks_from_pinned_specs(goal, pinned_tasks)
+            else:
+                if only_task_name:
+                    try:
+                        self.decomposer.only_task_name = only_task_name  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001 - hint is best-effort
+                        logger.debug("decomposer does not accept only_task_name hint")
+                try:
+                    tasks = self.decomposer.decompose(goal)
+                finally:
+                    if only_task_name:
+                        try:
+                            self.decomposer.only_task_name = None  # type: ignore[attr-defined]
+                        except Exception:  # noqa: BLE001
+                            pass
+
+            # Never let an empty plan masquerade as an executed goal. This is the
+            # last line of defence: every decomposer path is expected to produce
+            # at least one task, but a silent "0 tasks / success" must be
+            # impossible even if one does not.
+            if not tasks:
+                raise ValueError(
+                    f"goal {goal.id} cannot be executed: the planner produced no "
+                    f"executable subtasks for '{goal.natural_language}'. "
+                    "请补充更明确的目标，或检查默认模型/拆解器配置后重试。"
                 )
 
-        # Step 3: Execute
-        self._execute_plan(ctx, verification_criteria)
+            # Step 2: Plan
+            plan = self.planner.build(goal, tasks, mode=plan_mode)
+            ctx.plan = plan
+            plan.status = PlanStatus.ACTIVE
+            plan.started_at = utc_now()
 
-        # Step 4: Final verification
-        plan.completed_at = utc_now()
-        if ctx.failed_tasks:
-            plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
-        else:
-            plan.status = PlanStatus.COMPLETED
+            # Budget guard (per goal): wall-clock deadline + total attempt cap.
+            # Without these, 8 tasks × 4 retries × a 300s tool can run for hours.
+            try:
+                budget_seconds = float(os.environ.get("LIUHAO_GOAL_MAX_SECONDS", "600"))
+            except (TypeError, ValueError):
+                budget_seconds = 600.0
+            ctx.deadline_monotonic = time.monotonic() + max(1.0, budget_seconds)
+            try:
+                ctx.max_total_attempts = max(
+                    1, int(os.environ.get("LIUHAO_GOAL_MAX_ATTEMPTS", "16"))
+                )
+            except (TypeError, ValueError):
+                ctx.max_total_attempts = 16
 
-        if self.journal is not None and self._execution_id is not None:
-            self.journal.record(
-                self._execution_id,
-                "execution_completed",
-                plan_id=plan.id,
-                status=plan.status.value,
-                completed=len(ctx.completed_tasks),
-                failed=len(ctx.failed_tasks),
-                resumed=resumed_count,
+            # Explicit assignment (``POST /v1/goals/assign``): the caller named a
+            # specific agent, so every task of this goal is claimed for it --
+            # never silently redistributed across the pool. ``agent_claimed=True``
+            # keeps the claim honest: the executor must be able to resolve it,
+            # or the task lands as ``completed_unattributed`` instead of
+            # pretending the named employee did the work.
+            if pinned_agent:
+                for t in plan.tasks:
+                    t.assigned_agent = pinned_agent
+                    t.agent_claimed = True
+
+            # Incremental progress: the caller gets the full plan as soon as
+            # tasks exist, so a UI can render queued cards instead of waiting
+            # for the run to finish.
+            self._notify_progress(on_task_progress, plan)
+
+            # Single-task retry scope must be known BEFORE journal adoption: an
+            # explicitly retried task may run even if a previous attempt left
+            # only task_started behind (same task id = same idempotency key).
+            retry_scope: Set[str] = set(only_task_names or ())
+            if only_task_name:
+                retry_scope.add(only_task_name)
+            ctx.explicit_retry_names = set(retry_scope)
+
+            # Step 2.5: Adopt durable progress (crash recovery)
+            # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
+            # 才能对上上一次执行留下来的那串事件。
+            #
+            # 即使没接 journal 也要赋值：Action 需要它来判定「这个动作本来
+            # 应该被幂等账本去重」。否则账本缺失会重新变成静默 —— advisory
+            # 根本触发不了（这正是 ACTION-01 后续要修的那条）。
+            ctx.execution_id = goal.id
+            resumed_count = 0
+            if self.journal is not None:
+                # 归属只存在 ctx 上；实例字段仅作向后兼容的观测值，事件写入
+                # 一律用 ctx.execution_id，避免并发目标互相覆盖。
+                # 仅在真正接入 journal 时赋值：未接入时保持历史语义
+                # （``_execution_id`` 为 None），避免把「账本不存在」伪装成存在。
+                self._execution_id = goal.id
+                self.journal.record(
+                    ctx.execution_id,
+                    "execution_started",
+                    goal=goal.natural_language,
+                    plan_id=plan.id,
+                    task_count=len(plan.tasks),
+                )
+                resumed_count = self._adopt_journaled_progress(ctx)
+                if resumed_count:
+                    publish_event(
+                        type="execution_resumed",
+                        source="execution_kernel",
+                        data={
+                            "goal_id": goal.id,
+                            "resumed_tasks": resumed_count,
+                            "total_tasks": len(plan.tasks),
+                        },
+                        correlation_id=goal.correlation_id,
+                        scope=EventScope(goal.scope),
+                    )
+
+            # Single-task retry: only the named task(s) may run. Every other task
+            # still PENDING after journal adoption is SKIPPED, never executed --
+            # a retry of one failed card must not silently re-run the rest.
+            if retry_scope:
+                for t in plan.tasks:
+                    if t.name not in retry_scope and t.status == TaskStatus.PENDING:
+                        t.status = TaskStatus.SKIPPED
+
+            # Step 3: Execute
+            self._execute_plan(ctx, verification_criteria, stop_event, on_task_progress)
+
+            # Step 4: Final verification
+            plan.completed_at = utc_now()
+            if ctx.failed_tasks:
+                plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
+            else:
+                plan.status = PlanStatus.COMPLETED
+
+            # Terminal snapshot: guarantees the caller's last-recorded state is
+            # the real final task set, not the one before the last task landed.
+            self._notify_progress(on_task_progress, plan)
+
+            if self.journal is not None and ctx.execution_id is not None:
+                self.journal.record(
+                    ctx.execution_id,
+                    "execution_completed",
+                    plan_id=plan.id,
+                    status=plan.status.value,
+                    completed=len(ctx.completed_tasks),
+                    failed=len(ctx.failed_tasks),
+                    resumed=resumed_count,
+                )
+
+            publish_event(
+                type="execution_completed",
+                source="execution_kernel",
+                data={
+                    "goal_id": goal.id,
+                    "plan_id": plan.id,
+                    "status": plan.status.value,
+                    "completed": len(ctx.completed_tasks),
+                    "failed": len(ctx.failed_tasks),
+                },
+                correlation_id=goal.correlation_id,
+                scope=EventScope(goal.scope),
             )
 
-        publish_event(
-            type="execution_completed",
-            source="execution_kernel",
-            data={
-                "goal_id": goal.id,
-                "plan_id": plan.id,
-                "status": plan.status.value,
-                "completed": len(ctx.completed_tasks),
-                "failed": len(ctx.failed_tasks),
-            },
-            correlation_id=goal.correlation_id,
-            scope=EventScope(goal.scope),
-        )
-
-        return ctx
+            return ctx
 
     def _execute_plan(
         self,
         ctx: ExecutionContext,
-        verification_criteria: Optional[Dict[str, Any]] = None
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> None:
         """Execute all tasks in the plan."""
         max_iterations = 100  # Prevent infinite loops
@@ -700,6 +2237,13 @@ class ExecutionEngine:
         while iteration < max_iterations:
             iteration += 1
 
+            # Cooperative cancellation: a human operator (or the gateway) may
+            # have asked this goal to stop. Honour it between tasks so we never
+            # start a new task after a stop was requested.
+            if stop_event is not None and stop_event.is_set():
+                self._record_cancel(ctx)
+                raise GoalCancelled(ctx.goal.id)
+
             ready_tasks = ctx.plan.get_ready_tasks(ctx.completed_tasks)
             pending_tasks = [t for t in ctx.plan.tasks if t.status == TaskStatus.PENDING]
 
@@ -707,16 +2251,84 @@ class ExecutionEngine:
                 break  # All done
 
             if not ready_tasks and pending_tasks:
-                # Deadlock or circular dependency
+                # No task can start. Distinguish the two genuinely different
+                # causes: (a) a dependency FAILED -- that is not a deadlock, it
+                # is a real upstream failure and the message must say so;
+                # (b) the dependency graph is actually cyclic/unresolvable.
+                # Statuses must be read from ONE snapshot: mutating a task to
+                # FAILED inside this loop would otherwise make the next pending
+                # task look like it failed because of a dependency, turning a
+                # genuine cycle into a misleading "依赖任务失败".
+                statuses = {t.id: t.status for t in ctx.plan.tasks}
                 for task in pending_tasks:
+                    failed_deps = [
+                        dep for dep in ctx.plan.tasks
+                        if dep.id in task.dependencies
+                        and statuses.get(dep.id) in (TaskStatus.FAILED, TaskStatus.RETRYING)
+                    ]
+                    if failed_deps:
+                        names = "、".join(dep.name for dep in failed_deps)
+                        task.error = f"依赖任务失败（任务 {names}）"
+                    else:
+                        task.error = "Circular dependency or deadlock detected"
                     task.status = TaskStatus.FAILED
-                    task.error = "Circular dependency or deadlock detected"
                     ctx.failed_tasks.add(task.id)
+                    self._journal_event(
+                        task,
+                        "task_failed",
+                        ctx.execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        error=task.error,
+                    )
+                self._notify_progress(on_task_progress, ctx.plan)
                 break
 
-            # Execute ready tasks (in parallel conceptually)
-            for task in ready_tasks:
-                self._execute_task(ctx, task, verification_criteria)
+            # Execute the ready wave concurrently. Tasks with no dependency run
+            # at the same time (bounded by LIUHAO_EXECUTION_MAX_PARALLEL), while
+            # dependent tasks still wait for their predecessors -- the plan's DAG
+            # semantics are unchanged.
+            try:
+                max_parallel = int(os.environ.get("LIUHAO_EXECUTION_MAX_PARALLEL", "4"))
+            except (TypeError, ValueError):
+                max_parallel = 4
+            max_parallel = max(1, max_parallel)
+            workers = min(max_parallel, len(ready_tasks))
+            first_error: Optional[BaseException] = None
+            executor = ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix=f"goal-{ctx.goal.id}"
+            )
+            try:
+                futures = [
+                    # worker 线程默认**不继承** ContextVar：裸 submit 会让
+                    # KERNEL_ACTION_CORRELATION_ID 在任务线程里为空，execution.execute
+                    # 的审计事件退回随机 id，goal -> action 的链路在并发路径上悄然断开
+                    # （串行路径看不出问题）。逐次复制调用方上下文再 run。
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        self._execute_task_attributed,
+                        ctx,
+                        task,
+                        verification_criteria,
+                        stop_event,
+                        on_task_progress,
+                    )
+                    for task in ready_tasks
+                ]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except BaseException as exc:  # noqa: BLE001 - re-raised below
+                        if first_error is None:
+                            first_error = exc
+                        else:
+                            logger.error("parallel task failed: %s", exc)
+            finally:
+                # Waiting here is intentional: a goal must not be reported
+                # finished while a worker is still writing an artifact.
+                executor.shutdown(wait=True, cancel_futures=True)
+            if first_error is not None:
+                raise first_error
 
         if iteration >= max_iterations:
             # Timeout
@@ -725,6 +2337,7 @@ class ExecutionEngine:
                     task.status = TaskStatus.FAILED
                     task.error = "Execution timeout"
                     ctx.failed_tasks.add(task.id)
+            self._notify_progress(on_task_progress, ctx.plan)
 
     def _adopt_journaled_progress(self, ctx: ExecutionContext) -> int:
         """把 journal 里已完成的任务直接标成 COMPLETED —— 崩溃续跑的核心。
@@ -734,16 +2347,122 @@ class ExecutionEngine:
 
         返回跳过的任务数，并在 ctx 里放一个标明来自 journal 的 ActionResult，
         使后续 Verifier 看到的形状与真实执行一致（不是空成功，是「已恢复」）。
+
+        TOOL-04 语义（定死，2026-11-08）
+        ------------------------------
+        * 只有 ``task_started``、没有 ``task_exec_started``：任务「已领取但执行尚未
+          开始」，此时不可能有任何副作用 —— **允许自动重跑**。
+        * 有 ``task_exec_started``（带 ``exec_started_at``）且能力非幂等：副作用
+          可能已经发生，**必须转人工确认，不许自动重跑**。
+        * 有 ``task_exec_started`` 但能力天然幂等（``file_write`` / 纯计算 / 只读）：
+          重跑得到同一结果，**允许自动重跑**。
+        * 人工显式重试（``ctx.explicit_retry_names``）：视为已确认，允许执行一次，
+          并释放「已占坑但无结果」的幂等账（键不变）。
         """
-        assert self.journal is not None and self._execution_id is not None
-        done = self.journal.completed_task_names(self._execution_id)
-        if not done:
-            return 0
+        execution_id = ctx.execution_id or ctx.goal.id
+        assert self.journal is not None and execution_id
+        ctx.execution_id = execution_id
+        done = self.journal.completed_task_names(execution_id)
+        artifacts = self.journal.completed_task_artifacts(execution_id)
+        events = self.journal.events(execution_id)
+        started = {
+            ev.task_name
+            for ev in events
+            if ev.event_type == "task_started" and ev.task_name
+        } - done
+        #: 真正调用过执行器的任务 —— 「副作用可能已经发生」的分界线。
+        exec_started = {
+            ev.task_name
+            for ev in events
+            if ev.event_type == "task_exec_started" and ev.task_name
+        } - done
 
         resumed = 0
         for task in ctx.plan.tasks:
-            if task.status != TaskStatus.PENDING or task.name not in done:
+            if task.status != TaskStatus.PENDING:
                 continue
+            if task.name in ctx.explicit_retry_names and self.journal is not None:
+                # 显式重试 = 人工已经确认「可以再跑一次」。释放「已占坑但无结果」的
+                # 旧账，允许本次真正执行；键本身不变，仍是同一个 action id / 幂等键。
+                self.journal.release_idempotency(
+                    make_action_id(task.goal_id, task.name)
+                )
+            if task.name not in done:
+                if task.name in started and task.name not in ctx.explicit_retry_names:
+                    # TOOL-04 语义（定死，2026-11-08）：
+                    #   1) 任务已领取但执行尚未开始（只有 task_started，没有
+                    #      task_exec_started）-> 没有任何副作用，允许重跑；
+                    #   2) 执行已开始且能力天然幂等（file_write / 纯计算 / 只读）
+                    #      -> 重跑得到同一结果，允许重跑；
+                    #   3) 执行已开始且能力非幂等 -> 结果未知，必须转人工确认，
+                    #      不许自动重跑（TOOL-05 的核心诉求）。
+                    if (
+                        task.name not in exec_started
+                        or capability_is_reentrant(task.capability_id)
+                    ):
+                        self._journal_event(
+                            task,
+                            "task_requeued",
+                            execution_id,
+                            task_id=task.id,
+                            goal_id=task.goal_id,
+                            capability_id=task.capability_id,
+                            reason=(
+                                "no_exec_started"
+                                if task.name not in exec_started
+                                else "reentrant_capability"
+                            ),
+                        )
+                        continue
+                    task.status = TaskStatus.FAILED
+                    task.error = (
+                        "执行中断：结果未知（该任务已开始执行但没有完成记录），"
+                        "已停止自动重跑；请人工确认后再决定是否重试该任务"
+                    )
+                    task.completed_at = utc_now()
+                    ctx.failed_tasks.add(task.id)
+                    self._journal_event(
+                        task,
+                        "task_interrupted_unknown",
+                        execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        capability_id=task.capability_id,
+                        error=task.error,
+                    )
+                continue
+
+            # DEFECT E -- "it finished once" is NOT "it is still finished".
+            #
+            # Previously ANY name match was stamped COMPLETED with a synthetic
+            # success=True ActionResult and zero evidence, so an artifact that
+            # had since been deleted (or never flushed) was reported as done and
+            # the goal declared complete over work that is not there.
+            #
+            # Now a claim is only reclaimable when it is PROVEN:
+            #   * the task declared an artifact  -> the file must still exist and
+            #     be non-empty, else we do NOT reclaim (it stays PENDING and
+            #     re-executes, which is what actually restores the artifact);
+            #   * the task declared no artifact  -> there is no persistent side
+            #     effect that could have gone away, so there is nothing to prove.
+            #     Note this is NOT the same as "verified"; it is "nothing was
+            #     claimed", and it is kept distinct so the two are never conflated.
+            declared_path = artifacts.get(task.name)
+            still_there = artifact_currently_exists(declared_path)
+            if still_there is False:
+                # Proven ABSENT -- refuse the claim. Leaving it PENDING means it
+                # re-runs, which is the only way the missing artifact comes back.
+                self._journal_event(
+                    task,
+                    "journal_claim_unverified",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    artifact_path=declared_path,
+                    reason="declared artifact missing or empty on resume",
+                )
+                continue
+
             task.status = TaskStatus.COMPLETED
             task.started_at = task.started_at or utc_now()
             task.completed_at = utc_now()
@@ -752,25 +2471,242 @@ class ExecutionEngine:
             ctx.task_results[task.id] = ActionResult(
                 action_id=f"restored:{task.id}",
                 success=True,
-                output={"restored_from_journal": True, "task_name": task.name},
+                output={
+                    "restored_from_journal": True,
+                    "task_name": task.name,
+                    # Honest provenance of HOW this was accepted back:
+                    # "verified" (artifact proved present) vs "unverifiable"
+                    # (nothing was declared, so nothing could be checked).
+                    "resume_basis": (
+                        "artifact_verified" if still_there is True
+                        else "no_artifact_declared"
+                    ),
+                    "artifact_path": declared_path,
+                },
                 duration_ms=0,
             )
             resumed += 1
         return resumed
 
     def _journal_event(
-        self, task: Task, event_type: str, **payload: Any
+        self, task: Task, event_type: str, execution_id: Optional[str] = None, **payload: Any
     ) -> None:
-        """写一条任务级事件 —— journal 未挂载时必须是彻底的 no-op。"""
-        if self.journal is None or self._execution_id is None:
+        """写一条任务级事件 —— journal 未挂载时必须是彻底的 no-op。
+
+        ``execution_id`` 必须由调用方从自己的 ``ExecutionContext`` 传进来；
+        绝不读实例字段，否则并发目标会把事件写到别人的执行记录下。
+        未显式传入时用 ``task.goal_id``（journal 的 execution id 就是 goal id）：
+        这是该任务天然且唯一的归属，仍然与"当前引擎正在跑哪个目标"无关。
+        """
+        if self.journal is None:
             return
-        self.journal.record(self._execution_id, event_type, task_name=task.name, **payload)
+        execution_id = execution_id or task.goal_id
+        if not execution_id:
+            return
+        self.journal.record(execution_id, event_type, task_name=task.name, **payload)
+
+    def _record_cancel(self, ctx: ExecutionContext) -> None:
+        """Write a goal-level CANCELLED marker to the journal (no-op if unjournaled)."""
+        execution_id = ctx.execution_id or ctx.goal.id
+        if self.journal is None or not execution_id:
+            return
+        try:
+            self.journal.record(
+                execution_id,
+                "execution_cancelled",
+                status="cancelled",
+                completed=len(ctx.completed_tasks),
+                failed=len(ctx.failed_tasks),
+            )
+        except Exception:
+            # Journal write must never crash a cancellation.
+            pass
+
+    def _record_task_artifacts(
+        self, task: Task, result: Any, execution_id: Optional[str]
+    ) -> None:
+        """把本任务声明的产物写入旁路索引（``artifact_index=None`` 时彻底 no-op）。
+
+        索引是观测旁路，不是执行依赖：任何异常（导入失败、磁盘满、库损坏）都
+        只记警告，绝不把一次已经成功的执行改判为失败。
+
+        ``execution_id`` 由调用方传 ``ctx.goal.id``：与 journal 的确定性
+        ``execution_id = goal.id`` 同一口径，且**不接 journal 时也不丢归属**。
+        """
+        if self.artifact_index is None:
+            return
+        try:
+            # 内核层不得反向 import AI 应用层（分层门禁 B1，
+            # `.semgrep/liuhao.yml` 的 liuhao-kernel-imports-ai-layer；
+            # 文本护栏 tests/test_execution_tool_bridge.py 同禁）。工作区根的
+            # 解析由索引模块自己完成（``workspace=None`` 时它自己取），
+            # 内核只传事实（output/ids），不把应用层依赖带进来。
+
+            # 与执行链同一口径：归属不成立的 agent 不许写进索引（否则索引会
+            # 替一个不存在的执行者背书，正是 COMPLETED_UNATTRIBUTED 要防的事）。
+            agent_id = None
+            if isinstance(result.output, dict) and (
+                result.output.get("agent_attribution") != "unattributed"
+            ):
+                agent_id = task.assigned_agent
+
+            self.artifact_index.record_from_task_output(
+                workspace=None,
+                output=result.output,
+                execution_id=execution_id,
+                goal_id=task.goal_id,
+                correlation_id=task.correlation_id,
+                task_id=task.id,
+                task_name=task.name,
+                capability_id=task.capability_id,
+                agent_id=agent_id,
+                # journal.record() 不返回 seq，这里不编造序号。
+                journal_seq=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - 旁路失败不得上升为主流程失败
+            logger.warning(
+                "artifact index write failed (task=%s, goal=%s): %s",
+                task.id, task.goal_id, exc,
+            )
+
+    @staticmethod
+    def _tasks_from_pinned_specs(
+        goal: Goal, specs: Sequence[Dict[str, Any]]
+    ) -> List[Task]:
+        """用调用方给的原计划快照重建任务（崩溃恢复场景，不再重新拆解）。
+
+        保留原 ``id`` 与 ``dependencies``，让日志/产物里完成的任务仍能按名
+        被采纳；``status`` 一律回到 PENDING，完成度由 journal 决定。
+        """
+        tasks: List[Task] = []
+        for spec in specs:
+            name = str(spec.get("name") or "").strip()
+            capability = str(
+                spec.get("capability_id") or spec.get("capability") or ""
+            ).strip()
+            if not name or not capability:
+                raise ValueError("重试计划快照缺少任务名或能力 id")
+            tasks.append(Task(
+                id=str(spec.get("id") or uuid.uuid4()),
+                goal_id=goal.id,
+                name=name,
+                description=str(spec.get("description") or name),
+                capability_id=capability,
+                dependencies=[str(d) for d in (spec.get("dependencies") or [])],
+                inputs=_json_safe_inputs(spec.get("inputs")),
+                scope=goal.scope,
+                max_retries=int(spec.get("max_retries") or 3),
+                timeout_seconds=int(spec.get("timeout_seconds") or 300),
+            ))
+        return tasks
+
+    @staticmethod
+    def _task_snapshots(plan: Any) -> List[Dict[str, Any]]:
+        """Serialize every plan task into the SAME shape ``GET /v1/goals/{id}``
+        already returns (see ``AIStateManager._result_to_dict``).
+
+        One contract for both the incremental and the terminal snapshot means a
+        UI never has to branch on "is this still running". Values are kept
+        JSON-safe here (datetimes stringified, results truncated) because this
+        list is written to disk by the caller while execution continues.
+        """
+        out: List[Dict[str, Any]] = []
+        for t in getattr(plan, "tasks", None) or []:
+            out.append({
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+                "capability_id": t.capability_id,
+                "assigned_agent": t.assigned_agent,
+                "inputs": _json_safe_inputs(t.inputs),
+                "dependencies": list(t.dependencies or []),
+                "max_retries": t.max_retries,
+                "timeout_seconds": t.timeout_seconds,
+                "result": task_result_text(t.result)[:500] if t.result else None,
+                "error": t.error,
+                "started_at": str(t.started_at) if t.started_at else None,
+                "completed_at": str(t.completed_at) if t.completed_at else None,
+            })
+        return out
+
+    def _notify_progress(
+        self,
+        callback: Optional[Callable[[List[Dict[str, Any]]], None]],
+        plan: Any,
+    ) -> None:
+        """Hand a task snapshot to the caller. Never allowed to break a goal."""
+        if callback is None or plan is None:
+            return
+        try:
+            with self._progress_lock:
+                callback(self._task_snapshots(plan))
+        except Exception as exc:  # noqa: BLE001 - progress is an observer
+            logger.warning("task progress callback failed: %s", exc)
+
+    @staticmethod
+    def _task_inputs(ctx: ExecutionContext, task: Task) -> Dict[str, Any]:
+        """Task inputs plus the REAL outputs of its dependencies.
+
+        A synthesis task cannot produce a grounded conclusion if it cannot see
+        what the upstream research task actually returned. We inject the
+        dependency outputs under ``upstream`` without mutating ``task.inputs``
+        (so retries and snapshots stay stable; executors that ignore extra keys
+        keep working).
+        """
+        inputs: Dict[str, Any] = dict(task.inputs or {})
+        if not task.dependencies:
+            return inputs
+        upstream: List[Dict[str, Any]] = []
+        for dependency_id in task.dependencies:
+            dependency = ctx.plan.get_task(dependency_id)
+            if dependency is None:
+                continue
+            result = ctx.task_results.get(dependency_id)
+            if result is None or not result.success:
+                continue
+            upstream.append(
+                {
+                    "task": dependency.name,
+                    "capability": dependency.capability_id,
+                    "output": result.output,
+                }
+            )
+        if upstream:
+            inputs["upstream"] = upstream
+        return inputs
+
+    def _execute_task_attributed(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Task]], None]] = None,
+    ) -> None:
+        """给任务内的动作打上「哪个员工、哪个任务、哪条 goal」再执行。
+
+        全权模式下员工/定时任务自己触发的动作不再被拦，事后能不能说清
+        「谁干的」全靠这层归属。``assigned_agent`` 是拆解器/点名指派留下的
+        员工标识；没有就记 None，绝不拿用户身份顶替（principal_class 固定
+        ``SYSTEM_PRINCIPAL``）。
+        """
+        with task_attribution(
+            employee=task.assigned_agent,
+            task_id=task.id,
+            goal_id=task.goal_id,
+        ):
+            self._execute_task(
+                ctx, task, verification_criteria, stop_event, on_task_progress
+            )
 
     def _execute_task(
         self,
         ctx: ExecutionContext,
         task: Task,
-        verification_criteria: Optional[Dict[str, Any]] = None
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> None:
         """Execute a single task with retries."""
         task.status = TaskStatus.RUNNING
@@ -778,10 +2714,13 @@ class ExecutionEngine:
         # Join the goal's correlation chain so task lifecycle events are
         # traceable end to end (Definition Lock section 112).
         task.correlation_id = ctx.goal.correlation_id
+        # Queue → running is the transition a UI renders as "this card is now
+        # moving"; emit it before any work starts.
+        self._notify_progress(on_task_progress, ctx.plan)
 
         # 先记 task_started 再动手：崩溃时才能知道「当时正在跑哪个任务」，
         # 以及区分「从没开始」和「开始了但没完成」——后者可能需要人工看一眼副作用。
-        self._journal_event(task, "task_started", task_id=task.id, goal_id=task.goal_id)
+        self._journal_event(task, "task_started", ctx.execution_id, task_id=task.id, goal_id=task.goal_id)
 
         publish_event(
             type="task_started",
@@ -791,32 +2730,123 @@ class ExecutionEngine:
             scope=EventScope(task.scope),
         )
 
-        # Create action
+        # Create action. ARM1: carry the assigned agent across the Action
+        # boundary so it actually reaches the executor (previously it stopped at
+        # the Task dataclass and was physically unable to influence execution).
+        # Deterministic action id = stable idempotency key. Task ids are uuid4
+        # per run and are NOT stable across restarts; goal id + task name are
+        # (the decomposer/retry snapshot preserves both), so derive the key
+        # from them. Same task + same attempt => same key on replay.
         action = Action(
-            id=str(uuid.uuid4())[:8],
+            id=make_action_id(task.goal_id, task.name, task.retry_count),
             task_id=task.id,
             capability_id=task.capability_id,
             capability_namespace=task.capability_namespace,
-            inputs=task.inputs,
+            inputs=self._task_inputs(ctx, task),
             correlation_id=task.correlation_id,
             scope=task.scope,
             timeout_seconds=task.timeout_seconds,
+            assigned_agent=task.assigned_agent,
+            agent_claimed=task.agent_claimed,
+            execution_id=ctx.execution_id,
         )
+
+        # TOOL-04: ``task_started`` 只表示「任务被领取」，不代表副作用已经开始。
+        # 真正调用执行器之前再落一条 ``task_exec_started``（带 exec_started_at）。
+        # 恢复时据此区分两件事：
+        #   * 只有 task_started        -> 没有任何副作用，允许重跑；
+        #   * task_exec_started 且非幂等 -> 结果未知，转人工确认、不许自动重跑。
+        exec_started_marked = False
 
         # Execute with retries
         while task.retry_count <= task.max_retries:
+            # Per-goal budget: wall clock + cumulative attempts across ALL tasks.
+            with ctx.budget_lock:
+                over_deadline = (
+                    ctx.deadline_monotonic is not None
+                    and time.monotonic() > ctx.deadline_monotonic
+                )
+                over_attempts = ctx.attempts_used >= ctx.max_total_attempts
+                if not (over_deadline or over_attempts):
+                    ctx.attempts_used += 1
+            if over_deadline or over_attempts:
+                reason = (
+                    "执行超出时间预算"
+                    if over_deadline
+                    else "执行超出总尝试次数预算"
+                )
+                task.status = TaskStatus.FAILED
+                task.error = f"{reason}（不重试）：未开始本次尝试"
+                task.completed_at = utc_now()
+                ctx.failed_tasks.add(task.id)
+                self._journal_event(
+                    task,
+                    "task_budget_exhausted",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    error=task.error,
+                )
+                publish_event(
+                    type="task_failed",
+                    source="execution_kernel",
+                    data={"task_id": task.id, "goal_id": task.goal_id,
+                          "error": task.error},
+                    correlation_id=task.correlation_id,
+                    scope=EventScope(task.scope),
+                    priority=EventPriority.CRITICAL,
+                )
+                self._notify_progress(on_task_progress, ctx.plan)
+                return
+            # Honour a stop request before each attempt.
+            if stop_event is not None and stop_event.is_set():
+                self._record_cancel(ctx)
+                raise GoalCancelled(ctx.goal.id)
+            if not exec_started_marked:
+                self._journal_event(
+                    task,
+                    "task_exec_started",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    capability_id=task.capability_id,
+                    exec_started_at=utc_now().isoformat(),
+                )
+                exec_started_marked = True
             result = self.executor.execute(action)
             ctx.task_results[task.id] = result
 
             if result.success:
-                task.status = TaskStatus.COMPLETED
+                # ARM1 honesty: the side effects are real, but if the task was
+                # attributed to an agent that could not be resolved, do NOT
+                # record it as an ordinary COMPLETED task -- that is exactly the
+                # "ghost id still completes cleanly" defect. Record it as
+                # UNATTRIBUTED: the work happened, the claimed performer did not
+                # exist. The task still counts as completed for the goal (the
+                # bytes are on disk) so we never fake a failure either.
+                _unattributed = (
+                    isinstance(result.output, dict)
+                    and result.output.get("agent_attribution") == "unattributed"
+                )
+                task.status = (
+                    TaskStatus.COMPLETED_UNATTRIBUTED
+                    if _unattributed
+                    else TaskStatus.COMPLETED
+                )
                 task.result = result.output
                 task.completed_at = utc_now()
                 ctx.completed_tasks.add(task.id)
-                # 必须在已被正式标记 COMPLETED 之后立刻落盘：崩溃随时可能发生，
-                # 晚一步写就等于这个任务下次还要重跑（副作用执行第二次）。
+                artifact_path = artifact_path_from_output(result.output)
+                # 副作用已发生，但「执行过」不等于「完成」。先记 task_executed；
+                # 只有验证通过后才写 task_completed —— 崩溃恢复只认
+                # task_completed，否则一个验证失败的任务会被当成已完成收养。
                 self._journal_event(
-                    task, "task_completed", task_id=task.id, goal_id=task.goal_id
+                    task,
+                    "task_executed",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    artifact_path=artifact_path,
                 )
 
                 # Verify
@@ -824,8 +2854,72 @@ class ExecutionEngine:
                 ctx.verification_results[task.id] = verification
 
                 if verification.replan_required:
-                    # Could trigger replan here
-                    pass
+                    # 验证未通过 = 没有交付。子任务与目标必须一起降级，
+                    # 不能留下 state=completed + summary「均已产出」。
+                    task.status = TaskStatus.FAILED
+                    ctx.completed_tasks.discard(task.id)
+                    ctx.failed_tasks.add(task.id)
+                    reason = (
+                        verification.feedback
+                        or (verification.details or {}).get("reason")
+                        or ""
+                    )
+                    detail = (
+                        f"（{getattr(verification.result, 'value', verification.result)}，"
+                        f"得分 {verification.score:.2f}）"
+                    )
+                    task.error = "验证未通过" + detail + (
+                        f"：{reason}" if reason else ""
+                    )
+                    task.completed_at = utc_now()
+                    self._journal_event(
+                        task,
+                        "task_verification_failed",
+                        ctx.execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        error=task.error,
+                        artifact_path=artifact_path,
+                    )
+                    # 也让重启路径的 failed_task_names 看到它。
+                    self._journal_event(
+                        task,
+                        "task_failed",
+                        ctx.execution_id,
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        error=task.error,
+                    )
+                    publish_event(
+                        type="task_failed",
+                        source="execution_kernel",
+                        data={
+                            "task_id": task.id,
+                            "goal_id": task.goal_id,
+                            "error": task.error,
+                            "verification": getattr(
+                                verification.result, "value", str(verification.result)
+                            ),
+                        },
+                        correlation_id=task.correlation_id,
+                        scope=EventScope(task.scope),
+                        priority=EventPriority.CRITICAL,
+                    )
+                    self._notify_progress(on_task_progress, ctx.plan)
+                    return
+
+                # 验证通过后才是真正的完成：此时写 task_completed。
+                self._journal_event(
+                    task,
+                    "task_completed",
+                    ctx.execution_id,
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    artifact_path=artifact_path,
+                )
+
+                # 旁路：只有验证通过的产物才记录产物归属。
+                self._record_task_artifacts(task, result, ctx.goal.id)
 
                 publish_event(
                     type="task_completed",
@@ -839,7 +2933,12 @@ class ExecutionEngine:
                     correlation_id=task.correlation_id,
                     scope=EventScope(task.scope),
                 )
+                self._notify_progress(on_task_progress, ctx.plan)
                 return
+
+            if result.timed_out:
+                # 超时不重试：重试只会把 1 次超时放大成 4 次。
+                break
 
             # Retry
             task.retry_count += 1
@@ -853,18 +2952,31 @@ class ExecutionEngine:
                     scope=EventScope(task.scope),
                     priority=EventPriority.HIGH,
                 )
+                self._notify_progress(on_task_progress, ctx.plan)
 
         # All retries exhausted - preserve the root cause of the last
         # failed attempt alongside the exhaustion notice.
         last_result = ctx.task_results.get(task.id)
-        root_cause = (last_result.error if last_result and last_result.error
-                      else "unknown error")
+        raw_cause = (last_result.error if last_result and last_result.error
+                     else "unknown error")
+        root_cause = humanize_executor_error(raw_cause)
         task.status = TaskStatus.FAILED
-        task.error = f"Max retries ({task.max_retries}) exceeded; last error: {root_cause}"
+        # 人话在前；括号里只放真实发生过的尝试次数，不能把 max_retries 说成
+        # 「已重试 N 次」（超时不重试，实际只尝试了 1 次）。
+        attempts = min(task.retry_count + 1, task.max_retries + 1)
+        if task.retry_count >= task.max_retries:
+            tail = f"（重试耗尽：Max retries ({task.max_retries}) exceeded）"
+        else:
+            tail = ""
+        task.error = f"任务执行失败（已尝试 {attempts} 次）：{root_cause}{tail}"
+        logger.warning(
+            "evt=task_failed task_id=%s capability=%s raw_error=%s",
+            task.id, task.capability_id, raw_cause,
+        )
         task.completed_at = utc_now()
         ctx.failed_tasks.add(task.id)
         self._journal_event(
-            task, "task_failed", task_id=task.id, goal_id=task.goal_id, error=task.error
+            task, "task_failed", ctx.execution_id, task_id=task.id, goal_id=task.goal_id, error=task.error
         )
 
         publish_event(
@@ -875,6 +2987,7 @@ class ExecutionEngine:
             scope=EventScope(task.scope),
             priority=EventPriority.CRITICAL,
         )
+        self._notify_progress(on_task_progress, ctx.plan)
 
     @kernel_action("execution.create_checkpoint")
     def create_checkpoint(self, ctx: ExecutionContext) -> Dict[str, Any]:

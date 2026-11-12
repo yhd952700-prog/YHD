@@ -1,0 +1,80 @@
+{
+  "schema": "liuhao.c9-console-contract/1",
+  "generated_at": "2026-11-06",
+  "defect": "升级载荷不含前端 console/：后端被替换、前端保持旧版，/v1/health 仍 200，界面静默不更新",
+  "fix": {
+    "backend_contract_source": "src/gateway/contract.py::API_CONTRACT_VERSION",
+    "console_stamp": "console/console-contract.json",
+    "package_gate": "src/upgrade/manager.py preflight (before backup/mutation)",
+    "post_install_gate": "src/upgrade/selfcheck.py + /v1/health api_contract",
+    "build_refuses_missing_console": "packaging/make_release.py app_tree mode"
+  },
+  "packages": {
+    "old_0.1.1_without_console": {
+      "zip": "liuhao-0.1.1.zip",
+      "members": 662,
+      "console_members": 0,
+      "zip_bytes": 2741388,
+      "uncompressed_bytes": 9461145,
+      "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10"
+    },
+    "new_0.1.2_with_console": {
+      "zip": "liuhao-0.1.2.zip",
+      "members": 685,
+      "console_members": 12,
+      "zip_bytes": 2961979,
+      "uncompressed_bytes": 10047927,
+      "sha256": "ca46fc7664bcea137b787adb3d88cd72c5d0c53dfe1fb3ed8b480c0033945d0a",
+      "build_input_files": 683,
+      "reproducible": true,
+      "console_files_in_stamp": 11,
+      "console_fingerprint": "7dc9741d12380940b2c1aca05d4cb7bf9bcb1fd57effbe05f8bede40413596f6",
+      "api_contract": "1",
+      "frontend_version": "0.1.2"
+    }
+  },
+  "rejection_old_package": {
+    "exit_code": 1,
+    "console_before": {"files": 10, "bytes": 496026, "index_sha256": "b6cceb84b2e0d31403b1d21903732fab8a1dbda82271d7979ebe3efe55e5dab8"},
+    "console_after": {"files": 10, "bytes": 496026, "index_sha256": "b6cceb84b2e0d31403b1d21903732fab8a1dbda82271d7979ebe3efe55e5dab8"},
+    "version_after": "0.1.0",
+    "new_backups": 0,
+    "mutation_started": false
+  },
+  "upgrade_to_0.1.2": {
+    "wall_seconds": 18.72,
+    "record_id": "0a7fd4cd1fcd486a8381ad08c979d09c",
+    "backup_id": "20261106T055113Z-53a124b5",
+    "installed_files": 685,
+    "data_checked_files": 4,
+    "self_check_passed": true,
+    "self_check_issues": 0,
+    "startup_seconds": 5.75,
+    "health_status": 200,
+    "health_api_contract": "1",
+    "console_after": {"files": 12, "bytes": 496344, "index_sha256": "6f4f0c53a41a0e33bae4f80faec7c3f328c7ae572332a8f5a204c0f665f05f3c"},
+    "data_sentinel_sha256": "051f79b9f45934e70c67ebc25fbd10318c016b231fb5eda1f656dbcbadd8a4a9"
+  },
+  "restart_0.1.2": {
+    "ready_seconds": 5.07,
+    "health_status": 200,
+    "health_api_contract": "1",
+    "root_served_new_index": true,
+    "spa_fallback_served_new_index": true,
+    "new_asset_status": 200
+  },
+  "rollback_to_0.1.0": {
+    "wall_seconds": 2.67,
+    "record_id": "051514a413ef42e5ae6fae07d4d2b2c4",
+    "restored_files": 516,
+    "console_after": {"files": 10, "bytes": 496026, "index_sha256": "b6cceb84b2e0d31403b1d21903732fab8a1dbda82271d7979ebe3efe55e5dab8"},
+    "new_files_left_behind": 0,
+    "data_sentinel_sha256": "051f79b9f45934e70c67ebc25fbd10318c016b231fb5eda1f656dbcbadd8a4a9"
+  },
+  "limits": [
+    "frontend build is a simulated marker build, not a real npm run build",
+    "no Docker/CD deployment coverage in this file",
+    "no package signature",
+    "only same api_contract '1' upgrade exercised end to end; cross-contract rejection covered by unit tests"
+  ]
+}

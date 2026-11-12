@@ -1,0 +1,59 @@
+{
+  "kind": "liuhao.org.template",
+  "schema_version": 1,
+  "template": {
+    "key": "builtin.software-dev",
+    "name": "软件研发",
+    "industry": "软件与互联网",
+    "description": "以产品、工程、质量、运维四条线组织的研发参考。仅作参考，套用前可自由勾选节点。",
+    "version": 1,
+    "sort": 10,
+    "root": {
+      "key": "rd-center",
+      "name": "研发中心",
+      "kind": "department",
+      "description": "研发线的统一落点。",
+      "children": [
+        {
+          "key": "product",
+          "name": "产品部",
+          "kind": "department",
+          "description": "需求、原型与版本规划。",
+          "children": [
+            { "key": "pm", "name": "产品经理", "kind": "position", "description": "负责需求拆解与验收。", "children": [] },
+            { "key": "designer", "name": "产品设计", "kind": "position", "description": "负责交互与视觉方案。", "children": [] }
+          ]
+        },
+        {
+          "key": "engineering",
+          "name": "工程部",
+          "kind": "department",
+          "description": "编码、评审与技术债治理。",
+          "children": [
+            { "key": "frontend", "name": "前端组", "kind": "team", "description": "负责控制台与移动端。", "children": [] },
+            { "key": "backend", "name": "后端组", "kind": "team", "description": "负责网关与数据面。", "children": [] },
+            { "key": "architect", "name": "技术负责人", "kind": "position", "description": "负责架构与代码质量。", "children": [] }
+          ]
+        },
+        {
+          "key": "quality",
+          "name": "质量部",
+          "kind": "department",
+          "description": "测试与发布把关。",
+          "children": [
+            { "key": "qa", "name": "测试工程师", "kind": "position", "description": "负责用例与回归。", "children": [] }
+          ]
+        },
+        {
+          "key": "ops",
+          "name": "运维部",
+          "kind": "department",
+          "description": "部署、监控与故障响应。",
+          "children": [
+            { "key": "sre", "name": "运维工程师", "kind": "position", "description": "负责稳定性与告警。", "children": [] }
+          ]
+        }
+      ]
+    }
+  }
+}

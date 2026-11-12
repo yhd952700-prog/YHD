@@ -15,9 +15,14 @@ Pinned here:
 * **The posture snapshot is authenticated.** ``GET /v1/policy/enforcement``
   enumerates the *armed* surface, which is a map of what is **not** gated. It
   must not be readable anonymously.
-* **The surface is exactly four endpoints.** No "execute a kernel action over
-  HTTP" route may appear without this list changing — design decision
-  §10.8.3-1 deliberately refuses remote kernel-action execution.
+* **The surface is exactly five endpoints, and none of them executes.** No
+  "execute a kernel action over HTTP" route may appear without this list
+  changing — design decision §10.8.3-1 deliberately refuses remote
+  kernel-action execution. The fifth entry (``GET
+  /v1/policy/approvals/pending``, added 2026-11-06) is a read-only queue of
+  actions already blocked by policy: admin-gated, no execution, no state
+  change. Registering it is the decision §10.8.3-1 requires; it does not
+  reverse that decision.
 * **The loop is honest.** Issuing a grant does **not** make an HTTP retry
   succeed; execution stays in-process inside ``grant_window``. Measured
   2026-09-12: ``no-grant=defer`` -> ``after-grant=defer`` ->
@@ -26,6 +31,7 @@ Pinned here:
 """
 
 from __future__ import annotations
+
 
 import os
 import pathlib
@@ -46,6 +52,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 GATED_ACTION = "capability.retire"          # CRITICAL
 LOW_ACTION = "event.publish"                # LOW -- never enforcement-gated
+
+
+# Mandatory target for /v1/policy/approvals (governance ruling
+# 2026-10-05). A single concrete target is enough here; target-binding
+# semantics are covered in tests/kernels/test_sovereignty_target_binding.py.
+_T = "kernel-target:demo"
 
 
 @pytest.fixture(autouse=True)
@@ -96,8 +108,26 @@ def client(app):
 
 
 def _token(subject: str, ttl: int = 600) -> str:
-    """Mint a real ACCESS token for ``subject`` using the gateway's own handler."""
-    token, _payload = create_access_token(subject, ttl=ttl)
+    """Mint a real ACCESS token for ``subject`` using the gateway's own handler.
+
+    Write endpoints (grant/revoke) now require an administrative claim
+    (``require_human_principal``, 2026-11-04). These tests exercise the grant
+    lifecycle over HTTP, so the token carries ``admin``. The service-account
+    case is still rejected by the handler on identity kind -- the claim does
+    not let a service account hold sovereignty.
+    """
+    # ``require_human_principal``（src/gateway/policy.py:133-143）现在从**令牌
+    # 声明**判定主体类型：metadata.kind 不是 "human" 直接 403。这不是新加的
+    # 授权，而是把「令牌是唯一主体来源」写进契约；服务账号必须显式是 service，
+    # 人类必须显式是 human。测试令牌因此必须带上同样的声明，否则测的是
+    # 「没声明 kind 的令牌被拒」，而不是下面要断言的 grant 生命周期。
+    metadata = (
+        {"kind": "service"} if subject.startswith("svc-")
+        else {"kind": "human", "scope": "L0"}
+    )
+    token, _payload = create_access_token(
+        subject, roles=["admin"], ttl=ttl, metadata=metadata
+    )
     return token
 
 
@@ -142,13 +172,13 @@ class TestPrincipalIsTokenOnly:
     """The approver can only ever be whoever the token says it is."""
 
     def test_missing_token_is_401(self, client):
-        resp = client.post("/v1/policy/approvals", json={"actions": [GATED_ACTION]})
+        resp = client.post("/v1/policy/approvals", json={"target": _T, "actions": [GATED_ACTION]})
         assert resp.status_code == 401, resp.text
 
     def test_non_bearer_scheme_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers={"Authorization": "Basic YWRtaW46YWRtaW4="},
         )
         assert resp.status_code == 401, resp.text
@@ -156,7 +186,7 @@ class TestPrincipalIsTokenOnly:
     def test_garbage_token_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers={"Authorization": "Bearer not.a.jwt"},
         )
         assert resp.status_code == 401, resp.text
@@ -164,7 +194,7 @@ class TestPrincipalIsTokenOnly:
     def test_empty_bearer_token_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers={"Authorization": "Bearer "},
         )
         assert resp.status_code == 401, resp.text
@@ -176,7 +206,7 @@ class TestPrincipalIsTokenOnly:
         resp = client.post(
             "/v1/policy/approvals",
             json={
-                "actions": [GATED_ACTION],
+                "target": _T, "actions": [GATED_ACTION],
                 "principal": "somebody-else-entirely",
                 "issued_by": "somebody-else-entirely",
             },
@@ -194,27 +224,46 @@ class TestPrincipalIsTokenOnly:
         from src.gateway.policy import ApprovalRequest
 
         fields = set(ApprovalRequest.model_fields)
-        assert fields == {"actions", "reason", "ttl_seconds"}, fields
+        # Exact set (still fails loudly on any unexpected field). ``target`` and
+        # ``confirm_wildcard`` are the governance-required authorisation scope
+        # (2026-10-05): the grant names the resource it covers, and an all-target
+        # grant needs explicit secondary confirmation.
+        assert fields == {
+            "actions",
+            "target",
+            "confirm_wildcard",
+            "reason",
+            "ttl_seconds",
+            # 审批中心卡片 id（2026-11-11）：只用于「同一张卡片重复点击复用
+            # 同一条凭据」，不让一次批准叠加出第二份授权。它不是主体字段，
+            # 换成别的 pending_id 也不会改变 principal（主体仍只取令牌）。
+            "pending_id",
+        }, fields
+        assert "principal" not in fields and "approver" not in fields, fields
 
     def test_token_for_an_unknown_principal_is_400(self, human, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth("no-such-identity"),
         )
         assert resp.status_code == 400, resp.text
-        assert "unknown principal" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "还没有登记" in detail
+        assert "unknown principal" not in detail.lower()
 
     def test_service_identity_may_not_hold_sovereignty(self, service, client):
         # OD-010: a service account must never be able to approve its own
         # HIGH/CRITICAL action -- that would make the gate self-releasing.
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(service.id),
         )
         assert resp.status_code == 400, resp.text
-        assert "service" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "机器账号" in detail
+        assert "sovereignty" not in detail.lower()
 
     def test_reads_are_authenticated_too(self, client):
         for path in ("/v1/policy/approvals", "/v1/policy/enforcement"):
@@ -224,8 +273,12 @@ class TestPrincipalIsTokenOnly:
 class TestPostureSnapshotIsAuthenticated:
     """The enforcement snapshot is a map of what is *not* gated."""
 
-    def test_enforcement_reports_the_real_arming(self, human, client):
-        os.environ[enf.ENV_VAR] = "CRITICAL"
+    def test_enforcement_reports_the_real_arming(self, human, client, monkeypatch):
+        # Use monkeypatch (auto-restored) instead of a bare os.environ write:
+        # a direct assignment leaks into later modules and makes
+        # test_default_is_off order-dependent (a broken default could then pass
+        # after an armed test). The channel is correct; only the test hygiene was.
+        monkeypatch.setenv(enf.ENV_VAR, "CRITICAL")
         enf.reload()
         body = client.get("/v1/policy/enforcement", headers=_auth(human.id)).json()
         assert body["enabled"] is True
@@ -243,7 +296,7 @@ class TestGrantLifecycleOverHttp:
     def test_issue_then_list_then_fetch(self, human, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION], "reason": "quarterly cleanup"},
+            json={"target": _T, "actions": [GATED_ACTION], "reason": "quarterly cleanup"},
             headers=_auth(human.id),
         )
         assert created.status_code == 200, created.text
@@ -269,7 +322,7 @@ class TestGrantLifecycleOverHttp:
     def test_ttl_ceiling_is_enforced_over_http(self, human, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION], "ttl_seconds": sov.MAX_GRANT_TTL_SECONDS + 1},
+            json={"target": _T, "actions": [GATED_ACTION], "ttl_seconds": sov.MAX_GRANT_TTL_SECONDS + 1},
             headers=_auth(human.id),
         )
         assert resp.status_code == 422, resp.text
@@ -279,31 +332,31 @@ class TestGrantLifecycleOverHttp:
         # doing nothing -- refuse it rather than record a no-op.
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [LOW_ACTION]},
+            json={"target": _T, "actions": [LOW_ACTION]},
             headers=_auth(human.id),
         )
         assert resp.status_code == 400, resp.text
-        assert "enforcement-gated" in resp.json()["detail"]
+        assert "不需要审批" in resp.json()["detail"]
 
     def test_an_unknown_action_cannot_be_granted(self, human, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["totally.made.up"]},
+            json={"target": _T, "actions": ["totally.made.up"]},
             headers=_auth(human.id),
         )
         assert resp.status_code == 400, resp.text
-        assert "unknown kernel action" in resp.json()["detail"]
+        assert "动作不存在" in resp.json()["detail"]
 
     def test_empty_action_list_is_rejected(self, human, client):
         resp = client.post(
-            "/v1/policy/approvals", json={"actions": []}, headers=_auth(human.id)
+            "/v1/policy/approvals", json={"target": _T, "actions": []}, headers=_auth(human.id)
         )
         assert resp.status_code == 422, resp.text
 
     def test_revoke_then_hidden_from_the_default_listing(self, human, client):
         grant_id = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(human.id),
         ).json()["grant"]["grant_id"]
 
@@ -330,7 +383,7 @@ class TestGrantLifecycleOverHttp:
     def test_revoke_is_idempotent(self, human, client):
         grant_id = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(human.id),
         ).json()["grant"]["grant_id"]
         first = client.delete(
@@ -379,7 +432,7 @@ class TestTheLoopIsHonestOverHttp:
 
         issued = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION], "reason": "r76 loop probe"},
+            json={"target": _T, "actions": [GATED_ACTION], "reason": "r76 loop probe"},
             headers=_auth(human.id),
         )
         assert issued.status_code == 200
@@ -402,10 +455,14 @@ class TestTheLoopIsHonestOverHttp:
             raise PolicyDeferredError(GATED_ACTION, "default_deny")
 
         detail = client.get("/_test/r76/hint").json()["detail"]
-        assert "/v1/policy/approvals" in detail, "must still point at the entry point"
-        assert "grant_window" in detail, (
-            "must name the in-process mechanism that actually unblocks it"
+        assert "审批中心" in detail, "must still point at the entry point"
+        assert "不会直接放行" in detail, (
+            "must say that recording the authorisation does not unblock a retry"
         )
+        # 内部编号与实现机制名不上屏。
+        assert "OD-010" not in detail
+        assert "grant_window" not in detail
+        assert "/v1/policy" not in detail
 
     def test_issuing_a_grant_arms_nothing(self, human, client):
         # A grant must not widen the gate: the posture snapshot is unchanged
@@ -413,7 +470,7 @@ class TestTheLoopIsHonestOverHttp:
         before = client.get("/v1/policy/enforcement", headers=_auth(human.id)).json()
         client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(human.id),
         )
         after = client.get("/v1/policy/enforcement", headers=_auth(human.id)).json()
@@ -421,7 +478,7 @@ class TestTheLoopIsHonestOverHttp:
         assert before["enabled"] == after["enabled"]
 
 
-class TestThePolicySurfaceIsExactlyFourEndpoints:
+class TestThePolicySurfaceIsFixedAndHasNoExecutionRoute:
     """Design decision §10.8.3-1: no remote kernel-action execution, ever."""
 
     def test_no_extra_policy_route_appeared(self, app):
@@ -436,9 +493,32 @@ class TestThePolicySurfaceIsExactlyFourEndpoints:
         assert surface == [
             ("DELETE", "/v1/policy/approvals/{grant_id}"),
             ("GET", "/v1/policy/approvals"),
+            # 只读待办队列（2026-11-06 新增，审批中心显示"还在等我批什么"）：
+            # 需要 admin 主体、不执行任何内核动作、不改状态，故不构成
+            # §10.8.3-1 意义上的"远程执行路由"。把它登记在这里本身就是该
+            # 设计条款要求的决定，而不是绕过它。
+            ("GET", "/v1/policy/approvals/pending"),
             ("GET", "/v1/policy/approvals/{grant_id}"),
+            # 0.3.0 新增，Boss 已批准：读当前运行模式（standard / full）与
+            # 「启动值 / 重启后生效值」两个字段，供设置页显示。只读快照，
+            # 不收任何动作参数、不执行内核动作，不构成 §10.8.3-1 的执行路由。
+            ("GET", "/v1/policy/authority-mode"),
             ("GET", "/v1/policy/enforcement"),
+            # 0.3.0 新增，Boss 已批准：读危险命令「一次确认」开关状态。只读，
+            # 不执行命令、不改变权限，不构成 §10.8.3-1 的执行路由。
+            ("GET", "/v1/policy/host-command-confirmation"),
             ("POST", "/v1/policy/approvals"),
+            # 拒绝待处理动作（2026-11-11）：审批不能只有「同意」。它只写一条
+            # 拒绝审计并让卡片退出等待队列，不签发凭据、不执行、不重放任何
+            # 内核动作，因此同样不构成 §10.8.3-1 的"远程执行路由"。
+            ("POST", "/v1/policy/approvals/reject"),
+            # 0.3.0 新增，Boss 已批准：写入运行模式（管理员）。收紧立即生效、
+            # 放宽需重启；只改一份模式配置并记审计，不接收、不执行任何内核
+            # 动作名，因此不是 §10.8.3-1 意义上的执行路由。
+            ("PUT", "/v1/policy/authority-mode"),
+            # 0.3.0 新增，Boss 已批准：开关危险命令的一次确认（管理员）。
+            # 只管「执行前要不要问」，不代替人执行命令，也不是执行路由。
+            ("PUT", "/v1/policy/host-command-confirmation"),
         ], (
             "the policy surface changed. If this is a new *execution* route, it "
             "is a reversal of §10.8.3-1 and needs its own decision, not a test edit"

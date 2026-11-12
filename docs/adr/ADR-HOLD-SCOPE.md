@@ -1,0 +1,204 @@
+# ADR-HOLD-SCOPE — Scope and Limits of the `HOLD` Freeze
+
+| | |
+|---|---|
+| **Status** | LOCKED (decision D27) |
+| **Decision** | D27 |
+| **Date** | 2026-09-24 |
+| **Owner** | Human (LIUHAO owner / boss) |
+| **Supersedes** | — |
+| **Related** | D22 (derived audit view + red line on `audit_store.db`), D17 (risk-graded audit enforcement), `human_sovereignty_override` |
+
+---
+
+## 1. Context
+
+LIUHAO needs a single, well-understood operational switch — `HOLD` — that can
+stop the system from *moving itself forward* (deploying, auto-editing code,
+releasing through CI) while an incident, investigation, or human review is in
+progress. Without a precisely-scoped definition, `HOLD` risks either being too
+weak (a deploy sneaks past it) or too strong (**silently blocking a human's
+explicit, sovereign override**, which would defeat the entire point of the
+human-sovereignty architecture).
+
+Two hard constraints frame this decision:
+
+1. **D22 red line** — the original `audit_store.db` must **never be deleted,
+   reordered, or overwritten** by any tool. Any change to the audit record of
+   record is out of scope for an operational freeze and must go through its own
+   human-decision path.
+2. **`human_sovereignty_override` is the highest-authority channel** — it is the
+   mechanism by which the human owner deliberately overrides automated policy.
+   A freeze must not be able to swallow that channel.
+
+This ADR therefore defines *exactly* what `HOLD` freezes, *exactly* what it does
+**not** gate, and the invariant that any human-override side-effects still obey.
+
+---
+
+## 2. Decision
+
+### 2.1 What `HOLD` FREEZES (in scope)
+
+When `HOLD` is active, the following automated forward-motion paths are frozen:
+
+| # | Frozen path | Rationale |
+|---|---|---|
+| F1 | **Deployment / promotion to any environment** (build → deploy artifact step) | Stops a bad/under-review build from reaching production. |
+| F2 | **Automatic code changes** generated or applied by agents, pipelines, or "auto-fix" tooling | Prevents unattended mutation of the codebase during a freeze. |
+| F3 | **CI release gating / publish steps** (the release-promotion jobs) | The freeze is meaningless if CI can still cut and publish a release. |
+
+`HOLD` is a freeze of *automated forward motion*. It is intentionally narrow.
+
+**How §2.1 is enforced — verified 2026-10-07 (do NOT read the table above as an
+enforcement guarantee):** §2.1 states HOLD's *scope*, **not** a separate
+enforcement mechanism. The **only** machine enforcement of `HOLD` in this
+repository is `scripts/check_hold_gate.py`, invoked as a release-gate step in the
+CI release path (§2.4). There is **no** product code (`src/`) that reads
+`LIUHAO_HOLD`. In particular:
+* **F1 (deployment)** is enforced only insofar as the CI release job that performs
+  the deploy consults the gate; there is no independent deploy-time check.
+* **F2 (automatic agent code-changes)** is **not** blocked by any code. The
+  nearest guard, `src/ai/evolution.py` (MASTER-SPEC 80 "no production
+  self-modification without evaluation"), is gated on benchmark + human approval
+  and does **not** consult `HOLD`.
+* **F3 (CI publish)** is the gate step itself.
+
+Consequence: **outside the CI release path, `HOLD` is human discipline, not a
+machine control.** Any earlier or downstream phrasing that called §2.1 "the
+code-level freeze" was **unsupported by code** and has been corrected here.
+
+### 2.2 What `HOLD` does NOT gate (out of scope)
+
+| # | Not gated by `HOLD` | Why |
+|---|---|---|
+| N1 | **`human_sovereignty_override`** (the human owner's explicit override channel) | The human owner's deliberate override is the supreme authority; a freeze must never be able to veto the human. Gating it would invert the sovereignty model. |
+| N2 | **Read-only forensic / audit tooling** (e.g. the D22 derived audit view) | These only read and never mutate the record of record; they are safe to run during a freeze and are often *needed* during one. |
+| N3 | **Local verification / safeguard scripts that only read or report** | Same as N2 — reporting must continue so the freeze can be observed. |
+
+### 2.3 Invariant — override side-effects remain bound by the D22 red line
+
+Any side-effect produced by a `human_sovereignty_override` (whether or not
+`HOLD` is active) **continues to obey the D22 red line**:
+
+> The original `audit_store.db` is **never deleted, reordered, or overwritten**.
+> Every override is *appended* to the chain as a new, hash-linked event. The
+> override may change *runtime posture*; it may **never** rewrite *history*.
+
+`HOLD` does not — and cannot — relax this invariant. An override under `HOLD`
+still writes a new auditable event; it does not edit or remove prior events.
+
+### 2.4 MANDATORY `HOLD` env gate for deploy / CI jobs (enforced as C1)
+
+Deploy and CI release jobs MUST consult the explicit gate
+`scripts/check_hold_gate.py` as the **first step, before any push / deploy /
+promotion step** (C1, STEP 11 expert review). The gate is no longer optional
+human discipline — it is a machine-verifiable control that fails the job
+before `docker/build-push-action` runs:
+
+* **Env var:** `LIUHAO_HOLD=1` (or any non-empty truthy value) activates HOLD;
+  `LIUHAO_HOLD=0|false|off` leaves it inactive. **At the script level** an
+  *unset* variable also leaves HOLD inactive (the gate prints `HOLD inactive
+  (LIUHAO_HOLD=unset): release may proceed (default)`) — but **in CI this
+  script-level default is overridden to fail-safe**: `.github/workflows/ci-cd.yml`
+  sets `LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}`, so with the repo variable
+  unset the gate receives `1` and HOLD is **armed by default**. Lifting the
+  freeze is therefore a *platform* action (set the GitHub repo variable
+  `LIUHAO_HOLD=0`, which is audit-logged) — not a code edit.
+* **Behaviour:** if `LIUHAO_HOLD` is truthy, `check_hold_gate.py` prints
+  `HOLD active (LIUHAO_HOLD=<value>): release blocked` and exits **2**
+  (non-zero), which fails the CI job *before* the push step, so no image is
+  pushed and no promotion occurs. Automatic code-change agents (F2) MUST also
+  check this gate and stop.
+* **Wired in CI on the release path (reachable; HOLD default-armed):**
+  `.github/workflows/ci-cd.yml` runs `check_hold_gate.py` as a release-gate step
+  in the `build` job, ahead of `Build and push`. The workflow is a **deliberate,
+  human/tag-triggered release path** — `on: workflow_dispatch` + `push: tags:
+  ['v*']` — *not* an automatic per-push run for ordinary work on `p36`. (The old
+  `push: [main, develop]` / `pull_request: [main]` triggers and the
+  `if: ... github.ref == 'refs/heads/main'` pin once made this job unreachable
+  and the workflow executed **zero** times — `gh run list --workflow=ci-cd.yml`
+  => `[]`; both were corrected in commit `2eb15d35`, dropping the pins and
+  moving to manual dispatch + version tags.) Because the `build` job's `env`
+  sets `LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}`, HOLD is **armed by
+  default**: unless a human sets the repo variable `LIUHAO_HOLD=0`,
+  `check_hold_gate.py` exits **2** and the job fails at that step, *before*
+  `Build and push` — so no image is pushed and no promotion occurs. **Honesty
+  boundary:** the default-armed property is verified only at the *code/config*
+  level — it **cannot** be exercised by a real GitHub runner from this
+  workstation (no local runner), so its *runtime* behaviour is **UNVERIFIED**
+  here. This gate step is the **only** machine enforcement of `HOLD` (see §2.1);
+  there is no separate "code-level freeze" backing it.
+* **Not a security boundary:** the env gate is an operational safeguard, not an
+  authorization control. It is the **only** machine enforcement of `HOLD` on the
+  release path (see §2.1 — no code in `src/` reads `LIUHAO_HOLD`); it does **not**
+  back a separate "code-level freeze", and off the release path the freeze is
+  human discipline.
+* **Human override still passes:** a job that is blocked by `HOLD` MUST still
+  permit an explicit `human_sovereignty_override` to proceed (per N1), and that
+  override's audit event is appended (per §2.3), never rewriting history.
+
+---
+
+### 2.5 HC-01 repair-architecture authorization does NOT lift `HOLD`
+
+On 2026-09-24 the owner issued HD-01…HD-05 authorizing the *architecture* of an HC-01
+repair (full corrective fix + non-destructive migration; Single Writer Service; retain-all
++ NON-AUTHORITATIVE fork tagging; Hybrid TSA). These are **repair-architecture
+authorizations, not a GO authorization**:
+
+* `# HOLD` remains active. `HC-01 = UNVERIFIED` and `GO = BLOCKED` are unchanged.
+* HOLD-ALLOWED during the freeze: forensic investigation, and (only after explicit
+  HD-01 authorization) minimal containment. HOLD-BLOCKED: repair / migration /
+  production deployment / release / promotion.
+* Any repair/migration is permitted **only** once the corresponding Human Decision
+  explicitly authorizes it, and **no repair may bypass `HOLD` or the `GO` gate**.
+  Both gates now execute on the reachable release path (`ci-cd.yml:build`,
+  triggered only by `workflow_dispatch` / `v*` tags — see §2.4). Ordering
+  matters: the `check_hold_gate.py` step runs **before** `verify_go_readiness.py`
+  and the job fails on the first non-zero exit, so if `verify_go_readiness.py`
+  ever runs, `HOLD` must already have been lifted (`LIUHAO_HOLD=0`). With HC-01
+  `UNVERIFIED` the GO gate exits non-zero, so in the default (HOLD armed) state a
+  release is blocked at the `HOLD` step and the GO gate is never reached — the
+  release path is fail-closed on **both** controls by default.
+* The ten hard prohibitions attached to HD-01…HD-05 — no deletion of original
+  history, no overwriting old hashes, no direct renumbering of historical `seq`, no
+  forcing `UNIQUE(seq)` onto the damaged table, no verifier tampering to fake GREEN,
+  no metric recalibration to hide 284/169, no production deploy under HOLD, no
+  release/promotion, no claiming interface-only TSA/TPM as externally-trusted evidence
+  — are binding and supersede any implementation convenience.
+
+---
+
+## 3. Consequences
+
+### Positive
+* A single, unambiguous switch stops automated forward motion without disabling
+  the human owner.
+* The audit record of record is explicitly carved out of the freeze, reinforcing
+  the D22 red line.
+* Deploy/CI jobs get a simple, inspectable gate.
+
+### Negative / costs
+* Two code paths must co-exist: the automated freeze gate and the
+  human-override channel. They must be tested together so the freeze can never
+  silently swallow an override (regression risk — see §4).
+* `HOLD` is operational, not a security control; over-reliance on the env flag
+  alone would be a false sense of safety.
+
+### Rollback / change
+* To widen the freeze, extend §2.1 (and the env-gate check) via a new decision.
+* To narrow it, the same. The out-of-scope guarantees in §2.2 / §2.3 are
+  **not** negotiable without a superseding human decision — they protect the
+  human-sovereignty and audit-integrity bedrock.
+
+---
+
+## 4. Acceptance / verification notes
+* A test MUST exist proving that, with `HOLD` active, an automated deploy/release
+  is blocked, **while** a `human_sovereignty_override` is still permitted and
+  appends (never edits) the audit chain.
+* A test MUST exist proving that D22-style read-only tooling runs uninterrupted
+  under `HOLD`.
+* No code in this repo may, under `HOLD`, delete/reorder/overwrite
+  `audit_store.db`.

@@ -309,13 +309,22 @@ _global_registry: Optional[CapabilityRegistry] = None
 
 
 def get_capability_registry() -> CapabilityRegistry:
-    """Get or create the global capability registry."""
+    """Get or create the global capability registry.
+
+    初始化失败时**不能**把半成品注册表留在全局：``register`` 带审计
+    （``@kernel_action``），磁盘满 / 审计库不可写时会 fail-closed 抛出。若这时
+    已经把空/半满的注册表挂到 ``_global_registry``，之后每个调用都会拿着它
+    查出 "Capability not found"，连磁盘恢复后也要重启进程才能用（实测：磁盘
+    满时启动网关，恢复空间后目标执行仍报 ``kernel.execution_pipeline`` 不存在）。
+    因此只有完整注册成功才发布到全局，失败原样抛出、下次调用重新尝试。
+    """
     global _global_registry
     if _global_registry is None:
-        _global_registry = CapabilityRegistry()
+        registry = CapabilityRegistry()
         # Register built-in kernel capabilities
-        _register_builtin_capabilities(_global_registry)
-        _global_registry.initialize()  # 存在即 READY：构造完成即视为就绪
+        _register_builtin_capabilities(registry)
+        registry.initialize()  # 存在即 READY：构造完成即视为就绪
+        _global_registry = registry
     return _global_registry
 
 
@@ -449,7 +458,7 @@ def _register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             version="1.0.0",
             namespace="kernel",
             name="Security Enforcement",
-            description="RBAC + ABAC + Vault + Audit",
+            description="RBAC + ABAC + Audit",
             scope=CapabilityScope.L5,
             owner="security_kernel",
             tags={"kernel", "security", "rbac", "abac"},
@@ -473,6 +482,63 @@ def _register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             scope=CapabilityScope.L3,
             owner="ai_local_tools",
             tags={"kernel", "execution", "local", "compute", "restricted-python"},
+        ),
+        # Local Real-Execution Capability — file write inside the workspace (WS1b)
+        # Same contract as python_compute: declared as a real system capability,
+        # but it ONLY executes when a local tool is wired into the ToolRegistry.
+        # With no tool, execution fails loudly with "no active tool for capability"
+        # instead of silently simulating. The tool itself is path-contained:
+        # writes are resolved through ``resolve_in_workspace`` and anything
+        # outside the workspace root is refused (fail-closed).
+        CapabilityEntry(
+            id="file_write",
+            version="1.0.0",
+            namespace="kernel",
+            name="Local Workspace File Write",
+            description=(
+                "Write a file inside the LIUHAO workspace. Path containment is "
+                "enforced (realpath must stay inside the workspace root; traversal "
+                "is refused). Executable only when a local tool is wired; otherwise "
+                "fails with 'no active tool for capability'."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "filesystem", "workspace"},
+        ),
+        # Local Real-Execution Capability — constrained static preview (WS1c)
+        # The static root is fixed at tool-registration time (the task workspace);
+        # no command is executed and the server binds 127.0.0.1 only. Declared
+        # here so the execution kernel's scope check can resolve it; it still only
+        # runs when a preview tool is wired into the ToolRegistry.
+        CapabilityEntry(
+            id="preview_start",
+            version="1.0.0",
+            namespace="kernel",
+            name="Workspace Static Preview (start)",
+            description=(
+                "Start a built-in static file server rooted at the task workspace "
+                "(127.0.0.1, auto free port). Paths outside the workspace, "
+                "cross-drive paths and any '..' segment are refused; no shell or "
+                "arbitrary command is executed. Returns a handle + URL and a real "
+                "HTTP self-check."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "preview", "static-server"},
+        ),
+        CapabilityEntry(
+            id="preview_stop",
+            version="1.0.0",
+            namespace="kernel",
+            name="Workspace Static Preview (stop)",
+            description=(
+                "Stop a preview started by preview_start (by handle, or all "
+                "previews owned by the process). Previews are also auto-stopped "
+                "when the task ends/fails and on idle timeout."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "preview", "cleanup"},
         ),
     ]
 

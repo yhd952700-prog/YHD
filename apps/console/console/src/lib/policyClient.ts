@@ -1,5 +1,5 @@
 /**
- * 鎏灏 Policy 审批 HTTP 客户端 —— 驾驶舱「审批中心」的真实数据源。
+ * 贾维斯 Policy 审批 HTTP 客户端 —— 驾驶舱「审批中心」的真实数据源。
  *
  * ⚠️ 诚实声明（NO-FAKE）
  * ------------------------------------------------------------------
@@ -20,7 +20,7 @@
  */
 
 import { clearSession, currentToken, decodeToken, saveSession, TOKEN_HEADER } from './auth';
-
+import { readErrorMessage } from './errorMessage';
 
 /** 内核层拦截配置快照（GET /v1/policy/enforcement 的真实形状）。 */
 export interface EnforcementSnapshot {
@@ -38,6 +38,10 @@ export interface ApprovalGrant {
   grant_id: string;
   principal: string;
   actions: string[];
+  /** 该凭据授权的具体资源。授权单位是 (principal, action, target)。 */
+  target: string;
+  /** True 表示这是一张覆盖**全部** target 的通配凭据（target === "*"）。 */
+  is_wildcard: boolean;
   reason: string;
   issued_by: string;
   granted_at: number;
@@ -86,6 +90,7 @@ export function setToken(token: string): void {
       permissions: [],
       expiresAt: decoded.expiresAt,
       client: decoded.client ?? 'web',
+      isRoot: false,
     },
     false,
   );
@@ -122,23 +127,12 @@ function authHeaders(token: string): Record<string, string> {
   };
 }
 
-async function readError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { detail?: unknown; error?: unknown };
-    if (typeof body.detail === 'string') return body.detail;
-    if (body.error) return String(body.error);
-  } catch {
-    // 落到下面的通用文案
-  }
-  return `HTTP ${res.status}`;
-}
-
 /** 统一的鉴权检查：401 单独成一类，UI 才能区分「没令牌」和「令牌坏了」。 */
 async function call<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   if (!token) throw new PolicyAuthError('未认证：缺少审批令牌');
   const res = await fetch(path, { ...init, headers: authHeaders(token), cache: 'no-store' });
-  if (res.status === 401) throw new PolicyAuthError(await readError(res));
-  if (!res.ok) throw new PolicyApiError(res.status, await readError(res));
+  if (res.status === 401) throw new PolicyAuthError(await readErrorMessage(res));
+  if (!res.ok) throw new PolicyApiError(res.status, await readErrorMessage(res));
   return (await res.json()) as T;
 }
 
@@ -162,17 +156,32 @@ export function listApprovals(
 /**
  * 签发一条审批凭据。
  *
- * 注意：**没有 principal 参数** —— 主体只能来自令牌，这是刻意的安全设计。
+ * 注意：
+ * - **没有 principal 参数** —— 主体只能来自令牌，这是刻意的安全设计。
+ * - ``target`` **必填且无默认值**。授权的最小单位是 (principal, action, target)：
+ *   缺省 target 不能被解释成"任意 target"，否则一份只为一台资源签发的批准会静默
+ *   覆盖全部资源。后端 ``SovereigntyGrant.target`` 已必填无默认，前端**不得**给它
+ *   兜一个默认值把这道门再打开。
+ * - ``confirmWildcard``：仅当确实要授权**全部** target（``target === "*"``）时才传
+ *   true，对应后端 ``confirm_wildcard`` 的二次确认；后端对未确认的通配会拒绝（400）。
  */
 export function issueApproval(
   token: string,
   actions: string[],
+  target: string,
   reason: string,
   ttlSeconds: number,
+  confirmWildcard = false,
 ): Promise<{ approved: boolean; grant: ApprovalGrant }> {
   return call<{ approved: boolean; grant: ApprovalGrant }>('/v1/policy/approvals', token, {
     method: 'POST',
-    body: JSON.stringify({ actions, reason, ttl_seconds: ttlSeconds }),
+    body: JSON.stringify({
+      actions,
+      target,
+      confirm_wildcard: confirmWildcard,
+      reason,
+      ttl_seconds: ttlSeconds,
+    }),
   });
 }
 

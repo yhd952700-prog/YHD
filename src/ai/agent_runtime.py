@@ -19,22 +19,33 @@ See ``docs/AGENT-RUNTIME-DESIGN.md`` for the full design (Phase 3).
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.kernels.execution import (
     ExecutionEngine,
     ExecutionContext,
     Goal,
     CapabilityExecutor,
+    GoalCancelled,
 )
 from src.kernels.evaluation import (
+    EvaluationOutcome,
     EvaluationResult,
+    FeedbackType,
     get_evaluator,
+)
+from .llm_support import (
+    compose_execution_summary,
+    default_generate,
+    failure_summary,
+    goal_requires_artifact,
+    task_output_facts,
 )
 from src.kernels.memory import (
     MemoryKernel,
@@ -76,6 +87,7 @@ class AgentRunState(str, Enum):
     VERIFYING = "verifying"    # derived: during Evaluator.evaluate
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -183,6 +195,34 @@ class AgentObserver:
             pass
 
 
+def _record_employee(
+    task: Any,
+    resolver: Optional[Callable[[str], Optional[str]]],
+    pinned_agent: Optional[str],
+) -> Optional[str]:
+    """Who really did this task, as recordable evidence.
+
+    On a pinned (user-named) run the decomposer may already have stamped the
+    task with *someone else's* name; the pinned agent resolved against the live
+    roster is the only truthful source. No resolver => no name, never a guess.
+    """
+    if pinned_agent:
+        if not callable(resolver):
+            return None
+        try:
+            return resolver(str(pinned_agent)) or None
+        except Exception:  # noqa: BLE001 - unresolvable claim => no name
+            return None
+    employee = getattr(task, "assigned_employee", None)
+    agent_id = getattr(task, "assigned_agent", None)
+    if not employee and agent_id and callable(resolver):
+        try:
+            employee = resolver(str(agent_id))
+        except Exception:  # noqa: BLE001 - unresolvable claim => no name
+            employee = None
+    return employee
+
+
 @dataclass
 class AgentRunResult:
     """Outcome of one ``run_goal`` (or ``replan``/``recover``) call."""
@@ -194,9 +234,16 @@ class AgentRunResult:
     evaluation: Optional[EvaluationResult]
     trace: ExecutionTrace
     memory_keys: List[str] = field(default_factory=list)
+    persist_errors: List[str] = field(default_factory=list)
     replan_count: int = 0
     replan_suggested: bool = False
     error: Optional[str] = None
+    #: 派活前的能力边界提示（例如"需要写文件但 file_write 不可用"）。这些
+    #: 提示在执行开始前就产生并上报，不能等跑完再解释。
+    preflight_notices: List[str] = field(default_factory=list)
+    #: 本次任务计划是谁拆的：model / model_retry / keyword。
+    #: None 表示这次运行没有经过拆解器（例如单任务重试），不能假装是模型拆的。
+    decomposition_source: Optional[str] = None
 
 
 class AgentRuntime:
@@ -215,14 +262,85 @@ class AgentRuntime:
         evaluator: Optional[Any] = None,
         memory: Optional[MemoryKernel] = None,
         max_replans: int = 2,
+        executable_capabilities: Optional[Any] = None,
+        artifact_index: Any = None,
+        enable_model_planning: bool = False,
+        model_generator: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.scope = scope
         self.engine = ExecutionEngine(
-            scope=scope, capability_executor=capability_executor, journal=journal
+            scope=scope,
+            capability_executor=capability_executor,
+            journal=journal,
+            artifact_index=artifact_index,
         )
+        # Capability provider for both the planner contract and the LLM planner.
+        provider = None
+        if executable_capabilities is not None:
+            provider = (
+                executable_capabilities
+                if callable(executable_capabilities)
+                else lambda: executable_capabilities
+            )
+        # Kept for the *preflight* check: before a goal runs we can already tell
+        # the user "this needs file_write / network_bus, and it is not available".
+        self._capability_provider: Optional[Callable[[], Any]] = provider
+
+        # Model-first decomposition (opt-in). It sits INSIDE the executable-aware
+        # wrapper below, so a model plan is still validated against the real
+        # capability registry before any task runs. Every failure inside the
+        # LLM planner degrades to the deterministic keyword plan.
+        self.enable_model_planning = bool(enable_model_planning)
+        self._model_generator: Optional[Callable[[str], str]] = (
+            model_generator
+            if model_generator is not None
+            else (default_generate if enable_model_planning else None)
+        )
+        self._llm_decomposer = None
+        if enable_model_planning:
+            from .llm_decomposer import LLMTaskDecomposer
+
+            self._llm_decomposer = LLMTaskDecomposer(
+                self.engine.decomposer,
+                generator=self._model_generator,
+                capability_provider=provider,
+            )
+            self.engine.decomposer = self._llm_decomposer
+
+        # Planner ↔ executor contract (2026-10-04). Opt-in: a set of capability
+        # ids, or a zero-arg callable returning them. When supplied, the plan is
+        # validated BEFORE any task runs, so a goal needing an unregistered
+        # capability fails fast with a named reason instead of executing part of
+        # the work and failing afterwards. Unsupplied => unchanged behaviour.
+        if provider is not None:
+            from .planner_contract import ExecutableAwareDecomposer
+
+            self.engine.decomposer = ExecutableAwareDecomposer(
+                self.engine.decomposer, capability_provider=provider
+            )
         self.evaluator = evaluator or get_evaluator()
         self.memory = memory or get_memory_kernel()
         self.max_replans = max_replans
+        #: agent id → 员工名。网关注入后，汇总才能写清"谁做了什么"；未注入时
+        #: 汇总只用 agent id（不编造员工名）。
+        self.agent_employee_resolver: Optional[Callable[[str], Optional[str]]] = None
+        # Remember the goal text for each goal_id so ``replan``/``recover`` can
+        # actually re-run the *same* goal (deterministic task names -> the
+        # engine's journal resumes completed tasks). Guarded by no lock: a
+        # runtime drives one goal at a time through ``run_goal``.
+        self._goal_texts: Dict[str, str] = {}
+        # Per-goal stop flags (threading.Event) for cooperative cancellation.
+        # Keyed by goal_id; set by :meth:`request_stop` so the execution loop
+        # can abort a running goal cleanly.
+        self._stop_events: Dict[str, threading.Event] = {}
+        # Route the evaluation kernel's ``execute_replan`` action to a real
+        # re-execution instead of a status flip. The evaluation kernel stays
+        # layering-clean: it only holds a callable.
+        try:
+            self.evaluator.set_replan_executor(self._replan_for_evaluator)
+        except Exception:
+            # A non-Evaluator (e.g. a test double) may not implement the hook.
+            pass
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -237,19 +355,47 @@ class AgentRuntime:
         verification_criteria: Optional[Dict[str, Any]] = None,
         persist: bool = True,
         correlation_id: Optional[str] = None,
+        stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        pinned_agent: Optional[str] = None,
+        only_task_name: Optional[str] = None,
+        only_task_names: Optional[Sequence[str]] = None,
+        pinned_tasks: Optional[Sequence[Dict[str, Any]]] = None,
+        on_notice: Optional[Callable[[str], None]] = None,
     ) -> AgentRunResult:
         """Run one goal end-to-end: plan → execute → evaluate → (persist).
 
         Failure recovery is *reported* via ``replan_suggested``; call
         :meth:`replan` explicitly to act on it (avoids hidden recursion / loops).
+
+        ``stop_event`` is an optional :class:`threading.Event` (keyed by
+        ``goal_id``); when it is set, the execution loop raises
+        :class:`GoalCancelled` and this returns a CANCELLED result -- a real,
+        cooperative abort rather than a faked stop.
         """
         scope = scope or self.scope
         goal_id = goal_id or str(uuid.uuid4())[:8]
         correlation_id = correlation_id or str(uuid.uuid4())
+        self._goal_texts[goal_id] = goal_text
+        if stop_event is None:
+            stop_event = threading.Event()
+        self._stop_events[goal_id] = stop_event
 
         observer = AgentObserver(correlation_id)
         observer.subscribe()
+        # 能力边界前置：在拆解/执行之前就把"做不到的事"说清楚。跑完再解释
+        # 会被用户当成事后找借口，而且会让人误以为已经做了。
+        preflight_notices = self._preflight_capability_notices(goal_text)
+        if callable(on_notice):
+            for notice in preflight_notices:
+                try:
+                    on_notice(notice)
+                except Exception:  # noqa: BLE001 - 通知失败不能拖垮目标
+                    pass
         state = AgentRunState.CREATED
+        decomposition_source: Optional[str] = None
+        # 取消时也要把已经跑出来的任务快照交回调用方；不能因为异常路径就丢。
+        ctx: Optional[ExecutionContext] = None
         try:
             state = AgentRunState.PLANNING
             goal = Goal(
@@ -259,14 +405,67 @@ class AgentRuntime:
                 correlation_id=correlation_id,
             )
 
+            # --- MEMORY RECALL: apply learned directives before planning ---
+            # This is what makes memory CAUSAL, not just a write-only log.
+            # Learned directives (e.g. "NEVER write files") can change the
+            # outcome of a run. Without this step, memory is decorative.
+            blocked_reason = self._check_learning_blockers(goal, scope)
+            if blocked_reason is not None:
+                # The run is blocked by a learned directive. Return a
+                # FAILED result honestly — the memory changed the outcome.
+                state = AgentRunState.FAILED
+                blocked_error = f"blocked by learned directive: {blocked_reason}"
+                return AgentRunResult(
+                    goal_id=goal_id,
+                    correlation_id=correlation_id,
+                    state=state,
+                    context=None,
+                    evaluation=self._failed_evaluation(
+                        goal_id,
+                        correlation_id,
+                        "未完成：本次执行被已记住的规则阻止。"
+                        "本次没有生成任何文件，也没有任何可交付的产物路径。"
+                        "请调整目标或修改该规则后重试。",
+                        blocked_error,
+                    ),
+                    trace=observer.trace,
+                    memory_keys=[],
+                    persist_errors=[],
+                    error=blocked_error,
+                    preflight_notices=preflight_notices,
+                )
+
             state = AgentRunState.EXECUTING
             ctx = self.engine.execute_goal(
-                goal, plan_mode=plan_mode, verification_criteria=verification_criteria
+                goal,
+                plan_mode=plan_mode,
+                verification_criteria=verification_criteria,
+                stop_event=stop_event,
+                on_task_progress=on_task_progress,
+                pinned_agent=pinned_agent,
+                only_task_name=only_task_name,
+                only_task_names=only_task_names,
+                pinned_tasks=pinned_tasks,
             )
+            decomposition_source = goal.metadata.get("decomposition_source")
+            if decomposition_source is None and not self.enable_model_planning:
+                # 未启用模型拆解时，计划只可能来自关键词拆解器；这不是"未知"，
+                # 也不能让 UI 误以为历史数据。
+                decomposition_source = "keyword"
 
             state = AgentRunState.VERIFYING
-            evaluation = self._evaluate(goal, ctx, correlation_id)
-            memory_keys = self._persist(goal, ctx, evaluation, correlation_id) if persist else []
+            evaluation = self._evaluate(
+                goal,
+                ctx,
+                correlation_id,
+                pinned_agent=pinned_agent,
+                preflight_notices=preflight_notices,
+            )
+            memory_keys, persist_errors = (
+                self._persist(goal, ctx, evaluation, correlation_id)
+                if persist
+                else ([], [])
+            )
 
             replan_suggested = self._needs_replan(ctx, evaluation)
             state = (
@@ -282,7 +481,31 @@ class AgentRuntime:
                 evaluation=evaluation,
                 trace=observer.trace,
                 memory_keys=memory_keys,
+                persist_errors=persist_errors,
                 replan_suggested=replan_suggested,
+                preflight_notices=preflight_notices,
+                decomposition_source=decomposition_source,
+            )
+        except GoalCancelled:
+            # Cooperative cancellation: the goal was aborted by a stop request.
+            # Report it honestly as CANCELLED -- never as success.
+            return AgentRunResult(
+                goal_id=goal_id,
+                correlation_id=correlation_id,
+                state=AgentRunState.CANCELLED,
+                # 保留已产生的任务快照与产物，用户才能看到卡在哪一步。
+                context=ctx,
+                evaluation=self._failed_evaluation(
+                    goal_id,
+                    correlation_id,
+                    "已取消：本次执行被用户中止。"
+                    "已完成的步骤和产物会保留在任务列表里，可查看后再决定是否重试。",
+                    f"已取消：用户中止了本次执行（{goal_id}）",
+                ),
+                trace=observer.trace,
+                error="已取消：用户中止了本次执行。",
+                preflight_notices=preflight_notices,
+                decomposition_source=decomposition_source,
             )
         except Exception as exc:  # graceful failure, never crash the caller
             return AgentRunResult(
@@ -290,12 +513,122 @@ class AgentRuntime:
                 correlation_id=correlation_id,
                 state=AgentRunState.FAILED,
                 context=None,
-                evaluation=None,
+                evaluation=self._failed_evaluation(
+                    goal_id, correlation_id, failure_summary(exc), str(exc)
+                ),
                 trace=observer.trace,
                 error=str(exc),
+                preflight_notices=preflight_notices,
+                decomposition_source=decomposition_source,
             )
         finally:
+            # 验收项一：预览服务不留在进程里。任务结束 / 失败 / 取消都统一停掉，
+            # 再叠加空闲超时 watchdog 与进程退出兜底。
+            try:
+                from .preview_server import stop_all_previews
+
+                stopped = stop_all_previews(reason=f"goal_{goal_id}_finished")
+                if stopped:
+                    logging.getLogger("liuhao.ai.agent_runtime").info(
+                        "evt=previews_stopped_on_goal_end goal_id=%s count=%d",
+                        goal_id,
+                        len(stopped),
+                    )
+            except Exception as exc:  # noqa: BLE001 - 清理失败不能吞掉主结果
+                logging.getLogger("liuhao.ai.agent_runtime").debug(
+                    "preview cleanup failed for goal %s: %s", goal_id, exc
+                )
             observer.unsubscribe()
+            self._stop_events.pop(goal_id, None)
+
+    def set_employee_provider(
+        self, provider: Optional[Callable[[], Sequence[Dict[str, Any]]]]
+    ) -> None:
+        """注入真实员工花名册（拆解时由管家挑人；模型规划关闭时无效果）。"""
+        decomposer = getattr(self, "_llm_decomposer", None)
+        if decomposer is None:
+            return
+        decomposer.set_employee_provider(provider)
+
+    #: 目标里表示"要联网"的说法（粗判，用于执行前的边界提示，不阻断执行）。
+    _NET_INTENT_MARKERS = (
+        "联网", "上网", "在线", "实时", "最新", "今天的", "搜索", "检索",
+        "查一下", "查查", "调研", "热榜", "热搜",
+    )
+
+    def _preflight_capability_notices(self, goal_text: str) -> List[str]:
+        """Say what this goal cannot do **before** anything runs.
+
+        Only evidence is used: the goal text plus the *registered* capability
+        ids. No notice is produced when the registry is unknown, so this never
+        invents a limitation either.
+        """
+        provider = getattr(self, "_capability_provider", None)
+        if not callable(provider):
+            return []
+        try:
+            available = {str(item) for item in (provider() or [])}
+        except Exception:  # noqa: BLE001 - unknown registry => no claim
+            return []
+        if not available:
+            return []
+        text = str(goal_text or "")
+        notices: List[str] = []
+        if goal_requires_artifact(text) and "file_write" not in available:
+            notices.append(
+                "派活前提示：目标要求产出文件，但当前没有可用的 file_write 能力；"
+                "本次不会向工作区写入任何文件，也不会有可交付的产物路径。"
+            )
+        if (
+            any(marker in text for marker in self._NET_INTENT_MARKERS)
+            and "network_bus" not in available
+        ):
+            notices.append(
+                "派活前提示：目标需要联网检索，但当前没有可用的 network_bus 能力；"
+                "本次拿不到真实来源，结论不会附任何链接。"
+            )
+        return notices
+
+    def _failed_evaluation(
+        self,
+        goal_id: str,
+        correlation_id: str,
+        summary: str,
+        error: str,
+    ) -> EvaluationResult:
+        """Build an honest terminal evaluation for runs that died early.
+
+        Without this, a model outage left ``evaluation=None``: the page said
+        "未完成" with no reason and no evidence-only summary. The summary is
+        generated upstream from the error class and never names a file.
+        """
+        return EvaluationResult(
+            evaluation_id=str(uuid.uuid4()),
+            goal_id=goal_id,
+            task_id=None,
+            outcome=EvaluationOutcome.FAILED,
+            overall_score=0.0,
+            criteria_results=[],
+            feedback=str(error or ""),
+            feedback_type=FeedbackType.CRITICAL,
+            summary=summary,
+            correlation_id=correlation_id,
+            metadata={"terminal": "failed", "reason": "model_or_runtime_failure"},
+        )
+
+    def request_stop(self, goal_id: str) -> bool:
+        """Signal a running goal to abort (cooperative cancellation).
+
+        Returns ``True`` if a live execution for ``goal_id`` was found and its
+        stop flag set; ``False`` if the goal is not currently running (already
+        finished, or never started). The execution loop observes the flag and
+        terminates as CANCELLED.
+        """
+        event = self._stop_events.get(goal_id)
+        if event is None:
+            return False
+        event.set()
+        return True
 
     # ------------------------------------------------------------------ #
     # Failure recovery hooks
@@ -306,17 +639,34 @@ class AgentRuntime:
         *,
         extra_criteria: Optional[Dict[str, Any]] = None,
         max_replans: Optional[int] = None,
+        goal_text: Optional[str] = None,
     ) -> AgentRunResult:
         """Re-run a goal after a failed/partial run (fills the engine's L811 no-op).
 
         Idempotent: ``ExecutionEngine`` resumes already-completed tasks by name
         via its journal (``src/kernels/execution/__init__.py:714``), so side
         effects are not repeated. Bounded by ``max_replans`` to avoid loops.
+
+        ``goal_text`` lets callers (e.g. the gateway, whose stored ``prior`` has
+        no live ``context``) supply the original goal text; it falls back to
+        ``prior.context.goal.natural_language`` when available.
         """
-        max_replans = max_replans or self.max_replans
-        if prior.replan_count >= max_replans:
+        # A caller-supplied bound must be honoured verbatim. ``None`` is the
+        # sentinel for "caller did not set it" and falls back to the instance
+        # default; any explicit integer -- crucially ``0`` -- is respected.
+        #
+        # The previous form was ``max_replans or self.max_replans``, which
+        # treated an explicit ``0`` as falsy and silently substituted the
+        # (permissive) instance default. A caller that passed ``max_replans=0``
+        # to FORBID re-execution instead got ``self.max_replans`` runs, so the
+        # very control that bounds autonomous replanning failed open -- the
+        # "the bound is not the bound you asked for" class this hook exists to
+        # prevent.
+        effective_max_replans = self.max_replans if max_replans is None else max_replans
+        if prior.replan_count >= effective_max_replans:
             return prior
-        goal_text = prior.context.goal.natural_language if prior.context else ""
+        if goal_text is None:
+            goal_text = prior.context.goal.natural_language if prior.context else ""
         result = self.run_goal(
             goal_text,
             goal_id=prior.goal_id,
@@ -327,6 +677,27 @@ class AgentRuntime:
         )
         result.replan_count = prior.replan_count + 1
         return result
+
+    def _replan_for_evaluator(self, goal_id: str) -> AgentRunResult:
+        """Callback the evaluation kernel uses to actually re-run a goal.
+
+        Looks up the original goal text recorded in ``run_goal`` and re-executes
+        it (journal-driven resume makes this idempotent). Returns a FAILED
+        result — which makes ``Evaluator.execute_replan`` report ``False``
+        honestly — when this runtime has no record of the goal.
+        """
+        text = self._goal_texts.get(goal_id)
+        if text is None:
+            return AgentRunResult(
+                goal_id=goal_id,
+                correlation_id="",
+                state=AgentRunState.FAILED,
+                context=None,
+                evaluation=None,
+                trace=ExecutionTrace(correlation_id=""),
+                error="goal text unavailable for replan (not executed by this runtime)",
+            )
+        return self.run_goal(text, goal_id=goal_id, persist=True)
 
     def recover(self, goal: Goal) -> AgentRunResult:
         """Idempotent replay of a goal (rollforward / crash recovery).
@@ -345,7 +716,12 @@ class AgentRuntime:
     # Internal wiring
     # ------------------------------------------------------------------ #
     def _evaluate(
-        self, goal: Goal, ctx: ExecutionContext, correlation_id: str
+        self,
+        goal: Goal,
+        ctx: ExecutionContext,
+        correlation_id: str,
+        pinned_agent: Optional[str] = None,
+        preflight_notices: Optional[Sequence[str]] = None,
     ) -> Optional[EvaluationResult]:
         intended: Dict[str, Any] = {
             "id": goal.id,
@@ -366,11 +742,109 @@ class AgentRuntime:
             },
         }
         try:
-            return self.evaluator.evaluate(
+            evaluation = self.evaluator.evaluate(
                 intended, actual, scope=goal.scope, correlation_id=correlation_id
             )
         except Exception:
             return None
+        self._attach_summary(
+            goal,
+            ctx,
+            evaluation,
+            pinned_agent=pinned_agent,
+            preflight_notices=preflight_notices,
+        )
+        return evaluation
+
+    def _attach_summary(
+        self,
+        goal: Goal,
+        ctx: ExecutionContext,
+        evaluation: Optional[EvaluationResult],
+        pinned_agent: Optional[str] = None,
+        preflight_notices: Optional[Sequence[str]] = None,
+    ) -> None:
+        """Synthesize the user-facing conclusion from REAL task outputs.
+
+        The evaluator scores criteria; it does not write prose. Previously
+        ``EvaluationResult`` had no ``summary`` field at all, so the gateway
+        serialized ``""`` and the UI could only count tasks. Here the summary is
+        produced from the actual per-task outputs (model first, deterministic
+        evidence-only fallback), and the outcome is reconciled with the real
+        task result set so a failed task can never be labelled SUCCESS.
+        """
+        if evaluation is None or getattr(ctx, "plan", None) is None:
+            return
+        resolver = getattr(self, "agent_employee_resolver", None)
+        requires_artifact = goal_requires_artifact(goal.natural_language)
+        records: List[Dict[str, Any]] = []
+        artifact_paths: List[str] = []
+        for task in ctx.plan.tasks:
+            result = ctx.task_results.get(task.id)
+            agent_id = getattr(task, "assigned_agent", None)
+            employee = _record_employee(task, resolver, pinned_agent)
+            reason = getattr(task, "assignment_reason", None)
+            if pinned_agent:
+                # 用户点名指派：理由是可核对的事实，不需要模型编；也不能
+                # 沿用拆解器给"它原本想派的人"写的理由（会张冠李戴）。
+                reason = "用户点名指派"
+            output = result.output if result is not None else None
+            produced, artifacts = task_output_facts(
+                output, require_artifact=requires_artifact
+            )
+            for path in artifacts:
+                if path not in artifact_paths:
+                    artifact_paths.append(path)
+            # 把"是否真有产出"钉在任务上，网关序列化时照原样上屏，
+            # 避免 100% 进度 + 没有产物 的自相矛盾。
+            task.produced = produced
+            task.artifacts = list(artifacts)
+            records.append(
+                {
+                    "name": task.name,
+                    "capability": task.capability_id,
+                    "status": getattr(task.status, "value", str(task.status)),
+                    "result": output,
+                    "error": task.error,
+                    "assigned_agent": agent_id,
+                    "assigned_employee": employee,
+                    "assignment_reason": reason,
+                    "produced": produced,
+                    "artifacts": list(artifacts),
+                }
+            )
+        try:
+            summary = compose_execution_summary(
+                goal.natural_language, records, self._model_generator
+            )
+            notices = [str(n) for n in (preflight_notices or []) if str(n).strip()]
+            if notices:
+                # 边界提示永远排在最前面：它是"派活时"就说过的话，
+                # 不能埋在结论后面变成事后解释。
+                summary = "\n".join(notices) + ("\n\n" + summary if summary else "")
+            evaluation.summary = summary
+        except Exception:
+            # Summary generation must never take down a completed goal.
+            evaluation.summary = ""
+        if preflight_notices:
+            evaluation.metadata = dict(evaluation.metadata or {})
+            evaluation.metadata["preflight_notices"] = list(preflight_notices)
+        if ctx.failed_tasks:
+            completed_count = len(ctx.completed_tasks)
+            evaluation.outcome = (
+                EvaluationOutcome.PARTIAL if completed_count else EvaluationOutcome.FAILED
+            )
+            evaluation.metadata = dict(evaluation.metadata or {})
+            evaluation.metadata["failed_task_count"] = len(ctx.failed_tasks)
+            evaluation.metadata["completed_task_count"] = completed_count
+        elif requires_artifact and ctx.completed_tasks and not artifact_paths:
+            # 目标要文件、任务都"跑完了"却没有任何真实路径：这是未交付，
+            # 不是成功。state 仍是 completed（执行生命周期结束），但判定
+            # 必须降为 PARTIAL，让展示层能拆出「已完成但无产出」。
+            evaluation.outcome = EvaluationOutcome.PARTIAL
+            evaluation.metadata = dict(evaluation.metadata or {})
+            evaluation.metadata["artifact_required"] = True
+            evaluation.metadata["artifact_missing"] = True
 
     def _needs_replan(
         self, ctx: ExecutionContext, evaluation: Optional[EvaluationResult]
@@ -381,16 +855,95 @@ class AgentRuntime:
             return True
         return False
 
+    def _check_learning_blockers(self, goal: Goal, scope: str) -> Optional[str]:
+        """Check if any learned directives block this goal.
+
+        This is the READ side of memory — without this, memory is write-only
+        and the agent cannot learn from experience. We scan semantic/learning
+        entries for directives that constrain what the agent may do.
+
+        Returns a blocker reason string if the goal should be refused,
+        or ``None`` if it may proceed.
+        """
+        try:
+            mem_scope = MemoryScope(scope)
+        except Exception:
+            return None  # invalid scope => no blocking (fail-open for malformed input)
+
+        # Collect all semantic/learning memories at this scope and higher.
+        try:
+            all_entries = self.memory.scope_filter(mem_scope)
+        except Exception:
+            return None  # memory unavailable => don't block (availability)
+
+        # 写入侧落的是 MID_TERM（见 _persist）；只读 LONG_TERM 会让学习永远
+        # 不生效。两个层级都接受，学习闭环才真正闭合。
+        learning_entries = [
+            e for e in all_entries
+            if "learning" in e.tags
+            and e.tier in (MemoryTier.LONG_TERM, MemoryTier.MID_TERM)
+        ]
+
+        if not learning_entries:
+            return None
+
+        goal_lower = goal.natural_language.lower()
+
+        for entry in learning_entries:
+            value = entry.value if isinstance(entry.value, dict) else {}
+            directive = value.get("directive", "")
+            if not directive:
+                continue
+
+            directive_lower = directive.lower()
+
+            # --- Recognised directive patterns ---
+            # "NEVER write files" / "refuse every write"
+            if ("never" in directive_lower and "write" in directive_lower
+                    and ("file" in directive_lower or "write" in directive_lower)):
+                # Check if this goal involves file writing
+                file_keywords = ("write", "create", "save", "make", "generate", "file")
+                if any(kw in goal_lower for kw in file_keywords):
+                    # Also check for a filename pattern (e.g. "report.txt")
+                    import re
+                    if re.search(r"[\w./\\-]+\.[A-Za-z0-9]+", goal_lower):
+                        return f"learned directive prohibits file writes: {directive}"
+
+            # "NEVER run code" / "refuse execution"
+            if ("never" in directive_lower and ("code" in directive_lower
+                                                or "execute" in directive_lower
+                                                or "run" in directive_lower)):
+                code_keywords = ("run", "execute", "code", "python", "compute", "calculate")
+                if any(kw in goal_lower for kw in code_keywords):
+                    return f"learned directive prohibits code execution: {directive}"
+
+        return None
+
     def _persist(
         self,
         goal: Goal,
         ctx: ExecutionContext,
         evaluation: Optional[EvaluationResult],
         correlation_id: str,
-    ) -> List[str]:
-        keys: List[str] = []
+    ) -> Tuple[List[str], List[str]]:
+        """Persist run memory. Returns ``(written_keys, errors)``.
+
+        Honesty contract (alignment / intent-preservation): a memory write that
+        fails must NEVER be swallowed into silence. Each failure is captured in
+        ``errors`` so the caller (``run_goal``) can surface it on the
+        ``AgentRunResult``. The run still completes -- persistence must not crash
+        a run (availability) -- but a consumer reading the result can tell that
+        the agent did NOT actually remember this run, instead of believing a
+        silent, lossy "completed". ``written_keys`` holds only keys truly stored.
+        """
+        written: List[str] = []
+        errors: List[str] = []
         try:
             scope = MemoryScope(goal.scope)
+        except Exception as exc:
+            errors.append(f"memory scope invalid for goal {goal.id}: {exc!r}")
+            return written, errors
+        try:
             episodic = {
                 "goal_id": goal.id,
                 "goal": goal.natural_language,
@@ -405,9 +958,12 @@ class AgentRuntime:
                 key, episodic, tier=MemoryTier.MID_TERM, scope=scope,
                 tags={"episodic", "agent_run"},
             )
-            keys.append(key)
+            written.append(key)
+        except Exception as exc:
+            errors.append(f"episodic store failed for goal {goal.id}: {exc!r}")
 
-            if evaluation is not None and evaluation.replan_triggered:
+        if evaluation is not None and getattr(evaluation, "replan_triggered", False):
+            try:
                 learn = {
                     "goal_id": goal.id,
                     "feedback": evaluation.feedback,
@@ -418,11 +974,10 @@ class AgentRuntime:
                     k2, learn, tier=MemoryTier.MID_TERM, scope=scope,
                     tags={"semantic", "learning"},
                 )
-                keys.append(k2)
-        except Exception:
-            # Persistence must never fail a run.
-            pass
-        return keys
+                written.append(k2)
+            except Exception as exc:
+                errors.append(f"learning store failed for goal {goal.id}: {exc!r}")
+        return written, errors
 
 
 # ---------------------------------------------------------------------- #

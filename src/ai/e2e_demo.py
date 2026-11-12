@@ -30,6 +30,7 @@ import os
 import tempfile
 from typing import Any, Callable, Dict, Optional
 
+from ..kernels.execution import ExecutionJournal
 from .collaboration import MultiAgentTeam, Role
 from .lcore import LCore
 from .organization import Organization
@@ -85,6 +86,11 @@ def run_e2e_demo(
     """
     output_dir = output_dir or tempfile.mkdtemp(prefix="liuhao_e2e_")
     provider = provider or _DeterministicProvider()
+    # 账本与报告都落在这个目录；调用方可能只给了路径、还没建目录。
+    os.makedirs(output_dir, exist_ok=True)
+    # L-Core 走直接路由（不经 ExecutionEngine），所以必须显式接账本：
+    # 否则 multi_tier_memory 这类硬副作用会被闸门拒绝（这是有意的 fail-closed）。
+    journal = ExecutionJournal(os.path.join(output_dir, "execution_journal.db"))
 
     # The Organization's AgentFactory reads the *global* provider, while the
     # MultiAgentTeam takes one directly. Point both at the same provider so the
@@ -92,7 +98,7 @@ def run_e2e_demo(
     set_provider(provider)
     try:
         # ------------------------------------------------- Act 1: Organization
-        org = Organization("鎏灏研究院", budget=5000.0)
+        org = Organization("贾维斯研究院", budget=5000.0)
         org.add_policy("外部写盘需经 World 授权")
         research_dept = org.create_department("研究部")
         org.create_department("质量部")
@@ -109,7 +115,7 @@ def run_e2e_demo(
         delegate = team.delegate(manager, Role.RESEARCHER, "梳理 14 kernel 架构")
         pipeline = team.pipeline(
             [Role.RESEARCHER, Role.ANALYST, Role.QA],
-            seed="鎏灏 OS：十源 DNA，14 kernel",
+            seed="贾维斯 OS：十源 DNA，14 kernel",
         )
         report_text = pipeline["final"]
         org.remember("final_report", report_text)
@@ -121,8 +127,9 @@ def run_e2e_demo(
 
         # ------------------------------------------ Act 4: L-Core + World
         world = WorldInterface(
-            adapters=[FilesystemAdapter()],
+            adapters=[FilesystemAdapter(root=output_dir)],
             authorize=_world_authorize(output_dir),
+            actor="autonomous",
         )
         report_path = os.path.join(output_dir, "report.md")
 
@@ -136,7 +143,7 @@ def run_e2e_demo(
                 raise RuntimeError(result.error)
             return result.output
 
-        lcore = LCore(register_local_tools=True)
+        lcore = LCore(register_local_tools=True, journal=journal)
         lcore.register_tool(Tool(
             tool_id="persist-report",
             name="persist_report",
@@ -167,6 +174,7 @@ def run_e2e_demo(
         }
     finally:
         reset_provider()
+        journal.close()
 
 
 @observe("e2e_demo.main")
@@ -177,7 +185,7 @@ def main() -> None:
         out["world_read_back"]["status"] == "observed"
         and out["world_read_back"]["data"] == out["report_text"]
     )
-    print("=== 鎏灏 OS 四层端到端演示 ===")
+    print("=== 贾维斯 OS 四层端到端演示 ===")
     print(f"组织: {out['org']}")
     print(
         f"协作管线: {out['pipeline_status']}  "

@@ -23,6 +23,7 @@ import os
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
+from ..kernels.execution import ExecutionJournal
 from .collaboration import MultiAgentTeam, Role
 from .economy import BillingEngine, BudgetEngine, EconomyEngine
 from .enoch import MissionRunner, MissionStore, create_mission
@@ -85,6 +86,9 @@ def run_vhl_benchmark(
     output_dir = output_dir or tempfile.mkdtemp(prefix="liuhao_vhl_")
     provider = _DeterministicProvider()
     registry = L10KRegistry()
+    os.makedirs(output_dir, exist_ok=True)
+    # L-Core 直接路由工具，必须显式接账本；否则 multi_tier_memory 会被闸门拒绝。
+    journal = ExecutionJournal(os.path.join(output_dir, "execution_journal.db"))
 
     # 固定 benchmark 集：7 个任务，各对应一个能力层的真实产出。
     task_ids = {
@@ -105,7 +109,7 @@ def run_vhl_benchmark(
     set_provider(provider)
     try:
         # ------------------------------------------------- T1 Organization
-        org = Organization("鎏灏研究院", budget=5000.0)
+        org = Organization("贾维斯研究院", budget=5000.0)
         org.add_policy("外部写盘需经 World 授权")
         org.create_department("研究部")
         org.create_department("质量部")
@@ -121,7 +125,7 @@ def run_vhl_benchmark(
         team.hire(Role.QA)
         pipeline = team.pipeline(
             [Role.RESEARCHER, Role.ANALYST, Role.QA],
-            seed="鎏灏 OS：十源 DNA，14 kernel",
+            seed="贾维斯 OS：十源 DNA，14 kernel",
         )
         report_text = pipeline["final"]
         org.remember("final_report", report_text)
@@ -131,6 +135,7 @@ def run_vhl_benchmark(
         world = WorldInterface(
             adapters=[FilesystemAdapter()],
             authorize=_world_authorize(output_dir),
+            actor="autonomous",
         )
         report_path = os.path.join(output_dir, "report.md")
 
@@ -144,7 +149,7 @@ def run_vhl_benchmark(
                 raise RuntimeError(result.error)
             return result.output
 
-        lcore = LCore(register_local_tools=True)
+        lcore = LCore(register_local_tools=True, journal=journal)
         lcore.register_tool(Tool(
             tool_id="persist-report",
             name="persist_report",
@@ -212,6 +217,7 @@ def run_vhl_benchmark(
 
     finally:
         reset_provider()
+        journal.close()
 
     baseline = registry.baseline_report()
     main_units = baseline["main"]["weighted_units"]
@@ -236,7 +242,7 @@ def main() -> None:
 
     out = run_vhl_benchmark()
     b = out["baseline"]
-    print("=== 鎏灏 OS 八层端到端 VHL Benchmark ===")
+    print("=== 贾维斯 OS 八层端到端 VHL Benchmark ===")
     print(f"注册任务: {b['total_registered_tasks']}  计入: {b['total_recorded_tasks']}")
     print(f"main verified_units: {b['main']['verified_units']}  weighted: {b['main']['weighted_units']}")
     print(f"held-out verified_units: {b['held_out']['verified_units']}（隔离，不并入主指标）")

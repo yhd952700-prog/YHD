@@ -10,6 +10,37 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Sequence
 
+from error_types import ProviderError
+
+
+class ProviderNotConfiguredError(ProviderError):
+    """Raised by a provider adapter that has no real backend configured.
+
+    Why this exists
+    ---------------
+    Several adapters under ``src/providers/`` are deterministic contract stubs
+    (``openai``, ``self_host``): they have no client, yet they used to return
+    fabricated payloads carrying real model names and to report
+    ``health_check() == {"status": "healthy"}`` unconditionally. A caller could
+    not tell "the model answered" from "a hard-coded echo", and a monitor wired
+    to the health probe stayed green forever.
+
+    A component that cannot perform an operation must fail closed, not fake
+    success. Adapters raise this instead of fabricating, and reserve fabrication
+    for the explicit repo-wide simulation opt-in
+    (``LIUHAO_ALLOW_SIMULATED_EXECUTION``), where payloads are labelled
+    ``simulated=True``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        provider: str = "unknown",
+        error_code: str = "NOT_CONFIGURED",
+        severity: str = "high",
+    ) -> None:
+        super().__init__(message, provider, error_code, severity)
+
 
 class ProviderConfig:
     """Minimal config wrapper used by the provider registry."""

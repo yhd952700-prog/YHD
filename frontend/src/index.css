@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.slate.300') transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-slate-300 dark:bg-slate-700;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .lh-card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-card transition-shadow dark:border-slate-800 dark:bg-slate-900;
+  }
+
+  .lh-card-hover {
+    @apply hover:shadow-card-hover;
+  }
+
+  .lh-input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
+      placeholder:text-slate-400 focus:border-brand-500 focus:outline-none
+      focus:ring-2 focus:ring-brand-500/20 dark:border-slate-700 dark:bg-slate-900
+      dark:placeholder:text-slate-500;
+  }
+
+  .lh-btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm
+      font-medium transition-colors focus:outline-none focus:ring-2
+      focus:ring-brand-500/30 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .lh-btn-primary {
+    @apply lh-btn bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800;
+  }
+
+  .lh-btn-secondary {
+    @apply lh-btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50
+      dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800;
+  }
+
+  .lh-btn-ghost {
+    @apply lh-btn text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+
+  .lh-btn-danger {
+    @apply lh-btn bg-red-600 text-white hover:bg-red-700;
+  }
+
+  .lh-badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+
+  .lh-chip {
+    @apply inline-flex cursor-pointer items-center gap-1 rounded-full border
+      border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 transition-colors
+      hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+
+  .lh-chip-active {
+    @apply border-brand-500 bg-brand-50 text-brand-700 hover:bg-brand-100
+      dark:bg-brand-950 dark:text-brand-300;
+  }
+
+  .lh-divider {
+    @apply border-t border-slate-200 dark:border-slate-800;
+  }
+
+  .lh-skeleton {
+    @apply animate-pulse-soft rounded bg-slate-200 dark:bg-slate-800;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

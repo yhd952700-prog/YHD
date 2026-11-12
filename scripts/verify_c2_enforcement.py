@@ -9,21 +9,43 @@ What this proves:
   3. The gate BLOCKS a denied HIGH/CRITICAL action when enforce=True, and is
      fail-closed when adjudication is unavailable.
   4. The gate does NOT block: allow verdicts, and LOW/MEDIUM tiers.
-  5. SAFETY GUARD: no production ``@kernel_action`` call site has flipped
-     enforce=True -- the kernel layer stays additive in production.
+  5. SAFETY GUARD: no production ``@kernel_action`` call site passes
+     enforce=True -- that is exactly what this guard asserts. Whether the gate is
+     armed at *runtime* is a separate, deployment-side decision: the production
+     manifest arms ``CRITICAL`` by default (``docker-compose.prod.yml:69``),
+     and ``scripts/verify_armed_actions_are_inert.py`` keeps CI red if a change
+     makes an armed action reachable. Do not read "the decorator flag is unset"
+     as "nothing is enforced in production".
 """
 
 from __future__ import annotations
 
 import ast
 import importlib
+import os
 import pathlib
 import sys
+import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-KERNELS_DIR = REPO_ROOT / "src" / "kernels"
+# HIGH/CRITICAL kernel actions carry mandatory audit evidence (``reraise=True``):
+# if the evidence channel is unavailable the action MUST fail-closed. The
+# project-root ``audit_store.db`` is deliberately frozen as the HC-01 evidence
+# store, so ``AuditStore()`` refuses to default to it -- without an explicit
+# path this script cannot exercise a HIGH default-off action at all, and the
+# failure it reports ("unexpectedly raised") would be about the missing evidence
+# channel rather than about C-2 enforcement.
+#
+# Give the check a throwaway store, exactly as ``tests/conftest.py`` does for
+# the suite. The gate semantics are untouched: this only supplies the audit
+# channel a real deployment supplies via ``AUDIT_DB_PATH``.
+if not os.environ.get("AUDIT_DB_PATH"):
+    _audit_dir = tempfile.mkdtemp(prefix="liuhao_c2_audit_")
+    os.environ["AUDIT_DB_PATH"] = os.path.join(_audit_dir, "audit.db")
+
+SRC_DIR = REPO_ROOT / "src"
 
 RESULTS = []
 
@@ -37,7 +59,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def _discover_enforce_flags() -> dict:
     """Map of action-name -> whether any call site passes enforce=True."""
     enforced: dict = {}
-    for path in KERNELS_DIR.rglob("*.py"):
+    for path in SRC_DIR.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
@@ -79,7 +101,6 @@ def main() -> int:
           str(sorted(t.value for t in rc.ENFORCED_TIERS)))
 
     # --- 2+3+4. gate behaviour through the real decorator -------------------- #
-    import pytest  # only used for the raises helper below; fall back if absent
 
     # HIGH denied + enforce => raises (Policy C-3 reclassifies this as DEFER:
     # the action requires human sovereignty, OD-010, rather than a permanent
@@ -125,7 +146,10 @@ def main() -> int:
 
     # fail-closed: adjudication unavailable + enforce => blocks
     orig = xc._adjudicate
-    xc._adjudicate = lambda a, r: (None, None)
+    # PHASE 3.6 / A2: _adjudicate now returns the actor it actually used as a
+    # third value, so the stub must too. The real fail-closed path returns the
+    # service actor shape, so the stub mirrors it rather than inventing one.
+    xc._adjudicate = lambda a, r: (None, None, xc._service_actor_policy_shape())
     try:
         @xc.kernel_action("security.set_abac_rule", enforce=True)
         def critical_enforced():

@@ -12,8 +12,11 @@ Checks (exit 0 = all green):
 3. COVERAGE  — the registry covers EXACTLY the ``@kernel_action("...")`` names
               discovered by AST scan (no missing, no stale, no drift).
 4. TIERS     — every tier is a valid RiskTier; distribution is
-              14 LOW / 12 MEDIUM / 15 HIGH / 2 CRITICAL; LOW == the C-1
-              internal-service allow-list (two independent sources agree).
+              LOW 17 / MEDIUM 13 / HIGH 15 / CRITICAL 2; the internal-service
+              allow-list is checked against the ORTHOGONAL sovereignty invariant
+              (no HIGH/CRITICAL or destructive action pre-approved; the intended
+              MEDIUM operational actions stay allow-listed and tier-confirmed) --
+              the allow-list is NOT the LOW tier (decoupled dimensions).
 5. WIRING    — the decorator now records the *real* risk_level in the audit
               trail (previously a dead "LOW"), proving C-2 will have real
               input without changing any verdict today.
@@ -21,15 +24,27 @@ Checks (exit 0 = all green):
 
 from __future__ import annotations
 
-import ast
 import importlib
 import inspect
+import os
 import pathlib
 import sys
+import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
 sys.path.insert(0, str(REPO_ROOT))
+
+# --- audit-store isolation (honors ③ fail-closed, never touches frozen store) ---
+# Step [5] invokes real @kernel_action probes that write to the audit trail. The
+# frozen HC-01 evidence store (repo-root audit_store.db) MUST NOT be written by a
+# verification script, and ③ fail-closed makes AuditStore() refuse to default to
+# it when AUDIT_DB_PATH is unset -- which would crash this script at step 5
+# (before it can reach the honest L154 result) if run in an env that does not
+# pre-set AUDIT_DB_PATH. Redirect to an isolated temp db so the script is
+# self-contained; respect an externally-provided value if one is already set.
+_PROBE_DB = os.path.join(tempfile.gettempdir(), f"d8_risk_probe_{os.getpid()}.sqlite")
+os.environ.setdefault("AUDIT_DB_PATH", _PROBE_DB)
 
 failures: list[str] = []
 
@@ -46,7 +61,14 @@ print("=" * 72)
 print("[1] importing every module under src/")
 print("=" * 72)
 
-modules = sorted(p for p in SRC.rglob("*.py") if "__pycache__" not in p.parts)
+# ``__main__.py`` 是 ``python -m <pkg>`` 的入口，导入即执行 CLI（多个包以
+# ``raise SystemExit(main())`` 结尾，argparse 缺参时直接 exit 2）。它们不是
+# 可导入的库模块；SystemExit 不是 Exception，下面的 except 捕获不到。
+modules = sorted(
+    p
+    for p in SRC.rglob("*.py")
+    if "__pycache__" not in p.parts and p.name != "__main__.py"
+)
 ok = failed = 0
 for path in modules:
     name = _module_name(path)
@@ -72,6 +94,8 @@ print("=" * 72)
 from src.kernels._risk_classification import (  # noqa: E402
     KERNEL_ACTION_RISK,
     RiskTier,
+    is_enforced_tier,
+    get_action_risk,
     discover_kernel_action_names,
 )
 from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS  # noqa: E402
@@ -131,15 +155,21 @@ if unclassified:
     failures.append(f"COVERAGE: unclassified kernel actions {unclassified}")
 if stale:
     failures.append(f"COVERAGE: stale registry entries {stale}")
-if len(classified) != 44:
-    failures.append(f"COVERAGE: registry size {len(classified)} != 44")
+# Derived from discover_kernel_action_names() (computed above into `decorated`)
+# instead of a hardcoded magic number: legitimate growth -- adding a new
+# @kernel_action and its registry entry -- must not trip a brittle size guard.
+# The unclassified/stale checks above already enforce classified == decorated;
+# this is the explicit size sanity signal expressed against the real set.
+expected = len(decorated)
+if len(classified) != expected:
+    failures.append(f"COVERAGE: registry size {len(classified)} != derived {expected}")
 
 # --------------------------------------------------------------------------- #
 # 4. TIERS
 # --------------------------------------------------------------------------- #
 print()
 print("=" * 72)
-print("[4] tier validity + distribution + LOW==allow-list cross-check")
+print("[4] tier validity + distribution + orthogonal sovereignty invariant")
 print("=" * 72)
 
 counts = {t: 0 for t in RiskTier}
@@ -147,16 +177,78 @@ for rec in KERNEL_ACTION_RISK.values():
     assert isinstance(rec.tier, RiskTier), "non-enum tier"
     counts[rec.tier] += 1
 print(f"  distribution: { {t.value: c for t, c in counts.items()} }")
-if counts != {RiskTier.LOW: 15, RiskTier.MEDIUM: 12, RiskTier.HIGH: 15, RiskTier.CRITICAL: 2}:
+# Expected tier distribution. This is a guardrail: any drift from this baseline
+# must be re-confirmed as legitimate (new @kernel_action added with an intentional
+# tier) rather than silently accepted. Baseline updated 2026-10-06 after confirming
+# the prior {LOW:15, MEDIUM:12} had grown by 2 LOW + 1 MEDIUM from legitimately
+# registered kernel actions (coverage check showed decorated==registry, no
+# unclassified/stale). Re-confirmed 2026-11-10: HIGH 15 -> 17, from 2 new HIGH
+# kernel actions registered under "authority change / destructive / code lifecycle"
+# (coverage check showed decorated==registry, no unclassified/stale; registry
+# section header self-describes "HIGH (17)"). CRITICAL stays pinned at 2.
+EXPECTED_TIER_DISTRIBUTION = {
+    RiskTier.LOW: 17,
+    RiskTier.MEDIUM: 13,
+    RiskTier.HIGH: 17,
+    RiskTier.CRITICAL: 2,
+}
+if counts != EXPECTED_TIER_DISTRIBUTION:
     failures.append(f"TIERS: unexpected distribution {counts}")
 
-low = {a for a, rec in KERNEL_ACTION_RISK.items() if rec.tier is RiskTier.LOW}
-if low != set(INTERNAL_SERVICE_ALLOWED_ACTIONS):
+# Orthogonal sovereignty invariant -- mirrors tests/kernels/test_risk_classification.py
+# TestSovereigntyInvariant (commit 5cc13c5b). The allow-list is NOT the LOW tier;
+# internal services may run MEDIUM operational actions, but must never be
+# pre-approved for sovereignty-gated (HIGH/CRITICAL) or irreversible/destructive
+# actions. The two dimensions are decoupled on purpose: reverting the allow-list to
+# LOW-only would drop identity/quota/route/trust/planner paths to default_deny and
+# break the operational loop (the reverse error systems-critic warned against).
+sov_ok = True
+allow = set(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+
+# (1) allow-list must not pre-approve any sovereignty-gated (HIGH/CRITICAL) action.
+gated = {a for a, rec in KERNEL_ACTION_RISK.items() if is_enforced_tier(rec.tier)}
+if gated & allow:
+    sov_ok = False
     failures.append(
-        f"TIERS: LOW set != internal-service allow-list {sorted(low ^ set(INTERNAL_SERVICE_ALLOWED_ACTIONS))}"
+        f"SOVEREIGNTY: allow-list pre-approves enforced-tier action(s) {sorted(gated & allow)}"
     )
 else:
-    print("  LOW tier == INTERNAL_SERVICE_ALLOWED_ACTIONS (C-1 agreement): OK")
+    print("  allow-list ∩ enforced tiers (HIGH/CRITICAL) == ∅: OK")
+
+# (2) allow-list must not pre-approve any irreversible / destructive action.
+destructive = {a for a in allow if (rec := get_action_risk(a)) is not None and rec.destructive}
+if destructive:
+    sov_ok = False
+    failures.append(
+        f"SOVEREIGNTY: allow-list pre-approves destructive action(s) {sorted(destructive)}"
+    )
+else:
+    print("  allow-list contains no destructive action: OK")
+
+# (3) positive: the intended MEDIUM operational actions stay allow-listed AND are MEDIUM.
+expected_medium = {
+    "identity.create_identity",
+    "network.add_route",
+    "resource.allocate",
+    "resource.create_quota",
+    "trust.assign_score",
+    "trust.update_score",
+}
+if not expected_medium <= allow:
+    sov_ok = False
+    failures.append(
+        f"SOVEREIGNTY: expected MEDIUM operational actions missing from allow-list "
+        f"{sorted(expected_medium - allow)}"
+    )
+for a in expected_medium:
+    rec = get_action_risk(a)
+    if rec is None or rec.tier is not RiskTier.MEDIUM:
+        sov_ok = False
+        failures.append(
+            f"SOVEREIGNTY: {a} expected MEDIUM in allow-list, got {rec.tier if rec else None}"
+        )
+if sov_ok:
+    print("  MEDIUM operational actions present in allow-list and tier-confirmed: OK")
 
 # --------------------------------------------------------------------------- #
 # 5. WIRING — decorator records the real risk_level in audit
@@ -165,17 +257,46 @@ print()
 print("=" * 72)
 print("[5] decorator feeds the real risk_level into the audit trail")
 print("=" * 72)
+print(f"  audit-store isolation: AUDIT_DB_PATH={os.environ.get('AUDIT_DB_PATH')} "
+      f"(must NOT be the frozen repo-root audit_store.db)")
 
 from src.kernels._crosscutting import kernel_action  # noqa: E402
 
 
 def _details_for(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    PHASE 3.6 / A2 + F26. Before A2 every ``@kernel_action`` recorded the literal
+    subject ``"kernel"``, so this guard could find its own row by that string.
+    A2 replaced the constant with the *actual* acting principal, so pinning the
+    literal finds either nothing or a stale row left in the shared
+    ``audit_store.db`` by an earlier run -- and a stale row is a green that
+    proves nothing.
+
+    Attribution is asserted as a **value**: ``actor_fingerprint`` must actually
+    be a 32-hex fingerprint (not merely non-empty), and the event's
+    ``principal_id`` column must agree with the ``actor_identity_id`` in
+    ``details`` -- the keyspace convergence A2 established.
+    """
     from src.kernels.audit import audit_query
 
-    for ev in audit_query(principal_id="kernel", limit=2000, reverse=True):
+    for ev in audit_query(limit=2000, reverse=True):
         det = ev.get("details") or {}
-        if det.get("action") == action_name:
-            return det
+        if det.get("action") != action_name:
+            continue
+        fingerprint = det.get("actor_fingerprint")
+        assert isinstance(fingerprint, str) and len(fingerprint) == 32 and all(
+            c in "0123456789abcdef" for c in fingerprint
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fingerprint!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
     return None
 
 

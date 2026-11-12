@@ -100,18 +100,25 @@ def read_corpus(root: pathlib.Path):
     return corpus
 
 
-def classify(mod: str, self_path: pathlib.Path, corpus, root: pathlib.Path) -> str:
+def classify(mod: str, self_path: pathlib.Path, corpus, root: pathlib.Path, rel_targets=None) -> str:
     """Return ``"prod"``, ``"tests"`` or ``"none"`` for ``mod``'s reachability."""
     short = mod.rsplit(".", 1)[-1]
     dotted_re = re.compile(re.escape(mod))
     short_re = re.compile(rf"(?:from|import)\s+[\w\.]*\b{re.escape(short)}\b")
     quoted_re = re.compile(rf"[\"']{re.escape(mod)}[\"']")
+    rel_targets = rel_targets or {}
     tests_dir = root / "tests"
     seen_tests_only = False
     for path, text in corpus:
         if path == self_path:
             continue
-        if not (dotted_re.search(text) or short_re.search(text) or quoted_re.search(text)):
+        hit = (
+            dotted_re.search(text)
+            or short_re.search(text)
+            or quoted_re.search(text)
+            or mod in rel_targets.get(path, ())
+        )
+        if not hit:
             continue
         try:
             is_test = path.relative_to(root).parts[0] == tests_dir.name
@@ -123,12 +130,53 @@ def classify(mod: str, self_path: pathlib.Path, corpus, root: pathlib.Path) -> s
     return "tests" if seen_tests_only else "none"
 
 
+#: 包内相对导入：``from . import x`` / ``from .. import x`` / ``from .mod import x``，
+#: 以及带括号的多行写法。原先只按 "import <名字>" 匹配文本，import 后面若是
+#: ``paths, rescue`` 这种逗号列表，第二个名字就抓不到 —— ``src.selfupgrade.rescue``
+#: 因此被误判成零引用。
+_REL_IMPORT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(\.+)[ \t]*([\w\.]*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]+)",
+    re.MULTILINE,
+)
+
+
+def relative_import_targets(path: pathlib.Path, text: str, root: pathlib.Path) -> set[str]:
+    """把相对导入展开成绝对点分名，供 :func:`classify` 精确比对。
+
+    只做名字展开，不检查符号是否真的存在 —— 扫描器本来就是文本启发式，这里
+    补的是"按文件自身所在包还原 `.`/`..` 的层级"这一层，避免再漏掉包内导入。
+    """
+    try:
+        parts = list(path.relative_to(root).with_suffix("").parts)
+    except ValueError:
+        return set()
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    package = parts if path.name == "__init__.py" else parts[:-1]
+
+    targets: set[str] = set()
+    for match in _REL_IMPORT_RE.finditer(text):
+        dots, suffix, names = match.group(1), match.group(2), match.group(3)
+        up = len(dots) - 1
+        base = package[: len(package) - up] if up else list(package)
+        head = ".".join([*base, suffix] if suffix else list(base))
+        if suffix:
+            targets.add(head)
+        for raw in names.strip().strip("()").split(","):
+            name = raw.split(" as ")[0].strip().strip("()").strip()
+            if not name or name == "*":
+                continue
+            targets.add(f"{head}.{name}" if head else name)
+    return targets
+
+
 def find_orphans(root: pathlib.Path):
     """Return ``(orphans, test_only)`` -- both as sorted lists of module names."""
     corpus = read_corpus(root)
+    rel_targets = {path: relative_import_targets(path, text, root) for path, text in corpus}
     orphans, test_only = [], []
     for name, path in iter_modules(root):
-        verdict = classify(name, path, corpus, root)
+        verdict = classify(name, path, corpus, root, rel_targets)
         if verdict == "none":
             orphans.append(name)
         elif verdict == "tests":
@@ -209,6 +257,8 @@ def main(argv=None) -> int:
             print(f"    - {m}", file=sys.stderr)
 
     if args.list:
+        # `--list` 是纯信息模式（argparse 声明的 "report and always exit 0"）：
+        # 它只打印待人工核对的清单，不宣布"检查通过"。这里的 0 不是伪装通过。
         return 0
 
     if unacknowledged:

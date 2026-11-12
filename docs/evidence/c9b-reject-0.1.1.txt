@@ -1,0 +1,8 @@
+python.exe : 失败：升级包缺少控制台构建产物 console/index.html：安装后界面会停留在旧版本（或直接空白），已拒绝继续。请用包含前端的安装树重新打包：packaging/stage_payload.py → p
+ackaging/make_release.py --app-root。
+所在位置 行:20 字符: 1
++ & d:\LiuHao-AI-OS\.venv\Scripts\python.exe -m src.upgrade upgrade --a ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (失败：升级包缺少控制台构建产物....py --app-root。:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

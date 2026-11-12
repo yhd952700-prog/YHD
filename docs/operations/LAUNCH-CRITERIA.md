@@ -25,7 +25,7 @@
 | **A1** | 真实执行 | 至少一条「自然语言目标 → 能力路由 → 真实执行 → 真值」的端到端链路。运行时探针必须返回**真实计算结果**，而非 `status:"simulated"`。 |
 | **A2** | 诚实失败 | 不可执行 / 被安全策略拒绝 / 未接线，三种情况都必须 **loud fail**（`success=False` + 可操作原因）；任何路径都不得把「没做成」报成「做成」。 |
 | **A3** | 能力状态诚实 | 能力注册表与运行时代码一致；已知空转项列入 `known-open-items`。 |
-| **A4** | 人类主权护栏 | C-1..C-7 接线；C-2 默认 OFF 且默认值被 AST 护栏锁死；生产 arm 前身份表已挂（否则 fail-closed）。 |
+| **A4** | 人类主权护栏 | C-1..C-7 接线；C-2 默认 OFF 且默认值被 AST 护栏锁死；生产 arm 前身份表已挂（否则 fail-closed）。⚠️ **2026-09-22 复核（Track-D §37.9）：本行不满足人类决策包 `:168` 的 "Decision+Enforcement+Evidence 同一决策点闭环" —— 四守卫只验各自一层、无人验闭环，且 CRIT-1C 使 Evidence 静默失败（运行时即 `:167` 禁止的 `Decision=DENY/Evidence=missing/Action=continues` 悖论态）。A4 在此复核下应判 ❌ 阻塞，非 ✅ 通过；CRIT-1C 修复前不得判闭环。** |
 | **A5** | 可观测 | 审计哈希链可 `verify_integrity`；事件总线带 `correlation_id`；关键动作有 trace。 |
 | **A6** | 可复现部署 | 至少一条路径能在干净环境从零跑到可访问（云发布包 / Docker / 本机单端口）。 |
 | **A7** | 驾驶舱可用 | 外链可访问；展示的是真实遥测而非占位。 |
@@ -43,10 +43,10 @@
 | A1 | 真实执行 | ✅ **通过（WS1，本轮）** | 探针：目标 `"python: result = sum(i*i for i in range(1,11))"` → `status=executed`、`result='385'`。提交 `d992de46`。 |
 | A2 | 诚实失败 | ✅ **通过（WS1，本轮）** | 探针三路径：真执行 385 / 注入 `import os` → `REJECTED: ImportError` / 未接线 → `no active tool for capability python_compute`。护栏 `tests/test_execution_tool_bridge.py::(h)`。 |
 | A3 | 能力状态诚实 | ✅ **通过（WS2 + Round 89 复核实测）** | `capability-registry.yaml` 新增 `local-capabilities`（python_compute）与 `known-open-items`（OPEN-001..006）；名册端点 20 项测试通过。**Round 89**：OPEN-001（Context 内核默认空转）经运行核实测**前提已不成立** —— 默认 HYBRID 权重下输入 GOAL/TASK×2/MEMORY/POLICY 得 `retained=['task']`（非空、确定性、与顺序无关），注册表状态改为 `RESOLVED` 并附护栏引用。名册测试复绿（20 passed）。 |
-| A4 | 人类主权护栏 | ✅ **通过（WS3 复验 + P2 裁决）** | 4 个验证脚本 ALL GREEN：C-1(43 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(15，DEFER+委托) / C-4(52，生产清单 arm 面 == 审计面 16=16)。源码默认 OFF 仍由 AST 护栏锁死（`no production @kernel_action has enforce=True`）。**P2 裁决：发布包 serve.py `setdefault LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（与生产 compose 同值）—— 前提是身份表已挂（见 A11），实测线上 `enabled=true / 16 个动作`；回滚 = 导出空值重启。 |
+| A4 | 人类主权护栏 | ❌ **不满足（2026-09-22 复核推翻 WS3「通过」判定；CRIT-1C 修复前不得判闭环，详见本行右栏注）** | 4 个验证脚本 ALL GREEN：C-1(44 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(19，DEFER+委托) / C-4(54，生产清单 arm 面 == 审计面 16=16)。源码默认 OFF 仍由 AST 护栏锁死（`no production @kernel_action has enforce=True`）。**P2 裁决（原文保留）：发布包 serve.py `setdefault LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL`**（与生产 compose 同值）—— 前提是身份表已挂（见 A11），实测线上 `enabled=true / 16 个动作`；回滚 = 导出空值重启。<br>⚠️ **2026-09-21 复核：上述「发布包 serve.py 默认 arm」与「实测线上 `enabled=true / 16 个动作`」在本工作区既不能证实、也不能推翻。** 依据：① 磁盘上的 `deploy/cloud/serve.py`（2489 B、md5 `20c26fae1b615d4c60370fbe1e6d0c37`、mtime **2026-09-16 06:16:40**）**晚于**最后一次发布（2026-09-15 14:19；`deploy/cloud/` 内其余文件为 09-15 13:01–14:03）⇒ 它**不是发布当刻那一份**，对「线上跑的是什么」不构成任何方向的证据；② 该文件中 `LIUHAO_KERNEL_POLICY_ENFORCE` 与 `LIUHAO_JWT_SECRET` 均 **0 命中**，且**没有任何已提交版本的 `scripts/build_cloud_bundle.py` 能渲染出它的字节**（`_LAUNCHER`@`63f16723` 删掉 752 B 的 arming 段后与它逐字节相等；而更早的版本不含 LLM 块，该文件却含 LLM 块却不含 arming 段 —— 此组合在任何版本中都不出现）；③ 源码侧 `scripts/build_cloud_bundle.py:161` 的 arming 行**现存且无条件渲染** ⇒ 下一次重建会写入该行。**可复现的只有部署清单**：`docker-compose.prod.yml:69` = `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。**唯一能定论的是线上探针**：对已部署 URL 请求 `GET /v1/policy/enforcement`（需人类令牌，端点见 `src/gateway/policy.py:200`），读 `enabled` 与 `enforced_actions` 计数；本次未执行，外链现状见 A7 行。 ⚠️ **2026-09-21 复核（同一行内另一处依赖）**：上句引作证据的 CI 标签 `no production @kernel_action has enforce=True` 在仓库里共 3 处 —— `scripts/verify_c2_enforcement.py:153`、`scripts/verify_c3_sovereignty.py:324`、`scripts/verify_c4_approval_channel.py:445`。**该结论今日成立、未被推翻**，依据有两条：① 三处中 **c3 `:324` 那处的扫描根就是 `src/`**（`SRC_DIR.rglob("*.py")`，`:67`，223 个文件）且为绿；② 今日实测 `src/` 全域**代码形态** `enforce\s*=\s*True` 命中 **0**（另 4 处命中全为注释/docstring：`src/kernels/_enforcement.py:14`、`src/kernels/_crosscutting.py:68`、`:693`、`:710`）。**需记的是覆盖面而非结论**：另两处（c2 `:45`、c4 `:93`）的扫描根是 `KERNELS_DIR`（25 个文件），即这条证据链是**两弱一强**；就这两处而言，标签所称的 "production" 宽于其实际扫描的面。**本段为 `f659d496` 时点的快照**；若这三处的扫描根后续变更，本段须同步更新。<br>✅ **2026-09-21 同步（已按上一句执行，提交 `df4744cb`）**：上述「该结论今日成立、未被推翻」**未变**；变的是覆盖面与行号 —— 两处弱根已加宽，c2 `:31`/`:45`、c4 `:75`/`:106` 现均为 `SRC_DIR = REPO_ROOT / "src"` + `rglob("*.py")`（223 个文件），故「两弱一强」不再成立：三处 `no production @kernel_action has enforce=True` 标签的扫描根现在**同为 `src/`（223 个文件）**。行号随之上移：c2 `:153` 未变、c3 `:324`→`:327`、c4 `:445`→`:557`。同轮 c4 的 `no production kernel code opens a sovereignty channel` 收窄为 `no statically-resolvable opener of a sovereignty channel under src/`（c4 `:559`；c3 同类标签 `:335`），c3/c4 的 opener 集合补入 `grant_window`；`scripts/verify_single_identity_root.py` 的结论行同步收窄为「仅覆盖 `ast.Import` / `ast.ImportFrom` 可静态解析的 import 语句」。 |
 | A5 | 可观测 | ✅ 通过 | 审计哈希链 + 事件总线 + trace（既有实现与测试）。 |
 | A6 | 可复现部署 | ✅ **通过（WS4 + P0 重建）** | 发布包 229 文件（src 213 + config 7 + console 10 + 根文件）；`RestrictedPython`、`capability-registry.yaml`、**`config/human_identities.json`、`config/auth_secrets.json`** 全部入包。整包冒烟：无令牌 `roster`→401、`/v1/health`→200、登录→令牌、带令牌 roster/summary/profile/enforcement 全 200。 |
-| A7 | 驾驶舱可用 | ✅ **通过（Round 89 重新发布）** | **当前外链：`https://liuhao-cockpit-26430.app.workbuddy.host/`**（appId `wbapp_Ca767ODcz2AiVn7eutyxnq`，`verified:true`）。实测线上 `/v1/health` 200、无令牌 `/v1/dashboard/roster` 401、`auth/config` 报 `secret_store.configured=true` / `login_eligible_humans=1` / `diagnostics.algorithm=HS256`（Round 89 起用**烘焙的持久密钥**，旧行为是每进程随机的 RS256）/ `roundtrip=ok`、SPA 标题 `<title>LiuHao AI OS · 鎏灏智能中枢</title>`。⚠️ **旧链接 `liuhao-cockpit-84759`（appId `wbapp_AAy6Aj792OFtebl532XN9S`，旧内容）仍在线，且 API 侧已成孤儿**（Round 90 收口实测，三条路全被平台拒绝）：
+| A7 | 驾驶舱可用 | ✅ **通过（Round 89 重新发布）** | **成文时刻的外链：`https://liuhao-cockpit-26430.app.workbuddy.host/`**（appId `wbapp_Ca767ODcz2AiVn7eutyxnq`，写入时 `verified:true`）。（⚠️ **2026-09-21 复核：该 URL 现在返回平台页「链接已失效 / 该应用尚未发布，或者发布已被作者取消」** ⇒ 「当前外链」这一表述只对成文时刻成立，下文列出的线上端点数据在本工作区**不可复验**；判据以本行末尾与 §5 的「不能只看 `verified:true`」为准。）实测线上 `/v1/health` 200、无令牌 `/v1/dashboard/roster` 401、`auth/config` 报 `secret_store.configured=true` / `login_eligible_humans=1` / `diagnostics.algorithm=HS256`（Round 89 起用**烘焙的持久密钥**，旧行为是每进程随机的 RS256）/ `roundtrip=ok`、SPA 标题 `<title>LiuHao AI OS · 鎏灏智能中枢</title>`。⚠️ **旧链接 `liuhao-cockpit-84759`（appId `wbapp_AAy6Aj792OFtebl532XN9S`，旧内容）仍在线，且 API 侧已成孤儿**（Round 90 收口实测，三条路全被平台拒绝）：
 （1）`unpublish` + appId → `403 ListArtifactReleases: 10085:permission denied`（发布记录**按 `conversationId` 归属**，该 app 属 2026-09-13 那轮会话，本会话枚举不到）；
 （2）`deploy` + 旧 appId（覆盖）→ `无法复用应用 … 的原发布环境`；
 （3）再加 `replaceExistingApp:true` → 同一错误。
@@ -56,7 +56,7 @@
 | A8 | 测试与门禁 | ✅ 通过 | WS1–WS5 四个提交均 12/12 `success`（见 §6）；本轮本地：顶层 994 passed / importlib 208 modules FAILED=0。 |
 | A9 | 文档与手册 | ✅ **通过（WS4）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite）。 |
 | A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**（Ollama 走 `requests`，已在包内）。 |
-| A11 | 访问控制 | ✅ **通过（P0 + Round 88 令牌头 + Round 89 线上自证）** | 业务路由在 `include_router(dependencies=[Depends(require_human_principal)])` 上挂闸门；护栏 `tests/test_gateway_auth.py::TestProtectedRouters`（6 项）全绿；实测无令牌 401 / 登录后 200。已挂初始人类 `boss`（`login_eligible_humans=1`）。**Round 88 补**：托管边缘网关会改写 `Authorization` ⇒ 控制台改用私有头 `X-Liuhao-Token`，后端优先读它、`Authorization` 兜底；护栏 `tests/test_gateway_token_header.py`（20 项）。**Round 89 补**：签名密钥固定到 `LIUHAO_JWT_SECRET`（消除「重启即全端登出 / 多 worker 令牌互斥」），并**线上端到端自证**：用发布包烘焙的密钥为 `boss` 铸造合法令牌，走线上 `X-Liuhao-Token` → `/v1/auth/me` 200（`principal=boss`、`still_human=true`）→ `/v1/dashboard/roster` 200 → `POST /v1/chat` 真模型答 `2187`。护栏 `tests/test_jwt_key_persistence.py`（13 项）+ `tests/test_build_bundle_jwt.py`（5 项）。 |
+| A11 | 访问控制 | ✅ **通过（P0 + Round 88 令牌头 + Round 89 线上自证）** | 业务路由在 `include_router(dependencies=[Depends(require_human_principal)])` 上挂闸门；护栏 `tests/test_gateway_auth.py::TestProtectedRouters`（6 项）全绿；实测无令牌 401 / 登录后 200。已挂初始人类 `boss`（`login_eligible_humans=1`）。**Round 88 补**：托管边缘网关会改写 `Authorization` ⇒ 控制台改用私有头 `X-Liuhao-Token`，后端优先读它、`Authorization` 兜底；护栏 `tests/test_gateway_token_header.py`（20 项）。**Round 89 补**：签名密钥固定到 `LIUHAO_JWT_SECRET`（消除「重启即全端登出 / 多 worker 令牌互斥」），并**线上端到端自证**：用发布包烘焙的密钥为 `boss` 铸造合法令牌，走线上 `X-Liuhao-Token` → `/v1/auth/me` 200（`principal=boss`、`still_human=true`）→ `/v1/dashboard/roster` 200 → `POST /v1/chat` 真模型答 `2187`。护栏 `tests/test_jwt_key_persistence.py`（13 项）+ `tests/test_build_bundle_jwt.py`（5 项）。（⚠️ **2026-09-21 复核：本行的「线上端到端自证」不可从本工作区复验** —— 上文 URL 现返回平台页「链接已失效」；且「用发布包烘焙的密钥」这一前提与磁盘上的发布产物不符（见 A4 行注与 §4 第 12 条）。可复跑的只有上述两组测试文件。） |
 
 图例：✅ 通过　🟡 部分 / 进行中　❌ 未达
 
@@ -76,7 +76,8 @@
    新增护栏 `TestProtectedRouters`（6 项）。附带修复：`register_human_identity.py` 的
    `--file` 默认值此前只存在于帮助文本，导致裸命令报 `could not write to the store (file @ )`。
 8. [x] **P2**：生产治理裁决 —— ✅ 已完成（见 A4）。身份表 + 凭据随包发布；发布包
-   `serve.py` 默认 arm `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`，回滚 = 导出空值重启。
+   ~~发布包 `serve.py` 默认 arm `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`，回滚 = 导出空值重启。~~
+   ⚠️ **2026-09-21 复核：上一句（删除线）在本工作区不可判定，且与磁盘上的产物不符。** 构建器**确实**会渲染该行（`scripts/build_cloud_bundle.py:161`，无条件）；但磁盘上的 `deploy/cloud/serve.py`（2489 B、md5 `20c26fae1b615d4c60370fbe1e6d0c37`）中该变量 **0 命中**。该文件晚于最后一次发布 ⇒ 只能确定「上传目录当前不是武装的那一份」，**不能**说明线上当刻是什么（判定方法与可复现项见 A4 行注）。回滚方式不变，仍以导出空值 + 重启为准。
 9. [x] **P1-b**：线上接真实 LLM —— ✅ **已完成（Round 88 接云模型，Round 89 线上自证）**。
    构建期把 `AI_PROVIDER_TYPE=openai` / `AI_PROVIDER_MODEL=gpt-5.6-sol` /
    `OPENAI_BASE_URL=https://jiefuai.vip/v1` / `AI_PROVIDER_KEY`（打码入日志）烘焙进 `serve.py`。
@@ -94,7 +95,12 @@
     - **修复**：`get_jwt_handler()` 支持从环境固定密钥（`LIUHAO_JWT_SECRET`，并兼容上述两个旧名；
       支持 RS256 的 PEM 对）。未配置时保持原行为**并出 WARNING**（不再静默）。已知占位值
       （`replace-me` / `change-me` 等）**拒绝当密钥**（已知密钥比随机密钥更危险）。发布包构建期
-      **必然**烘焙一枚持久密钥（无则生成）⇒ 包内 `serve.py` 自带 `LIUHAO_JWT_SECRET`。
+      **必然**烘焙一枚持久密钥（无则生成）—— 这是**构建器的设计**（`scripts/build_cloud_bundle.py:203`
+      `_render_jwt_block` 无条件渲染）。⚠️ **2026-09-21 实测：磁盘上的发布产物不符合该设计** ——
+      `deploy/cloud/serve.py`（2489 B、md5 `20c26fae1b615d4c60370fbe1e6d0c37`）中
+      `LIUHAO_JWT_SECRET` 命中 **0**、`LIUHAO_KERNEL_POLICY_ENFORCE` 命中 **0**；该文件
+      mtime 2026-09-16 06:16:40 **晚于**最后一次发布（2026-09-15 14:19）⇒「线上那一份自带密钥」
+      **本工作区不可判定**。重新构建一次即会按上述设计写入。
     - **证据**：本地整包冒烟 9/9（含真口令登录 + 用烘焙密钥铸造的令牌被接受 + 真模型答 `2187`）；
       **线上** 6/6（`/v1/health` 200 / 无令牌 401 / 铸造令牌 `/v1/auth/me` 200 `principal=boss` /
       带令牌 roster 200 / `POST /v1/chat` 真答 `2187` / 非 mock）。新测 18 项。
@@ -129,7 +135,7 @@
     （新 `sandboxId=6ded52064ef84d5bb05ea19c61a19cf8`，`verified:true`）。恢复后复验：
     `health` 200 / `auth/config` `HS256`+`roundtrip=ok` / 前端指纹 `index-T9uDEQf9.js`（新包）/ 无令牌 401。
     ⇒ **验收不可只看 `verified:true`**，须复验算法、前端指纹与闸门。
-- **JWT 签名密钥随包发布，是刻意的取舍**：平台无密钥托管，要让令牌跨重启/跨 worker 存活就只能
+- **JWT 签名密钥随包发布，是刻意的取舍**（⚠️ 2026-09-21：这是**构建器的设计意图**；磁盘上的当前产物**不含**该密钥，实测见 §4 第 12 条）：平台无密钥托管，要让令牌跨重启/跨 worker 存活就只能
   把密钥放进包里（与 LLM key 同一处理）。因此**发布包本身即敏感物**：谁拿到包内容谁就能铸造令牌。
   边界是「包不外泄」，而非「密钥不落盘」。若要更强的隔离，应换成平台侧密钥托管或 RS256 +
   只读挂载私钥（`LIUHAO_JWT_PRIVATE_KEY`/`_PUBLIC_KEY` 已支持）。

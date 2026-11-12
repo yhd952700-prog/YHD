@@ -83,10 +83,27 @@ class TrustScore:
     negative_events: int = 0
     last_updated: datetime = field(default_factory=utc_now)
     created_at: datetime = field(default_factory=utc_now)
+    #: End of this score's validity window; ``None`` means "no expiry".
+    #:
+    #: PHASE 3.6 / A4. Before this field existed the kernel implemented TTL in
+    #: exactly one place -- ``TrustChainLink.expires_at`` with ``is_expired``,
+    #: honoured while walking the trust *graph* -- while the cached per-entity
+    #: aggregate kept in ``_scores`` carried no window at all, and the read path
+    #: consulted neither a window nor ``_revoked``. The system therefore
+    #: genuinely "handled TTL" on one side while re-validating the same
+    #: relationship as live on the other.
+    valid_until: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         self._update_level()
+
+    @property
+    def is_expired(self) -> bool:
+        """True when the validity window has closed."""
+        if self.valid_until is None:
+            return False
+        return utc_now() > self.valid_until
 
     def _update_level(self):
         """Update trust level based on score."""
@@ -208,9 +225,22 @@ class TrustManager:
         initial_score: float = 0.5,
         scope: TrustScope = TrustScope.L0,
         reasons: Optional[List[str]] = None,
-        confidence: float = 0.5
+        confidence: float = 0.5,
+        valid_in: Optional[timedelta] = None,
     ) -> TrustScore:
-        """Assign initial trust score to an entity."""
+        """Assign initial trust score to an entity.
+
+        ``valid_in`` bounds the score's validity window (PHASE 3.6 / A4).
+
+        **Invariant (PHASE 3.6 / A4 follow-up): a validity bound, once set,
+        cannot be cleared by omission.** When ``valid_in`` is omitted the
+        existing ``valid_until`` is carried over unchanged; only an explicit
+        ``valid_in`` moves the bound. This method used to do the opposite --
+        ``valid_until = (utc_now() + valid_in) if valid_in else None`` -- so a
+        caller who merely forgot the TTL silently converted a bounded grant
+        into a *permanent* one, which is the one direction a trust bound must
+        never fail in. Omission is not evidence that the bound was lifted.
+        """
         with self._lock:
             if entity_id in self._revoked:
                 raise ValueError(f"Entity {entity_id} is revoked")
@@ -222,6 +252,11 @@ class TrustManager:
             trust_score.score = score_val
             trust_score.confidence = confidence
             trust_score.last_updated = utc_now()
+            # Omission PRESERVES the bound; only an explicit valid_in moves it.
+            # See the docstring's invariant -- this is the polarity that all
+            # three write paths now share.
+            if valid_in is not None:
+                trust_score.valid_until = utc_now() + valid_in
             trust_score._update_level()
 
             # Record event
@@ -245,9 +280,16 @@ class TrustManager:
         scope: TrustScope = TrustScope.L0,
         reason: str = "",
         event_type: TrustEventType = TrustEventType.NEUTRAL,
-        correlation_id: Optional[str] = None
+        correlation_id: Optional[str] = None,
+        valid_in: Optional[timedelta] = None,
     ) -> TrustScore:
-        """Update trust score by delta."""
+        """Update trust score by delta.
+
+        ``valid_in`` (PHASE 3.6 / A4) extends or sets the score's validity
+        window. When omitted the existing window is left untouched -- an
+        incremental update is not a fresh statement of trust, so it must not
+        silently un-expire or un-bound a score.
+        """
         with self._lock:
             if entity_id in self._revoked:
                 raise ValueError(f"Entity {entity_id} is revoked")
@@ -260,6 +302,8 @@ class TrustManager:
 
             trust_score.score = new_score
             trust_score.last_updated = utc_now()
+            if valid_in is not None:
+                trust_score.valid_until = utc_now() + valid_in
             trust_score._update_level()
             trust_score.event_count += 1
 
@@ -294,27 +338,57 @@ class TrustManager:
             return trust_score
 
     def get_score(self, entity_id: str, scope: TrustScope = TrustScope.L0) -> Optional[TrustScore]:
-        """Get trust score for entity at scope."""
+        """Get trust score for entity at scope.
+
+        PHASE 3.6 / A4: the read path is where "revoked" and "expired" have to
+        take effect, and before this change neither did. ``revoke()`` deleted
+        the entry for the requested scope only, so a *scoped* revocation left
+        every other scope readable even though ``_revoked`` marks the entity as
+        revoked outright; and a score whose window had closed was still returned
+        as live.
+        """
         with self._lock:
-            if entity_id in self._scores and scope in self._scores[entity_id]:
-                return self._scores[entity_id][scope]
-            return None
+            if entity_id in self._revoked:
+                return None
+            score = self._scores.get(entity_id, {}).get(scope)
+            if score is None or score.is_expired:
+                return None
+            return score
 
     def get_all_scores(self, entity_id: str) -> Dict[TrustScope, TrustScore]:
-        """Get all trust scores for an entity across scopes."""
+        """Get all trust scores for an entity across scopes.
+
+        A revoked entity has no scores (PHASE 3.6 / A4) -- returning the
+        surviving scopes of a revoked entity is exactly the read-path hole this
+        closes.
+        """
         with self._lock:
-            return self._scores.get(entity_id, {}).copy()
+            if entity_id in self._revoked:
+                return {}
+            return {
+                scope: score
+                for scope, score in self._scores.get(entity_id, {}).items()
+                if not score.is_expired
+            }
 
     def get_score_at_scope_or_higher(self, entity_id: str, min_scope: TrustScope) -> Optional[TrustScore]:
-        """Get highest scope score at or above min_scope."""
+        """Get highest scope score at or above min_scope.
+
+        PHASE 3.6 / A4: same guard as :meth:`get_score`. This one matters more
+        than the others because it is the value ``evaluate_trust_for_access``
+        reads to grant access, so a stale or revoked score here is an access
+        decision made on evidence that has already been withdrawn.
+        """
         with self._lock:
+            if entity_id in self._revoked:
+                return None
             scores = self._scores.get(entity_id, {})
             scope_order = {s: i for i, s in enumerate(TrustScope)}
             min_idx = scope_order[min_scope]
 
             candidates = [
                 (scope, score) for scope, score in scores.items()
-                if scope_order[scope] >= min_idx
+                if scope_order[scope] >= min_idx and not score.is_expired
             ]
 
             if not candidates:
@@ -345,6 +419,23 @@ class TrustManager:
             if expires_in:
                 expires_at = utc_now() + expires_in
 
+            # TTL must be honoured on BOTH sides (PHASE 3.6 / A4): the link,
+            # which the graph traversal already checks, and the cached
+            # per-entity aggregate, which the read path reads. Without this,
+            # ``establish_trust`` genuinely "handles TTL" while ``get_score``
+            # keeps handing back the same relationship as live.
+            #
+            # On BOTH sides the polarity is the ``assign_score`` invariant: a
+            # validity bound, once set, cannot be cleared by omission. Omission
+            # is not evidence that the previous bound was lifted, so a
+            # re-establishment without a TTL neither un-expires the derived
+            # aggregate nor un-bounds an already-bounded link. Passing an
+            # explicit ``expires_in`` is the only way to move a bound.
+            if expires_at is not None:
+                derived = self._scores.get(to_entity, {}).get(scope)
+                if derived is not None:
+                    derived.valid_until = expires_at
+
             link = TrustChainLink(
                 from_entity=from_entity,
                 to_entity=to_entity,
@@ -366,7 +457,12 @@ class TrustManager:
 
             if existing:
                 existing.trust_score = score
-                existing.expires_at = expires_at
+                # Only an explicit TTL may move the link's bound (same
+                # invariant as above). Unconditionally assigning ``expires_at``
+                # here let a bare re-establishment erase a link's expiry and
+                # revive a window that had already closed.
+                if expires_at is not None:
+                    existing.expires_at = expires_at
                 existing.metadata = metadata or {}
                 existing.active = True
                 return existing
@@ -457,6 +553,16 @@ class TrustManager:
         """Revoke trust for an entity."""
         with self._lock:
             self._revoked.add(entity_id)
+
+            # Close the validity window of every surviving aggregate BEFORE
+            # deleting anything (PHASE 3.6 / A4). A *scoped* revocation removes
+            # only the named scope, so the other scopes remain in ``_scores``;
+            # closing their windows means a future read path that forgets the
+            # ``_revoked`` check still cannot read them as live. Belt and
+            # braces on a control whose value is that it must not depend on
+            # every caller remembering.
+            for surviving in self._scores.get(entity_id, {}).values():
+                surviving.valid_until = utc_now()
 
             # Remove all trust scores
             if scope:

@@ -21,6 +21,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+from ...common.data_paths import resolve_store_path
 from ...ai.observability import observe
 
 # 默认落盘位置：项目根目录（非写死某台机器的绝对路径 —— 写死会在 CI 工作区
@@ -30,7 +31,46 @@ _PROJECT_ROOT = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
 )
-DEFAULT_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
+_LEGACY_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
+
+
+def _default_db_path() -> str:
+    """记忆库落盘路径：``MEMORY_DB_PATH`` > ``LIUHAO_DATA_DIR`` > 历史默认。"""
+    return resolve_store_path(
+        "memory_store.db",
+        _LEGACY_DB_PATH,
+        env_var="MEMORY_DB_PATH",
+    )
+
+
+DEFAULT_DB_PATH = _default_db_path()
+
+# 断电级持久化：WAL+synchronous=NORMAL 只能扛"进程被杀"（已提交事务在 OS
+# 页缓存里），扛不住"直接断电/蓝屏"（最后若干已确认事务可能随页缓存丢失）。
+# 记忆写入是低频操作，默认 FULL 换取"已返回成功的写入一定还在"；确实要
+# 用吞吐换风险时可用环境变量降为 NORMAL/OFF。
+_SYNC_LEVELS = {"OFF", "NORMAL", "FULL", "EXTRA"}
+_MEMORY_SYNCHRONOUS = (
+    os.environ.get("LIUHAO_MEMORY_SYNCHRONOUS") or "FULL"
+).strip().upper()
+if _MEMORY_SYNCHRONOUS not in _SYNC_LEVELS:
+    _MEMORY_SYNCHRONOUS = "FULL"
+
+
+class MemoryStoreError(RuntimeError):
+    """记忆落盘失败：带可读原因，调用方必须据此失败（fail-closed）。
+
+    不吞异常、不假装成功：磁盘满 / 数据目录只读 / 文件被独占时，调用方拿到
+    的是一条能看懂的中文原因，并且已成功落盘的旧记忆保持不变。
+    """
+
+    def __init__(self, db_path: str, exc: Exception):
+        super().__init__(
+            f"无法写入记忆库 {db_path}（磁盘可能已满、数据目录只读或文件被占用）："
+            f"{exc}。本次记忆未保存，已有记忆保持不变。"
+        )
+        self.db_path = db_path
+        self.original = exc
 
 
 class MemoryStore:
@@ -38,14 +78,25 @@ class MemoryStore:
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
-            db_path = os.environ.get("MEMORY_DB_PATH", DEFAULT_DB_PATH)
+            db_path = _default_db_path()
         self._db_path = db_path
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
-        if db_path != ":memory:":
-            parent = os.path.dirname(os.path.abspath(db_path))
-            os.makedirs(parent, exist_ok=True)
-        self._init_db()
+        try:
+            if db_path != ":memory:":
+                parent = os.path.dirname(os.path.abspath(db_path))
+                os.makedirs(parent, exist_ok=True)
+            self._init_db()
+        except (sqlite3.Error, OSError) as exc:
+            raise MemoryStoreError(db_path, exc) from exc
+
+    def _rollback_quietly(self) -> None:
+        """失败路径的回滚：本身再失败也不能掩盖原始异常。"""
+        try:
+            if self._conn is not None:
+                self._conn.rollback()
+        except sqlite3.Error:
+            pass
 
     # ------------------------------------------------------------------ #
     # 建表
@@ -53,7 +104,7 @@ class MemoryStore:
     def _init_db(self) -> None:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(f"PRAGMA synchronous={_MEMORY_SYNCHRONOUS}")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS memory_entries (
@@ -89,59 +140,71 @@ class MemoryStore:
         ``entry`` 是 ``MemoryEntry`` 的字段字典，字段名约定见模块 docstring。
         """
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO memory_entries (
-                    key_hash, entry_id, key, value, tier, scope, created_at,
-                    expires_at, tags, correlation_id, access_count,
-                    last_accessed, provenance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(key_hash) DO UPDATE SET
-                    entry_id = excluded.entry_id,
-                    key = excluded.key,
-                    value = excluded.value,
-                    tier = excluded.tier,
-                    scope = excluded.scope,
-                    created_at = excluded.created_at,
-                    expires_at = excluded.expires_at,
-                    tags = excluded.tags,
-                    correlation_id = excluded.correlation_id,
-                    access_count = excluded.access_count,
-                    last_accessed = excluded.last_accessed,
-                    provenance = excluded.provenance
-                """,
-                (
-                    entry["key_hash"],
-                    entry["entry_id"],
-                    entry["key"],
-                    entry["value"],
-                    entry["tier"],
-                    entry["scope"],
-                    entry["created_at"],
-                    entry["expires_at"],
-                    entry["tags"],
-                    entry["correlation_id"],
-                    entry["access_count"],
-                    entry["last_accessed"],
-                    entry["provenance"],
-                ),
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO memory_entries (
+                        key_hash, entry_id, key, value, tier, scope, created_at,
+                        expires_at, tags, correlation_id, access_count,
+                        last_accessed, provenance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(key_hash) DO UPDATE SET
+                        entry_id = excluded.entry_id,
+                        key = excluded.key,
+                        value = excluded.value,
+                        tier = excluded.tier,
+                        scope = excluded.scope,
+                        created_at = excluded.created_at,
+                        expires_at = excluded.expires_at,
+                        tags = excluded.tags,
+                        correlation_id = excluded.correlation_id,
+                        access_count = excluded.access_count,
+                        last_accessed = excluded.last_accessed,
+                        provenance = excluded.provenance
+                    """,
+                    (
+                        entry["key_hash"],
+                        entry["entry_id"],
+                        entry["key"],
+                        entry["value"],
+                        entry["tier"],
+                        entry["scope"],
+                        entry["created_at"],
+                        entry["expires_at"],
+                        entry["tags"],
+                        entry["correlation_id"],
+                        entry["access_count"],
+                        entry["last_accessed"],
+                        entry["provenance"],
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                raise MemoryStoreError(self._db_path, exc) from exc
 
     @observe("kernels.memory.store.delete")
     def delete(self, key_hash: str) -> None:
         """按 ``key_hash`` 删除一条条目（compress 合并后移除源条目时用）。"""
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM memory_entries WHERE key_hash = ?", (key_hash,)
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    "DELETE FROM memory_entries WHERE key_hash = ?", (key_hash,)
+                )
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                raise MemoryStoreError(self._db_path, exc) from exc
 
     def clear(self) -> None:
         """清空持久化存储（重置会话 / 测试隔离时用）。"""
         with self._lock:
-            self._conn.execute("DELETE FROM memory_entries")
-            self._conn.commit()
+            try:
+                self._conn.execute("DELETE FROM memory_entries")
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                raise MemoryStoreError(self._db_path, exc) from exc
 
     # ------------------------------------------------------------------ #
     # 读

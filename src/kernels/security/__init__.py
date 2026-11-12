@@ -1,19 +1,25 @@
-"""Security Kernel — RBAC+ABAC+Vault+Audit enforcement
+"""Security Kernel — RBAC+ABAC+Audit enforcement
 
 The Security Kernel provides comprehensive access control with RBAC and ABAC
-policies, Vault Transit integration for crypto operations, and full audit logging.
+policies, full audit logging.
 
 依据 Definition Lock §112: Security Kernel 必须能够
 - RBAC role-based access control with role hierarchies
 - ABAC attribute-based access control with condition evaluation
-- Vault Transit integration for cryptographic operations
 - Complete audit trail for all access decisions
 - Human sovereignty override capability
 - Scope enforcement L0-L7
+
+NOTE (2026-10-02 honesty correction): this kernel does NOT integrate Vault
+Transit. The earlier "Vault" claims were removed — `VAULT_AVAILABLE` had zero
+consumers and the old stub silently returned empty reads. The real Vault client
+lives in src/security/vault_client.py and src/integrations/vault/ and is not
+wired here. See KERNEL-PRODUCT-CAPABILITY.md §10.
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
 
+import importlib.util
 import logging
 import threading
 from datetime import datetime
@@ -24,7 +30,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 from ._permission_map import get_mapping
 
 _log = logging.getLogger(__name__)
@@ -48,11 +54,11 @@ _log = logging.getLogger(__name__)
 # 真实的 Vault 实现不在本内核，而在 `src/security/vault_client.py`
 # （hvac + AppRole 认证）与 `src/integrations/vault/`（hvac + 单例 + secret_manager）。
 # 本内核只如实报告**客户端库是否可用**；内核层不得反向依赖那两层。
-try:
-    import hvac as _hvac  # noqa: F401
-    VAULT_AVAILABLE = True
-except ImportError:
-    VAULT_AVAILABLE = False
+#
+# 用 find_spec 而不是 `import hvac`：hvac 会连带导入 requests 等约 2.0s 的
+# 依赖树（实测），而这里只需要"装没装"这个布尔值。find_spec 不执行模块体，
+# 语义与 `import hvac` 成功/失败完全一致（测试也按 find_spec 断言）。
+VAULT_AVAILABLE = importlib.util.find_spec("hvac") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +197,7 @@ class SecurityEngine:
         self._seed_default_rules()
 
     def _seed_default_rules(self) -> None:
-        """Seed default RBAC rules for core kernel operations.
+        """No default RBAC rules are seeded; this hook is intentionally empty.
 
         **2026-09-15 (boss-approved full cut): no colon permissions are seeded
         by default.** Measured with ``discover_permission_literals``: only
@@ -308,6 +314,9 @@ class SecurityEngine:
                 )
                 self._audit_log.append(audit)
                 return True
+            mark_action_denied(
+                f"revoke_rbac_role rejected: {principal_id!r} does not hold role {role.value}"
+            )
             return False
 
     def check_rbac(self, principal_id: str, permission: str, scope: str = "L1") -> AccessDecision:
@@ -316,8 +325,24 @@ class SecurityEngine:
         Scope participates in the decision (S4): an invalid scope value is
         rejected with DENY, and a request whose scope exceeds the
         principal's authorized ceiling is denied.
+
+        Lifecycle gate: a PAUSED / STOPPED security engine returns DENY (and
+        audits it) instead of adjudicating. ``pause()`` used to only flip a
+        flag, so a "paused" engine kept granting access. The refusal is a
+        *returned DENY*, never a raised exception -- a caller that catches
+        broadly would otherwise turn "denied" into an unhandled path whose
+        effective direction is fail-OPEN, which is precisely the wrong way
+        for this kernel to fail.
         """
         with self._lock:
+            if not is_servable(self):
+                self._audit_rbac_check(
+                    principal_id, permission, scope, "denied",
+                    f"RBAC check denied: security engine is "
+                    f"{self.lifecycle.value}",
+                )
+                return AccessDecision.DENY
+
             if not _is_valid_scope(scope):
                 self._audit_rbac_check(principal_id, permission, scope, "denied",
                                        f"RBAC check denied: invalid scope {scope!r}")

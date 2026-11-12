@@ -6,8 +6,20 @@ simulating them, while preserving strict layering (kernels must not import ai).
 """
 import uuid
 
-from src.kernels.execution import Action, ActionExecutor
+import pytest
+
+from src.kernels.execution import Action, ActionExecutor, ExecutionJournal
 from src.ai.tool_registry import Tool, ToolRegistry, ToolRouter
+
+
+@pytest.fixture(autouse=True)
+def _allow_simulated_execution(monkeypatch):
+    # The simulation fallback is now opt-in (LIUHAO_ALLOW_SIMULATED_EXECUTION).
+    # These bridge tests exercise the *simulated* path and the bridge wiring;
+    # we opt in explicitly rather than relying on a silent default so the
+    # simulation contract stays honest (production wires a real executor and
+    # fails closed when nothing is wired).
+    monkeypatch.setenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", "1")
 
 
 def _make_action(action_id="a1", capability_id="network_bus", scope="L1", inputs=None):
@@ -25,7 +37,10 @@ def _make_action(action_id="a1", capability_id="network_bus", scope="L1", inputs
 
 
 # ---------------------------------------------------------------------------
-# (a) Backward compatibility: no injection => simulated path unchanged
+# (a) Backward compatibility: no injection + simulation opted in => simulated
+#     path preserved. (Simulation is no longer a silent default -- it must be
+#     explicitly requested, so the kernel cannot masquerade a simulation as a
+#     real execution in production.)
 # ---------------------------------------------------------------------------
 def test_no_injection_stays_simulated():
     executor = ActionExecutor()
@@ -39,14 +54,19 @@ def test_no_injection_stays_simulated():
 # ---------------------------------------------------------------------------
 # (b) Injected executor is invoked with correct args and output normalized
 # ---------------------------------------------------------------------------
-def test_injected_executor_is_called_and_normalized():
+def test_injected_executor_is_called_and_normalized(tmp_path):
     calls = []
 
     def fake_executor(capability_id, inputs):
         calls.append((capability_id, inputs))
-        return {"capability": capability_id, "status": "ignored", "extra": 1}
+        # 引擎要求显式的 ``success``（缺失即 fail-closed），status 由引擎归一化补齐。
+        return {"success": True, "capability": capability_id, "extra": 1}
 
-    executor = ActionExecutor(capability_executor=fake_executor)
+    # 生产装配一定接 journal；这里有账本才允许执行硬副作用能力（network_bus）。
+    executor = ActionExecutor(
+        capability_executor=fake_executor,
+        journal=ExecutionJournal(str(tmp_path / "j.db")),
+    )
     assert executor.has_capability_executor
 
     sent_inputs = {"query": "test"}
@@ -71,9 +91,10 @@ def test_injected_executor_is_called_and_normalized():
 # ---------------------------------------------------------------------------
 # (c) End-to-end with the real registry + router
 # ---------------------------------------------------------------------------
-def test_real_registry_roundtrip_and_pre_activation_failure():
+def test_real_registry_roundtrip_and_pre_activation_failure(tmp_path):
     registry = ToolRegistry()
     router = ToolRouter(registry)
+    journal = ExecutionJournal(str(tmp_path / "j.db"))
 
     sentinel = {"answer": 42}
 
@@ -91,7 +112,9 @@ def test_real_registry_roundtrip_and_pre_activation_failure():
     )
 
     # Before activation: routing fails -> action failure
-    executor_pre = ActionExecutor(capability_executor=router.as_capability_executor())
+    executor_pre = ActionExecutor(
+        capability_executor=router.as_capability_executor(), journal=journal
+    )
     pre_result = executor_pre.execute(_make_action(capability_id="network_bus"))
     assert pre_result.success is False
     assert "no active tool for capability" in pre_result.error
@@ -102,7 +125,9 @@ def test_real_registry_roundtrip_and_pre_activation_failure():
     assert registry.approve("t_net")
     assert registry.activate("t_net")
 
-    executor = ActionExecutor(capability_executor=router.as_capability_executor())
+    executor = ActionExecutor(
+        capability_executor=router.as_capability_executor(), journal=journal
+    )
     post_result = executor.execute(_make_action(capability_id="network_bus"))
     assert post_result.success is True
     assert post_result.output["status"] == "executed"
@@ -126,11 +151,14 @@ def test_kernel_does_not_import_ai_layer():
 # ---------------------------------------------------------------------------
 # (e) Failure propagation: raising executor -> success=False with message
 # ---------------------------------------------------------------------------
-def test_raising_executor_propagates_failure():
+def test_raising_executor_propagates_failure(tmp_path):
     def boom(capability_id, inputs):
         raise RuntimeError("capability exploded")
 
-    executor = ActionExecutor(capability_executor=boom)
+    executor = ActionExecutor(
+        capability_executor=boom,
+        journal=ExecutionJournal(str(tmp_path / "j.db")),
+    )
     result = executor.execute(_make_action())
     assert result.success is False
     assert "capability exploded" in result.error
@@ -139,16 +167,19 @@ def test_raising_executor_propagates_failure():
 # ---------------------------------------------------------------------------
 # (f) ExecutionEngine forwards the injected executor through the whole pipeline
 # ---------------------------------------------------------------------------
-def test_execution_engine_forwards_injected_executor_end_to_end():
+def test_execution_engine_forwards_injected_executor_end_to_end(tmp_path):
     from src.kernels.execution import ExecutionEngine, Goal
 
     calls = []
 
     def fake_executor(capability_id, inputs):
         calls.append((capability_id, dict(inputs)))
-        return {"from": "real"}
+        return {"success": True, "from": "real"}
 
-    engine = ExecutionEngine(capability_executor=fake_executor)
+    engine = ExecutionEngine(
+        capability_executor=fake_executor,
+        journal=ExecutionJournal(str(tmp_path / "j.db")),
+    )
     assert engine.executor.has_capability_executor is True
 
     ctx = engine.execute_goal(
@@ -170,7 +201,7 @@ def test_execution_engine_forwards_injected_executor_end_to_end():
 # ---------------------------------------------------------------------------
 # (g) Cross-subsystem bridge: LCore's registry drives the Execution Kernel
 # ---------------------------------------------------------------------------
-def test_lcore_registry_drives_execution_engine_end_to_end():
+def test_lcore_registry_drives_execution_engine_end_to_end(tmp_path):
     from src.ai.lcore import LCore
     from src.kernels.execution import ExecutionEngine, Goal
 
@@ -185,7 +216,10 @@ def test_lcore_registry_drives_execution_engine_end_to_end():
         fn=lambda **kwargs: {"handled_by": "real_tool", "goal": kwargs.get("goal")},
     ))
 
-    engine = ExecutionEngine(capability_executor=lcore.capability_executor())
+    engine = ExecutionEngine(
+        capability_executor=lcore.capability_executor(),
+        journal=ExecutionJournal(str(tmp_path / "j.db")),
+    )
     # "plan the schedule" decomposes to exactly one execution_pipeline task
     ctx = engine.execute_goal(
         Goal(id="g2", natural_language="plan the schedule", scope="L1")
@@ -201,18 +235,20 @@ def test_lcore_registry_drives_execution_engine_end_to_end():
 # ---------------------------------------------------------------------------
 # (h) Honesty guardrail: an explicit success=False must never be masked
 # ---------------------------------------------------------------------------
-def test_explicit_executor_failure_is_not_masked():
+def test_explicit_executor_failure_is_not_masked(tmp_path):
     """An injected executor signalling ``success: False`` must not surface as a
     successful action — the kernel honours the explicit verdict and preserves
     the structured reason (this closes the silent-false-success hazard)."""
     def failing_executor(capability_id, inputs):
         return {"success": False, "status": "rejected", "error": "sandbox refused"}
 
-    executor = ActionExecutor(capability_executor=failing_executor)
+    executor = ActionExecutor(
+        capability_executor=failing_executor,
+        journal=ExecutionJournal(str(tmp_path / "j.db")),
+    )
     result = executor.execute(_make_action())
 
     assert result.success is False
     assert "sandbox refused" in (result.error or "")
     # The structured failure reason survives (not overwritten to "executed").
     assert result.output["status"] == "rejected"
-

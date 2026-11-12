@@ -8,8 +8,9 @@
 - ``POST /v1/kernels/{name}/resume``：恢复指定内核（合法前置 PAUSED）。
 
 全部路由挂在带 ``require_human_principal`` 闸门的 router 上（main.get_app 统一
-挂一次；这里每条再显式加一次依赖，确保即使挂载方式变化也不会漏闸门），未持
-有效人类令牌的请求会得到 401。
+挂一次；这里每条再显式加一次依赖，确保挂载方式变化也不会漏闸门），未持有效人类
+令牌的请求会得到 401。``init`` / ``shutdown`` / ``pause`` / ``resume`` 会改变全局
+内核状态，额外要求管理员权限（非管理员 403）；只读的 ``GET /v1/kernels`` 不要求。
 
 **绝不伪造成功**：factory-only 的 context / execution 没有规范单例，pause/resume
 它们会如实返回 409 + 原因；实例不存在的内核也如实返回 409 + 原因，而不是假装
@@ -22,7 +23,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .policy import require_human_principal
+from .policy import require_admin_principal, require_human_principal
 from src.kernels._base import KernelStateError
 from src.kernels._registry import (
     get_entry,
@@ -48,7 +49,7 @@ def get_kernels(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
 
 
 @kernels_router.post("/kernels/init")
-def post_kernels_init(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
+def post_kernels_init(_: str = Depends(require_admin_principal)) -> Dict[str, Any]:
     """主权主体显式驱动「已存在实例」进入 READY。
 
     只操作已存在的实例（绝不创建）。返回做了什么 / 跳过了什么 / 失败了的什么。
@@ -57,14 +58,14 @@ def post_kernels_init(_: str = Depends(require_human_principal)) -> Dict[str, An
 
 
 @kernels_router.post("/kernels/shutdown")
-def post_kernels_shutdown(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
+def post_kernels_shutdown(_: str = Depends(require_admin_principal)) -> Dict[str, Any]:
     """主权主体显式驱动「已存在实例」进入 STOPPED。"""
     return shutdown_all()
 
 
 @kernels_router.post("/kernels/{name}/pause")
 def post_kernels_pause(
-    name: str, _: str = Depends(require_human_principal)
+    name: str, _: str = Depends(require_admin_principal)
 ) -> Dict[str, Any]:
     """暂停指定内核。合法前置：READY / UNINITIALIZED。
 
@@ -97,22 +98,21 @@ def post_kernels_pause(
             detail={
                 "error": "no_instance_present",
                 "name": name,
-                "reason": (
-                    "内核已登记但当前没有实例（惰性单例尚未被使用）。"
-                    "先经其 get_*() 构造实例，或 POST /v1/kernels/init "
-                    "后再试。"
-                ),
+                "reason": "该模块已登记但尚未启用。请先在运维页完成初始化后再试。",
             },
         )
     try:
         inst.pause()
     except KernelStateError as exc:
+        current = getattr(inst, "lifecycle", None)
         raise HTTPException(
             status_code=409,
             detail={
                 "error": "illegal_state_transition",
                 "name": name,
-                "current": getattr(inst, "lifecycle", None),
+                # 枚举必须先取 .value：应用的 HTTPException 处理器直接 json.dumps，
+                # 原始 Enum 会让 409 变成 TypeError/500。
+                "current": getattr(current, "value", current),
                 "detail": str(exc),
             },
         )
@@ -125,7 +125,7 @@ def post_kernels_pause(
 
 @kernels_router.post("/kernels/{name}/resume")
 def post_kernels_resume(
-    name: str, _: str = Depends(require_human_principal)
+    name: str, _: str = Depends(require_admin_principal)
 ) -> Dict[str, Any]:
     """恢复指定内核。合法前置：PAUSED。
 
@@ -154,21 +154,19 @@ def post_kernels_resume(
             detail={
                 "error": "no_instance_present",
                 "name": name,
-                "reason": (
-                    "内核已登记但当前没有实例（惰性单例尚未被使用）。"
-                    "无法 resume 一个不存在的实例。"
-                ),
+                "reason": "该模块已登记但尚未启用，无法恢复。请先在运维页完成初始化后再试。",
             },
         )
     try:
         inst.resume()
     except KernelStateError as exc:
+        current = getattr(inst, "lifecycle", None)
         raise HTTPException(
             status_code=409,
             detail={
                 "error": "illegal_state_transition",
                 "name": name,
-                "current": getattr(inst, "lifecycle", None),
+                "current": getattr(current, "value", current),
                 "detail": str(exc),
             },
         )

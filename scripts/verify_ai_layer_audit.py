@@ -2,6 +2,28 @@
 
 用途：复现 ``docs/spec/AI-LAYER-DOD-AUDIT.md`` §3.5 的运行时实测矩阵。
 
+**退出码的真实含义（重要，先读这一节）**：
+    本脚本是 **fail-closed** 的审计覆盖闸门（F1 修复：原先是"绿-by-default"——
+    末尾无条件 ``return 0``，20/21 个模块失去审计覆盖仍会绿）。现在：
+
+      * 对照探针失败（测不到已知会审计的 ``@kernel_action`` 写入） → ``return 2``；
+      * 任一探针 **出错**（状态 ``ERR``，结论不确定） → ``return 2``；
+      * 任一模块的**关键操作未写入审计**且**未列入 ``ALLOW_NO_AUDIT`` 允许清单**
+        （疑似审计覆盖回归） → ``return 2``。
+
+    只有「对照通过 + 无探针出错 + 无未授权的不下沉模块」三者同时成立才 ``return 0``。
+    ``ALLOW_NO_AUDIT`` 仅收录**有意不接入能力层审计**的模块（目前仅 P17 Economy，
+    其 docstring 明示为有意独立实现，见 ``docs/spec/AI-LAYER-DOD-AUDIT.md`` §3.5 及
+    ``tests/test_ai_layer_dod_delegation.py::test_economy_still_has_no_capability_layer_audit``）；
+    任何新增的、确实不应审计的模块都必须显式加入该清单并在规格文档中记录理由，否则会被
+    本闸门判为回归。
+
+**与部署姿态的边界**：脚本末尾那句「``policy_decision`` 恒为 ``deny`` 且装饰器
+    从不拦截」是**记录态（record-only）观测** —— 本脚本不设置
+    ``LIUHAO_KERNEL_POLICY_ENFORCE``。生产清单 ``docker-compose.prod.yml:69``
+    以 ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}``
+    武装 ``CRITICAL``，故那句**不是**对生产运行时行为的断言。
+
 方法：
   1) **对照实验**：先直接调用已知被 ``@kernel_action`` 装饰的
      ``get_memory_kernel().store()``，确认 audit store 计数 +1。
@@ -11,7 +33,13 @@
 
 用法::
 
-    D:\\LiuHao-AI-OS\\.venv\\Scripts\\python.exe scripts/verify_ai_layer_audit.py
+    python scripts/verify_ai_layer_audit.py
+
+（此前这里写的是本机绝对路径 ``D:\\LiuHao-AI-OS\\.venv\\Scripts\\python.exe``。
+  那既不是可移植的调用方式，也掩盖了一个事实：本脚本长期只在 Windows 上跑过。
+  同一处还硬编码了 ``D:/cache/temp`` 作为临时目录（见 :func:`_tmpdir`）——
+  在 Ubuntu runner 上该路径非法，CI 每次都只能走 fallback，而那条 fallback 从未
+  在 Linux 上真正执行验证过。）
 
 判据来自 ``docs/CODEX-CONTRACT.md`` §5：
   Audited           = 关键操作写入 audit log（含 correlation_id）
@@ -30,13 +58,30 @@ sys.path.insert(0, str(ROOT))
 
 
 def _tmpdir() -> Path:
-    """优先用 D 盘临时目录（本项目约定）；不可用时退回系统临时目录。"""
-    candidate = Path("D:/cache/temp")
+    """Per-run scratch directory for the isolated DBs.
+
+    This used to prefer the literal Windows path ``D:/cache/temp``. On the
+    Ubuntu CI runner that is not a valid path, so every CI run silently took the
+    ``mkdtemp`` fallback -- a branch that had never actually executed on Linux
+    (the workflow was dying before this script ever ran, see CRITICAL-1).
+
+    The Windows constant is gone rather than guarded: ``mkdtemp`` already
+    honours TMPDIR/TEMP, so on this project's Windows box it resolves under
+    D:\\cache\\temp by itself while Linux gets /tmp. No drive letter, no
+    per-OS branch, same result on both.
+
+    A fresh directory per run is also the *correct* behaviour for what this
+    script measures: it reads audit-store event **increments**, and reusing one
+    fixed directory would let a previous run's rows leak into the next
+    measurement.
+    """
     try:
-        candidate.mkdir(parents=True, exist_ok=True)
-        return candidate
-    except OSError:
         return Path(tempfile.mkdtemp(prefix="liuhao_ai_dod_"))
+    except OSError:
+        # Last resort, still outside the repo. The pid keeps parallel runs apart.
+        fallback = Path(tempfile.gettempdir()) / f"liuhao_ai_dod_{os.getpid()}"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 TMP = _tmpdir()
@@ -50,6 +95,16 @@ from src.kernels.audit import audit_query, get_audit_store  # noqa: E402
 from src.kernels.policy import get_policy_engine  # noqa: E402
 
 ROWS: list = []
+
+# F1 修复：显式允许「有意不接入能力层审计」的模块。仅当某模块的**关键操作确实
+# 不应审计**时才加入此处，并在 docs/spec/AI-LAYER-DOD-AUDIT.md 中记录理由。
+# 目前仅有 P17 Economy —— 其 docstring 明示为"self-contained, dependency-free"的
+# 有意独立实现（不接线能力层审计），见规格文档 §3.5 / 行 268-270 及
+# tests/test_ai_layer_dod_delegation.py::test_economy_still_has_no_capability_layer_audit。
+# 任何未列入此清单却未产生审计的模块，都会让本闸门变红（视为审计覆盖回归）。
+ALLOW_NO_AUDIT: frozenset = frozenset({
+    ("P17", "economy.BudgetEngine.reserve/consume()"),
+})
 
 
 def _count() -> int:
@@ -252,7 +307,8 @@ def main() -> int:
         print(f"   +{delta:<3} {phase} {label}")
     print("\n【不产生审计 — 该模块的关键操作未写入审计】")
     for phase, label, _, _, _ in clean:
-        print(f"    0    {phase} {label}")
+        mark = "   (允许不下沉)" if (phase, label) in ALLOW_NO_AUDIT else "   [未授权的不下沉]"
+        print(f"    0    {phase} {label}{mark}")
     if errored:
         print("\n【探针出错（结论不确定）】")
         for phase, label, _, _, err in errored:
@@ -274,7 +330,34 @@ def main() -> int:
         )
         print(f"   risk={risk:9} -> {decision.decision.value}")
 
-    print("\n注意：policy_decision 恒为 deny 且装饰器从不拦截 —— 见 AI-LAYER-DOD-AUDIT.md §3.5.4。")
+    print(
+        "\n注意：以上是【记录态】观测 —— 本脚本未设置 LIUHAO_KERNEL_POLICY_ENFORCE，"
+        "故 policy_decision 恒为 deny 且装饰器从不拦截（见 AI-LAYER-DOD-AUDIT.md §3.5.4）；"
+        "生产清单 docker-compose.prod.yml:69 武装 CRITICAL，"
+        "那句话不是对生产运行时行为的断言。"
+    )
+
+    # ---- fail-closed 判定（F1 修复：绿不再仅等价于"对照探针通过"）----
+    failures = []
+    if errored:
+        failures.append(
+            "%d 个探针出错（结论不确定），不能算绿：%s"
+            % (len(errored), ", ".join("%s/%s" % (p, l) for (p, l, _, _, _) in errored)))
+    unexpected_no_audit = [
+        (p, l) for (p, l, d, s, e) in clean if (p, l) not in ALLOW_NO_AUDIT
+    ]
+    if unexpected_no_audit:
+        failures.append(
+            "%d 个模块的关键操作未写入审计且未列入允许清单（疑似审计覆盖回归）：%s"
+            % (len(unexpected_no_audit),
+               ", ".join("%s/%s" % (p, l) for p, l in unexpected_no_audit)))
+
+    if failures:
+        print("\nAI-LAYER AUDIT GATE FAIL:")
+        for f in failures:
+            print("  - " + f)
+        return 2
+    print("\nAI-LAYER AUDIT GATE PASS：对照通过、无探针出错、无未授权的不下沉模块。")
     return 0
 
 

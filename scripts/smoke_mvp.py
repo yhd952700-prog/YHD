@@ -68,7 +68,7 @@ def _wait_ready(base: str, attempts: int = 40) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="LiuHao MVP end-to-end smoke")
+    parser = argparse.ArgumentParser(description="Jarvis MVP end-to-end smoke")
     parser.add_argument("--base", default="http://127.0.0.1:8080")
     args = parser.parse_args()
     base = args.base.rstrip("/")

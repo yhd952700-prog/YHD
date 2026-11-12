@@ -163,6 +163,39 @@ def test_restart_restores_history(isolate_conversation_store):
     assert msgs[-1] == {"role": "user", "content": "继续"}
 
 
+def test_completed_turn_emits_one_conversation_append_audit(monkeypatch):
+    """一轮成功对话的会话落盘只写一条 append 审计（不是 user/assistant 各一条）。"""
+    import src.kernels.audit as audit_kernel
+
+    actions = []
+    real_log_event = audit_kernel.log_event
+
+    def counting_log_event(*args, **kwargs):
+        details = kwargs.get("details") or {}
+        if details.get("action") == "p5.conversation.append":
+            actions.append(details)
+        return real_log_event(*args, **kwargs)
+
+    monkeypatch.setattr(audit_kernel, "log_event", counting_log_event)
+
+    a = make_assistant(name="single-append-audit")
+    result = a.chat("hello")
+
+    assert result["status"] == "completed"
+    assert len(a.history) == 2
+    assert len(actions) == 1
+
+
+def test_turn_failure_reason_maps_network_errors():
+    """连接失败/超时必须有机器可读 reason，不能只回通用文案。"""
+    import requests
+
+    reason = lh_module._turn_failure_reason
+    assert reason(requests.exceptions.ConnectionError("refused")) == "unreachable"
+    assert reason(requests.exceptions.ConnectTimeout("slow")) == "timeout"
+    assert reason(RuntimeError("unknown")) is None
+
+
 def test_restart_isolated_by_principal(isolate_conversation_store):
     """不同 principal 之间会话历史互不干扰。"""
     a = make_assistant(name="alice")

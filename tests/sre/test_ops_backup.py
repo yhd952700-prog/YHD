@@ -1,0 +1,301 @@
+"""The operational backup tool: restore must not be a write primitive.
+
+Three things this file pins down, because each is a way a "recovery" path can
+hurt rather than help:
+
+1. Extraction cannot escape the target directory. A tar member named
+   ``../../../../Windows/Temp/x`` used to be unpacked wherever the archive
+   asked, so "restore this backup" meant "let whoever built the archive choose
+   where we write".
+2. Restore refuses an archive that does not verify, instead of unpacking
+   whatever it turns out to contain.
+3. Windows actually works: the scratch directory used to be hardcoded to
+   ``/tmp``.
+
+Every case below is executed, not asserted from reading the code.
+"""
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import sys
+import tarfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPT = _REPO_ROOT / "scripts" / "ops" / "backup.py"
+
+
+def _load_module():
+    """Import scripts/ops/backup.py by path (it is a script, not a package)."""
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    spec = importlib.util.spec_from_file_location("ops_backup", _SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def ops_backup():
+    return _load_module()
+
+
+def _manager(ops_backup, tmp_path, **backup_kwargs):
+    defaults = dict(
+        storage_path=str(tmp_path / "backup-store"),
+        encryption=False,
+        encryption_key="",
+        verify_after_backup=True,
+    )
+    defaults.update(backup_kwargs)
+    return ops_backup.BackupManager(
+        SimpleNamespace(backup=SimpleNamespace(**defaults))
+    )
+
+
+def _write_archive(path: Path, members: dict) -> Path:
+    """Write a tar.gz whose member NAMES are the keys and file contents the values."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(path, "w:gz") as tar:
+        for name, payload in members.items():
+            staging = path.parent / "_staging_member"
+            staging.write_bytes(payload)
+            tar.add(staging, arcname=name)
+            staging.unlink()
+    return path
+
+
+class TestRestoreCannotEscapeTheTarget:
+    def test_a_dot_dot_member_is_refused_and_writes_nothing(self, ops_backup, tmp_path):
+        target = tmp_path / "restore-target"
+        outside = tmp_path / "must-not-exist.txt"
+        archive = _write_archive(
+            tmp_path / "store" / "evil.tar.gz",
+            {
+                "backup/metadata.json": b"{}",
+                # escapes target from inside \Windows\Temp style roots
+                "../../../../../../../../must-not-exist.txt": b"pwned",
+            },
+        )
+        manager = _manager(ops_backup, tmp_path)
+
+        assert manager.restore_backup(archive, target) is False
+        assert not outside.exists()
+
+    def test_reject_traversal_flags_paths_outside_the_root(self, ops_backup, tmp_path):
+        reject = ops_backup._reject_traversal
+        root = tmp_path / "root"
+
+        with pytest.raises(ValueError):
+            reject(["../../../../escape.txt"], root)
+        with pytest.raises(ValueError):
+            reject(["/absolute/path.txt"], root)
+
+    def test_reject_traversal_allows_paths_inside_the_root(self, ops_backup, tmp_path):
+        root = tmp_path / "root"
+        ops_backup._reject_traversal(["root/a.txt", "root/nested/b.txt"], root)
+
+    def test_pre312_fallback_refuses_symlink_members(
+        self, ops_backup, tmp_path, monkeypatch
+    ):
+        """3.11 没有 filter="data"，回退路径必须自己拒绝链接成员。
+
+        名字本身完全合法（``good/link``），越界发生在 linkname 上；只查
+        member.name 的旧实现会把这种归档放过去。
+        """
+        store = tmp_path / "store"
+        store.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "must-not-exist.txt"
+        archive = store / "symlink.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            meta = tarfile.TarInfo("good/metadata.json")
+            payload = b"{}"
+            meta.size = len(payload)
+            tar.addfile(meta, io.BytesIO(payload))
+            link = tarfile.TarInfo("good/escape")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../must-not-exist.txt"
+            tar.addfile(link)
+
+        original = tarfile.TarFile.extractall
+
+        def pre312(self, path=".", *args, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("unexpected keyword argument 'filter'")
+            return original(self, path, *args, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", pre312)
+        manager = _manager(ops_backup, tmp_path)
+
+        assert manager.restore_backup(archive, tmp_path / "restore-target") is False
+        assert not outside.exists()
+
+
+class TestRestoreRoundTrip:
+    def test_a_good_backup_restores_into_the_target(self, ops_backup, tmp_path):
+        target = tmp_path / "restore-target"
+        archive = _write_archive(
+            tmp_path / "store" / "good.tar.gz",
+            {
+                "good/metadata.json": json.dumps(
+                    {"backup_name": "good", "version": "1.0.0"}
+                ).encode(),
+                "good/data/payload.txt": b"real data",
+            },
+        )
+        manager = _manager(ops_backup, tmp_path)
+
+        assert manager.restore_backup(archive, target) is True
+        restored = target / "good" / "data" / "payload.txt"
+        assert restored.exists()
+        assert restored.read_bytes() == b"real data"
+
+    def test_an_archive_without_metadata_is_refused(self, ops_backup, tmp_path):
+        target = tmp_path / "restore-target"
+        archive = _write_archive(
+            tmp_path / "store" / "no-meta.tar.gz",
+            {"backup/data.txt": b"orphan"},
+        )
+        manager = _manager(ops_backup, tmp_path)
+
+        assert manager.restore_backup(archive, target) is False
+        assert not (target / "backup" / "data.txt").exists()
+
+    def test_a_truncated_archive_is_refused(self, ops_backup, tmp_path):
+        target = tmp_path / "restore-target"
+        archive = _write_archive(
+            tmp_path / "store" / "good.tar.gz",
+            {"good/metadata.json": b"{}", "good/data.txt": b"x" * 4096},
+        )
+        with open(archive, "rb") as handle:
+            content = handle.read()
+        with open(archive, "wb") as handle:
+            handle.write(content[: len(content) // 2])
+        manager = _manager(ops_backup, tmp_path)
+
+        assert manager.restore_backup(archive, target) is False
+
+
+class TestWindowsScratchDirectory:
+    def test_create_backup_does_not_hardcode_posix_tmp(self, ops_backup):
+        source = _SCRIPT.read_text(encoding="utf-8")
+
+        assert '/tmp/liuhao_backup_' not in source
+        assert "tempfile.mkdtemp" in source
+
+
+class TestEncryptedRestoreFailsClosed:
+    """A decrypt failure must return False, not raise out of ``restore_backup``.
+
+    ``restore_backup`` documents "Returns: True if successful" and the CLI does
+    ``sys.exit(0 if success else 1)``. But decryption used to run *outside* the
+    try/except, so a wrong/missing key or a corrupt ciphertext raised
+    ``InvalidToken`` straight out of the method -- the caller got an exception
+    where it was promised a boolean, and temp cleanup was skipped entirely.
+    """
+
+    def test_a_wrong_key_is_refused_not_raised(self, ops_backup, tmp_path):
+        archive = _write_archive(
+            tmp_path / "store" / "enc.tar.gz",
+            {"backup/metadata.json": b"{}", "backup/data.txt": b"secret"},
+        )
+        # Encrypt with a real key via the tool's own routine, then open with a
+        # different key.
+        _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )._encrypt_backup(archive)
+        wrong = _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="z" * 32
+        )
+        target = tmp_path / "restore-target"
+
+        assert wrong.restore_backup(archive, target) is False
+        # Fail closed: nothing half-restored.
+        assert not (target / "backup" / "data.txt").exists()
+
+    def test_a_corrupt_ciphertext_is_refused_not_raised(self, ops_backup, tmp_path):
+        archive = _write_archive(
+            tmp_path / "store" / "corrupt.tar.gz",
+            {"backup/metadata.json": b"{}", "backup/data.txt": b"secret"},
+        )
+        _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )._encrypt_backup(archive)
+        raw = archive.read_bytes()
+        archive.write_bytes(raw[: len(raw) // 2])
+        manager = _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )
+
+        assert manager.restore_backup(archive, tmp_path / "restore-target") is False
+
+    def test_a_good_encrypted_backup_restores_and_leaves_no_scratch(
+        self, ops_backup, tmp_path
+    ):
+        archive = _write_archive(
+            tmp_path / "store" / "enc2.tar.gz",
+            {"backup/metadata.json": b"{}", "backup/data.txt": b"secret"},
+        )
+        _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )._encrypt_backup(archive)
+        manager = _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )
+        target = tmp_path / "restore-target"
+
+        assert manager.restore_backup(archive, target) is True
+        assert (target / "backup" / "data.txt").read_bytes() == b"secret"
+        # The decrypted scratch copy must not linger next to the archive.
+        assert not list((tmp_path / "store").glob("*.decrypted"))
+
+
+class TestCreateRefusesSilentDowngrade:
+    """create_backup must not produce a restorable-looking artifact it cannot honor.
+
+    With the shipped defaults (``BackupConfig.encryption=True``,
+    ``encryption_key=None``) the old code logged a warning and wrote a PLAINTEXT
+    archive -- while the config still claimed encryption=True -- and a restore
+    using that same config could not open it. A backup you cannot restore is not
+    a backup; it is a false sense of safety.
+    """
+
+    def test_encryption_enabled_without_key_refuses_and_writes_nothing(
+        self, ops_backup, tmp_path
+    ):
+        manager = _manager(ops_backup, tmp_path, encryption=True, encryption_key="")
+
+        with pytest.raises(RuntimeError):
+            manager.create_backup("plaintext")
+
+        assert list((tmp_path / "backup-store").glob("*.tar.gz*")) == []
+        assert manager.list_backups() == []
+
+    def test_encryption_enabled_with_none_key_refuses(self, ops_backup, tmp_path):
+        manager = _manager(ops_backup, tmp_path, encryption=True, encryption_key=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            manager.create_backup("plaintext")
+
+        assert "encryption" in str(excinfo.value).lower()
+
+    def test_a_failed_verification_leaves_no_artifact(self, ops_backup, tmp_path):
+        manager = _manager(ops_backup, tmp_path)
+        manager._verify_backup = lambda path: False  # force a failed verify
+
+        with pytest.raises(RuntimeError):
+            manager.create_backup("bad")
+
+        # The unusable archive must not linger, or list_backups would offer it.
+        assert manager.list_backups() == []
+        assert list((tmp_path / "backup-store").glob("*.tar.gz*")) == []
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(pytest.main([__file__, "-v"]))

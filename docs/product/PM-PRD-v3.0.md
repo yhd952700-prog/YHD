@@ -1,4 +1,4 @@
-# LIUHAO X v3.0 — PM PRD (Product Requirements Document)
+# LiuHao AI OS · 鎏灏智能中枢 — PM PRD（v3.0）
 
 > **Version**: v3.0
 > **Date**: 2026-09-05
@@ -9,7 +9,7 @@
 
 ## 1. Product Vision
 
-**LIUHAO X / 鎏灏 X** = Human-Sovereign Agent Operating System
+**LiuHao AI OS · 鎏灏智能中枢**（旧称 LIUHAO X / 鎏灏 X） = Human-Sovereign Agent Operating System
 
 **Core**: Open-Ended Capability + Bounded Autonomous Authority
 
@@ -69,7 +69,7 @@
 - **REQ-SEC-001**: RBAC roles + permissions (verified SEC_01)
 - **REQ-SEC-002**: ABAC policies with default-deny (verified SEC_02)
 - **REQ-SEC-003**: Vault Transit encryption, keys never in DB (verified SEC_03)
-- **REQ-SEC-004**: CryptoAuditLogger with hash-chain integrity (verified SEC_04)
+- **REQ-SEC-004**: CryptoAuditLogger with hash-chain integrity (verified SEC_04) (IN-MEMORY ONLY — not persisted, not audit-grade). Durable tamper-evident audit is provided by src.kernels.audit (HC-01; runtime integrity currently UNVERIFIED on a populated deployment).
 - **REQ-SEC-005**: API Key management with scopes (verified SEC_05)
 - **REQ-SEC-006**: Key rotation automation (verified SEC_06)
 
@@ -104,7 +104,7 @@
 | Security | TLS 1.3 enforced | End-to-end | MUST |
 | Security | Vault keys | Never in DB | MUST |
 | Audit | Operation traceability | 100% | MUST |
-| Audit | Tamper-proof | Hash chain | MUST |
+| Audit | Tamper-evident (target; HC-01 runtime integrity currently UNVERIFIED — forked chain, pending F1–F6 + independent verification; in-memory crypto-audit HC-09 is NON-AUTHORITATIVE) | Hash chain | MUST |
 | Observability | Trace completeness | Full chain | MUST |
 | Observability | Metrics completeness | RED + USE | MUST |
 | Disaster Recovery | RPO | < 5min | MUST |

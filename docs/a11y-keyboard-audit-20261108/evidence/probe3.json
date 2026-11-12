@@ -1,0 +1,194 @@
+{
+  "errors": [],
+  "initial": {
+    "tag": "initial-focus",
+    "html": "input",
+    "name": "label:账号",
+    "outline": "none 3px rgb(232, 238, 252)",
+    "shadow": "none"
+  },
+  "tabOrder": [
+    {
+      "tag": "tab1",
+      "html": "button",
+      "name": "总览",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "color(srgb 0.301961 0.552941 1 / 0.3) 0px 0px 0px 1px inset"
+    },
+    {
+      "tag": "tab2",
+      "html": "button",
+      "name": "鎏灏管家",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab3",
+      "html": "button",
+      "name": "我的员工",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab4",
+      "html": "button",
+      "name": "能力注册表",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab5",
+      "html": "button",
+      "name": "业务中心",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab6",
+      "html": "button",
+      "name": "知识中心",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab7",
+      "html": "button",
+      "name": "记忆",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab8",
+      "html": "button",
+      "name": "工作台",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab9",
+      "html": "button",
+      "name": "目标与任务",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab10",
+      "html": "button",
+      "name": "项目",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab11",
+      "html": "button",
+      "name": "应用",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab12",
+      "html": "button",
+      "name": "数据中心",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab13",
+      "html": "button",
+      "name": "事件流",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab14",
+      "html": "button",
+      "name": "审批中心",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab15",
+      "html": "button",
+      "name": "审计链",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab16",
+      "html": "button",
+      "name": "信任",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab17",
+      "html": "button",
+      "name": "网络",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab18",
+      "html": "button",
+      "name": "身份与权限",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab19",
+      "html": "button",
+      "name": "工作区文件",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab20",
+      "html": "button",
+      "name": "系统状态",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab21",
+      "html": "button",
+      "name": "生产预检",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab22",
+      "html": "button",
+      "name": "成员与权限管理",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab23",
+      "html": "button",
+      "name": "权限矩阵",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    },
+    {
+      "tag": "tab24",
+      "html": "button",
+      "name": "角色模板",
+      "outline": "solid 2px rgb(77, 141, 255)",
+      "shadow": "none"
+    }
+  ],
+  "steps": 19,
+  "found": true,
+  "wbInfo": {
+    "title": "工作台",
+    "hasTextarea": true,
+    "textareaAria": {
+      "label": null,
+      "placeholder": "请输入您的业务指令...",
+      "labelledby": null
+    },
+    "textareaColor": "rgb(234, 246, 255)",
+    "live": [],
+    "body": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的员工\n能力注册表\n业务中心\n知识中心\n记忆\n工作台\n目标与任务\n项目\n应用\n数据中心\n事件流\n治理\n审批中心\n审计链\n信任\n网络\n身份与权限\n工作区文件\n系统状态\n生产预检\n成员与权限管理\n权限矩阵\n角色模板\n备份与迁移\n恢复码\n全部 Key\n系统设置\n无\n无障碍审计\n我的工作空间\n搜索当前页面\n/\n11/07 12:12\n工作台\n\n你自己看任务、看文件、看产出，也可以直接对话\n\n工作台：你自己看任务、看文件、看产出，也可以直接在下方输入框对话。 想让管家替你拆解目标，去「鎏灏管家」。\n开始对话\n看任务\n看文件与产出\n看运行记录\n直接对话\n\n在下面输入框里提问，回车发送；工具调用原样展示，不做摘要或美化\n\n您\nJARVIS\nYour AI Business Partner\n老板，我已准备就绪！\n今天我可以为您分析什么？\n请下达业务指令，Jarvis 将为您实时分析。\n发送\n市场分析\n销售机会\n客户策略\nSEO优化\n数据分析\n默认模型：旧配置 · 本地 Ollama\n旧配置 · 本地 Ollama · qwen2.5:3b\n未命名会话\n＋新会话\n删除\n身份"
+  }
+}

@@ -10,7 +10,10 @@ Provides standardized metrics for:
 """
 
 from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry
+import threading
 import time
+from collections import deque
+from typing import Any, Dict, Optional
 
 
 # Create custom registry
@@ -50,6 +53,62 @@ http_response_size_bytes = Histogram(
     buckets=[100, 1000, 10000, 100000, 1000000],
     registry=REGISTRY
 )
+
+
+# ----------------------------------------------------------------------------
+# Bounded endpoint labels
+# ----------------------------------------------------------------------------
+# The 22-minute soak measured a metric-cardinality leak: labelling by the RAW
+# request path meant every new id created a new ``(method, endpoint)`` label
+# set -- 18 -> 23 combinations in 22 minutes, all of them dynamic-id paths
+# (``GET /v1/goals/<id>``, ``POST /v1/goals/<id>/tasks/<id>/retry``), each
+# costing 11 histogram bucket lines + 5 summary lines (~16 exposition lines) and
+# ~8.4 KB of text, with process handles rising in lockstep (869 -> 912).
+#
+# Endpoint labels are therefore resolved from the MATCHED ROUTE TEMPLATE
+# (e.g. ``/v1/goals/{goal_id}``), which has a fixed, bounded set of values
+# regardless of how many ids are requested. Requests that match no route are
+# folded into ONE sentinel, so probing arbitrary unknown paths cannot grow the
+# label space either.
+UNMATCHED_ENDPOINT_LABEL = "__unmatched__"
+
+
+def endpoint_template(scope: Any) -> str:
+    """Return a bounded ``endpoint`` label for the given ASGI scope.
+
+    Starlette/FastAPI record the matched route object in ``scope["route"]``
+    (``fastapi.routing.APIRoute.matches`` sets it for both full and partial
+    matches), and ``route.path`` is the template with placeholders, not the
+    concrete URL. Raw paths are never used for labels -- they embed unbounded
+    identifiers.
+
+    Unknown/unmatched paths converge on :data:`UNMATCHED_ENDPOINT_LABEL`.
+    """
+    try:
+        route = scope.get("route")
+        template = getattr(route, "path", None)
+    except Exception:  # pragma: no cover - a malformed scope must not raise
+        template = None
+    if isinstance(template, str) and template:
+        return template
+    return UNMATCHED_ENDPOINT_LABEL
+
+
+def record_http_request(method: str, scope: Any, status_code: int,
+                        duration_seconds: float) -> None:
+    """Feed the HTTP request metrics using the scope's route template.
+
+    This is the single production instrumentation entry point (the gateway
+    middleware calls it), so the bounded-label rule is exercised by the same
+    code path a test or reproducer would use.
+    """
+    endpoint = endpoint_template(scope)
+    http_requests_total.labels(
+        method=method, endpoint=endpoint, status=str(status_code)
+    ).inc()
+    http_request_duration_seconds.labels(
+        method=method, endpoint=endpoint
+    ).observe(duration_seconds)
 
 
 # ============================================================
@@ -317,6 +376,167 @@ def set_employee_success_rate(employee_name: str, rate: float):
 
 
 # ============================================================
+# Executor Fence / Coordinator Metrics (UBX-005 observability)
+# ============================================================
+# These surface the human-sovereignty-critical executor fence (the default-DENY
+# autonomous-action gate) into Prometheus so operators can see denials, liveness
+# failures, backend outages, and concurrent-executor pressure. Every emitter is
+# best-effort: a metrics failure must NEVER break the fence path.
+
+executor_fence_denials_total = Counter(
+    'executor_fence_denials_total',
+    'Total executor-fence denials (default-deny outcomes), labelled by reason',
+    ['reason'],
+    registry=REGISTRY,
+)
+
+executor_fence_enforce_seconds = Histogram(
+    'executor_fence_enforce_seconds',
+    'Executor fence enforce() latency in seconds (the per-action gate)',
+    buckets=[0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5],
+    registry=REGISTRY,
+)
+
+executor_fence_active_leases = Gauge(
+    'executor_fence_active_leases',
+    'Number of currently-active (non-stale) executor leases',
+    registry=REGISTRY,
+)
+
+executor_fence_epoch = Gauge(
+    'executor_fence_epoch',
+    'Current executor-fence logical era/epoch in effect',
+    registry=REGISTRY,
+)
+
+executor_fence_heartbeat_failures_total = Counter(
+    'executor_fence_heartbeat_failures_total',
+    'Executor fence heartbeat failures (liveness lost or backend error)',
+    registry=REGISTRY,
+)
+
+executor_fence_backend_errors_total = Counter(
+    'executor_fence_backend_errors_total',
+    'Executor fence coordination-backend failures that forced a fail-closed deny',
+    registry=REGISTRY,
+)
+
+executor_fence_renew_failures_total = Counter(
+    'executor_fence_renew_failures_total',
+    'Executor fence renew() failures (stale lease or backend error)',
+    registry=REGISTRY,
+)
+
+coordinator_admission_contention_total = Counter(
+    'coordinator_admission_contention_total',
+    'Coordinator admission-section contention (retry attempts under max_executors)',
+    registry=REGISTRY,
+)
+
+# G8/G9 fail-open observability: whether the *production* executor fence is
+# actually installed in this process. ``attach_default_executor_fence()`` failing
+# at boot used to be invisible (one ERROR log, boot continues, metric families
+# absent) -- an operator scraping Prometheus saw a fully instrumented service
+# that was silently running autonomous actions UN-FENCED.
+# 0 does NOT mean "the fence is not needed": it means "not installed". A
+# deployment that legitimately leaves the gate unarmed is reported separately by
+# /v1/ready (armed=False) and must not be conflated with this signal.
+liuhao_executor_fence_installed = Gauge(
+    'liuhao_executor_fence_installed',
+    'Executor-fence installation state (1=default production fence attached, '
+    '0=NOT attached -- autonomous actions may be running un-fenced)',
+    registry=REGISTRY,
+)
+
+liuhao_executor_fence_install_failures_total = Counter(
+    'liuhao_executor_fence_install_failures_total',
+    'Total failures to attach the default production executor fence at boot '
+    '(each one left the process un-fenced unless startup aborted)',
+    registry=REGISTRY,
+)
+
+
+def set_fence_installed(installed: bool) -> None:
+    """Set the executor-fence installation gauge (1 attached / 0 not attached)."""
+    try:
+        liuhao_executor_fence_installed.set(1 if installed else 0)
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_install_failure() -> None:
+    """Count one failed attempt to attach the default executor fence."""
+    try:
+        liuhao_executor_fence_install_failures_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_denial(reason: str) -> None:
+    """Record one executor-fence denial, labelled by its reason class name."""
+    try:
+        executor_fence_denials_total.labels(reason=reason).inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def observe_fence_enforce(duration: float) -> None:
+    """Record the latency of a single enforce() call."""
+    try:
+        executor_fence_enforce_seconds.observe(duration)
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def set_fence_active_leases(n: int) -> None:
+    """Set the gauge of currently-active executor leases."""
+    try:
+        executor_fence_active_leases.set(int(n))
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def set_fence_epoch(epoch: int) -> None:
+    """Set the gauge of the current executor-fence era/epoch."""
+    try:
+        executor_fence_epoch.set(int(epoch))
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_heartbeat_failure() -> None:
+    """Record one executor-fence heartbeat failure."""
+    try:
+        executor_fence_heartbeat_failures_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_backend_error() -> None:
+    """Record one coordination-backend failure that forced a fail-closed deny."""
+    try:
+        executor_fence_backend_errors_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_renew_failure() -> None:
+    """Record one executor-fence renew() failure."""
+    try:
+        executor_fence_renew_failures_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_coordinator_admission_contention() -> None:
+    """Record one coordinator admission-section contention event."""
+    try:
+        coordinator_admission_contention_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+# ============================================================
 # Context Managers for Easy Tracking
 # ============================================================
 
@@ -406,3 +626,279 @@ def generate_metrics() -> bytes:
     """Generate Prometheus metrics output."""
     from prometheus_client import generate_latest
     return generate_latest(REGISTRY)
+
+
+# ============================================================
+# Real metric emitters for the alert engine (OB / blocker #3)
+# ============================================================
+# The production alert rules (install_production_rules) reference metrics
+# error_rate_percent / memory_usage_percent / cpu_usage_percent /
+# latency_p99_ms / service_heartbeat_interval / audit_log_lag_seconds /
+# audit_write_failing. Until
+# now nothing produced those names, so evaluate_all() was inert. The classes
+# below are the HONEST emitters: every value is measured from the real process
+# / OS / audit store. No value is invented or hard-coded to "look healthy".
+#
+# ``psutil`` is used when importable (it is the cleanest cross-platform source
+# for RSS and CPU); when it is absent we fall back to dependency-free
+# platform calls. psutil is never added to requirements.
+
+
+def _percentile(values: list, quantile: float) -> float:
+    """Return the ``quantile`` (0..1) percentile of a list of floats.
+
+    Pure-python, no numpy. Returns 0.0 for an empty list. Uses the
+    "nearest-rank" style index so the 99th percentile of a non-empty window is
+    always a real member of the window (never an interpolated fake).
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if quantile <= 0.0:
+        return float(ordered[0])
+    if quantile >= 1.0:
+        return float(ordered[-1])
+    idx = int(round(quantile * (len(ordered) - 1)))
+    idx = max(0, min(len(ordered) - 1, idx))
+    return float(ordered[idx])
+
+
+def _system_memory_total_bytes() -> float:
+    """Best-effort total system RAM in bytes, dependency-free.
+
+    Tries sysconf (POSIX) first; callers may also short-circuit via psutil.
+    Returns 0.0 if it cannot be determined (caller then reports best-effort).
+    """
+    try:
+        import os
+
+        page_size = os.sysconf("SC_PAGE_SIZE")  # type: ignore[attr-defined]
+        phys_pages = os.sysconf("SC_PHYS_PAGES")  # type: ignore[attr-defined]
+        if page_size and phys_pages:
+            return float(page_size * phys_pages)
+    except (ValueError, OSError, AttributeError):
+        pass
+    # Windows / fallback: parse /proc/meminfo if present.
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    # e.g. "MemTotal:       16384256 kB"
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) * 1024.0
+    except (OSError, ValueError):
+        pass
+    return 0.0
+
+
+class MetricCollector:
+    """Thread-safe collector of the 7 real metrics feeding the alert engine.
+
+    ``record_request`` is called by the gateway HTTP middleware for every
+    completed response. ``collect_snapshot`` computes the current value of each
+    of the 7 metrics against real sources. A daemon thread in the gateway
+    lifespan drives ``collect_snapshot`` -> ``AlertManager.evaluate_all`` every
+    15s.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._total_requests = 0
+        self._count_2xx = 0
+        self._count_4xx = 0
+        self._count_5xx = 0
+        # Bounded rolling window of recent request latencies in seconds.
+        self._latencies: "deque[float]" = deque(maxlen=200)
+        # Heartbeat: time of the last successful collect_snapshot() tick.
+        self._last_heartbeat = time.time()
+        # Probe traffic is counted separately, never into the user error rate:
+        # a probe 503 means "the service is busy answering a probe", not "a
+        # user request failed". Mixing them produced a false CRITICAL
+        # (error_rate_percent 50.0) while the service was perfectly healthy.
+        self._probe_requests = 0
+        self._probe_5xx = 0
+
+    # -- ingestion ----------------------------------------------------------
+
+    def record_request(
+        self, duration_seconds: float, status_code: int, is_probe: bool = False
+    ) -> None:
+        """Record one completed HTTP response. Fail-safe: never raises.
+
+        ``is_probe`` marks health/ready/metrics and other operator probe
+        surfaces. Their status is tracked in ``probe_stats()`` only, so a
+        busy probe can never be read as a failing user request. Prometheus
+        still labels these per endpoint, so probe failures stay observable.
+        """
+        try:
+            if not isinstance(status_code, int):
+                status_code = int(status_code)
+            with self._lock:
+                if is_probe:
+                    self._probe_requests += 1
+                    if 500 <= status_code < 600:
+                        self._probe_5xx += 1
+                    return
+                self._total_requests += 1
+                if 200 <= status_code < 300:
+                    self._count_2xx += 1
+                elif 400 <= status_code < 600:
+                    # 4xx counted separately from 5xx by the model's intent,
+                    # but only 5xx drives error_rate_percent. Keep both for
+                    # completeness / future dashboards.
+                    if 500 <= status_code < 600:
+                        self._count_5xx += 1
+                    self._count_4xx += 1
+                # Other classes (3xx) only bump total.
+                if duration_seconds is not None:
+                    self._latencies.append(float(duration_seconds))
+        except Exception:  # pragma: no cover - must never break a request
+            pass
+
+    def probe_stats(self) -> Dict[str, int]:
+        """Probe-only counters (separate class, not part of the error rate)."""
+        with self._lock:
+            return {"requests": self._probe_requests, "five_xx": self._probe_5xx}
+
+    # -- measurement helpers (each wrapped so one bad source can't sink all) -
+
+    def _memory_usage_percent(self) -> float:
+        """Process RSS / system RAM * 100. Real, never faked."""
+        try:
+            import psutil  # type: ignore
+
+            rss = psutil.Process().memory_info().rss
+            total = psutil.virtual_memory().total
+            if total > 0:
+                return float(rss) / float(total) * 100.0
+        except Exception:
+            pass
+        # Dependency-free fallback (POSIX). On platforms without psutil and
+        # without sysconf, return 0.0 honestly (source genuinely unavailable)
+        # rather than inventing a number.
+        try:
+            import resource  # type: ignore
+
+            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # type: ignore
+            total = _system_memory_total_bytes()
+            if total > 0 and rss_kb > 0:
+                # ru_maxrss is KB on Linux/Unix.
+                return float(rss_kb) * 1024.0 / total * 100.0
+        except Exception:
+            pass
+        return 0.0
+
+    def _cpu_usage_percent(self) -> float:
+        """Process/Host CPU usage percent. Real, never faked."""
+        try:
+            import psutil  # type: ignore
+
+            # interval=None => % since the previous call; the 15s loop makes
+            # this a meaningful rolling average while staying non-blocking for
+            # the synchronous /v1/observability/metrics endpoint.
+            return float(psutil.cpu_percent())
+        except Exception:
+            pass
+        # Dependency-free fallback: sample os.times() twice ~0.1s apart.
+        try:
+            import os
+
+            t0 = os.times()  # type: ignore[attr-defined]
+            time.sleep(0.1)
+            t1 = os.times()  # type: ignore[attr-defined]
+            utime = t1.user - t0.user
+            stime = t1.system - t0.system
+            wall = (t1.elapsed - t0.elapsed) if hasattr(t1, "elapsed") else 0.1
+            if wall > 0:
+                return (utime + stime) / wall * 100.0
+        except Exception:
+            pass
+        return 0.0
+
+    def _error_rate_percent(self) -> float:
+        with self._lock:
+            total = self._total_requests
+            errs = self._count_5xx
+        return (errs / max(1, total)) * 100.0
+
+    def _latency_p99_ms(self) -> float:
+        with self._lock:
+            window = list(self._latencies)
+        return _percentile(window, 0.99) * 1000.0
+
+    def _service_heartbeat_interval(self) -> float:
+        now = time.time()
+        with self._lock:
+            delta = now - self._last_heartbeat
+            self._last_heartbeat = now
+        return float(delta)
+
+    def _audit_write_health(self) -> Dict[str, Any]:
+        """Read-only write-health watermarks recorded by the audit store."""
+        try:
+            from ..kernels.audit import get_audit_write_health
+
+            return get_audit_write_health()
+        except Exception:
+            # Cannot reach the audit module -> we cannot prove a lag, so report
+            # "no lag" rather than inventing one. (A dead PROCESS is the
+            # service-heartbeat rule's job; this metric is about the write path.)
+            return {}
+
+    def _audit_log_lag_seconds(self) -> float:
+        """Age of the OLDEST audit-write request that has not landed yet.
+
+        This measures write backlog, not event silence. An idle system issues no
+        audit writes, so there is no backlog and the value is 0.0 -- it can run
+        idle for ten minutes (or ten days) without firing. A genuine stall
+        (writer blocked, DB write lock held by another process, disk wedged)
+        leaves a real request uncommitted, and that request's age is the lag.
+
+        A failed write ENDS its request; it is reported by
+        ``audit_write_failing`` (failure streak, cleared only by a later
+        successful write) rather than folded into this age.
+        """
+        health = self._audit_write_health()
+        return float(health.get("oldest_inflight_age_seconds") or 0.0)
+
+    def _audit_write_failing(self) -> float:
+        """1.0 while an audit write has failed and no later write has succeeded.
+
+        This is positive proof of a failed write plus absence of proof of
+        recovery, so it stays 1.0 until a real successful append clears the
+        streak. It is deliberately NOT time-based: a failure does not "age out".
+        """
+        health = self._audit_write_health()
+        return 1.0 if health.get("failing") else 0.0
+
+    # -- snapshot -----------------------------------------------------------
+
+    def collect_snapshot(self) -> Dict[str, float]:
+        """Compute the current value of all 7 metrics from real sources.
+
+        Every key is always present (all have real emitters). Each helper is
+        independently defended so one failing source yields 0.0 for that key
+        instead of crashing the whole snapshot.
+        """
+        return {
+            "memory_usage_percent": self._memory_usage_percent(),
+            "cpu_usage_percent": self._cpu_usage_percent(),
+            "error_rate_percent": self._error_rate_percent(),
+            "latency_p99_ms": self._latency_p99_ms(),
+            "service_heartbeat_interval": self._service_heartbeat_interval(),
+            "audit_log_lag_seconds": self._audit_log_lag_seconds(),
+            "audit_write_failing": self._audit_write_failing(),
+        }
+
+
+# Module-level singleton (mirrors the other *get_* accessors in this module).
+_metric_collector: Optional["MetricCollector"] = None
+
+
+def get_metric_collector() -> "MetricCollector":
+    """Return the process-wide MetricCollector singleton."""
+    global _metric_collector
+    if _metric_collector is None:
+        _metric_collector = MetricCollector()
+    return _metric_collector

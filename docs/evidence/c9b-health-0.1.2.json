@@ -1,0 +1,14 @@
+{
+    "status":  "ok",
+    "service":  "liuhao-gateway",
+    "timestamp":  1793944345.0901566,
+    "trace_id":  "unknown",
+    "version":  "1.0.0",
+    "api_contract":  "1",
+    "ai_provider":  {
+                        "type":  "mock",
+                        "mode":  "mock",
+                        "simulated":  false,
+                        "source":  "env"
+                    }
+}

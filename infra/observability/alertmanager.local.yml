@@ -1,0 +1,19 @@
+# Alertmanager config for a NATIVE (non-container) closed-loop run: sink and
+# Alertmanager are both on 127.0.0.1.
+#
+# Used by scripts/verify_observability_loop.py --mode local.
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: 'closed-loop-sink'
+  group_by: ['alertname']
+  group_wait: 0s
+  group_interval: 1m
+  repeat_interval: 5m
+
+receivers:
+  - name: 'closed-loop-sink'
+    webhook_configs:
+      - url: 'http://127.0.0.1:18010/'
+        send_resolved: true

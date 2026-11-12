@@ -44,7 +44,7 @@ LHX-C-xxx    ——         十源去重后的统一核心能力（Kernel 层专
 | LHX-C-010 | Trust Chain | `trust` | JOCaSTA | 629 | IMPLEMENTED | ✅ 48 |
 | LHX-C-011 | Outcome Evaluation | `evaluation` | （全源） | 595 | IMPLEMENTED | ✅ 29 |
 | LHX-C-012 | Security (RBAC+ABAC+Vault) | `security` | JOCaSTA | 450 | IMPLEMENTED | ✅ 49 |
-| LHX-C-013 | Tamper-evident Audit | `audit` | ENOCH | 423 | IMPLEMENTED | ✅ 31 |
+| LHX-C-013 | Audit (hash-chain; tamper-evident DESIGN implemented, runtime integrity UNVERIFIED — forked chain) | `audit` | ENOCH | 423 | IMPLEMENTED | ✅ 31 |
 | LHX-C-014 | Plugin Management | `plugin` | ZOON | 447 | IMPLEMENTED | ✅ 15 |
 
 **达标数：14 / 14。**

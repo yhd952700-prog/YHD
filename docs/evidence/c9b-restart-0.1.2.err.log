@@ -1,0 +1,10 @@
+Debug API surface ENABLED (APP_ENV=development): /docs, /redoc, /openapi.json are readable on this listener -- set APP_ENV=production to turn them off
+INFO:     Started server process [16060]
+INFO:     Waiting for application startup.
+Deployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.
+no LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.
+Human identity store: file @ (unconfigured) -- 0 registered humans, so NOBODY CAN APPROVE a HIGH/CRITICAL action (fail-closed, OD-010). Register one with scripts/register_human_identity.py
+{"ts": 1793944437.1709611, "level": "INFO", "logger": "liuhao.reliability.checkpointer", "msg": "background_verifier_started", "segment_events": 5000, "incremental_interval_sec": 300.0, "rolling_every_n_ticks": 12, "predicted_seconds_per_tick": 0.15}
+{"ts": 1793944437.1805208, "level": "INFO", "logger": "liuhao.reliability.checkpointer", "msg": "checkpoint_tick_complete", "status": "ok", "checkpoints": 6, "uncovered": 0, "coverage_ratio": 1.0, "rooted_at_genesis": true}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:18324 (Press CTRL+C to quit)

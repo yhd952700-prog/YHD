@@ -90,8 +90,23 @@ class TestBillingEngine:
     def test_unknown_model_is_honest_not_crashing(self):
         billing = BillingEngine({"gpt-4": 0.03})
         rec = billing.record_usage("mystery-model", 500, 500)
-        assert rec["cost"] == pytest.approx(0.0)
+        # 未知价格不再按 0 元入账：cost 为 None，并明确给出"暂无价格"。
+        assert rec["cost"] is None
         assert rec["unknown_model"] is True
+        assert rec["pricing_status"] == "unknown"
+        assert "暂无价格" in rec["message"]
+
+    def test_unknown_model_does_not_pollute_known_total(self):
+        billing = BillingEngine({"gpt-4": 0.03})
+        billing.record_usage("gpt-4", 1000, 1000)      # 0.06
+        billing.record_usage("mystery-model", 500, 500)
+        report = billing.usage_report()
+        assert report["total_cost"] == pytest.approx(0.06)
+        assert report["total_cost_complete"] is False
+        assert report["unknown_models"] == ["mystery-model"]
+        assert report["models"]["mystery-model"]["cost"] is None
+        assert report["models"]["mystery-model"]["pricing_status"] == "unknown"
+        assert "暂无价格" in report["message"]
 
     def test_usage_report_aggregates_per_model(self):
         billing = BillingEngine({"gpt-4": 0.03})

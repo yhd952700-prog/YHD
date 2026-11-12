@@ -1,0 +1,345 @@
+# =============================================================================
+# LiuHao AI OS — Prometheus 告警规则 (alert-rules.yaml)
+# =============================================================================
+# 用途：
+#   Prometheus 加载本文件（prometheus.yml 的 rule_files），周期性评估以下
+#   告警表达式，命中后推送 Alertmanager 路由通知。
+#
+# 分级约定：
+#   severity: critical —— 立即电话/加急，服务不可用或数据风险
+#   severity: warning  —— 工作时间处理，性能退化或容量预警
+#   severity: info     —— 记录观察，不主动打扰
+#
+# for 参数说明：条件需持续满足该时长才触发，避免毛刺告警。
+#
+# 变量说明（由 Alertmanager 模板渲染）：
+#   {{ $labels.instance }} / {{ $labels.job }} / {{ $value }}
+# =============================================================================
+
+groups:
+
+  # ---------------------------------------------------------------------------
+  # 应用可用性
+  # ---------------------------------------------------------------------------
+  - name: liuhao.availability
+    interval: 15s
+    rules:
+
+      - alert: AppDown
+        expr: up{job="liuhao-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "应用实例下线：{{ $labels.instance }}"
+          description: "liuhao-app 实例 {{ $labels.instance }} 已连续 1 分钟无法抓取指标。检查容器状态与健康检查日志。"
+
+      - alert: AppReadinessFailing
+        expr: probe_success{job="blackbox-http", instance=~".*readyz.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "就绪探针失败：{{ $labels.instance }}"
+          description: "黑盒探测 /readyz 连续失败 2 分钟，流量可能正在被送入未就绪实例。"
+
+      - alert: HighHttp5xxRate
+        expr: |
+          sum(rate(http_requests_total{job="liuhao-app", status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="liuhao-app"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "HTTP 5xx 比例过高（{{ $value | humanizePercentage }}）"
+          description: "5 分钟内 5xx 占比超过 5%。查看 error.log 与最近发布记录。"
+
+      - alert: HighHttp4xxRate
+        expr: |
+          sum(rate(http_requests_total{job="liuhao-app", status=~"4.."}[15m]))
+          /
+          sum(rate(http_requests_total{job="liuhao-app"}[15m])) > 0.30
+        for: 15m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "HTTP 4xx 比例异常（{{ $value | humanizePercentage }}）"
+          description: "可能是客户端滥用、鉴权配置错误或爬虫扫描。"
+
+  # ---------------------------------------------------------------------------
+  # 延迟
+  # ---------------------------------------------------------------------------
+  - name: liuhao.latency
+    interval: 15s
+    rules:
+
+      - alert: HttpP99LatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="liuhao-app"}[5m])) by (le)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "HTTP P99 延迟超过 2s（当前 {{ $value }}s）"
+          description: "检查慢查询、LLM 上游延迟与连接池饱和度。"
+
+      - alert: LLMRequestP95Slow
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(llm_request_duration_seconds_bucket[10m])) by (le, provider)
+          ) > 30
+        for: 15m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "LLM 提供方 {{ $labels.provider }} P95 超过 30s"
+          description: "考虑切换 fallback_chain 或调低 request_timeout_seconds。"
+
+  # ---------------------------------------------------------------------------
+  # LLM 提供方与成本
+  # ---------------------------------------------------------------------------
+  - name: liuhao.llm
+    interval: 30s
+    rules:
+
+      - alert: LLMProviderErrorRateHigh
+        expr: |
+          sum(rate(llm_requests_total{status="error"}[5m])) by (provider)
+          /
+          sum(rate(llm_requests_total[5m])) by (provider) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "LLM 提供方 {{ $labels.provider }} 错误率 > 20%"
+          description: "检查 API key 配额、上游状态页与熔断器状态。"
+
+      - alert: LLMProviderCircuitOpen
+        expr: circuit_breaker_state{component=~"llm.*"} == 2
+        for: 1m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "熔断器打开：{{ $labels.component }}"
+          description: "{{ $labels.component }} 已熔断，流量正切换到降级链路。"
+
+      - alert: DailyCostBudget80
+        expr: cost_daily_total_usd / cost_daily_budget_usd > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "日成本已达预算 80%（{{ $value | humanizePercentage }}）"
+          description: "按当前速率今日将超支。检查异常 agent 循环或大上下文请求。"
+
+      - alert: MonthlyCostBudget95
+        expr: cost_monthly_total_usd / cost_monthly_budget_usd > 0.95
+        for: 30m
+        labels:
+          severity: critical
+          team: ai
+        annotations:
+          summary: "月成本已达预算 95%"
+          description: "即将触发 on_budget_exceeded=degrade 降级到本地模型。"
+
+  # ---------------------------------------------------------------------------
+  # Agent 运行时
+  # ---------------------------------------------------------------------------
+  - name: liuhao.agents
+    interval: 30s
+    rules:
+
+      - alert: AgentRunFailureRateHigh
+        expr: |
+          sum(rate(agent_runs_total{status="failed"}[15m]))
+          /
+          sum(rate(agent_runs_total[15m])) > 0.15
+        for: 10m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "Agent 运行失败率 > 15%"
+          description: "抽查失败 run 的轨迹；常见原因：工具沙箱超时、上下文超长。"
+
+      - alert: AgentQueueBacklog
+        expr: agent_queue_pending > 50
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Agent 队列积压 {{ $value }} 个任务"
+          description: "考虑扩容 max_concurrent 或增加 worker 实例。"
+
+      - alert: HumanApprovalStuck
+        expr: time() - max(human_approval_requested_timestamp) > 1800
+        for: 5m
+        labels:
+          severity: info
+          team: ai
+        annotations:
+          summary: "存在超过 30 分钟未处理的人工审批"
+          description: "审批通道可能无人值守；检查 lark/web 通知是否送达。"
+
+  # ---------------------------------------------------------------------------
+  # 基础设施：数据库 / Redis / 宿主机
+  # ---------------------------------------------------------------------------
+  - name: liuhao.infra
+    interval: 30s
+    rules:
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: dba
+        annotations:
+          summary: "PostgreSQL 不可用"
+          description: "应用将进入降级/只读。检查容器与数据卷状态。"
+
+      - alert: PostgresConnectionsHigh
+        expr: |
+          sum(pg_stat_activity_count) by (datname)
+          /
+          pg_settings_max_connections > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "PostgreSQL 连接数超 80%（库 {{ $labels.datname }}）"
+          description: "检查应用连接池泄漏（pool_size + max_overflow 是否过大）。"
+
+      - alert: PostgresSlowQueries
+        expr: rate(pg_stat_statements_mean_time_seconds[5m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "PostgreSQL 平均查询时间超过 1s"
+          description: "检查慢查询日志与缺失索引。"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis 不可用"
+          description: "缓存、会话与分布式锁失效。"
+
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis 内存使用超 85%"
+          description: "检查 key TTL 策略与 maxmemory-policy。"
+
+      - alert: RedisHitRateLow
+        expr: rate(redis_keyspace_hits_total[10m]) / (rate(redis_keyspace_hits_total[10m]) + rate(redis_keyspace_misses_total[10m])) < 0.5
+        for: 30m
+        labels:
+          severity: info
+          team: platform
+        annotations:
+          summary: "Redis 缓存命中率低于 50%"
+          description: "缓存策略可能失效；检查 key 设计与 TTL。"
+
+      - alert: HostDiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/", fstype!~"tmpfs|overlay"}
+          / node_filesystem_size_bytes{mountpoint="/"}) < 0.15
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "宿主机磁盘剩余不足 15%"
+          description: "清理日志轮转文件、Docker 悬空镜像与旧备份。"
+
+      - alert: HostMemoryHigh
+        expr: |
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "宿主机内存使用超 90%"
+          description: "检查容器内存泄漏与 agent 沙箱限额。"
+
+      - alert: HostCpuHigh
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "宿主机 CPU 持续超 90%"
+          description: "考虑水平扩容或降低 server.workers。"
+
+  # ---------------------------------------------------------------------------
+  # 备份与安全
+  # ---------------------------------------------------------------------------
+  - name: liuhao.ops
+    interval: 60s
+    rules:
+
+      - alert: BackupMissing
+        expr: time() - backup_last_success_timestamp > 93600
+        for: 1h
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "超过 26 小时没有成功备份"
+          description: "检查 crontab backup 任务日志与 S3 凭证。"
+
+      - alert: AuditAnchoringFailed
+        expr: increase(audit_anchor_failures_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "审计日志外部锚定失败"
+          description: "审计链完整性无法保证；检查 anchor_key.pem 与外部锚定服务。"
+
+      - alert: CertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TLS 证书将在 {{ $value | humanizeDuration }} 内过期"
+          description: "更新 certs/ 或续期 ACME 证书并 reload Nginx。"
+
+      - alert: TooManyAuthFailures
+        expr: rate(auth_failures_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "认证失败速率异常（{{ $value }}/s）"
+          description: "可能存在暴力破解；考虑临时封禁来源 IP。"
