@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -215,6 +216,9 @@ class VectorStore:
     All operations are in-memory only; production would use pgvector, Pinecone,
     Qdrant, etc. but this prototype is designed for compatibility with those.
     """
+
+    #: Backend label reported by ``KnowledgeDocumentService.status``.
+    backend = "memory"
 
     def __init__(self) -> None:
         # In-memory storage: doc_id -> (embedding, metadata)
@@ -631,6 +635,8 @@ class PersistentVectorStore(VectorStore):
     every write is upserted to SQLite first so a crash cannot leave the process
     serving vectors that were never persisted.
     """
+
+    backend = "local_sqlite"
 
     def __init__(self, db_path: Optional[str] = None) -> None:
         super().__init__()
@@ -1346,16 +1352,105 @@ class PersistentVectorStore(VectorStore):
 _STORE: Optional[VectorStore] = None
 _STORE_LOCK = threading.Lock()
 
+#: Which vector backend to use (``LIUHAO_VECTOR_BACKEND``):
+#: ``auto`` (default) / ``local`` / ``sqlite`` / ``qdrant``.
+VECTOR_BACKEND_ENV = "LIUHAO_VECTOR_BACKEND"
+
+#: Cached Qdrant probe result (``{"at": float, "reachable": bool}``) so the
+#: status endpoint does not open a TCP connection on every call. The cache is
+#: keyed by address: pointing the probe at a different host/port re-probes.
+_PROBE_CACHE: Dict[str, Any] = {"at": 0.0, "reachable": False, "address": None}
+_PROBE_CACHE_TTL_SECONDS = 60.0
+
+
+def probe_qdrant_cached() -> bool:
+    """Cached ``qdrant_store.probe_qdrant`` (60 s TTL; never raises)."""
+    import time
+
+    from .qdrant_store import qdrant_base_url
+
+    address = qdrant_base_url()
+    now = time.monotonic()
+    if (
+        now - float(_PROBE_CACHE.get("at") or 0.0) < _PROBE_CACHE_TTL_SECONDS
+        and _PROBE_CACHE.get("address") == address
+    ):
+        return bool(_PROBE_CACHE.get("reachable"))
+    try:
+        from .qdrant_store import probe_qdrant
+
+        reachable = probe_qdrant()
+    except Exception:  # noqa: BLE001 - probe failure is a "no" answer
+        reachable = False
+    _PROBE_CACHE["at"] = now
+    _PROBE_CACHE["reachable"] = reachable
+    _PROBE_CACHE["address"] = address
+    return reachable
+
+
+def select_vector_backend() -> str:
+    """``"qdrant"`` / ``"local_sqlite"`` / ``"auto"`` from env + reachability.
+
+    * ``LIUHAO_VECTOR_BACKEND=qdrant`` -- Qdrant is mandatory: unreachable
+      raises instead of silently falling back to SQLite.
+    * ``local`` / ``sqlite`` -- always the SQLite store.
+    * ``auto`` (default) -- decided by :func:`get_vector_store`: Qdrant only
+      when it is reachable **and** the local SQLite corpus is empty. An
+      existing local corpus is never stranded silently: once documents live in
+      SQLite, ``auto`` stays on SQLite until the operator explicitly selects
+      ``qdrant`` (and migrates).
+    """
+    choice = (os.environ.get(VECTOR_BACKEND_ENV) or "auto").strip().lower()
+    if choice in {"local", "sqlite"}:
+        return "local_sqlite"
+    if choice == "qdrant":
+        if not probe_qdrant_cached():
+            from .qdrant_store import qdrant_base_url
+
+            raise RuntimeError(
+                "LIUHAO_VECTOR_BACKEND=qdrant，但 Qdrant 服务不可达 "
+                f"({qdrant_base_url()})：请启动 Qdrant，或改回 "
+                "LIUHAO_VECTOR_BACKEND=local"
+            )
+        return "qdrant"
+    if choice != "auto":
+        logger.warning(
+            "unknown %s=%r; treating as auto", VECTOR_BACKEND_ENV, choice
+        )
+    return "auto"
+
 
 def get_vector_store(db_path: Optional[str] = None) -> VectorStore:
-    """Process-level singleton; raises (fail-closed) if the DB cannot open."""
+    """Process-level singleton; raises (fail-closed) if the store cannot open.
+
+    Backend selection (see :func:`select_vector_backend`): Qdrant when it is
+    explicitly selected and reachable; the SQLite-backed
+    :class:`PersistentVectorStore` otherwise -- except on a fresh start
+    (``auto`` + empty local corpus + reachable Qdrant), where the empty local
+    store is set aside and Qdrant is adopted. The local store is the durable
+    default: it survives restarts without any external service.
+    """
     global _STORE
     if _STORE is not None:
         return _STORE
     with _STORE_LOCK:
         if _STORE is None:
+            backend = select_vector_backend()
+            if backend == "qdrant":
+                from .qdrant_store import QdrantVectorStore
+
+                try:
+                    _STORE = QdrantVectorStore()
+                except Exception as exc:
+                    logger.error("knowledge vector store (Qdrant) unavailable: %s", exc)
+                    raise
+                logger.info(
+                    "knowledge vector store: Qdrant (%s)",
+                    _STORE.base_url,  # type: ignore[attr-defined]
+                )
+                return _STORE
             try:
-                _STORE = PersistentVectorStore(db_path)
+                local = PersistentVectorStore(db_path)
             except (sqlite3.Error, OSError) as exc:
                 logger.error(
                     "knowledge vector store unavailable at %s: %s",
@@ -1363,6 +1458,29 @@ def get_vector_store(db_path: Optional[str] = None) -> VectorStore:
                     exc,
                 )
                 raise
+            if backend == "auto" and local.count() == 0 and probe_qdrant_cached():
+                # Fresh start with a live Qdrant: adopt it instead of leaving
+                # the (still empty) SQLite file as the corpus home.
+                try:
+                    local.close()
+                except Exception:  # noqa: BLE001 - close failure is not fatal
+                    pass
+                from .qdrant_store import QdrantVectorStore
+
+                try:
+                    _STORE = QdrantVectorStore()
+                except Exception as exc:
+                    logger.error("knowledge vector store (Qdrant) unavailable: %s", exc)
+                    raise
+                logger.info(
+                    "knowledge vector store: Qdrant (%s, auto-adopted on empty local corpus)",
+                    _STORE.base_url,  # type: ignore[attr-defined]
+                )
+                return _STORE
+            _STORE = local
+            logger.info(
+                "knowledge vector store: local SQLite (%s)", _STORE.db_path
+            )
     return _STORE
 
 
