@@ -22,7 +22,7 @@ export interface ActiveProviderStatus {
   mode: string
   /** 真实 provider 且未开模拟路径。 */
   isReal: boolean
-  /** 内置 mock（默认开发态）：回复是编造的，不是真实模型输出。 */
+  /** 内置 mock（默认态）：未配置真实模型时不生成回答，只返回未配置提示。 */
   isMock: boolean
   /** 给人看的一句话结论（短）。 */
   label: string
@@ -73,7 +73,7 @@ export function deriveProviderStatus(input: {
   } else if (isMock) {
     label = '尚未接入真实模型'
     detail =
-      '当前回复为演示内容，不会调用真实模型。到「系统设置 → 模型管理」填写密钥并测试连通后，下一条消息即可使用真实模型。'
+      '未配置模型，请先配置模型密钥。发送消息后只会收到未配置提示，不会得到模拟回答；到「系统设置 → 模型管理」填写密钥并测试连通后，下一条消息即可使用真实模型。'
   } else if (posture.simulated) {
     label = '模拟执行'
     detail = posture.verdict
