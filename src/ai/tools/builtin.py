@@ -1,4 +1,4 @@
-"""Built-in tools for LiuHao AI OS.
+"""Built-in tools for Jarvis.
 
 Provides a set of ready-to-use tools that cover common operations:
 
@@ -217,7 +217,7 @@ class SearchTool(BaseTool):
     _KNOWLEDGE_BASE: Dict[str, str] = {
         "python": "Python is a high-level, interpreted programming language known for its readability and versatility.",
         "machine learning": "Machine learning is a subset of AI that enables systems to learn and improve from experience.",
-        "liuhao": "鎏灏智能中枢（LiuHao AI OS）是一个具备多智能体能力的自主 AI 操作系统。",
+        "liuhao": "贾维斯（Jarvis）是一个具备多智能体能力的自主 AI 操作系统。",
         "neural network": "A neural network is a computing system inspired by biological neural networks in animal brains.",
         "algorithm": "An algorithm is a finite sequence of rigorous instructions, typically used to solve a class of specific problems.",
         "data structure": "A data structure is a data organization, management, and storage format that enables efficient access and modification.",
