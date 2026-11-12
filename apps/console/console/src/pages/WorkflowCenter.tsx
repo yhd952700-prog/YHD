@@ -473,6 +473,8 @@ export function WorkflowCenter({ query }: { query: string }) {
     }
   }
 
+  // 各状态计数是真 0：后端 WorkflowStore.summary() 以 {status: 0 for status in
+  // RUN_STATUSES} 起步再累加，全部状态恒有键；?? 0 只防旧版本响应缺键。
   const summaryRuns = summary.data?.runs ?? {}
 
   return (
