@@ -27,6 +27,14 @@ import { relativeTime } from '../lib/format'
 import { useImeComposition } from '../lib/ime'
 import { detectMode } from '../lib/mode'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
+import {
+  ASSISTANT_QUICK_QUESTIONS,
+  ASSISTANT_TAGLINE,
+  ASSISTANT_TOOLS,
+  assistantGreeting,
+  buildToolPrompt,
+} from '../lib/assistant'
+import { getAssistantName, useWorkspaceName } from '../lib/workspaceName'
 import { BudgetDenialActions, Failure } from './ui'
 
 /** 对话页只需要模型列表里可展示/可选的最小字段。 */
@@ -125,8 +133,9 @@ function failureText(error: unknown): string {
   return '读取失败，请稍后再试。'
 }
 
-/** 快捷指令 chips（点击填入输入框）。 */
-const QUICK = ['市场分析', '销售机会', '客户策略', 'SEO优化', '数据分析']
+/** 快捷问题与工具箱的唯一事实源在 `lib/assistant.ts`：只有一个助手
+    （贾维斯，Muse 能力 + 小龙虾风格的结合版），没有 persona 切换，
+    所以这里不再另维护一套 chips。 */
 
 /** 与后端 ChatRequest.message 的 max_length=8000 保持一致。 */
 const MAX_MESSAGE_CHARS = 8000
@@ -199,18 +208,22 @@ interface ChatPanelProps {
   onOpenUsage?: () => void
 }
 
-/** 首屏问候：按本地时间打招呼，对用户的称呼固定为 Boss。 */
-export function greetingForHour(hour: number): string {
-  if (hour >= 5 && hour < 12) return '早上好，Boss'
-  if (hour >= 12 && hour < 18) return '下午好，Boss'
-  if (hour >= 18 && hour < 23) return '晚上好，Boss'
-  return '夜深了，Boss'
+/** 首屏问候：唯一助手的问候语（见 `lib/assistant.ts`），按本地时间打招呼，
+    对用户的称呼固定为 Boss，语气是结合版的活泼亲切。名字默认当前工作台名。 */
+export function greetingForHour(hour: number, name?: string): string {
+  return assistantGreeting(hour, name ?? getAssistantName())
 }
 
 export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanelProps) {
+  // 助手名就是当前工作台名字（`lib/workspaceName.ts`）：设置页改了名，
+  // 这里的助手名、问候语、输入框提示跟着变。
+  const workspaceName = useWorkspaceName()
+  const assistantDisplayName = workspaceName.name_zh
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [inputError, setInputError] = useState('')
+  /** 工具箱点空输入框时填入指令后的提示（用户一改输入就消失）。 */
+  const [toolHint, setToolHint] = useState('')
   const [sending, setSending] = useState(false)
   const [sessionId, setSessionIdState] = useState(() => getSessionId())
   // 用户身份：声明后画像跨会话共享（未声明则后端按会话主体记画像）。
@@ -815,6 +828,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
         return
       }
       setInputError('')
+      setToolHint('')
       setInput('')
       fullDraftRef.current = ''
       setOversizedChars(null)
@@ -974,6 +988,34 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
     ],
   )
 
+  /**
+   * 工具箱（总结 / 写邮件 / 润色 / 翻译 / 想点子 / 代码示例）：只有一套，
+   * 全部走唯一助手（见 `lib/assistant.ts`）。
+   *
+   * 输入框里有内容 → 把"指令模板 + 内容"拼成一条消息直接发给助手，
+   * 生成结果回到对话里（走 `POST /v1/chat/stream`，与手打消息同一条链路；
+   * 未配置模型时后端只返回未配置提示，不编结果）。
+   * 输入框是空的 → 只把指令填进输入框并聚焦，等用户粘贴内容再发送，
+   * 不发一条没有内容的空指令。
+   */
+  const applyTool = useCallback(
+    (toolId: string) => {
+      const tool = ASSISTANT_TOOLS.find((candidate) => candidate.id === toolId)
+      if (!tool || sending) return
+      const draft = oversizedChars !== null ? fullDraftRef.current : input
+      const text = draft.trim()
+      if (text) {
+        setToolHint('')
+        void send(buildToolPrompt(tool, text))
+        return
+      }
+      setInput(tool.template.replace('{text}', ''))
+      setToolHint(`已填入「${tool.label}」指令，在后面粘贴内容再发送。`)
+      inputRef.current?.focus()
+    },
+    [input, oversizedChars, sending, send],
+  )
+
   /** 下拉框标签：首条消息 + 更新时间；没有标题时显示"未命名会话"（绝不显示 ID）。 */
   const sessionLabel = useCallback(
     (id: string) => {
@@ -1017,15 +1059,15 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           </div>
 
           <div className="jarvis-intro">
-            <div className="jarvis-name">贾维斯</div>
-            <div className="jarvis-sub">你的 AI 管家</div>
+            <div className="jarvis-name">{assistantDisplayName}</div>
+            <div className="jarvis-sub">{ASSISTANT_TAGLINE}</div>
           </div>
         </div>
 
         <div className="jarvis-right">
           <div className="jarvis-greeting">
-            <span className="greet-main">{greetingForHour(new Date().getHours())}，我已准备就绪。</span>
-            <span className="greet-sub">今天想让我分析什么？</span>
+            <span className="greet-main">{assistantGreeting(new Date().getHours(), assistantDisplayName)}</span>
+            <span className="greet-sub">写邮件、总结、翻译、想点子、做清单——直接说就行。</span>
           </div>
 
           <div className="jarvis-chat">
@@ -1090,7 +1132,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 以为对面是一个真实模型。判据来自 /v1/health（单一事实源）。 */}
             {showModelWarning && (
               <div className="chat-model-banner" role="status">
-                <span className="chat-model-badge">模拟回复</span>
+                <span className="chat-model-badge">未配置模型</span>
                 <span className="chat-model-detail">
                   {provider.label}。{provider.detail}
                   <br />
@@ -1152,8 +1194,8 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 ) : (
                   <div className="chat-empty">
                     {provider.isReal
-                      ? '请下达业务指令，贾维斯会实时分析。'
-                      : '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'}
+                      ? '直接说想让我帮你做什么吧，也可以点下面的工具箱。'
+                      : '当前未配置真实模型：未配置模型，请先配置模型密钥。发送后只会收到未配置提示，不会生成模拟回答。'}
                   </div>
                 )
               ) : (
@@ -1189,7 +1231,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                             />
                           )}
                           <div className="chat-error-text">
-                            如果一直失败，请确认鎏灏仍在运行，然后重试。
+                            如果一直失败，请确认贾维斯仍在运行，然后重试。
                           </div>
                         </div>
                       )}
@@ -1258,6 +1300,35 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
             </div>
 
             <div className="jarvis-input-wrap">
+              {/* 工具箱（只有一套，走唯一助手）：点一下把"指令模板 + 输入框
+                  内容"作为一条消息发给助手，生成结果回到对话里；输入框是空的
+                  就只填入指令，等用户粘贴内容再发送。全部走后端真实模型，
+                  未配置模型时只会收到未配置提示，不会编造结果。 */}
+              <div className="os-toolbox" role="group" aria-label="工具箱">
+                {ASSISTANT_TOOLS.map((tool) => (
+                  <button
+                    key={tool.id}
+                    type="button"
+                    className="chip os-toolbox-btn"
+                    title={`${tool.hint}（走后端模型生成，结果回到对话里）`}
+                    onClick={() => applyTool(tool.id)}
+                    disabled={sending}
+                  >
+                    {tool.label}
+                  </button>
+                ))}
+              </div>
+              <p className="os-toolbox-note">
+                工具箱走后端模型生成，结果发回对话里
+                {provider.isReal
+                  ? '。'
+                  : '；未配置模型，请先配置模型密钥。'}
+              </p>
+              {toolHint && (
+                <p className="os-toolbox-note" role="status">
+                  {toolHint}
+                </p>
+              )}
               <textarea
                 ref={inputRef}
                 value={input}
@@ -1270,6 +1341,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                   }
                   setInput(e.target.value)
                   if (inputError) setInputError('')
+                  if (toolHint) setToolHint('')
                 }}
                 onPaste={(e) => {
                   const pasted = e.clipboardData?.getData('text') ?? ''
@@ -1299,8 +1371,8 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                 enterKeyHint={isMobileLayout ? 'enter' : 'send'}
                 placeholder={
                   provider.isReal
-                    ? '请输入你的业务指令…'
-                    : '未配置真实模型：当前发送将得到模拟回复'
+                    ? `跟${assistantDisplayName}说点什么…`
+                    : '未配置模型，请先配置模型密钥'
                 }
                 rows={1}
                 /* 用 readOnly 而不是 disabled：disabled 会把焦点从输入框拿走，
@@ -1327,7 +1399,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
             )}
 
             <div className="jarvis-chips">
-              {QUICK.map((q) => (
+              {ASSISTANT_QUICK_QUESTIONS.map((q) => (
                 <button key={q} className="chip" onClick={() => send(q)} disabled={sending}>
                   {q}
                 </button>
