@@ -19,6 +19,7 @@ from src.ai.model_config import ModelConfigError
 from src.ai.providers import (
     BaseProvider,
     MockProvider,
+    DEMO_MODEL_NOT_CONFIGURED_MESSAGE,
     MODEL_NOT_CONFIGURED_MESSAGE,
     OpenAIProvider,
 )
@@ -275,13 +276,20 @@ def test_d3_failed_turn_is_neutral_and_never_enters_context():
     ]
 
 
-def test_d4_mock_provider_is_explicit_demo_not_internal_state():
-    """D4：未配置模型时明确提示 + 下一步；不再输出内部状态转储。"""
+def test_d4_mock_provider_is_explicit_not_internal_state(monkeypatch):
+    """D4：未配置模型时明确提示 + 下一步；不再输出内部状态转储。
+
+    默认（非演示）模式：文案是"未配置模型，请先配置模型密钥"，**不带**
+    "[演示数据]"前缀 —— 默认安装不是演示，贴演示标签本身就是假话；
+    也不编造对问题的回答。
+    """
+    monkeypatch.delenv("LIUHAO_DEMO_SEED", raising=False)
     provider = MockProvider(name="mock", model="mock-model")
     text = provider.generate("status")
     assert text == MODEL_NOT_CONFIGURED_MESSAGE
     assert "还没有配置模型" in text
-    assert "演示数据" in text
+    assert "请先配置模型密钥" in text
+    assert "演示数据" not in text
     assert "系统设置 → 模型管理" in text and "密钥" in text
     assert "LiuHao AI OS status" not in text
     assert "supports_streaming" not in text
@@ -293,6 +301,20 @@ def test_d4_mock_provider_is_explicit_demo_not_internal_state():
     result = assistant.chat("status")
     assert result["reply"] == MODEL_NOT_CONFIGURED_MESSAGE
     assistant.reset()
+
+
+def test_d4_demo_seed_labels_mock_reply_as_demo(monkeypatch):
+    """D4-演示：``LIUHAO_DEMO_SEED=1`` 时同一提示明确标注演示数据。
+
+    与默认模式分开断言：演示模式可以出现"[演示数据]"，默认模式不行。
+    """
+    monkeypatch.setenv("LIUHAO_DEMO_SEED", "1")
+    provider = MockProvider(name="mock", model="mock-model")
+    text = provider.generate("status")
+    assert text == DEMO_MODEL_NOT_CONFIGURED_MESSAGE
+    assert "演示数据" in text
+    assert "还没有配置模型" in text
+    assert "系统设置 → 模型管理" in text
 
 
 def _serve_upstream(monkeypatch, *, status: int, payload: dict) -> None:
