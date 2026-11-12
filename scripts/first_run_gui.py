@@ -16,7 +16,7 @@
    ``src.ai.model_config`` 以 AES-256-GCM 加密落盘，不写明文）；
 4. 完成前请确认：再核一遍数据目录、加密、备份、卸载与联网边界；
 5. 自检结果：固定四项检测（网关端口 / 数据目录 / 托盘驻留 / 默认模型）——
-   端口试绑定（端口上已有鎏灏在监听也算通过）、数据目录试写临时文件、
+   端口试绑定（端口上已有贾维斯在监听也算通过）、数据目录试写临时文件、
    托盘查系统级单实例锁（本次启动将驻留托盘时也判为通过）、
    默认模型真的发一次最小请求；必要项通过（模型选「跳过」时标注稍后配置）后
    点「进入控制台」，由启动器拉起网关并打开浏览器。
@@ -59,6 +59,10 @@ if str(APP_ROOT) not in sys.path:
 EXIT_OK = 0
 EXIT_CANCELED = 1
 EXIT_UNAVAILABLE = 3
+
+#: 工作台名字出厂默认值（Joseph 这份：贾维斯 / Jarvis）。向导里改了名字
+#: 就不再是默认值；改完顶栏 / 登录页 / 助手名全都跟着变（见 src/brand.py）。
+from src.brand import BRAND_NAME_EN, BRAND_NAME_ZH  # noqa: E402
 
 DATA_DIR_ENV = "LIUHAO_DATA_DIR"
 DATA_DIR_MARKER = APP_ROOT / "data-dir.txt"
@@ -192,12 +196,12 @@ def volume_risk_message(raw: str) -> str:
         return ""
     if kind == DRIVE_REMOVABLE:
         return (
-            "这个目录在可移动磁盘（U 盘 / 移动硬盘）上：设备拔掉后鎏灏会找不到数据，"
+            "这个目录在可移动磁盘（U 盘 / 移动硬盘）上：设备拔掉后贾维斯会找不到数据，"
             "无法启动。建议改选本机固定磁盘上的目录。"
         )
     if kind == DRIVE_REMOTE:
         return (
-            "这个目录在网络盘上：断网或对方关机后鎏灏会找不到数据，无法启动。"
+            "这个目录在网络盘上：断网或对方关机后贾维斯会找不到数据，无法启动。"
             "建议改选本机固定磁盘上的目录。"
         )
     return ""
@@ -265,6 +269,21 @@ def validate_principal(value: str) -> str | None:
         return (
             "账号需以英文字母开头，2–32 位，只能包含字母、数字、点、下划线或连字符。"
         )
+    return None
+
+
+def validate_workbench_name(name_zh: str, name_en: str | None = None) -> str | None:
+    """工作台名字校验（与 ``src/brand.py`` 的落盘口径一致）；``None`` 表示合规。
+
+    中文名留空 = 不改名（用出厂默认「贾维斯」），不算错；填了就必须
+    1–40 字，英文名可空、填了最多 80 字。
+    """
+    zh = (name_zh or "").strip()
+    if zh and len(zh) > 40:
+        return "工作台名字（中文）最多 40 个字。"
+    en = (name_en or "").strip()
+    if en and len(en) > 80:
+        return "工作台英文名最多 80 个字。"
     return None
 
 
@@ -632,10 +651,14 @@ def commit(
     """校验并执行首启动作（不依赖窗口，可被测试直接调用）。
 
     ``values`` 字段：``data_dir``、``principal``、``display``、``password``、
-    ``model``（``skip`` / ``ollama`` / ``cloud``）、``api_port``（可选）以及
-    模型相关字段。失败时返回「中文原因 + 日志路径」，技术细节只写日志。
-    ``recovery_out`` 收集管理员恢复码明文，供图形向导当场「只展示一次」；
-    其余调用方（CLI / 测试）不传即可，恢复码仍会由 CLI 打印。
+    ``model``（``skip`` / ``ollama`` / ``cloud``）、``api_port``（可选）、
+    ``workbench_name_zh`` / ``workbench_name_en``（可选：工作台名字；
+    留空或与出厂默认相同就不写配置文件，填了新名字则在建账号之前先
+    落盘到数据目录的 ``workspace_settings.json``，顶栏 / 登录页 /
+    助手名随后都读它）以及模型相关字段。失败时返回「中文原因 +
+    日志路径」，技术细节只写日志。``recovery_out`` 收集管理员恢复码
+    明文，供图形向导当场「只展示一次」；其余调用方（CLI / 测试）不传
+    即可，恢复码仍会由 CLI 打印。
     """
     current = chosen_data_dir()
     dir_value, dir_error = validate_data_dir(str(values.get("data_dir") or ""))
@@ -648,6 +671,16 @@ def commit(
     password_error = validate_password(str(values.get("password") or ""))
     if password_error:
         return _fail(dir_value, password_error)
+
+    # 工作台名字先校验（不合规则在建账号之前就拦住，不留半个账号）。
+    name_zh = str(values.get("workbench_name_zh") or "").strip()
+    name_en = str(values.get("workbench_name_en") or "").strip()
+    name_error = validate_workbench_name(name_zh, name_en)
+    if name_error:
+        return _fail(dir_value, name_error)
+    rename = bool(name_zh) and (
+        name_zh != BRAND_NAME_ZH or (name_en and name_en != BRAND_NAME_EN)
+    )
 
     api_port = _resolve_port(values, port)
     if api_port is None:
@@ -676,6 +709,17 @@ def commit(
             f"无法准备数据目录 {dir_value}：请确认目录可写、磁盘没有写满，或换一个目录后重试。",
             detail=f"prepare_store_env failed: {type(exc).__name__}: {exc}",
         )
+
+    # 工作台改名（只在用户真的起了新名字时写；默认贾维斯不写文件）。
+    # prepare_store_env 已把 LIUHAO_DATA_DIR 指到本次数据目录，所以
+    # workspace_settings.json 正好落在该目录里，随数据目录一起备份/迁移。
+    if rename:
+        from src.brand import set_workspace_name
+
+        try:
+            set_workspace_name(name_zh, name_en or None)
+        except ValueError as exc:
+            return _fail(dir_value, f"工作台名字保存失败：{exc}")
 
     from scripts import first_run_wizard as cli
 
@@ -744,9 +788,10 @@ def commit(
         "first-run done:"
         f" principal={mask_principal(principal)}"
         f" principal_hash={principal_fingerprint(principal)}"
-        f" model={mode} port={api_port}",
+        f" model={mode} port={api_port}"
+        + (f" workbench_name={name_zh}" if rename else ""),
     )
-    return True, "设置完成，正在启动鎏灏窗口…"
+    return True, "设置完成，正在启动贾维斯窗口…"
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +836,7 @@ def _flag(value: Any) -> str:
 
 
 def check_port_ready(host: str, port: int) -> CheckResult:
-    """网关端口：可绑定，或已被本机鎏灏监听（两种情况都可以直接使用）。"""
+    """网关端口：可绑定，或已被本机贾维斯监听（两种情况都可以直接使用）。"""
     from src.desktop.probe import http_json, port_is_free
 
     if port_is_free(port, host):
@@ -809,7 +854,7 @@ def check_port_ready(host: str, port: int) -> CheckResult:
             key="port",
             title="网关端口",
             ok=True,
-            detail=f"端口 {port} 上已有鎏灏在运行，可以直接打开鎏灏窗口。",
+            detail=f"端口 {port} 上已有贾维斯在运行，可以直接打开贾维斯窗口。",
             code="serving",
         )
     suggested = _recommended_free_port(port + 1 if port < 65535 else 8081)
@@ -848,7 +893,7 @@ def check_data_dir_writable(data_dir: Path) -> CheckResult:
         detail=f"现在无法写入：{data_dir}（可能磁盘已满、目录被设为只读，或被安全软件拦截）。",
         action="打开数据目录",
         blocking=True,
-        advice="必须先处理：账号和对话都写不进这个目录，鎏灏窗口打不开。处理好后点下方「重新检测全部四项」。",
+        advice="必须先处理：账号和对话都写不进这个目录，贾维斯窗口打不开。处理好后点下方「重新检测全部四项」。",
         code="unwritable",
         log_detail=f"{type(exc).__name__}: {exc}" if exc else "",
     )
@@ -1113,7 +1158,7 @@ class _WizardWindow:
         self._model_mode = "skip"
         self._check_results: list[CheckResult] = []
         self._check_running = False
-        #: 自检还没结束就点了「进入鎏灏」：排队，等自检收尾后自动进入。
+        #: 自检还没结束就点了「进入贾维斯」：排队，等自检收尾后自动进入。
         self._finish_pending = False
         #: 自检的开始时间与次数，只用于日志与超时兜底（不含任何凭据）。
         self._check_seq = 0
@@ -1126,7 +1171,7 @@ class _WizardWindow:
         dpi_support.enable_dpi_awareness()
         self.root = tk.Tk()
         self._dpi = dpi_support.apply_tk_scaling(self.root)
-        self.root.title("鎏灏首次设置")
+        self.root.title("贾维斯首次设置")
         self.root.protocol("WM_DELETE_WINDOW", self._cancel)
         self.root.attributes("-topmost", True)
         self.root.after(400, lambda: self.root.attributes("-topmost", False))
@@ -1136,6 +1181,9 @@ class _WizardWindow:
         self.display_var = tk.StringVar(value="")
         self.password_var = tk.StringVar()
         self.confirm_var = tk.StringVar()
+        # 工作台名字：默认就是出厂名（贾维斯 / Jarvis）；用户改了才写配置。
+        self.workbench_name_zh_var = tk.StringVar(value=BRAND_NAME_ZH)
+        self.workbench_name_en_var = tk.StringVar(value=BRAND_NAME_EN)
         self.mode_var = tk.StringVar(value="skip")
         self.ollama_model_var = tk.StringVar(value="qwen2.5:7b")
         self.ollama_url_var = tk.StringVar(value=OLLAMA_DEFAULT_BASE_URL)
@@ -1158,7 +1206,7 @@ class _WizardWindow:
     def _build(self, ttk: Any, filedialog: Any) -> None:
         header = self._tk.Label(
             self.root,
-            text="鎏灏首次设置",
+            text="贾维斯首次设置",
             font=("Microsoft YaHei UI", 16, "bold"),
             anchor="w",
         )
@@ -1398,6 +1446,8 @@ class _WizardWindow:
                 ("显示名（可中文）", self.display_var, {}),
                 ("登录密码", self.password_var, {"show": "*"}),
                 ("确认密码", self.confirm_var, {"show": "*"}),
+                ("工作台名字（中文）", self.workbench_name_zh_var, {}),
+                ("工作台英文名（可空）", self.workbench_name_en_var, {}),
             )
         ):
             self._tk.Label(grid, text=label, width=14, anchor="e").grid(
@@ -1409,6 +1459,11 @@ class _WizardWindow:
         self._tk.Label(
             frame,
             text=f"密码至少 {MIN_PASSWORD_LEN} 位，且同时包含字母和数字。请记下来——之后登录就是用它。",
+            fg="#555555", anchor="w", wraplength=620,
+        ).pack(anchor="w", pady=(6, 0))
+        self._tk.Label(
+            frame,
+            text="工作台名字就是顶栏、登录页和助手显示的名字（默认贾维斯）；改了全站都跟着变，之后随时可在控制台「系统设置 → 工作台名字」里再改。",
             fg="#555555", anchor="w", wraplength=620,
         ).pack(anchor="w", pady=(6, 0))
         return frame
@@ -1462,7 +1517,7 @@ class _WizardWindow:
                 "由 AES-256-GCM 加密，不会写进明文配置；"
                 "解密用的 data\\model_config.key 在同目录，仅当前 Windows 用户可读。\n"
                 "删除：系统设置 → 模型管理 → 删除该模型，Key 会一起删除。\n"
-                "联网：保存后，对话内容会直接发送到你填写的 base_url，不经过鎏灏服务器；"
+                "联网：保存后，对话内容会直接发送到你填写的 base_url，不经过贾维斯服务器；"
                 "本机 Ollama 的推理只连 127.0.0.1，不出网。\n"
                 "「联网检索」默认关闭；开启后才把提炼后的关键词发到 hn.algolia.com / api.github.com / export.arxiv.org 三个公开接口。"
                 "只发送提炼后的关键词；不发送你的对话内容、对话历史、个人画像、账号信息或 API Key。"
@@ -1511,7 +1566,7 @@ class _WizardWindow:
         ).pack(anchor="w")
         self._tk.Label(
             frame,
-            text="之后随时可在鎏灏窗口左侧底部的「关于与隐私」查看版本、数据目录、"
+            text="之后随时可在贾维斯窗口左侧底部的「关于与隐私」查看版本、数据目录、"
                  "许可证与联网说明。",
             fg="#777777", anchor="w", justify="left", wraplength=620,
         ).pack(anchor="w", pady=(8, 0))
@@ -1630,7 +1685,16 @@ class _WizardWindow:
     def _show(self, index: int) -> None:
         self._index = index
         if index == 3:
-            self.summary_var.set(f"数据目录：{self.dir_var.get()}")
+            workbench_zh = (self.workbench_name_zh_var.get() or "").strip() or BRAND_NAME_ZH
+            workbench_en = (self.workbench_name_en_var.get() or "").strip() or BRAND_NAME_EN
+            workbench = (
+                workbench_zh
+                if workbench_zh == workbench_en
+                else f"{workbench_en} · {workbench_zh}"
+            )
+            self.summary_var.set(
+                f"数据目录：{self.dir_var.get()}\n工作台名字：{workbench}"
+            )
         for position, page in enumerate(self._pages):
             if position == index:
                 page.pack(fill="both", expand=True)
@@ -1638,7 +1702,7 @@ class _WizardWindow:
                 page.pack_forget()
         self._back.configure(state="normal" if 0 < index < 4 else "disabled")
         if index == 4:
-            self._next.configure(text="进入鎏灏", state="normal")
+            self._next.configure(text="进入贾维斯", state="normal")
             self._start_checks()
         elif index == 3:
             self._next.configure(text="完成并自检", state="normal")
@@ -1660,6 +1724,13 @@ class _WizardWindow:
                     "两次输入的密码不一致。"
                     if self.confirm_var.get() != self.password_var.get()
                     else ""
+                )
+                or (
+                    validate_workbench_name(
+                        self.workbench_name_zh_var.get(),
+                        self.workbench_name_en_var.get(),
+                    )
+                    or ""
                 )
             )
         if index >= 3:
@@ -1839,7 +1910,7 @@ class _WizardWindow:
         """自检卡住时的兜底：把按钮一定恢复成可点，并给用户一行中文提示。
 
         正常自检约 3 秒完成，这里只在异常路径触发；结果全部标成不阻塞，
-        所以按钮会变成「进入鎏灏」，用户可以先进控制台再回头看结果。
+        所以按钮会变成「进入贾维斯」，用户可以先进控制台再回头看结果。
         """
         if not self._check_running:
             return
@@ -1944,7 +2015,7 @@ class _WizardWindow:
         if any(item.blocking for item in failures):
             self._next.configure(state="disabled", text="请先处理上面的问题")
         else:
-            self._next.configure(state="normal", text="进入鎏灏")
+            self._next.configure(state="normal", text="进入贾维斯")
         blocking_count = len([item for item in failures if item.blocking])
         self._write_check_event(
             f"evt=startup.check.rendered seq={self._check_seq}"
@@ -1963,7 +2034,7 @@ class _WizardWindow:
         self._resume_deferred_finish()
 
     def _resume_deferred_finish(self) -> None:
-        """自检收尾：若用户此前已点过「进入鎏灏」，在这里自动接着走。
+        """自检收尾：若用户此前已点过「进入贾维斯」，在这里自动接着走。
 
         用户在按钮还是「正在自检…」时点的那一下不能被丢掉——排队后由这里兑现。
         自检真有阻塞项时不替用户越过，把决定权交回界面。
@@ -1981,7 +2052,7 @@ class _WizardWindow:
             return
         _write_log(
             self.data_dir,
-            "evt=wizard.finish_resume auto=1 blocking=0 next_text=进入鎏灏",
+            "evt=wizard.finish_resume auto=1 blocking=0 next_text=进入贾维斯",
         )
         self._finish()
 
@@ -2199,6 +2270,8 @@ class _WizardWindow:
             "display": self.display_var.get(),
             "password": self.password_var.get(),
             "confirm": self.confirm_var.get(),
+            "workbench_name_zh": self.workbench_name_zh_var.get(),
+            "workbench_name_en": self.workbench_name_en_var.get(),
             "model": self.mode_var.get(),
             "api_port": self.port_var.get(),
             "model_name": (
@@ -2267,7 +2340,7 @@ def run_wizard(
     except Exception:  # noqa: BLE001 - 无桌面会话是最常见的真实故障
         _write_log(data_dir, traceback.format_exc())
         message = (
-            "无法打开设置窗口。请在正常登录的 Windows 桌面上运行鎏灏；"
+            "无法打开设置窗口。请在正常登录的 Windows 桌面上运行贾维斯；"
             "如果这台电脑没有桌面（例如计划任务 / 远程无桌面会话），"
             f"请改用命令行方式：\"{APP_ROOT / 'LiuHao.bat'}\" --console\n"
             f"日志：{log_path}"
@@ -2301,7 +2374,7 @@ def _emit(text: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="鎏灏图形化首次设置向导")
+    parser = argparse.ArgumentParser(description="贾维斯图形化首次设置向导")
     parser.add_argument("--data-dir", default="", help="覆盖默认数据目录（排障用）")
     parser.add_argument("--api-port", type=int, default=None, help="预检的网关端口")
     args = parser.parse_args(argv)
