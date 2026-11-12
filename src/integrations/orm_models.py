@@ -555,6 +555,9 @@ class Task(Base):
     result = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     priority = Column(Integer, nullable=False, default=0)
+    # 截止时间（B组第二轮补，与 tasks_api 的 due_date 对应）。历史行 NULL。
+    # 迁移见 alembic/versions/007_add_task_due_date.py。
+    due_date = Column(DateTime, nullable=True)
     meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=utc_now)
     started_at = Column(DateTime, nullable=True)
