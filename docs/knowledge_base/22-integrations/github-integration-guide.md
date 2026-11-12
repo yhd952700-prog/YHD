@@ -1,6 +1,6 @@
 # GitHub 集成指南
 
-GitHub 集成让 LiuHao AI OS 智能体深度参与研发流程：自动代码审查、Issue 分类、PR 摘要、发布说明生成、仓库问答。本文档覆盖 GitHub App 创建、Webhook 处理、Checks API、代码审查智能体实现与权限最小化配置。
+GitHub 集成让 Jarvis 智能体深度参与研发流程：自动代码审查、Issue 分类、PR 摘要、发布说明生成、仓库问答。本文档覆盖 GitHub App 创建、Webhook 处理、Checks API、代码审查智能体实现与权限最小化配置。
 
 ---
 
