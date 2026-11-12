@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "LiuHao AI OS · 鎏灏智能中枢",
-  "short_name": "鎏灏智能中枢",
-  "description": "LiuHao AI OS · 鎏灏智能中枢 驾驶舱 —— 桌面端 / 网页版 / 手机端统一入口。真实运行态、审批中心与系统状态。",
+  "name": "Jarvis · 贾维斯",
+  "short_name": "贾维斯",
+  "description": "Jarvis · 贾维斯 驾驶舱 —— 桌面端 / 网页版 / 手机端统一入口。真实运行态、审批中心与系统状态。",
   "lang": "zh-CN",
   "dir": "ltr",
   "start_url": "/",
