@@ -1,7 +1,7 @@
-"""鎏灏智能中枢 主控 — 可对话的 AI OS 入口。
+"""贾维斯 主控 — 可对话的 AI OS 入口。
 
 把「用户输入 → 权限检查 → 记忆召回 → 上下文构建 → 真实 LLM 生成 → 记忆持久化 →
-审计留痕」串成一条可对话的闭环。这是"用鎏灏"的最小、真实的入口。
+审计留痕」串成一条可对话的闭环。这是"用贾维斯"的最小、真实的入口。
 
 复用（不重写，全部建立在既有内核/能力层之上）：
 - ``Agent`` / ``AgentMemory`` / ``AgentPolicy`` — AgentFactory 的构件
@@ -73,15 +73,52 @@ from ..kernels.policy import (
 )
 from .observability import TraceContext, observe, get_logger
 
-DEFAULT_SYSTEM_PROMPT = (
-    "你是「贾维斯」（Jarvis），这个单机工作台的 AI 管家，由十源 DNA（ULTRON / VISION / ADA / EDITH / "
-    "FRIDAY / JARVIS / JOCaSTA / KAREN / ENOCH / ZOON）统一形成的人格。\n"
-    "你运行在 LiuHao AI OS（鎏灏工作台）之上，具备 14 个内核能力与 21-Phase 能力层。\n"
+#: 唯一的助手定义（单助手结合版，没有可切换的人格/风格分支）。
+#:
+#: 2026-11-12 用户纠正（最高优先级，覆盖之前"可切换 Muse / 小龙虾"的
+#: 要求）：不要两个可切换的助手，只要 Muse 与小龙虾的结合版。因此这里
+#: 只有**一份** system prompt，不留 persona 切换分支，不按 persona 分流
+#: 回复风格：
+#:
+#: * 能力像 Muse：准确、能干、会用工具、诚实可审计；不确定时明说，
+#:   不伪造能力与数据；做不到的事直接说做不到；
+#: * 说话风格融合小龙虾的活泼亲切：热情、口语化、有温度，但不失分寸，
+#:   绝不为了活泼而编造内容。
+#:
+#: 名字仍叫出厂默认「贾维斯」（控制台/底栏/管家页都以此称呼，由
+#: ``tests/test_brand_consistency.py`` 钉住底栏口径）：改的是助手的人格
+#: 定义，不是产品内的称呼；若要把产品内的助手也改名，需另做产品级改名。
+#: 未配置模型时本 prompt 根本不会生效 —— ``MockProvider`` 只返回一条
+#: "未配置模型，请先配置模型密钥"提示，不编两种风格的回复（见
+#: ``src/ai/providers.py`` 的演示/非演示拆分）。
+#:
+#: 工作台名字可改（2026-11-12）：``{name}`` 是当前工作台名字，默认
+#: 「贾维斯」，用户在设置里改了工作台名字，助手的名字也跟着改 ——
+#: 工作台与助手同名。``DEFAULT_SYSTEM_PROMPT`` 是用出厂默认名渲染好
+#: 的版本（保持旧导入可用）；运行时构造助手请走 ``build_system_prompt()``，
+#: 它读 ``src/brand.py`` 的 ``resolve_brand()``。
+_SYSTEM_PROMPT_TEMPLATE = (
+    "你是「{name}」，Muse 与小龙虾的结合版助手，也是这个单机工作台唯一"
+    "的 AI 助手，没有可切换的人格或风格分支。\n"
+    "能力上像 Muse：准确、能干、会用工具、诚实可审计；不确定时明说，"
+    "不伪造能力与数据；做不到的事直接说做不到。\n"
+    "说话风格融合小龙虾的活泼亲切：热情、口语化、有温度，但不失分寸，"
+    "绝不为了活泼而编造内容。\n"
+    "你运行在 {name} 工作台之上，具备 14 个内核能力与 21-Phase 能力层。\n"
     "称呼用户时一律用「Boss」，不要用「主人」「您」等替代说法，回复里不要出现「您」字。\n"
-    "你自己叫「贾维斯」，不要把自己称作「鎏灏」——鎏灏是工作台的产品名，不是你的名字。\n"
+    "工作台的名字与你相同，都叫「{name}」：用户在设置里改了工作台名字，你的名字也跟着改。\n"
     "你诚实、可审计：不确定时明说，不伪造能力与数据；做不到的事直接说做不到。\n"
     "请用简洁、准确、有帮助的中文回答。"
 )
+
+DEFAULT_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(name="贾维斯")
+
+
+def build_system_prompt() -> str:
+    """当前工作台名字渲染的 system prompt（名字改了，助手自称也跟着改）。"""
+    from src.brand import resolve_brand
+
+    return _SYSTEM_PROMPT_TEMPLATE.format(name=resolve_brand()["name_zh"])
 
 # 会话构造时读取的历史条数上限（user+assistant 各算一条）。
 # 240 条只是"裁剪源"：真正发给模型多少由 ``context_budget.trim_history``
@@ -619,7 +656,7 @@ def _declared_max_output_tokens(provider: Any) -> int:
 
 
 class LiuHaoAssistant:
-    """鎏灏主控：一条真实的「输入→授权→生成→记忆→审计」对话闭环。
+    """贾维斯主控：一条真实的「输入→授权→生成→记忆→审计」对话闭环。
 
     每次 ``chat`` 都走完整链路，不跳过任何一步。同一个实例内维护多轮历史，
     跨轮保持上下文连续。
@@ -644,7 +681,7 @@ class LiuHaoAssistant:
         # 画像主体：默认与会话主体一致；传入时同一用户可跨会话共享画像
         # （会话历史仍按 self.principal 隔离，二者刻意解耦）。
         self.profile_principal = profile_principal or name
-        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.system_prompt = system_prompt or build_system_prompt()
         # 模型配置中心优先：界面上保存的默认模型即时生效；未配置时回退 .env。
         self.provider = provider or resolve_provider()
         self.capabilities = list(capabilities or ["chat"])
@@ -697,7 +734,7 @@ class LiuHaoAssistant:
         self.policy = AgentPolicy(principal=self.principal, capabilities=self.capabilities)
 
         # 4. 授权基线 — policy engine 是 default-deny，需显式注册一条
-        #    "agent 主体可执行低风险动作"的授权规则，鎏灏才能被授权对话。
+        #    "agent 主体可执行低风险动作"的授权规则，贾维斯才能被授权对话。
         self._ensure_chat_policy()
 
         # 5. 会话历史持久化 — 跨进程重启恢复多轮上下文（memory kernel 是
@@ -799,7 +836,7 @@ class LiuHaoAssistant:
 
     @staticmethod
     def _ensure_chat_policy() -> None:
-        """注册鎏灏 agent 低风险动作授权规则（幂等）。
+        """注册贾维斯 agent 低风险动作授权规则（幂等）。
 
         policy engine 内置规则全是 DENY（唯一 allow 是 human sovereignty，
         要求 actor.type == "human"）。agent 主体在 scope=L1 下没有任何 allow
@@ -811,7 +848,7 @@ class LiuHaoAssistant:
             PolicyRule(
                 id="liuhao_agent_low_risk_allow",
                 name="LiuHao Agent Low-Risk Allow",
-                description="鎏灏 agent 主体可执行低风险动作（如对话）",
+                description="贾维斯 agent 主体可执行低风险动作（如对话）",
                 conditions=[
                     PolicyCondition("actor.type", PolicyOperator.EQ, "agent"),
                     PolicyCondition("action.name", PolicyOperator.IN, ["chat"]),
