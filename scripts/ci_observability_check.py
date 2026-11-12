@@ -34,7 +34,7 @@ from src.adapters.observability.metrics_helper import get_metrics
 
 def main():
     print("=" * 60)
-    print("LiuHao AI OS - CI Observability Validation")
+    print("Jarvis · 贾维斯 - CI Observability Validation")
     print("=" * 60)
 
     # 1. Test ObservabilityConfig
