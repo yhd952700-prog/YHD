@@ -1022,7 +1022,19 @@ def _run(data_dir: Path, logging_config: Path, args: list[str]) -> int:
                 "首次运行：正在打开图形化设置向导"
                 "（数据目录 → 管理员账号 → 选择模型 → 完成前请确认 → 自检结果，共五页）…"
             )
-            code = gui.run_wizard(port=_arg_api_port(forwarded))
+            try:
+                code = gui.run_wizard(port=_arg_api_port(forwarded))
+            except Exception as exc:  # noqa: BLE001 - 图形向导起不来就走命令行向导
+                # tkinter 缺失/坏掉时（嵌入版 runtime 嫁接失败、tcl 数据不全）
+                # 图形向导会在建窗口时抛 ImportError/TclError：不要让启动直接
+                # 崩掉，改走命令行向导（黑窗口里按提示完成首次设置）。
+                print(
+                    "[!!] 图形向导打不开"
+                    f"（{type(exc).__name__}），改用命令行向导继续。",
+                    file=sys.stderr,
+                )
+                print("       请在这个黑窗口里按提示完成首次设置。")
+                return _run(data_dir, logging_config, [*args, "--console"])
             if code != 0:
                 print(
                     "[FAIL] 首次设置未完成，已停止启动（不会打开控制台）。",
