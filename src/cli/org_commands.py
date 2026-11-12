@@ -11,11 +11,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed data is opt-in only (env LIUHAO_DEMO_SEED=1).
+
+    Without it the organization starts empty; sample employees must
+    never be mixed into production-facing state by default.
+    """
+    return os.environ.get("LIUHAO_DEMO_SEED") == "1"
 
 
 class OrgRole(str, Enum):
@@ -62,10 +72,15 @@ class OrgManager:
     def __init__(self) -> None:
         self._teams: Dict[str, Team] = {}
         self._members: Dict[str, Member] = {}
-        self._seed_sample_data()
+        if _demo_seed_enabled():
+            self._seed_sample_data()
 
     def _seed_sample_data(self) -> None:
-        """Seed with sample organization data."""
+        """Seed with sample organization data (demo mode only).
+
+        Only called when LIUHAO_DEMO_SEED=1. Sample members are
+        fictional demo data, never production state.
+        """
         # Teams
         teams_data = [
             ("team-exec", "Executive Team", None, "Top-level leadership"),
@@ -93,6 +108,9 @@ class OrgManager:
             ("m-010", "Henry Lin", OrgRole.DIRECTOR, "team-product", "henry@example.com", False),
         ]
         for mid, name, role, team_id, email, is_agent in members_data:
+            # Deterministic capacity: derived from the member id's
+            # numeric suffix, NOT hash() (hash() is salted per process).
+            suffix = "".join(ch for ch in mid if ch.isdigit())
             member = Member(
                 member_id=mid,
                 name=name,
@@ -100,7 +118,7 @@ class OrgManager:
                 email=email,
                 team_id=team_id,
                 is_agent=is_agent,
-                capacity_pct=80.0 + hash(mid) % 20,
+                capacity_pct=80.0 + (int(suffix) % 20 if suffix else 0),
             )
             self._members[mid] = member
             if team_id:
@@ -331,24 +349,33 @@ class OrgManager:
     def get_performance(self, team_id: Optional[str] = None) -> Dict[str, Any]:
         """Get team/member performance metrics.
 
+        NOT AVAILABLE: OrgManager tracks teams, members and capacity
+        only. No task completions, turnaround times, quality ratings
+        or collaboration signals are recorded anywhere it can read,
+        so these metrics are null (with a note) instead of fabricated
+        constants, and no members are ranked as top performers.
+
         Args:
             team_id: Optional team filter.
 
         Returns:
-            Dict with performance data.
+            Dict with performance data (nulls where not recorded).
         """
         return {
             "scope": team_id or "organization",
             "period": "last_30_days",
-            "tasks_completed": 142,
-            "avg_turnaround_hours": 4.5,
-            "quality_score": 0.91,
-            "collaboration_index": 0.85,
-            "top_performers": [
-                {"member_id": mid, "name": self._members[mid].name, "score": 0.95 + i * 0.01}
-                for i, mid in enumerate(list(self._members.keys())[:3])
-                if mid in self._members
-            ],
+            "tasks_completed": None,
+            "avg_turnaround_hours": None,
+            "quality_score": None,
+            "collaboration_index": None,
+            "top_performers": [],
+            "note": (
+                "Performance metrics are not available: OrgManager records "
+                "teams, members and capacity only; no task completions, "
+                "turnaround times, quality ratings or collaboration signals "
+                "are tracked, so no values are reported and no members are "
+                "ranked as top performers."
+            ),
         }
 
 
