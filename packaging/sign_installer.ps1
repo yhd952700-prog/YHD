@@ -1,4 +1,4 @@
-﻿# LiuHao AI OS · 鎏灏智能中枢 —— 给安装包做自签名（Set-AuthenticodeSignature）
+# Jarvis · 贾维斯 —— 给安装包做自签名（Set-AuthenticodeSignature）
 #
 # 不依赖 signtool / Windows SDK，只用 PowerShell 内置的签名与证书接口。
 # 证书来源优先级：
@@ -9,7 +9,7 @@
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File packaging\sign_installer.ps1
-#   ... -InstallerPath dist\installer\LiuHao-Setup-0.1.1.exe
+#   ... -InstallerPath dist\installer\Jarvis-Setup-0.1.1.exe
 #   ... -Check      # 只判断证书是否可用：0=可用，3=不可用
 #
 # 退出码：
@@ -97,10 +97,10 @@ if ($Check) {
 }
 
 if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
-    $found = Get-ChildItem (Join-Path $Root "dist\installer") -Filter "LiuHao-Setup-*.exe" -File -ErrorAction SilentlyContinue |
+    $found = Get-ChildItem (Join-Path $Root "dist\installer") -Filter "Jarvis-Setup-*.exe" -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime | Select-Object -Last 1
     if (-not $found) {
-        Say "找不到待签名安装包：dist\installer\LiuHao-Setup-*.exe 不存在。" "Red"
+        Say "找不到待签名安装包：dist\installer\Jarvis-Setup-*.exe 不存在。" "Red"
         exit 1
     }
     $InstallerPath = $found.FullName
