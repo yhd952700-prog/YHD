@@ -4,8 +4,11 @@
 ``LiuHao AI OS · 鎏灏智能中枢``、``鎏灏 LIUHAO X``、``鎏灏 AI OS``，
 另外还出现过错字 ``镭灏``。这条测试把口径钉死，避免下次再漂移。
 
-口径：主品牌 = ``LiuHao AI OS · 鎏灏智能中枢``；``LIUHAO X / 鎏灏 X``
-只作为旧称出现，不得再自称权威主名。
+口径（2026-11-12 用户改名）：主品牌 = ``Jarvis · 贾维斯``；
+``LiuHao AI OS · 鎏灏智能中枢``、``LIUHAO X / 鎏灏 X`` 只作为旧称
+出现，不得再自称权威主名。工作台名字可改（见 ``src/brand.py`` 的
+``resolve_brand``）：``src/brand.json`` 只提供出厂默认值，运行时
+名字存在数据目录的 ``workspace_settings.json`` 里。
 """
 
 from __future__ import annotations
@@ -30,8 +33,8 @@ def _brand_json() -> dict:
 
 def test_single_source_matches_exports():
     data = _brand_json()
-    assert BRAND_NAME_EN == data["name_en"] == "LiuHao AI OS"
-    assert BRAND_NAME_ZH == data["name_zh"] == "鎏灏智能中枢"
+    assert BRAND_NAME_EN == data["name_en"] == "Jarvis"
+    assert BRAND_NAME_ZH == data["name_zh"] == "贾维斯"
     assert BRAND_LOCKUP == f"{BRAND_NAME_EN} · {BRAND_NAME_ZH}"
 
 
@@ -120,7 +123,9 @@ def test_mobile_nav_points_at_butler():
 
     shell = _read(root / "components" / "Shell.tsx")
     assert "item.key === 'butler'" in shell
-    assert "'贾维斯'" in shell
+    # 2026-11-12 G 组：底栏/侧栏的贾维斯入口不再写死名字，跟着可改名配置
+    # （`lib/workspaceName.ts` 的 store）走；出厂默认仍是贾维斯（见 nav.ts）。
+    assert "workspaceName.name_zh" in shell
 
     css = _read(root / "os.css")
     assert "[data-key='butler']" in css
