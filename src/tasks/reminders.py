@@ -1523,7 +1523,7 @@ class ReminderService:
                 record, payload, occurrence, quiet_until, now_iso
             )
 
-        title = "鎏灏提醒"
+        title = "贾维斯提醒"
         body = f"{record['title']}（{self._human_time(record)}）"
 
         # 先落 intent 标记再通知：进程死在通知的任何阶段，重启后看到 intent
@@ -1756,7 +1756,7 @@ class ReminderService:
         latest = rows[0]
         latest_title = self._delivery_title(latest)
         latest_time = self._delivery_time_text(latest)
-        title = "鎏灏提醒：错过的提醒"
+        title = "贾维斯提醒：错过的提醒"
         body = (
             f"你有 {count} 条错过的提醒。最近一条：{latest_title}"
             f"（{latest_time}）。明细可在「错过的提醒」里查看。"
