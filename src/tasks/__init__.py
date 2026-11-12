@@ -1,4 +1,4 @@
-"""鎏灏任务队列包（taskiq 集成）。
+"""贾维斯任务队列包（taskiq 集成）。
 
 职责边界见 `src/tasks/broker.py` 的模块文档：**taskiq 只负责任务队列与
 执行**，事件广播继续由 `src/distribution/msg_bus.py` 负责。两者不互换。
