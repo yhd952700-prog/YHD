@@ -57,7 +57,7 @@
 
 ### 1.1 环境要求
 
-- Windows 10 / 11 x64；源码运行需要 Python 3.11+（仓库自带 `.venv`）。
+- Windows 10 / 11 x64；源码运行需要 Python 3.12（仓库自带 `.venv`）。
 - 控制台前端需要 Node.js；仓库内已带 `node_modules` 时可直接起。
 - 模型可选：本机 Ollama，或在控制台 **系统设置 → 模型管理** 填云 API Key。
 
