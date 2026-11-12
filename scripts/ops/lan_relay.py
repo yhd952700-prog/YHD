@@ -742,7 +742,7 @@ _PAIR_PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-<title>连接鎏灏</title>
+<title>连接贾维斯</title>
 <style>
   :root {{ color-scheme: dark; }}
   * {{ box-sizing: border-box; }}
@@ -770,7 +770,7 @@ _PAIR_PAGE = """<!doctype html>
 </head>
 <body>
 <main>
-  <h1>连接鎏灏</h1>
+  <h1>连接贾维斯</h1>
   <p>在电脑上打开「手机访问」，把这台设备的配对码填进下面。配对码只可用一次。</p>
   <form method="post" action="/__relay/pair">
     <input name="code" inputmode="numeric" autocomplete="one-time-code"
@@ -970,7 +970,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 502,
                 {
                     "detail": (
-                        "本地服务没有给出设备会话：请确认电脑上的鎏灏正在运行，"
+                        "本地服务没有给出设备会话：请确认电脑上的贾维斯正在运行，"
                         "并在设置里重新开启手机访问。"
                     )
                 },
@@ -1532,7 +1532,7 @@ def _serve(relay: RelayState, lan_host: str, lan_port: int, admin_port: int) -> 
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="鎏灏局域网手机中继（默认关闭，显式运行才开启）")
+    parser = argparse.ArgumentParser(description="贾维斯局域网手机中继（默认关闭，显式运行才开启）")
     parser.add_argument("--lan-host", default="0.0.0.0", help="局域网监听地址（默认 0.0.0.0）")
     parser.add_argument("--lan-port", type=int, default=8090, help="局域网监听端口（默认 8090）")
     parser.add_argument(
