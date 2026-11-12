@@ -86,6 +86,10 @@ class SearchResponse(BaseModel):
     total: int
     limit: int
     results: List[Dict[str, Any]]
+    # No vector retrieval backend is wired: searches always report
+    # unavailable (see semantic_search) instead of fabricated scores.
+    search_unavailable: bool = False
+    detail: Optional[str] = None
 
 
 class CollectionCreate(BaseModel):
@@ -106,6 +110,11 @@ class CollectionResponse(BaseModel):
 # =====================================================================
 # In-memory stores (scaffold)
 # =====================================================================
+# NOTE: these stores are in-memory only and are NOT persisted; contents
+# are lost on restart and there is no vector index. Documents recorded
+# here are metadata only — see upload_document / semantic_search.
+
+_CHUNK_SIZE_CHARS = 1000
 
 
 _knowledge_bases: Dict[str, Dict[str, Any]] = {}
@@ -269,6 +278,13 @@ async def upload_document(
 ) -> Dict[str, Any]:
     """Upload a document to a knowledge base.
 
+    The uploaded bytes are actually read: ``size_bytes`` is their real
+    length and ``chunk_count`` is the number of ``_CHUNK_SIZE_CHARS``
+    text chunks the content splits into. The document content itself
+    is NOT persisted or indexed — there is no chunking/indexing
+    pipeline or vector store wired in this module, so the record kept
+    here is metadata only.
+
     Args:
         kb_id: Knowledge base identifier.
         file: Uploaded file.
@@ -281,6 +297,13 @@ async def upload_document(
         HTTPException: 404 if KB not found.
     """
     kb = _get_kb_or_404(kb_id)
+    content = await file.read()
+    text = content.decode("utf-8", errors="replace")
+    chunk_count = (
+        (len(text) + _CHUNK_SIZE_CHARS - 1) // _CHUNK_SIZE_CHARS
+        if text
+        else 0
+    )
     doc_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
     doc = {
@@ -288,8 +311,8 @@ async def upload_document(
         "kb_id": kb_id,
         "title": title,
         "source": file.filename or "unknown",
-        "chunk_count": 5,  # placeholder
-        "size_bytes": file.size or 0,
+        "chunk_count": chunk_count,
+        "size_bytes": len(content),
         "created_at": now,
     }
     _documents[doc_id] = doc
@@ -331,37 +354,38 @@ async def semantic_search(
 ) -> Dict[str, Any]:
     """Perform semantic search on a knowledge base.
 
+    NOT IMPLEMENTED as real retrieval: no embedding model, chunk
+    index, or vector store is wired in this module, so no relevance
+    scores or document excerpts can be produced. Returns an empty
+    result set explicitly marked ``search_unavailable`` instead of
+    fabricated scores. (``threshold`` is accepted for API
+    compatibility and ignored.)
+
     Args:
         kb_id: Knowledge base identifier.
         query: Search query.
         limit: Maximum results.
-        threshold: Similarity threshold.
+        threshold: Similarity threshold (ignored; no retrieval backend).
 
     Returns:
-        Search results with relevance scores.
+        Empty search results with ``search_unavailable=True``.
 
     Raises:
         HTTPException: 404 if KB not found.
     """
     _get_kb_or_404(kb_id)
-    docs = [d for d in _documents.values() if d["kb_id"] == kb_id]
-    results = []
-    for i, doc in enumerate(docs[:limit]):
-        score = 0.95 - (i * 0.05)  # placeholder scores
-        if score >= threshold:
-            results.append({
-                "document_id": doc["id"],
-                "title": doc["title"],
-                "content": f"Relevant chunk from {doc['title']}",
-                "similarity_score": round(score, 4),
-                "chunk_index": 0,
-            })
     return {
         "query": query,
         "kb_id": kb_id,
-        "total": len(results),
+        "total": 0,
         "limit": limit,
-        "results": results,
+        "results": [],
+        "search_unavailable": True,
+        "detail": (
+            "Semantic search is unavailable: no embedding model, chunk "
+            "index, or vector store is wired for this knowledge base, "
+            "so no results or similarity scores can be produced."
+        ),
     }
 
 
