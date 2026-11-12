@@ -1,5 +1,5 @@
 /* ============================================================
-   LiuHao AI OS · 鎏灏智能中枢 · CEO Command Center — 深空未来风驾驶舱
+   Jarvis · 贾维斯 · CEO Command Center — 深空未来风驾驶舱
    配色严格对齐参考图：深海军蓝底 + 霓虹青蓝发光 + 渐变图标 + 金色目标徽章
    ============================================================ */
 
@@ -1197,6 +1197,38 @@ html, body, #root {
   color: var(--text-hi);
   border-color: var(--border-strong);
   box-shadow: var(--glow);
+}
+
+/* 工具箱：只有一套（总结 / 写邮件 / 润色 / 翻译 / 想点子 / 代码示例），
+   在输入框上方；点一下把指令发给唯一助手，结果回到对话里。 */
+.os-toolbox { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+
+.os-toolbox .chip {
+  font-size: 12px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: rgba(56, 217, 255, 0.05);
+  border-radius: 20px;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.os-toolbox .chip:hover:not(:disabled) {
+  color: var(--text-hi);
+  border-color: var(--border-strong);
+  box-shadow: var(--glow);
+}
+
+.os-toolbox .chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.os-toolbox-note {
+  font-size: 12px;
+  color: var(--os-text-dim);
+  margin: 0 0 8px;
 }
 
 .jarvis-sessions {
