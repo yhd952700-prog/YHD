@@ -8,7 +8,6 @@ Provides command-line interface for running tests with various options.
 import sys
 import argparse
 import subprocess
-from pathlib import Path
 
 
 def run_tests(
