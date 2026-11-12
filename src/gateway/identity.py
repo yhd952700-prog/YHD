@@ -117,12 +117,21 @@ def _manager():
 
     lifecycle = getattr(manager, "lifecycle", None)
     if lifecycle is not None and lifecycle is not KernelLifecycle.READY:
-        raise HTTPException(
+        # 必须用 UserReadableHTTPException：普通 HTTPException 的 5xx detail 会被
+        # 网关统一掩码换成通用文案，"尚未就绪"这条诚实说明就丢了——用户看到的
+        # 会是"意外问题"，而真相是"暂时无法判定"。生命周期值是实现细节，只进
+        # 服务端日志，不进对外文案（docs/audit-error-copy-20261108.md E-4 早已
+        # 把整段英文内部推理判为坏文案）。
+        # scripts/verify_identity_user_surface.py 的 kernel STOPPED 检查依赖
+        # "not READY" 这条状态词在响应体里可见。
+        logger.warning(
+            "identity kernel lifecycle=%s; refusing to answer as if READY", lifecycle
+        )
+        raise UserReadableHTTPException(
             status_code=503,
             detail=(
-                f"identity kernel is not READY (lifecycle={lifecycle}); "
-                "the principal list would be indistinguishable from 'no "
-                "principals exist', so it is not returned"
+                "身份服务尚未就绪（identity kernel is not READY）：暂时无法判定"
+                "账号清单，本次读取没有完成。请稍后重试。"
             ),
         )
     return manager

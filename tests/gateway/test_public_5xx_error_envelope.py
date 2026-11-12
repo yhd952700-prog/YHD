@@ -292,8 +292,12 @@ def test_identity_lookup_503_detail_is_user_readable(account_client, monkeypatch
     assert resp.json()["detail"] == "身份查询没有完成，请稍后重试。", resp.text
 
 
-def test_identity_lifecycle_503_with_internals_stays_masked(account_client, monkeypatch):
-    """lifecycle 文案是英文实现细节 → 即使有标记也必须继续掩码。"""
+def test_identity_lifecycle_503_is_user_readable_and_masks_internals(
+    account_client, monkeypatch
+):
+    """lifecycle 503 必须把"尚未就绪"说明白（"not READY" 可见，供
+    scripts/verify_identity_user_surface.py 校验），但英文实现细节
+    （SHUTDOWN 等生命周期状态值）不得外泄。"""
 
     class _NotReady:
         def __init__(self, real):
@@ -308,7 +312,7 @@ def test_identity_lifecycle_503_with_internals_stays_masked(account_client, monk
     resp = client.get("/v1/identity/principals", headers=_headers())
     assert resp.status_code == 503, resp.text
     body = resp.json()
-    assert body["detail"] == INTERNAL_ERROR_MESSAGE, resp.text
+    assert "not READY" in body["detail"], resp.text
     assert "SHUTDOWN" not in resp.text
 
 
