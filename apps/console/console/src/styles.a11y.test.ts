@@ -3,9 +3,9 @@
  *
  * 这些都是"肉眼看着还行、实际不可用"的高危退化，必须有自动断言：
  * 1) 焦点不可见：曾出现 6 处 `outline:none`，键盘用户完全看不到当前位置；
- * 2) 对比度：浅色主题把 #2f6fe4 当正文只有约 4.4:1，不达 WCAG AA 4.5:1；
+ * 2) 对比度：浅色正文陶土色 #9a4a22 对白底 6.1:1、深色 #e8a37e 对面板底 7.2:1，均达 WCAG AA 4.5:1；
  * 3) 窄屏：长任务名 / 长文件名 / 搜索行会把页面撑出横向滚动；
- * 4) 预算：同屏动画不得超过 3 个，新增 CSS 不得失控。
+ * 4) 预算：同屏动画不得超过 4 个（第 4 个是方舟反应堆标识的 24s 慢转，0.4.4 Phase 2 要求），新增 CSS 不得失控。
  *
  * 读源码而不是渲染，是因为 jsdom 不实现 :focus-visible 与颜色对比计算。
  */
@@ -96,19 +96,19 @@ describe('焦点可见', () => {
 })
 
 describe('对比度令牌', () => {
-  test('两套主题都定义 --os-accent-text，且浅色正文蓝达到 AA', () => {
+  test('两套主题都定义 --os-accent-text，且浅色正文陶土色达到 AA', () => {
     const osCss = read('./os.css')
     const definitions = osCss.match(/--os-accent-text:\s*#[0-9a-f]{6}/gi) ?? []
     expect(definitions).toHaveLength(2)
 
-    // 浅色主题：文字用 #1f5bd0，实底填充仍是品牌蓝 #2f6fe4（白字不变）。
-    expect(osCss).toMatch(/--os-accent-text:\s*#1f5bd0/)
-    expect(osCss).toMatch(/--os-accent:\s*#2f6fe4/)
+    // 浅色主题：文字用 #9a4a22，实底填充仍是陶土色 #b85a2e（白字不变）。
+    expect(osCss).toMatch(/--os-accent-text:\s*#9a4a22/)
+    expect(osCss).toMatch(/--os-accent:\s*#b85a2e/)
 
-    expect(contrast('#1f5bd0', '#ffffff')).toBeGreaterThanOrEqual(4.5)
-    expect(contrast('#1f5bd0', '#f7f9fe')).toBeGreaterThanOrEqual(4.5)
-    // 深色主题的正文蓝在面板底上同样必须达标。
-    expect(contrast('#4d8dff', '#0b1120')).toBeGreaterThanOrEqual(4.5)
+    expect(contrast('#9a4a22', '#ffffff')).toBeGreaterThanOrEqual(4.5)
+    expect(contrast('#9a4a22', '#fffdf9')).toBeGreaterThanOrEqual(4.5)
+    // 深色主题的正文陶土色在面板底上同样必须达标。
+    expect(contrast('#e8a37e', '#2b2521')).toBeGreaterThanOrEqual(4.5)
   })
 
   test('彩色文字一律走 --os-accent-text，不再直接把 --os-accent 当正文', () => {
@@ -129,9 +129,10 @@ describe('科幻视觉层（P1 落地）', () => {
     for (const token of ['--sc-dur-hover', '--sc-dur-state', '--sc-ease-out', '--sc-hairline']) {
       expect(osCss).toMatch(new RegExp(`${token}:\\s`))
     }
-    // 品牌主色与品牌名不动。
-    expect(osCss).toMatch(/--os-accent:\s*#2f6fe4/)
-    expect(osCss).toMatch(/--os-accent:\s*#4d8dff/)
+    // 品牌主色是陶土色（0.4.4 Phase 2 Muse 风格改版，不再是旧的品牌蓝）；
+    // 两套主题各一个定义，值与 os.css 的令牌一致。
+    expect(osCss).toMatch(/--os-accent:\s*#b85a2e/)
+    expect(osCss).toMatch(/--os-accent:\s*#d98a63/)
   })
 
   test('HUD 角标只画两个伪元素、手机端关闭；活跃面板在浅色下不放大范围外发光', () => {
@@ -245,11 +246,13 @@ describe('窄屏与预算', () => {
     expect(ruleBody(short, '.os-field')).toMatch(/margin-bottom:\s*10px/)
   })
 
-  test('同屏动画不超过 3 个，且新增焦点/断行规则不带动画', () => {
+  test('同屏动画不超过 4 个，且新增焦点/断行规则不带动画', () => {
     const osCss = read('./os.css')
     // `animation: none` 是 reduced-motion 的关闭项，不算一个动画。
+    // 上限 4 个：第 4 个是方舟反应堆标识的 24s 慢转（0.4.4 Phase 2 要求，
+    // 干活时才转快），同样受 prefers-reduced-motion 门控。
     const animations = osCss.match(/animation:\s*(?!\s*none)[^;]+;/g) ?? []
-    expect(animations.length).toBeLessThanOrEqual(3)
+    expect(animations.length).toBeLessThanOrEqual(4)
 
     // 聚焦与窄屏兜底段落里绝不能引入新的动画。
     const focusSection = osCss.slice(osCss.indexOf('键盘焦点（a11y）'))
