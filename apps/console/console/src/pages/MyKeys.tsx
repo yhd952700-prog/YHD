@@ -384,7 +384,7 @@ export function MyKeys({
           )}
         </Guard>
         <p className="os-hint">
-          额度由启动配置决定，调整后需要重启鎏灏才会生效；本页只显示已用量。
+          额度由启动配置决定，调整后需要重启贾维斯才会生效；本页只显示已用量。
         </p>
       </Card>
 
