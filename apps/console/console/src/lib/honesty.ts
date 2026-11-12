@@ -71,9 +71,9 @@ export function providerPosture(input: {
       isReal,
       verdict: unknown
         ? '暂时无法判定当前输出是否来自真实模型。'
-        : '尚未接入真实模型：回复为演示内容，不会产生真实调用。',
+        : '尚未接入真实模型：未配置模型，请先配置模型密钥；发送后只会收到未配置提示，不会生成模拟回答。',
       tone: 'danger',
-      badge: unknown ? '真实性未知' : '模拟',
+      badge: unknown ? '真实性未知' : '未配置',
     }
   }
   if (simulated) {
