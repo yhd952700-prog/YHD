@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""鎏灏管家 · 真实模型验收（拆解+检索 / 并行 / 失败重试）。
+"""贾维斯 · 真实模型验收（拆解+检索 / 并行 / 失败重试）。
 
 一条命令跑完三类场景，输出结构化结果并给出 PASS / FAIL / SKIP 判定。
 
@@ -60,7 +60,7 @@ GOAL_PARALLEL = (
 # ────────────────────────────────────────────────────────────── 环境准备
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="鎏灏管家真实模型验收：拆解+检索、并行、失败重试",
+        description="贾维斯真实模型验收：拆解+检索、并行、失败重试",
     )
     parser.add_argument(
         "--provider",
