@@ -975,7 +975,6 @@ def _is_irreversible_action(action: str) -> bool:
         return False
 
 
-
 def _fence_enabled_for(action: str) -> bool:
     env = os.environ.get("LIUHAO_EXECUTOR_FENCE", "").strip().lower()
     if env in ("on", "1", "true", "yes"):

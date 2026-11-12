@@ -34,6 +34,7 @@ _SCOPE_SOVEREIGNTY = "L0"
 #: 执行/动作层审计域。
 _SCOPE_EXECUTION = "L5"
 
+
 #: 从真审计模块按需导入，避免 import 期循环依赖。
 def _audit():
     from src.kernels.audit import AuditEventType, AuditScope, log_event

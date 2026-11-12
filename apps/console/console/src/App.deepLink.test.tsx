@@ -243,7 +243,10 @@ describe('恢复码即时可见（PROD-006）', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '复制恢复码' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('REC-COPY-2026'))
-    await screen.findByRole('button', { name: '已复制' })
+    // CI 实测（run 43124949627）：writeText 已调用、handler 同步置 done，但满载
+    // runner 上 React 提交可慢过 findByRole 默认 1s——放宽等待上限，断言不变：
+    // 必须出现「已复制」。
+    await screen.findByRole('button', { name: '已复制' }, { timeout: 5000 })
     expect(screen.getByRole('button', { name: '下载恢复材料' })).toBeTruthy()
   })
 })

@@ -26,11 +26,10 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .definition import (
     APPROVAL_NODE_TYPES,
-    DefinitionError,
     evaluate_condition,
     node_by_id,
     outgoing_edges,

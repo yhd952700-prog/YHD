@@ -575,7 +575,7 @@ def _normalize_principal(principal: str) -> str:
     """
     pid = str(principal or "").strip()
     if pid.startswith(_HUMAN_ID_PREFIX) and len(pid) > len(_HUMAN_ID_PREFIX):
-        return pid[len(_HUMAN_ID_PREFIX) :]
+        return pid[len(_HUMAN_ID_PREFIX):]
     return pid
 
 

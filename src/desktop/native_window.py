@@ -121,6 +121,7 @@ def clear_session_js() -> str:
         "return true;})()"
     )
 
+
 #: 桌面壳身份标记：前端读 ``navigator.userAgent`` 里的这一段就能确认"我在
 #: 桌面原生窗口里"，不需要窗口尺寸，也不依赖任何查询参数（刷新、深链、
 #: 重定向都不会丢）。

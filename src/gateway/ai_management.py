@@ -5228,6 +5228,7 @@ def get_workflow(
             detail="要查看的目标不存在。请刷新列表后重试。",
         ) from exc
 
+
 # ── 任务台账接口（/v1/tasks*）────────────────────────────────
 # 编进本模块已挂载的 /v1 路由：不新增 main.py 挂载点（避开组织架构数据层那条线），
 # 复用同一道 require_human_principal 与同一套 _goal_viewer 可见范围。

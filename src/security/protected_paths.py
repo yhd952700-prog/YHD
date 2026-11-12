@@ -123,7 +123,7 @@ def protected_reason(path: str | os.PathLike[str] | None) -> str | None:
     # 3) 程序本体：安装目录下的 runtime/、src/、*.exe、*.dll
     if _under(real, roots.install):
         install_parts = Path(roots.install).parts
-        tail = Path(real).parts[len(install_parts) :]
+        tail = Path(real).parts[len(install_parts):]
         if tail and tail[0].lower() in _PROTECTED_INSTALL_DIRS:
             return "application-body"
         if os.path.splitext(real)[1].lower() in _PROTECTED_INSTALL_EXTS:

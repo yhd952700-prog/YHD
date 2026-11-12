@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .engine import WorkflowRuntime, get_workflow_runtime
 from .store import WorkflowStore, get_workflow_store

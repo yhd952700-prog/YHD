@@ -26,11 +26,10 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from .skill_import import DEFAULT_LIMITS, normalize_runtime
+from .skill_import import DEFAULT_LIMITS
 from .skill_store import SkillStore
 
 logger = logging.getLogger(__name__)
@@ -294,7 +293,6 @@ class SkillApprovalStore:
         key = self._key(skill_id, entrypoint, package_hash, script_sha256)
         with _APPROVAL_LOCK:
             rows = self._load()
-            now = datetime.now(timezone.utc)
             for row in rows:
                 if (
                     row.get("status") == "pending"

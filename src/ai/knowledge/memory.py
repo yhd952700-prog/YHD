@@ -20,7 +20,6 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Sequence
 
 from .service import (
-    KnowledgeError,
     Viewer,
     _MAX_TITLE,
     _clean_title,

@@ -35,7 +35,7 @@ import re
 import sqlite3
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -635,7 +635,6 @@ def patch_template(
                 current_revision=current_revision,
             )
         payload = json.loads(row["payload_json"])
-        template = payload["template"]
         if req.name is not None:
             payload["template"]["name"] = _clean_name(req.name, "模板名称")
         if req.description is not None:
@@ -1157,7 +1156,6 @@ def apply_template(
         row_by_key = {row["key"]: row for row in rows}
         statuses = {item["key"]: item["status"] for item in plan["nodes"]}
         names = {item["key"]: item["name"] for item in plan["nodes"]}
-        selected = set(plan["selected_keys"])
         mapping: Dict[str, str] = {}
         removed_nodes = 0
         removed_assignments = 0

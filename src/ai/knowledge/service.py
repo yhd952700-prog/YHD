@@ -17,7 +17,6 @@ from __future__ import annotations
 import difflib
 import hashlib
 import math
-import os
 import re
 import shutil
 import sqlite3
@@ -35,7 +34,6 @@ from .store import (
     new_id,
     now_iso,
     open_knowledge,
-    row_to_dict,
 )
 from .text import (
     SUPPORTED_SUFFIXES,
@@ -1000,7 +998,7 @@ def list_documents(
         else:
             documents.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
         total = len(documents)
-        page = documents[offset : offset + limit]
+        page = documents[offset:offset + limit]
         versions: Dict[str, Dict[str, Any]] = {}
         for item in page:
             current = _current_version(connection, item)

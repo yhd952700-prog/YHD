@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel

@@ -181,7 +181,7 @@ def segment_text(text: str) -> str:
                 if len(run) == 1:
                     tokens.append(run)
                 else:
-                    tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
+                    tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
             # 中文串之间夹带的英文/数字也保留下来。
             for word in _WORD_RE.findall(chunk):
                 tokens.append(word)
@@ -199,7 +199,7 @@ def query_terms(query: str) -> List[str]:
         candidates: Iterable[str]
         if _CJK_RE.fullmatch(run):
             candidates = [lowered] if len(lowered) == 1 else [
-                lowered[i : i + 2] for i in range(len(lowered) - 1)
+                lowered[i:i + 2] for i in range(len(lowered) - 1)
             ]
         else:
             candidates = [lowered]
@@ -475,10 +475,10 @@ def _image_size(data: bytes) -> Tuple[Optional[int], Optional[int]]:
                 if marker in (0xD8, 0xD9):
                     index += 2
                     continue
-                length = int.from_bytes(data[index + 2 : index + 4], "big")
+                length = int.from_bytes(data[index + 2:index + 4], "big")
                 if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA):
-                    height = int.from_bytes(data[index + 5 : index + 7], "big")
-                    width = int.from_bytes(data[index + 7 : index + 9], "big")
+                    height = int.from_bytes(data[index + 5:index + 7], "big")
+                    width = int.from_bytes(data[index + 7:index + 9], "big")
                     return width, height
                 index += 2 + max(length, 2)
     except (IndexError, ValueError):

@@ -1364,4 +1364,3 @@ def get_audit(
             status_code=503, detail=f"读取审计记录失败：{type(exc).__name__}: {exc}"
         ) from exc
     return {"skill_id": skill_id, "total": len(rows), "events": rows}
-
