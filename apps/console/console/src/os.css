@@ -4,7 +4,7 @@
 
    约定
    ----
-   1. 所有类名以 ``os-`` 前缀，与既有 ``App.css``（审批中心 / 对话面板）完全隔离，
+   1. 所有类名以 ``os-`` 前缀，与既有 ``App.css``（审批签发 / 对话面板）完全隔离，
       互不覆盖。
    2. 形态与主题**只由 ``<html>`` 上的两个属性驱动**：
         data-mode  = desktop | web | mobile
@@ -17,45 +17,45 @@
 /* ---------- 令牌：深色（桌面端 / 手机端默认） ---------- */
 :root,
 [data-theme='dark'] {
-  --os-bg: #050912;
-  --os-bg-grad: radial-gradient(1200px 600px at 18% -10%, #0d1b3a 0%, #050912 55%);
-  --os-panel: #0b1120;
-  --os-panel-2: #101a2e;
-  --os-panel-hover: #16213a;
-  --os-border: #1c2942;
-  --os-border-soft: #141f36;
-  --os-text: #e8eefc;
-  --os-text-dim: #93a3c4;
-  --os-text-faint: #8a9ac0;
-  --os-on-accent: #06121f;   /* 强调色实底上的文字：深底用近黑，保证 AA */
+  --os-bg: #201b17;
+  --os-bg-grad: none;
+  --os-panel: #2b2521;
+  --os-panel-2: #332c26;
+  --os-panel-hover: #3d352c;
+  --os-border: #4a4136;
+  --os-border-soft: #3a332b;
+  --os-text: #f3ede3;
+  --os-text-dim: #c4b9a9;
+  --os-text-faint: #9d9282;
+  --os-on-accent: #241a12;   /* 强调色实底上的文字：深底用近黑，保证 AA */
   --os-badge-ink: #000000;   /* 彩色徽章实底上的文字 */
-  --os-accent: #4d8dff;
-  --os-accent-soft: rgba(77, 141, 255, 0.16);
-  /* 蓝色**文字**专用：深底上 #4d8dff 对 #0b1120 是 5.9:1，可直接当正文。 */
-  --os-accent-text: #4d8dff;
-  --os-focus: #4d8dff;
-  --os-accent-2: #9b6bff;
-  --os-ok: #2ee6a8;
-  --os-warn: #ffb74d;
+  --os-accent: #d98a63;
+  --os-accent-soft: rgba(217, 138, 99, 0.16);
+  /* 陶土色**文字**专用：深底上 #e8a37e 对 #2b2521 是 7.2:1，可直接当正文。 */
+  --os-accent-text: #e8a37e;
+  --os-focus: #e8a37e;
+  --os-accent-2: #b98a4a;
+  --os-ok: #4cc38a;
+  --os-warn: #e0a44f;
   /* 状态色**文字**专用墨色：深色主题下与状态色同值（本就 ≥10:1），
      浅色主题下换成更深的墨色，避免 3.2:1 的对比不足。 */
-  --os-ok-ink: #2ee6a8;
-  --os-warn-ink: #ffb74d;
-  --os-danger: #ff5d6c;
-  --os-danger-ink: #ff5d6c;   /* 危险色文字放在 10% 危险色底上的墨色，需 ≥4.5:1 */
-  --os-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
-  --os-glow: 0 0 0 1px rgba(77, 141, 255, 0.22), 0 0 32px rgba(77, 141, 255, 0.16);
-  --os-grid-line: rgba(77, 141, 255, 0.09);
+  --os-ok-ink: #4cc38a;
+  --os-warn-ink: #e0a44f;
+  --os-danger: #f27d8a;
+  --os-danger-ink: #f27d8a;   /* 危险色文字放在 10% 危险色底上的墨色，需 ≥4.5:1 */
+  --os-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 12px 28px rgba(0, 0, 0, 0.35);
+  --os-glow: 0 0 0 1px var(--os-border);
+  --os-grid-line: rgba(217, 138, 99, 0.09);
   color-scheme: dark;
 
   /* ---- 科幻层语义令牌（叠加在 --os-* 之上，不替换现有取值）---- */
-  --sc-bg-deep: #03060e;
-  --sc-hairline: rgba(120, 190, 255, 0.14);
-  --sc-cyan: #35e0ff;
-  /* 青色**文字**专用：深底上 #35e0ff 已远超 AA，与状态环同值。 */
-  --sc-cyan-ink: #35e0ff;
-  --sc-gold: #ffc93c;
-  --sc-accent-ink: #06121f;
+  --sc-bg-deep: #171310;
+  --sc-hairline: rgba(217, 138, 99, 0.14);
+  --sc-cyan: #7fb2dd;
+  /* 钢蓝色**文字**专用：深底上 #7fb2dd 已远超 AA，与状态环同值。 */
+  --sc-cyan-ink: #7fb2dd;
+  --sc-gold: #d9a441;
+  --sc-accent-ink: #241a12;
   --sc-font-ui: system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
     'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   --sc-font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Consolas,
@@ -80,43 +80,43 @@
 
 /* ---------- 令牌：浅色（网页版默认） ---------- */
 [data-theme='light'] {
-  --os-bg: #f4f7fd;
-  --os-bg-grad: radial-gradient(1000px 500px at 15% -10%, #e6efff 0%, #f4f7fd 60%);
-  --os-panel: #ffffff;
-  --os-panel-2: #f7f9fe;
-  --os-panel-hover: #eef3fd;
-  --os-border: #dbe4f3;
-  --os-border-soft: #e8eef8;
-  --os-text: #101a30;
-  --os-text-dim: #57648a;
-  --os-text-faint: #59647e;
+  --os-bg: #faf7f1;
+  --os-bg-grad: none;
+  --os-panel: #fffdf9;
+  --os-panel-2: #f3eee4;
+  --os-panel-hover: #ece5d6;
+  --os-border: #ddd4c2;
+  --os-border-soft: #e9e1d1;
+  --os-text: #2b2620;
+  --os-text-dim: #6f6553;
+  --os-text-faint: #7d7261;
   --os-on-accent: #ffffff;
   --os-badge-ink: #000000;
-  --os-accent: #2f6fe4;
-  --os-accent-soft: rgba(47, 111, 228, 0.1);
-  /* #2f6fe4 当正文只有 4.4:1（不达 AA）。浅底文字改用更深的 #1f5bd0（5.7:1）；
+  --os-accent: #b85a2e;
+  --os-accent-soft: rgba(184, 90, 46, 0.12);
+  /* #b85a2e 当正文只有 4.3:1（不达 AA）。浅底文字改用更深的 #9a4a22（6.1:1）；
      实底填充仍用 --os-accent，视觉不漂移。 */
-  --os-accent-text: #1f5bd0;
-  --os-focus: #2f6fe4;
-  --os-accent-2: #7c4ddb;
-  --os-ok: #0f9d76;
-  --os-warn: #c47c14;
-  --os-danger: #d93a4a;
+  --os-accent-text: #9a4a22;
+  --os-focus: #9a4a22;
+  --os-accent-2: #a97b3f;
+  --os-ok: #2e7d5b;
+  --os-warn: #b97a1a;
+  --os-danger: #c23b4a;
   /* 实测 #d93a4a 在 10% 混色底（rgb(251,235,237)）上只有 3.84:1，低于 AA 的 4.5:1。
      文字单独用更深的墨色（5.6:1），底色/边框仍用 --os-danger 保持原视觉。 */
   --os-danger-ink: #b4232f;
-  --os-shadow: 0 12px 30px rgba(23, 43, 84, 0.1);
-  --os-glow: 0 0 0 1px rgba(47, 111, 228, 0.16), 0 0 24px rgba(47, 111, 228, 0.1);
-  --os-grid-line: rgba(47, 111, 228, 0.08);
+  --os-shadow: 0 1px 3px rgba(74, 58, 40, 0.08), 0 8px 24px rgba(74, 58, 40, 0.08);
+  --os-glow: 0 0 0 1px var(--os-border);
+  --os-grid-line: rgba(184, 90, 46, 0.08);
   color-scheme: light;
 
-  --sc-bg-deep: #e9effa;
-  --sc-hairline: rgba(47, 111, 228, 0.1);
-  --sc-cyan: #0096b8;
-  /* 浅底文字墨色：实测 #0096b8 在白底只有 3.4:1，不达 AA；
-     #00708a 对 --os-panel-2 (5.3:1) / 白底 (5.7:1) 均达标。图形/边框仍用 --sc-cyan。 */
-  --sc-cyan-ink: #00708a;
-  --sc-gold: #a8730a;
+  --sc-bg-deep: #f3eee4;
+  --sc-hairline: rgba(184, 90, 46, 0.12);
+  --sc-cyan: #4a7fb5;
+  /* 浅底文字墨色：实测 #4a7fb5 在白底只有 4.1:1，不达 AA；
+     #2f6f9f 对 --os-panel-2 (5.2:1) / 白底 (5.3:1) 均达标。图形/边框仍用 --sc-cyan。 */
+  --sc-cyan-ink: #2f6f9f;
+  --sc-gold: #8a6d1a;
   --sc-accent-ink: #ffffff;
   /* 浅底文字专用墨色（实底填充色不变）。 */
   --os-ok-ink: #0a7a5b;
@@ -214,15 +214,7 @@ main#os-main:focus-visible {
   outline-offset: -2px;
 }
 
-/* 深色大画布铺一层 32px 静态网格 + 地平线光（规范 4.1）。
-   只做一次绘制、不带动画；手机端与浅色主题不铺（浅色网格像草稿纸）。 */
-[data-theme='dark']:not([data-mode='mobile']) .os-app {
-  background-image:
-    linear-gradient(var(--os-grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--os-grid-line) 1px, transparent 1px),
-    var(--os-bg-grad);
-  background-size: 32px 32px, 32px 32px, auto;
-}
+/* Muse 风格：不铺 HUD 网格，底色就是暖米白 / 暖炭灰。 */
 
 [data-mode='web'] .os-app {
   --os-sidebar-w: 212px;
@@ -299,10 +291,43 @@ main#os-main:focus-visible {
   height: 34px;
   flex: 0 0 34px;
   border-radius: 10px;
-  background: linear-gradient(140deg, var(--os-accent), var(--os-accent-2));
+  background: var(--os-panel-2);
+  border: 1px solid var(--os-border);
   display: grid;
   place-items: center;
-  box-shadow: var(--os-glow);
+}
+
+/* 方舟反应堆标识：平时慢转，干活时（data-state='active'）转快变亮。
+   状态取值沿用 .sc-status 的 data-state 约定。 */
+.os-reactor {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+.os-reactor-rotor {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: os-reactor-spin 24s linear infinite;
+}
+
+.os-reactor[data-state='active'] .os-reactor-rotor {
+  animation-duration: 3s;
+}
+
+.os-reactor[data-state='active'] {
+  filter: brightness(1.15);
+}
+
+@keyframes os-reactor-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .os-reactor-rotor {
+    animation: none;
+  }
 }
 
 .os-brand-name {
@@ -323,6 +348,61 @@ main#os-main:focus-visible {
   flex-direction: column;
   gap: 2px;
   margin-top: 4px;
+}
+
+/* 日常 / 全部切换：两段式，当前段高亮；计数是该账号实际可见的入口数。 */
+.os-nav-scope {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: var(--os-panel-hover);
+}
+
+.os-nav-scope-btn {
+  flex: 1;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--os-text-dim);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.os-nav-scope-btn:hover {
+  color: var(--os-text);
+}
+
+.os-nav-scope-btn[data-active] {
+  background: var(--os-accent-soft);
+  color: var(--os-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--os-accent) 30%, transparent);
+}
+
+/* 日常模式下的「更多」：点一下展开全部入口，不是跳转。 */
+.os-nav-more {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  margin-top: 6px;
+  border: 1px dashed var(--os-border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--os-text-dim);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.os-nav-more:hover {
+  background: var(--os-panel-hover);
+  color: var(--os-text);
 }
 
 .os-nav-label {
@@ -484,7 +564,7 @@ main#os-main:focus-visible {
   font-size: 12.5px;
   font-weight: 650;
   color: var(--os-on-accent);
-  background: linear-gradient(140deg, var(--os-accent), var(--os-accent-2));
+  background: var(--os-accent);
 }
 
 .os-user-name {
@@ -818,7 +898,7 @@ main#os-main:focus-visible {
   position: absolute;
   inset: 0 0 auto 0;
   height: 2px;
-  background: linear-gradient(90deg, var(--os-accent), transparent);
+  background: var(--os-accent);
   opacity: 0.55;
 }
 
@@ -915,7 +995,7 @@ main#os-main:focus-visible {
 .os-bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--os-accent), var(--os-accent-2));
+  background: var(--os-accent);
 }
 
 .os-dot {
@@ -990,13 +1070,7 @@ main#os-main:focus-visible {
 
 .os-skeleton {
   border-radius: 8px;
-  background: linear-gradient(
-    90deg,
-    var(--os-panel-2) 25%,
-    var(--os-panel-hover) 37%,
-    var(--os-panel-2) 63%
-  );
-  background-size: 400% 100%;
+  background: var(--os-panel-2);
   animation: os-shimmer 1.4s ease-in-out infinite;
 }
 
@@ -1046,8 +1120,8 @@ main#os-main:focus-visible {
 }
 
 @keyframes os-shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: 0 0; }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
 /* ==========================================================================
@@ -1096,9 +1170,7 @@ main#os-main:focus-visible {
   position: relative;
   border-radius: 12px;
   border: 1px solid var(--os-border-soft);
-  background:
-    radial-gradient(closest-side, var(--os-accent-soft), transparent 72%),
-    var(--os-panel-2);
+  background: var(--os-panel-2);
   padding: 8px;
 }
 
@@ -1253,15 +1325,6 @@ main#os-main:focus-visible {
   display: none;
 }
 
-[data-theme='dark']:not([data-mode='mobile']) .os-login {
-  background-image:
-    linear-gradient(var(--os-grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--os-grid-line) 1px, transparent 1px),
-    var(--os-bg-grad);
-  background-size: 32px 32px, 32px 32px, auto;
-  background-attachment: fixed;
-}
-
 /* 只有**桌面壳**在宽屏下才排双栏。浏览器即使视口 >=1280（data-mode=desktop）
    也只是网页版：单卡居中，不显示桌面端专属左栏，避免「左栏自称桌面端、
    底部却高亮网页版」的自相矛盾。 */
@@ -1360,15 +1423,6 @@ main#os-main:focus-visible {
   color: var(--os-warn-ink);
 }
 
-/* 地平线光：唯一装饰，静态，不参与动画。 */
-[data-client='desktop-shell'][data-mode='desktop'] .os-login-aside::after {
-  content: '';
-  display: block;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--sc-cyan), transparent);
-  opacity: 0.45;
-}
-
 .os-login-card {
   width: 100%;
   max-width: 396px;
@@ -1394,8 +1448,8 @@ main#os-main:focus-visible {
   border-radius: 18px;
   display: grid;
   place-items: center;
-  background: linear-gradient(140deg, var(--os-accent), var(--os-accent-2));
-  box-shadow: var(--os-glow);
+  background: var(--os-panel-2);
+  border: 1px solid var(--os-border);
 }
 
 .os-login-title {
@@ -1566,7 +1620,7 @@ main#os-main:focus-visible {
   padding: 11px 16px;
   border-radius: 10px;
   border: 1px solid transparent;
-  background: linear-gradient(135deg, var(--os-accent), var(--os-accent-2));
+  background: var(--os-accent);
   color: var(--os-on-accent);
   font-size: 14px;
   font-weight: 620;
@@ -2911,7 +2965,7 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--sc-cyan), var(--os-accent));
+  background: var(--os-accent);
   transition: width var(--sc-dur-state) var(--sc-ease-out);
 }
 
@@ -3078,7 +3132,7 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--sc-cyan), var(--os-accent));
+  background: var(--os-accent);
   transition: width var(--sc-dur-state) var(--sc-ease-out);
 }
 
@@ -3538,7 +3592,8 @@ html[data-client='browser']:not([data-mode='mobile']) .os-download-link {
   bottom: 0;
   left: 0;
   width: 40%;
-  background: linear-gradient(90deg, transparent, var(--sc-cyan), transparent);
+  background: var(--sc-cyan);
+  opacity: 0.35;
   animation: sc-flow 2.2s linear infinite;
 }
 
