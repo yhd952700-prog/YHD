@@ -121,7 +121,7 @@ function makeState(): MockState {
   })
   const n1 = node({
     node_id: 'n1',
-    name: '鎏灏科技',
+    name: '贾维斯科技',
     kind: 'company',
     lead: LEAD,
     assignments: [LEAD],
@@ -312,7 +312,7 @@ function mockFetch(state: MockState) {
               node_id: 'n1',
               parent_id: '',
               kind: 'company',
-              name: '鎏灏科技',
+              name: '贾维斯科技',
               description: '',
               sort_order: 0,
               created_at: 0,
@@ -414,7 +414,7 @@ describe('组织架构页', () => {
   test('按层级展示节点、负责人与成员数', async () => {
     renderPage()
 
-    expect(await screen.findByText('鎏灏科技')).toBeTruthy()
+    expect(await screen.findByText('贾维斯科技')).toBeTruthy()
     expect(screen.getAllByText('研发部').length).toBeGreaterThan(0)
     expect(screen.getByText('前端组')).toBeTruthy()
     expect(screen.getByText('4 个节点 · 2 条任职')).toBeTruthy()
@@ -424,7 +424,7 @@ describe('组织架构页', () => {
 
   test('新建顶层节点会提交名称、类型与空上级', async () => {
     renderPage()
-    await screen.findByText('鎏灏科技')
+    await screen.findByText('贾维斯科技')
 
     fireEvent.click(screen.getByRole('button', { name: '新建顶层节点' }))
     fireEvent.change(await screen.findByLabelText('节点名称'), {
@@ -447,7 +447,7 @@ describe('组织架构页', () => {
 
   test('同级重名返回 409 时，错误留在表单里而不是静默失败', async () => {
     renderPage()
-    await screen.findByText('鎏灏科技')
+    await screen.findByText('贾维斯科技')
 
     fireEvent.click(screen.getByRole('button', { name: '新建顶层节点' }))
     fireEvent.change(await screen.findByLabelText('节点名称'), { target: { value: '重名部门' } })
@@ -488,7 +488,7 @@ describe('组织架构页', () => {
 
   test('回滚先展示会发生什么，确认前不发请求', async () => {
     renderPage()
-    await screen.findByText('鎏灏科技')
+    await screen.findByText('贾维斯科技')
 
     fireEvent.click(screen.getByRole('button', { name: '版本历史' }))
     await screen.findByText('第 2 版')
@@ -507,7 +507,7 @@ describe('组织架构页', () => {
 
   test('方向键可以在树内移动并展开/收起', async () => {
     renderPage()
-    const first = await screen.findByRole('button', { name: /^鎏灏科技，/ })
+    const first = await screen.findByRole('button', { name: /^贾维斯科技，/ })
     expect((first as HTMLButtonElement).tabIndex).toBe(0)
 
     fireEvent.keyDown(first, { key: 'ArrowDown' })
@@ -595,12 +595,12 @@ describe('组织架构页', () => {
   test('搜索只列出匹配节点，并说明它在谁下面', async () => {
     renderPage('前端')
     expect(await screen.findByText(/1 个节点。/)).toBeTruthy()
-    expect(screen.getByText('小组 · 上级：鎏灏科技 / 研发部')).toBeTruthy()
+    expect(screen.getByText('小组 · 上级：贾维斯科技 / 研发部')).toBeTruthy()
   })
 
   test('「从模板开始」只打开参考库，不自动预览或套用', async () => {
     renderPage()
-    await screen.findByText('鎏灏科技')
+    await screen.findByText('贾维斯科技')
 
     fireEvent.click(screen.getByRole('button', { name: '从模板开始' }))
     expect(await screen.findByText('软件研发')).toBeTruthy()
