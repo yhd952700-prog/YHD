@@ -62,3 +62,32 @@ python scripts/lint_audit_claims.py                # CI mode: changed docs vs HE
 The guard fails (exit 1) when a doc introduces an HC-01 / HC-09 / HC-10 claim
 without the required caveat, within a `±1` line window (override with `--window`).
 See `python scripts/lint_audit_claims.py` header for the full pattern reference.
+
+## Env-var and dependency drift check
+
+```bash
+python scripts/check_env_drift.py
+```
+
+Run this before touching `config/docker.env`, `.env.example`,
+`requirements.txt`, `pyproject.toml`, the `Dockerfile`, or any CI workflow.
+It verifies, read-only (exit 1 = drift found):
+
+1. Every variable in `config/docker.env` and `.env.example` is referenced
+   by real code (`src/`, `scripts/`, `LiuHao-O/packages/kernel/`),
+   a `docker-compose*.yml`, or the other env file. A name nothing reads
+   is either dead config (comment it out with a `⚠ 未接线` note, or delete
+   it) or a rename where the wrong side must be fixed to the name the code
+   actually reads (e.g. `ALERT_WEBHOOK_URL` → `LIUHAO_ALERT_WEBHOOK`,
+   `TRACING_OTLP_ENDPOINT` → `OTEL_EXPORTER_OTLP_ENDPOINT`).
+   `LHX_*` variables are read by `LiuHao-O/packages/kernel/config.py`
+   (`env_prefix="LHX_"`), not by `src/`.
+2. Every `[project] dependencies` entry in `pyproject.toml` is pinned in
+   `requirements.txt` (`requirements.txt` is the `uv pip compile`
+   default-deps lockfile; transitive pins without a pyproject declaration
+   are expected, not drift). Optional extras are intentionally **not** in
+   `requirements.txt` — they install via `pip install -e .[extra]`.
+   Regenerate the lockfile with `uv pip compile pyproject.toml -o requirements.txt`.
+3. The Python version is pinned to a single version everywhere:
+   `pyproject.toml` (`requires-python` floor), `.python-version`,
+   `Dockerfile`, and every CI workflow (currently 3.12, no matrix leg).
