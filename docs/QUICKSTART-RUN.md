@@ -1,6 +1,6 @@
 # 5 分钟跑起来
 
-面向「我现在就想把鎏灏用起来」的人。Windows 口径，Git Bash / PowerShell 均可。
+面向「我现在就想把贾维斯用起来」的人。Windows 口径，Git Bash / PowerShell 均可。
 
 ## 最短路径
 
@@ -12,7 +12,7 @@
 命令行等价：
 
 ```bash
-cd D:\LiuHao-AI-OS
+cd D:\Jarvis-AI-OS
 .venv\Scripts\python.exe scripts\start_liuhao.py
 ```
 
@@ -25,11 +25,11 @@ cd D:\LiuHao-AI-OS
 
 ```bash
 # 1. 网关
-cd D:\LiuHao-AI-OS
+cd D:\Jarvis-AI-OS
 .venv\Scripts\python.exe -m uvicorn src.gateway.main:app --host 127.0.0.1 --port 8080
 
 # 2. 控制台前端（新开一个终端）
-cd D:\LiuHao-AI-OS\apps\console\console
+cd D:\Jarvis-AI-OS\apps\console\console
 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 ```
 
@@ -55,7 +55,7 @@ curl --noproxy '*' -X POST http://127.0.0.1:8080/v1/chat \
 期望（约 5 秒，走本机 Ollama `qwen2.5:3b` 真实推理）：
 
 ```json
-{"reply":"我是鎏灏，一个由十源DNA统一形成的AI操作系统人格…","status":"completed","turn":1,…}
+{"reply":"我是贾维斯，一个由十源DNA统一形成的AI操作系统人格…","status":"completed","turn":1,…}
 ```
 
 ## 跑一次端到端冒烟
