@@ -252,7 +252,12 @@ class ProductionConfig:
         if os.getenv("LOG_LEVEL"):
             self.observability.log_level = os.getenv("LOG_LEVEL")
         if os.getenv("METRICS_ENABLED"):
-            self.observability.metrics_enabled = os.getenv("METRICS_ENABLED").lower() == "true"
+            # 接受 1/true/yes/on：env 文件与 compose 全用 1/0 约定
+            # （METRICS_PERSIST=1 也是按 "1" 判的）；此前只认 "true"，
+            # 导致 docker.env 的 METRICS_ENABLED=1 被静默判成关闭。
+            self.observability.metrics_enabled = os.getenv("METRICS_ENABLED").strip().lower() in (
+                "1", "true", "yes", "on",
+            )
         
         # Deployment
         if os.getenv("DOCKER_IMAGE"):
