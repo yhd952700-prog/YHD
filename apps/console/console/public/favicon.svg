@@ -1,20 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="贾维斯">
-  <!-- 与 PWA 图标（scripts/generate_pwa_icons.py 生成的 PNG）同一个形状：
-       圆角渐变底 + 尖顶六边形描边 + 中心圆点。两者必须一致，否则浏览器标签页
-       与装到桌面/主屏的图标会是两个牌子。 -->
-  <defs>
-    <linearGradient id="liuhao-tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3e7bf0" />
-      <stop offset="1" stop-color="#101b3e" />
-    </linearGradient>
-  </defs>
-  <rect width="64" height="64" rx="14" fill="url(#liuhao-tile)" />
-  <path
-    d="M32 12.8 48.6 22.4v19.2L32 51.2 15.4 41.6V22.4z"
-    fill="none"
-    stroke="#ffffff"
-    stroke-width="3.4"
-    stroke-linejoin="round"
-  />
-  <circle cx="32" cy="32" r="5.4" fill="#ffffff" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="贾维斯 · 方舟反应堆">
+  <!-- 方舟反应堆标识（原创，无字母）：外环带 10 个节点 + 线圈虚线环 + 内三角 + 发光核心，钢蓝色。
+       与控制台内的 ReactorMark、PWA 的 PNG 图标（scripts/generate_pwa_icons.py 生成）
+       是同一个造型；favicon 是静态的，不转。 -->
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#5b9bd5" stroke-width="2.5" />
+  <circle cx="60.00" cy="32.00" r="2.2" fill="#5b9bd5" />
+  <circle cx="54.65" cy="48.46" r="2.2" fill="#5b9bd5" />
+  <circle cx="40.65" cy="58.63" r="2.2" fill="#5b9bd5" />
+  <circle cx="23.35" cy="58.63" r="2.2" fill="#5b9bd5" />
+  <circle cx="9.35" cy="48.46" r="2.2" fill="#5b9bd5" />
+  <circle cx="4.00" cy="32.00" r="2.2" fill="#5b9bd5" />
+  <circle cx="9.35" cy="15.54" r="2.2" fill="#5b9bd5" />
+  <circle cx="23.35" cy="5.37" r="2.2" fill="#5b9bd5" />
+  <circle cx="40.65" cy="5.37" r="2.2" fill="#5b9bd5" />
+  <circle cx="54.65" cy="15.54" r="2.2" fill="#5b9bd5" />
+  <circle cx="32" cy="32" r="22" fill="none" stroke="#5b9bd5" stroke-width="1.6" stroke-dasharray="3 4" />
+  <path d="M32 20 L42 40 L22 40 Z" fill="none" stroke="#8fbde8" stroke-width="2" stroke-linejoin="round" />
+  <circle cx="32" cy="32" r="7.5" fill="#bcd9f2" />
+  <circle cx="32" cy="32" r="4" fill="#eaf4fc" />
 </svg>
