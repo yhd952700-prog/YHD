@@ -1,4 +1,4 @@
-/* LiuHao AI OS · 鎏灏智能中枢 驾驶舱 —— Service Worker
+/* Jarvis · 贾维斯 驾驶舱 —— Service Worker
  *
  * 职责边界（刻意收得很窄）
  * ----------------------
@@ -69,9 +69,9 @@ const OFFLINE_BANNER_ID = 'liuhao-offline-banner';
 const OFFLINE_BANNER = `
 <div id="${OFFLINE_BANNER_ID}" role="alert" style="position:fixed;left:0;right:0;top:0;z-index:2147483647;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:center;padding:12px 18px;background:#3b2020;color:#ffe9e6;border-bottom:1px solid #8a4444;box-shadow:0 2px 12px rgba(0,0,0,.45);font:14px/1.5 system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">
   <strong style="font-weight:600;color:#ffb4a8">本地服务未运行</strong>
-  <span>鎏灏的本地服务已断开，这一页是上次缓存的内容，数据不会更新。</span>
+  <span>贾维斯的本地服务已断开，这一页是上次缓存的内容，数据不会更新。</span>
   <a href="/" style="display:inline-block;padding:4px 12px;border-radius:999px;background:#ffb4a8;color:#3b2020;font-weight:600;text-decoration:none">重新加载</a>
-  <span style="opacity:.85">请打开鎏灏后再试。</span>
+  <span style="opacity:.85">请打开贾维斯后再试。</span>
 </div>`;
 
 /** 把横幅塞进缓存的 HTML；重复回退不会叠加多个横幅。 */
@@ -84,7 +84,7 @@ function withOfflineBanner(html) {
 async function offlineShell() {
   const cached = (await caches.match('/')) || (await caches.match('/index.html'));
   if (!cached) {
-    return new Response('本地服务未运行，且没有可用的缓存页面。请打开鎏灏后再试。', {
+    return new Response('本地服务未运行，且没有可用的缓存页面。请打开贾维斯后再试。', {
       status: 503,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
