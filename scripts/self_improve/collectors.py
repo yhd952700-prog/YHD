@@ -4,23 +4,19 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from models import (
     Gap,
     auto_eligibility,
-    content_is_sensitive,
     downgrade,
-    path_is_sensitive,
     worse,
 )
 
