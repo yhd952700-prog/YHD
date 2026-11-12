@@ -42,7 +42,7 @@ ROOT_KEY = "sk-root-migration-0001"
 MEMBER_KEY = "sk-member-migration-0002"
 
 PASSWORDS = {"root1": "rootpass123", "member1": "memberpass123"}
-ROOT_DOC = "根账号知识库：鎏灏备份迁移验证，包含唯一的检索锚点 ALPHA-ROOT-9527。"
+ROOT_DOC = "根账号知识库：贾维斯备份迁移验证，包含唯一的检索锚点 ALPHA-ROOT-9527。"
 MEMBER_DOC = "成员知识库：换机迁移验证，包含唯一的检索锚点 BETA-MEMBER-8642。"
 
 
@@ -308,7 +308,7 @@ def seed(inst: Instance) -> Dict[str, Any]:
 
     for token, text in (
         (root, "根账号记忆：偏好深色主题。"),
-        (root, "根账号记忆：项目代号鎏灏。"),
+        (root, "根账号记忆：项目代号贾维斯。"),
         (member, "成员记忆：每周五提交周报。"),
     ):
         status, body = request(
