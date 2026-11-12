@@ -51,6 +51,71 @@ _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
+def derive_backup_key(
+    passphrase: str,
+    salt: bytes,
+    iterations: int = 600_000,
+) -> bytes:
+    """从口令派生 32 字节备份密钥（PBKDF2-HMAC-SHA256）。
+
+    调用方负责保管 ``salt``（与备份文件放在一起即可，它不是密钥）；
+    同一口令 + 同一 salt 才能解开。迭代次数 600k 是 OWASP 对 PBKDF2-HMAC-SHA256
+    的建议值。``cryptography`` 是 pyproject 已声明的依赖，不引入新依赖。
+    """
+    if not passphrase:
+        raise ValueError("derive_backup_key requires a non-empty passphrase")
+    if not salt:
+        raise ValueError("derive_backup_key requires a non-empty salt")
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    return PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=iterations,
+    ).derive(passphrase.encode("utf-8"))
+
+
+_ENCRYPTED_MAGIC = b"LHBAK1"
+_ENCRYPTED_NONCE_LEN = 12
+
+
+def encrypt_backup_bytes(plaintext: bytes, key: bytes) -> bytes:
+    """AES-256-GCM 加密一段备份字节流。
+
+    格式：``b"LHBAK1" + 12 字节随机 nonce + 密文（含 16 字节 GCM tag）``。
+    先压缩再加密（调用方负责顺序）；解密失败一律报 ``ValueError``，
+    不把 ``InvalidTag`` 的细节透给调用方之外的日志。
+    """
+    if len(key) != 32:
+        raise ValueError("backup encryption key must be 32 bytes (AES-256)")
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    nonce = os.urandom(_ENCRYPTED_NONCE_LEN)
+    return _ENCRYPTED_MAGIC + nonce + AESGCM(key).encrypt(nonce, plaintext, None)
+
+
+def decrypt_backup_bytes(blob: bytes, key: bytes) -> bytes:
+    """``encrypt_backup_bytes`` 的逆操作。"""
+    if len(key) != 32:
+        raise ValueError("backup encryption key must be 32 bytes (AES-256)")
+    if len(blob) < len(_ENCRYPTED_MAGIC) + _ENCRYPTED_NONCE_LEN + 16:
+        raise ValueError("not an encrypted backup blob (too short or bad magic)")
+    if blob[: len(_ENCRYPTED_MAGIC)] != _ENCRYPTED_MAGIC:
+        raise ValueError("not an encrypted backup blob (bad magic)")
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    nonce = blob[len(_ENCRYPTED_MAGIC) : len(_ENCRYPTED_MAGIC) + _ENCRYPTED_NONCE_LEN]
+    try:
+        return AESGCM(key).decrypt(nonce, blob[len(_ENCRYPTED_MAGIC) + _ENCRYPTED_NONCE_LEN :], None)
+    except InvalidTag as exc:
+        raise ValueError(
+            "cannot decrypt backup: wrong key or corrupted archive"
+        ) from exc
+
+
 def _is_sqlite_file(path: Path) -> bool:
     """Detect SQLite by its on-disk header, not by extension."""
     try:
@@ -505,8 +570,11 @@ class BackupManager:
         backups: Registry of all known backups (by ID).
         retention_policy: Policy for pruning old backups.
         compression_level: Gzip compression level (1-9).
-        encryption_enabled: Not implemented; ``True`` makes ``create_backup``
-            raise rather than write a plaintext archive labelled as encrypted.
+        encryption_enabled: ``True`` 时归档经 AES-256-GCM 加密后落盘
+            （先 gzip 再加密）。必须同时提供 ``encryption_key``（32 字节），
+            否则 ``create_backup`` 拒绝写入；只有 ``encryption_key`` 而未开启
+            亦拒绝，避免"带了密钥却写了明文"的误解。密钥由调用方保管，
+            可用 ``derive_backup_key(passphrase, salt)`` 从口令派生。
     """
 
     backup_dir: Path
@@ -515,6 +583,26 @@ class BackupManager:
     retention_policy: RetentionPolicy = field(default_factory=RetentionPolicy)
     compression_level: int = 6
     encryption_enabled: bool = False
+    encryption_key: Optional[bytes] = None
+
+    def _require_encryption_key(self) -> bytes:
+        """加密备份的密钥门禁：缺密钥 / 错长度一律拒绝，绝不写明文。"""
+        if self.encryption_key is None:
+            raise ValueError(
+                "encryption_enabled=True requires encryption_key (32 bytes): "
+                "pass encryption_key=derive_backup_key(passphrase, salt), "
+                "or use scripts/ops/backup.py for passphrase-based archives."
+            )
+        if len(self.encryption_key) != 32:
+            raise ValueError("encryption_key must be 32 bytes (AES-256)")
+        return self.encryption_key
+
+    def _decrypt_blob(self, raw: bytes, meta: "BackupMetadata") -> bytes:
+        """按元数据把归档字节流还原成压缩/明文 JSON（加密时先解密）。"""
+        if not meta.encrypted:
+            return raw
+        key = self._require_encryption_key()
+        return decrypt_backup_bytes(raw, key)
 
     def __post_init__(self) -> None:
         self.backup_dir = Path(self.backup_dir)
@@ -551,14 +639,15 @@ class BackupManager:
         if sources is None:
             sources = list(self.source_paths.keys())
 
-        # Fail loudly instead of writing a plaintext archive that claims to be
-        # encrypted. ``encryption_enabled`` used to be a flag only: the metadata
-        # said encrypted=True while the bytes on disk were plaintext.
+        # 加密是真实落盘的 AES-256-GCM，不是只改元数据的 flag：缺密钥或
+        # 密钥长度不对时直接拒绝，绝不写出"标称已加密的明文"。
+        encryption_key: Optional[bytes] = None
         if self.encryption_enabled:
-            raise NotImplementedError(
-                "encryption_enabled=True is not implemented in this manager: it "
-                "writes plaintext archives. Set encryption_enabled=False (the "
-                "default), or use scripts/ops/backup.py for encrypted archives."
+            encryption_key = self._require_encryption_key()
+        elif self.encryption_key is not None:
+            raise ValueError(
+                "encryption_key is set but encryption_enabled=False: refusing to "
+                "write a plaintext archive while a key is configured."
             )
 
         backup_id = f"backup_{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -577,7 +666,9 @@ class BackupManager:
         )
 
         backup_path = self.backup_dir / backup_id
-        if compress:
+        if self.encryption_enabled:
+            backup_path = backup_path.with_suffix(".enc")
+        elif compress:
             backup_path = backup_path.with_suffix(".tar.gz")
         else:
             backup_path = backup_path.with_suffix(".tar")
@@ -611,16 +702,18 @@ class BackupManager:
                 backup_data["data"][source.value] = source_data
                 total_size += source_data.get("size_bytes", 0)
 
-            # Serialise and write
+            # Serialise and write: gzip first, then encrypt (encrypt-then-
+            # compress would leak plaintext length structure and defeat gzip).
             json_bytes = json.dumps(backup_data, indent=2, default=str).encode("utf-8")
 
             if compress:
-                compressed = gzip.compress(json_bytes, compresslevel=self.compression_level)
-                backup_path.write_bytes(compressed)
-                meta.size_bytes = len(compressed)
+                payload = gzip.compress(json_bytes, compresslevel=self.compression_level)
             else:
-                backup_path.write_bytes(json_bytes)
-                meta.size_bytes = len(json_bytes)
+                payload = json_bytes
+            if encryption_key is not None:
+                payload = encrypt_backup_bytes(payload, encryption_key)
+            backup_path.write_bytes(payload)
+            meta.size_bytes = len(payload)
 
             # Compute checksum from the written file
             meta.checksum = self._compute_checksum(backup_path)
@@ -789,9 +882,10 @@ class BackupManager:
         if actual_checksum != meta.checksum:
             return False
 
-        # Try to read/decompress
+        # Try to read/decompress (decrypt first when the archive is encrypted).
         try:
             raw = filepath.read_bytes()
+            raw = self._decrypt_blob(raw, meta)
             if meta.compressed:
                 gzip.decompress(raw)
             else:
@@ -851,8 +945,18 @@ class BackupManager:
             )
 
         try:
-            # Read and decompress
+            # Read, decrypt (when encrypted), then decompress.
             raw = filepath.read_bytes()
+            try:
+                raw = self._decrypt_blob(raw, meta)
+            except ValueError as exc:
+                return RestoreResult(
+                    success=False,
+                    backup_id=backup_id,
+                    error_message=str(exc),
+                    duration_seconds=time.time() - start_time,
+                    status=RestoreStatus.FAILED,
+                )
             if meta.compressed:
                 raw = gzip.decompress(raw)
 
