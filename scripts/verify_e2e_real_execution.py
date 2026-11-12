@@ -43,7 +43,6 @@ if REPO_ROOT not in sys.path:
 
 from src.kernels.execution import (  # noqa: E402
     Action,
-    ActionResult,
     ExecutionEngine,
     Goal,
     GoalDecomposer,
