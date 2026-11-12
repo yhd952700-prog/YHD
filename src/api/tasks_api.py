@@ -52,6 +52,9 @@ class TaskCreate(BaseModel):
     assigned_agent: Optional[str] = Field(default=None, description="Assigned agent ID")
     parameters: Optional[Dict[str, Any]] = Field(default=None, description="Task parameters")
     scheduled_at: Optional[str] = Field(default=None, description="Scheduled execution time")
+    # 截止时间（ISO 8601 字符串，如 "2026-12-31T23:59:59"）。B组第二轮补：
+    # 此前 Task 只有 priority/progress，没有截止时间字段。
+    due_date: Optional[str] = Field(default=None, description="Due date (ISO 8601, optional)")
 
 
 class TaskUpdate(BaseModel):
@@ -61,6 +64,7 @@ class TaskUpdate(BaseModel):
     priority: Optional[TaskPriority] = None
     status: Optional[TaskStatus] = None
     assigned_agent: Optional[str] = None
+    due_date: Optional[str] = Field(default=None, description="Due date (ISO 8601, optional)")
 
 
 class TaskResponse(BaseModel):
@@ -77,6 +81,9 @@ class TaskResponse(BaseModel):
     started_at: Optional[str]
     completed_at: Optional[str]
     progress_pct: float
+    # 截止时间：创建时未给则为 None。progress_pct 目前恒为 0.0 —— 执行器
+    # 未接线（execute 端点返回 501），没有真实进度可报，不编假进度。
+    due_date: Optional[str] = None
 
 
 class TaskListResponse(BaseModel):
@@ -107,8 +114,9 @@ class TaskResultResponse(BaseModel):
     status: str
     result: Dict[str, Any]
     completed_at: str
-    duration_ms: float
+    duration_ms: Optional[float] = None
     error: Optional[str] = None
+    note: Optional[str] = None
 
 
 # =====================================================================
@@ -125,6 +133,22 @@ def _get_task_or_404(task_id: str) -> Dict[str, Any]:
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
     return task
+
+
+def _duration_ms(started_at: Optional[str], completed_at: Optional[str]) -> Optional[float]:
+    """Real duration: milliseconds between start and completion.
+
+    Returns None when either timestamp is missing or unparseable
+    instead of a fabricated constant.
+    """
+    if not started_at or not completed_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at)
+        completed = datetime.fromisoformat(completed_at)
+    except ValueError:
+        return None
+    return max(0.0, round((completed - started).total_seconds() * 1000.0, 2))
 
 
 # =====================================================================
@@ -197,6 +221,7 @@ async def create_task(body: TaskCreate) -> Dict[str, Any]:
         "started_at": None,
         "completed_at": None,
         "progress_pct": 0.0,
+        "due_date": body.due_date,
     }
     _tasks[task_id] = task
     return task
@@ -268,37 +293,38 @@ async def delete_task(task_id: str) -> None:
 async def execute_task(task_id: str, body: TaskExecuteRequest) -> Dict[str, Any]:
     """Execute a task.
 
+    NOT IMPLEMENTED: no task executor is wired to this endpoint, so
+    executing would only pretend to run. Returns HTTP 501 and leaves
+    the task untouched (still PENDING) instead of marking it RUNNING
+    with a fabricated progress value.
+
     Args:
         task_id: Task identifier.
         body: Execution request.
 
     Returns:
-        Execution status.
+        Never returns normally while no executor is wired.
 
     Raises:
-        HTTPException: 404 if not found.
+        HTTPException: 404 if not found, 501 if no executor is wired.
     """
-    task = _get_task_or_404(task_id)
-    now = datetime.utcnow().isoformat()
-    task["status"] = TaskStatus.RUNNING.value
-    task["started_at"] = now
-    task["progress_pct"] = 10.0
-    if body.agent_id:
-        task["assigned_agent"] = body.agent_id
-    if body.parameters:
-        task["parameters"].update(body.parameters)
-    execution_id = str(uuid.uuid4())
-    return {
-        "task_id": task_id,
-        "execution_id": execution_id,
-        "status": TaskStatus.RUNNING.value,
-        "started_at": now,
-    }
+    _get_task_or_404(task_id)
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Task execution is not implemented: no executor is wired "
+            "to this endpoint, so the task was not started."
+        ),
+    )
 
 
 @router.get("/{task_id}/result", response_model=TaskResultResponse)
 async def get_task_result(task_id: str) -> Dict[str, Any]:
     """Get the result of a completed task.
+
+    duration_ms is computed from the task record's started_at /
+    completed_at timestamps; it is null (with a note) when the
+    record has no usable timestamps.
 
     Args:
         task_id: Task identifier.
@@ -316,16 +342,23 @@ async def get_task_result(task_id: str) -> Dict[str, Any]:
             "status": task["status"],
             "result": {},
             "completed_at": task.get("completed_at") or "",
-            "duration_ms": 0.0,
+            "duration_ms": None,
             "error": None if task["status"] != TaskStatus.FAILED.value else "Task failed",
+            "note": "Duration is not available: the task has not completed.",
         }
+    duration_ms = _duration_ms(task.get("started_at"), task.get("completed_at"))
     return {
         "task_id": task_id,
         "status": task["status"],
         "result": {"output": "Task completed successfully", "details": task.get("parameters", {})},
         "completed_at": task.get("completed_at") or "",
-        "duration_ms": 1500.0,
+        "duration_ms": duration_ms,
         "error": None,
+        "note": (
+            None
+            if duration_ms is not None
+            else "Duration is not available: the task record has no usable started_at/completed_at timestamps."
+        ),
     }
 
 
@@ -404,6 +437,7 @@ async def get_task_status(task_id: str) -> Dict[str, Any]:
         "status": task["status"],
         "priority": task["priority"],
         "progress_pct": task.get("progress_pct", 0),
+        "due_date": task.get("due_date"),
         "assigned_agent": task.get("assigned_agent"),
         "updated_at": task["updated_at"],
     }
