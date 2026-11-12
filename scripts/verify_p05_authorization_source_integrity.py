@@ -59,7 +59,7 @@ from src.kernels._sovereignty import (  # noqa: E402
 )
 from src.kernels.audit import get_audit_store  # noqa: E402
 from src.kernels.capability import get_capability_registry  # noqa: E402
-from src.kernels.identity import IdentityManager, get_identity_manager  # noqa: E402
+from src.kernels.identity import get_identity_manager  # noqa: E402
 
 _RESULTS: list[tuple[bool, str]] = []
 KERNEL_PRINCIPAL = "liuhao-internal-service"
