@@ -164,7 +164,7 @@ export function About() {
                 </h3>
                 <p style={{ color: 'var(--os-text-dim)', lineHeight: 1.8 }}>
                   账号、对话、知识库、记忆、审计记录和日志都保存在上面的数据目录里，
-                  不会上传到鎏灏服务器。
+                  不会上传到贾维斯服务器。
                   <br />
                   只有 API Key 用 AES-256-GCM 加密保存（密钥文件 data\model_config.key 与
                   数据库同目录，仅当前 Windows 用户可读）；对话、知识库、审计是
@@ -273,7 +273,7 @@ export function About() {
                   备份与卸载
                 </h3>
                 <p style={{ color: 'var(--os-text-dim)', lineHeight: 1.8 }}>
-                  备份：退出鎏灏后，把整个数据目录复制到移动硬盘或另一台电脑；
+                  备份：退出贾维斯后，把整个数据目录复制到移动硬盘或另一台电脑；
                   必须同时复制 data\model_config.key 与 data\model_registry.sqlite3，
                   缺一个已存 API Key 就解不开。
                   <br />
