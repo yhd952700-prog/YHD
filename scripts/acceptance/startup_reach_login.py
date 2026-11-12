@@ -12,13 +12,13 @@
 ----
 * T0 = 本脚本 spawn ``scripts/launch_installed.py`` 的那一刻（模拟双击）；
 * 启动器 stdout 的里程碑行（``正在启动…`` / ``[1/2]`` / ``网关就绪`` /
-  ``[2/2]`` / ``鎏灏已就绪``）按到达时间打点，分段由相邻打点相减得到；
+  ``[2/2]`` / ``贾维斯已就绪``）按到达时间打点，分段由相邻打点相减得到；
 * 网关内部阶段（包导入 / lifespan 各段）来自 ``LIUHAO_STARTUP_PROFILE_OUT``
   落盘的 ``startup_profile`` JSON，T0' 是进程内"进入 src.gateway 包"；
 * 浏览器段用 Playwright 真实启动 Chromium、导航到 ``/``，等到 ``#os-principal``
   可见；这代理的是生产里"启动器调 webbrowser.open + 默认浏览器冷启动"。
   真实默认浏览器可能比 headless Chromium 更慢，脚本会如实标注。
-* 最终总计 = 启动器 T0 → ``鎏灏已就绪`` + Chromium 冷启动 + 页面可见。
+* 最终总计 = 启动器 T0 → ``贾维斯已就绪`` + Chromium 冷启动 + 页面可见。
 
 拒绝脏数据
 ----------
@@ -68,7 +68,7 @@ MILESTONES = (
     ("gateway_ready", "网关就绪（"),
     ("gateway_ready_warn", "核心可用，但后台组件未就绪"),
     ("console_check", "[2/2]"),
-    ("banner", "鎏灏已就绪"),
+    ("banner", "贾维斯已就绪"),
 )
 
 SEED_CODE = r"""
@@ -279,7 +279,7 @@ def _run_once(
                         ready.set()
                     if name == "banner":
                         banner.set()
-            if "鎏灏已就绪" in line:
+            if "贾维斯已就绪" in line:
                 banner.set()
             if "[FAIL]" in line:
                 ready.set()
@@ -290,7 +290,7 @@ def _run_once(
     try:
         if not banner.wait(timeout=timeout_s):
             tail = "\n".join(line for _, line in lines[-25:])
-            raise RuntimeError(f"启动器在 {timeout_s:.0f}s 内没有打印「鎏灏已就绪」。最后输出：\n{tail}")
+            raise RuntimeError(f"启动器在 {timeout_s:.0f}s 内没有打印「贾维斯已就绪」。最后输出：\n{tail}")
         if "gateway_ready" not in marks and "gateway_ready_warn" not in marks:
             raise RuntimeError("就绪里程碑缺失（启动器没有报告网关就绪）")
         t_banner = marks["banner"]
@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
         "gateway_interpreter_and_pkg": "  其中解释器 + 包导入前",
         "console_probe": "控制台就绪探测（/ 请求）",
         "post_ready_banner": "写当前地址 + 打印就绪横幅",
-        "launcher_total": "启动器合计（T0 → 鎏灏已就绪）",
+        "launcher_total": "启动器合计（T0 → 贾维斯已就绪）",
         "browser_launch": "Chromium 冷启动（代理默认浏览器）",
         "page_to_login_visible": "导航 / → #os-principal 可见",
         "total": "总计",
