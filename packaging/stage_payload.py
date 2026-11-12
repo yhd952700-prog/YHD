@@ -1055,7 +1055,7 @@ def _assert_payload_hygiene(app_dir: Path) -> None:
 
 def _write_start_bat(app_dir: Path) -> None:
     bat = """@echo off
-rem LiuHao AI OS - command-line troubleshooting entry (--console).
+rem Jarvis - command-line troubleshooting entry (--console).
 rem Normal users start from the desktop / Start-menu shortcut, which runs
 rem runtime\\pythonw.exe directly and shows NO console window. This .bat is
 rem only for --console troubleshooting on machines without a desktop session.
@@ -1102,7 +1102,7 @@ rem 退出码 0 有两种：用户自己停掉服务，或双击时已经有实�
 rem 这两种情况都不该再 pause —— 否则第二个窗口会一直挂着等按键。
 exit /b 0
 :lh_failed
-echo [FAIL] 鎏灏未能正常启动（退出码 %LH_CODE%）。
+echo [FAIL] 贾维斯未能正常启动（退出码 %LH_CODE%）。
 echo        原因与堆栈见日志：!LH_DIR!bootstrap.log
 echo.
 echo 按任意键关闭此窗口。
@@ -1114,7 +1114,7 @@ endlocal
 
 
 def _write_start_here(app_dir: Path, version: str) -> None:
-    text = f"""LiuHao AI OS · 鎏灏智能中枢 {version} —— 先看这里
+    text = f"""Jarvis · 贾维斯 {version} —— 先看这里
 
 1. 双击桌面 / 开始菜单里的快捷方式（托盘壳）。
    关闭窗口只会隐藏到托盘，服务继续运行；托盘菜单里可打开控制台 / 停止服务 / 退出。
@@ -1181,7 +1181,7 @@ def _write_start_here(app_dir: Path, version: str) -> None:
 联网说明：默认不主动联网。只有你自己配置云端模型后，对话内容与检索到的知识片段
           才会发到你填的 base_url；本机 Ollama 只连 127.0.0.1，完全不出网；
           不收集使用统计、不做遥测上报。
-程序使用项目自签名证书（签名者 CN=鎏灏智能中枢）：导入安装器附带的信任脚本后
+程序使用项目自签名证书（签名者 CN=贾维斯）：导入安装器附带的信任脚本后
 属性里签名状态为「有效」并能看到签名者，但按微软口径自签名在 SmartScreen 上
 等同未签名，仍可能提示“未知发布者”，点「更多信息 → 仍要运行」即可继续。
 数据与隐私：登录后点左侧导航底部的「关于与隐私」，可看到版本、数据目录、许可证、
