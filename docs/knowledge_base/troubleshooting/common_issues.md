@@ -1,6 +1,6 @@
 # 常见问题与解决方案
 
-本文档汇总了 LiuHao AI OS 使用过程中常见的问题及其解决方案。
+本文档汇总了 Jarvis 使用过程中常见的问题及其解决方案。
 
 ---
 
@@ -34,17 +34,17 @@ pip install package_name.whl
 
 **解决方案**：
 
-LiuHao AI OS 需要 Python 3.11 或更高版本。
+Jarvis 需要 Python 3.12。
 
 ```bash
 # 检查当前 Python 版本
 python --version
 
-# Windows: 下载安装 Python 3.11+
+# Windows: 下载安装 Python 3.12
 # https://www.python.org/downloads/
 
 # 使用 py 启动器指定版本
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 ```
 
 ### 问题：Node.js 依赖安装失败
