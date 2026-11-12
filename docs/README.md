@@ -194,10 +194,10 @@ docs/
 | [`PRODUCTION-READINESS-DESIGN.md`](PRODUCTION-READINESS-DESIGN.md) | 生产就绪探测设计 |
 | [`QUOTA-ACCOUNTING-DESIGN.md`](QUOTA-ACCOUNTING-DESIGN.md) | 配额计费设计 |
 | [`artifact-index-design.md`](artifact-index-design.md) | 产物索引与执行回溯 —— 设计说明 |
-| [`automation-design.md`](automation-design.md) | 鎏灏自动化设计稿 |
+| [`automation-design.md`](automation-design.md) | 贾维斯自动化设计稿 |
 | [`capability-map.md`](capability-map.md) | 能力地图（2026-11-06 复核） |
 | [`startup-profile.md`](startup-profile.md) | 网关冷启动：测量、优化与前端契约 |
-| [`self-upgrade.md`](self-upgrade.md) | 鎏灏自我升级与受控自改代码 |
+| [`self-upgrade.md`](self-upgrade.md) | 贾维斯自我升级与受控自改代码 |
 | [`upgrade-api-contract.md`](upgrade-api-contract.md) | 升级 HTTP 接口契约（前端对接） |
 | [`first-run-e2e.md`](first-run-e2e.md) | 首次安装端到端自检（可复现步骤记录） |
 | [`hc01-status.md`](hc01-status.md) | HC-01 审计链状态（事实与缺口） |
@@ -206,7 +206,7 @@ docs/
 | [`strategy-30-directions.md`](strategy-30-directions.md) | 30 个方向 × 五大中心的战略架构研究 |
 | [`strategy-priority-matrix.md`](strategy-priority-matrix.md) | 30 个方向 × 落地优先级矩阵（可排期） |
 | [`DELIVERY-CHECKLIST.md`](DELIVERY-CHECKLIST.md) | 交付清单（实测版） |
-| [`END-USER-GUIDE.md`](END-USER-GUIDE.md) | LiuHao AI OS · 鎏灏智能中枢 使用指南 |
+| [`END-USER-GUIDE.md`](END-USER-GUIDE.md) | Jarvis · 贾维斯 使用指南 |
 | [`USER-GUIDE.md`](USER-GUIDE.md) | 使用指南（Windows 安装版） |
 | [`INSTALL-WINDOWS.md`](INSTALL-WINDOWS.md) | Windows 安装与卸载 |
 | [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
@@ -217,7 +217,7 @@ docs/
 | [`release-announcement.md`](release-announcement.md) | 发布文案草稿（官网/网盘分享说明） |
 | [`ui-scifi-direction.md`](ui-scifi-direction.md) | 控制台科幻未来风视觉规范（Y1.0） |
 | [`ui-reference-terse.md`](ui-reference-terse.md) | 竞品 UI 参考规格：Terse |
-| [`BRAND-CANON.md`](BRAND-CANON.md) | 品牌口径唯一来源（主名只认 `LiuHao AI OS · 鎏灏智能中枢`；改名只改 `src/brand.json`） |
+| [`BRAND-CANON.md`](BRAND-CANON.md) | 品牌口径唯一来源（主名只认 `Jarvis · 贾维斯`；改名只改 `src/brand.json`） |
 | [`RELEASE-PAGE-CONTENT.md`](RELEASE-PAGE-CONTENT.md) | 发布页 / 下载页文案源（数值字段由出包脚本写入，不手抄） |
 | [`DIAGNOSTIC-BUNDLE-READING.md`](DIAGNOSTIC-BUNDLE-READING.md) | 诊断 zip 读包指南：30 秒说出结论（面向技术支持与用户） |
 | [`TROUBLESHOOTING-USER-20261108.md`](TROUBLESHOOTING-USER-20261108.md) | 用户故障处置手册 v0.1.1（按撞上概率排序；推演项已标注） |
