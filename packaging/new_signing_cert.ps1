@@ -1,4 +1,4 @@
-﻿# LiuHao AI OS · 鎏灏智能中枢 —— 自签名代码签名证书（生成 / 复用 / 导出）
+# Jarvis · 贾维斯 —— 自签名代码签名证书（生成 / 复用 / 导出）
 #
 # 设计要点：
 # * 证书默认只生成一次，之后所有构建复用同一张（同一指纹）。换证书会让所有
@@ -180,7 +180,7 @@ if (-not $cert) {
     $cert = New-SelfSignedCertificate `
         -Type CodeSigningCert `
         -Subject $subject `
-        -FriendlyName "LiuHao AI OS 代码签名（自签名，10 年）" `
+        -FriendlyName "Jarvis 代码签名（自签名，10 年）" `
         -CertStoreLocation "Cert:\CurrentUser\My" `
         -KeyExportPolicy Exportable `
         -NotAfter (Get-Date).AddYears(10)
