@@ -1,6 +1,12 @@
-# LiuHao AI OS - 前端组件库
+# Jarvis - 前端组件库
 
-基于 **React 18 + TypeScript + Vite + Tailwind CSS** 的鎏灏 AI OS 前端组件库，覆盖 Agent 管理、任务看板、对话、记忆、知识库、仪表盘、工作流、插件、设置、通知与整体布局等全部核心界面。
+> **注意：本目录是组件库，不可独立运行，未接后端。**
+> 这里只有 React 组件与 hooks，没有应用入口、不发任何后端请求（全仓 0 次
+> `fetch`）；hooks 的数据获取函数（`fetcher` / `fetch*` / `onSearch` 等）
+> 全部是可选参数，不传时静默返回空列表——空列表不代表后端无数据。
+> 真正可运行的控制台在 `apps/console/console`，不要把本目录当作独立应用启动或联调。
+
+基于 **React 18 + TypeScript + Vite + Tailwind CSS** 的Jarvis 前端组件库，覆盖 Agent 管理、任务看板、对话、记忆、知识库、仪表盘、工作流、插件、设置、通知与整体布局等全部核心界面。
 
 ## 目录结构
 
@@ -59,6 +65,8 @@ npm run build      # 类型检查 + 生产构建
 npm run typecheck  # 仅 TypeScript 检查
 npm run lint       # ESLint
 ```
+
+`npm run dev` 只起组件预览用的开发服务器，不接后端、不提供登录与真实数据。
 
 ## 使用示例
 
