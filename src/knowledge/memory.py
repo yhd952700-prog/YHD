@@ -1,5 +1,5 @@
 """
-LiuHao AI OS · 鎏灏智能中枢 - Memory Layer
+Jarvis · 贾维斯 - Memory Layer
 Integrates Mem0 (mem0ai) as the production-grade long-term memory backend.
 Provides unified interface compatible with 10-layer memory architecture.
 """
@@ -443,7 +443,7 @@ class InMemoryBackend(MemoryBackend):
 
 class MemoryManager:
     """
-    Unified Memory Manager for LiuHao AI OS.
+    Unified Memory Manager for Jarvis.
     Supports multiple backends with tiered memory architecture.
     """
 
@@ -633,7 +633,7 @@ if __name__ == "__main__":
         tags=["preference", "language"]
     )
     id2 = mm.remember(
-        "Current project: LiuHao AI OS Y1 implementation",
+        "Current project: Jarvis Y1 implementation",
         tier=MemoryTier.EPISODIC,
         importance=0.8,
         tags=["project", "status"]
