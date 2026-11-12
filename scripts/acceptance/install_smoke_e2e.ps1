@@ -1,7 +1,7 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
-    鎏灏安装冒烟 E2E：一条命令跑完 docs/DELIVERY-CHECKLIST.md §0.2 的 S-01～S-11，
+    贾维斯安装冒烟 E2E：一条命令跑完 docs/DELIVERY-CHECKLIST.md §0.2 的 S-01～S-11，
     外加安装树洁净度与机器级密钥二次启动复用（S-12～S-14）。
 
 .DESCRIPTION
@@ -28,7 +28,7 @@
     要验证出厂默认目录时显式传 -InstallDir D:\LiuHao。
 
 .PARAMETER DataDir
-    数据目录。默认 D:\LiuHaoSmoke\LiuHaoData。
+    数据目录。默认 D:\LiuHaoSmoke\JarvisData。
 
 .PARAMETER ModelKey
     真实模型 Key。环境变量 LIUHAO_SMOKE_MODEL_KEY 优先；两者都没有时 S-06 / S-07(写链路) / S-08
@@ -58,7 +58,7 @@
 param(
     [string]$InstallerPath = '',
     [string]$InstallDir = 'D:\LiuHaoSmoke\LiuHao',
-    [string]$DataDir = 'D:\LiuHaoSmoke\LiuHaoData',
+    [string]$DataDir = 'D:\LiuHaoSmoke\JarvisData',
     # 验收专用开始菜单组名：真实安装默认组名是 LiuHao，验收安装若沿用同名组，
     # 会把用户的开始菜单项改成指向 D:\LiuHaoSmoke，正是「点开始菜单拉起另一份
     # 副本」那个缺陷的复现源。验收一律装进独立组，跑完随卸载一起删除。
@@ -499,7 +499,7 @@ function Resolve-Installer {
 }
 
 # ---------------------------------------------------------------- 主流程
-Write-RunLog ("# 鎏灏安装冒烟 E2E  {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+Write-RunLog ("# 贾维斯安装冒烟 E2E  {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
 Write-RunLog ("# 仓库根目录：{0}" -f $script:RepoRoot)
 Write-RunLog ("# 证据目录：{0}" -f $script:EvidenceDir)
 Write-RunLog ("# 安装目录：{0}" -f $InstallDir)
@@ -1110,14 +1110,14 @@ S-09 关窗驻留 / 托盘退出 —— 手工步骤与判定标准
   因此本项不自动判定，标记 NEEDS_HUMAN。
 
 手工步骤
-  1. 双击桌面「LiuHao AI OS · 鎏灏智能中枢」快捷方式，等待控制台页面打开。
+  1. 双击桌面「Jarvis · 贾维斯」快捷方式，等待控制台页面打开。
   2. 记下控制台端口，并在浏览器里登录成功（能落在总览页）。
   3. 点击状态窗口右上角「关闭」按钮（不是托盘「退出」）。
   4. 回到浏览器发一条消息：应仍能成功；同时执行
        Get-Process pythonw | Select-Object Id,CPU
        Get-NetTCPConnection -State Listen | Where-Object { `$_.LocalPort -eq <端口> }
      应仍能看到 pythonw 进程与端口监听。
-  5. 右键任务栏通知区鎏灏图标 →「退出」。
+  5. 右键任务栏通知区贾维斯图标 →「退出」。
   6. 再执行上面两条命令：pythonw 进程应消失，端口应释放（Get-NetTCPConnection 无输出）。
 
 判定标准
@@ -1462,7 +1462,7 @@ $json = [pscustomobject]@{
 
 Write-Host ''
 Write-Host ('=' * 100)
-Write-Host '鎏灏安装冒烟 S-01～S-14 汇总'
+Write-Host '贾维斯安装冒烟 S-01～S-14 汇总'
 Write-Host ('=' * 100)
 foreach ($line in $summary) { Write-Host $line }
 Write-Host ''
