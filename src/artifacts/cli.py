@@ -447,13 +447,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "command": args.command,
                     "db": db_path,
                     "exists": False,
-                    "note": "索引库不存在；启动鎏灏并执行一次目标后会自动生成。",
+                    "note": "索引库不存在；启动贾维斯并执行一次目标后会自动生成。",
                 }
             )
         else:
             print(f"索引库不存在：{db_path}")
             print(
-                "（启动鎏灏并执行一次目标后会自动生成；也可用 --db 指定其他索引库）"
+                "（启动贾维斯并执行一次目标后会自动生成；也可用 --db 指定其他索引库）"
             )
         return 0
 
