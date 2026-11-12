@@ -1467,7 +1467,7 @@ export function Butler({
               const wildcard = isWildcardBody(body)
               const confirmed = Boolean(wildcardConfirmed[item.pending_id])
               const busy = approvingId === item.pending_id
-              // 手机上不提供"批准"：审批中心签发的授权目标是 `*`（整类放行），
+              // 手机上不提供"批准"：审批签发发出的授权目标是 `*`（整类放行），
               // 服务端对局域网来源一律拒绝；高危动作更是只能当面点头。
               const remoteBlocked = isLanClient() && (item.remote_approvable !== true || wildcard)
               return (
@@ -1526,7 +1526,7 @@ export function Butler({
                     <p className="os-note" role="note">
                       <span>
                         <strong>需要在本机确认。</strong>
-                        高风险动作不能在手机上批准；回到这台电脑上打开审批中心即可确认。
+                        高风险动作不能在手机上批准；回到这台电脑上打开审批签发即可确认。
                         手机上可以拒绝它。
                       </span>
                     </p>
