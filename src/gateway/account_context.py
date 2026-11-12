@@ -68,6 +68,12 @@ class AccountContext:
         return self.node.is_root
 
     @property
+    def is_owner(self) -> bool:
+        """Owner 即账号树根（含单人模式的独立根）；与 ``is_root`` 同义，
+        只是用产品语言命名，供 Owner 面（``gateway/owner.py``）调用。"""
+        return self.node.is_root
+
+    @property
     def is_member(self) -> bool:
         return not self.node.is_root
 
