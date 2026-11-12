@@ -1,6 +1,6 @@
 # CI/CD 流水线
 
-本文档描述 LiuHao AI OS 推荐的持续集成与持续交付流水线：从代码提交到生产部署的完整自动化路径，包含质量门禁、安全扫描、镜像构建、渐进式交付与回滚策略。示例使用 GitHub Actions，概念同样适用于 GitLab CI、Jenkins 与 ArgoCD 生态。
+本文档描述 Jarvis 推荐的持续集成与持续交付流水线：从代码提交到生产部署的完整自动化路径，包含质量门禁、安全扫描、镜像构建、渐进式交付与回滚策略。示例使用 GitHub Actions，概念同样适用于 GitLab CI、Jenkins 与 ArgoCD 生态。
 
 ---
 
@@ -396,7 +396,7 @@ helm test liuhao                       # 通过后流量才切过来
 
 ### Q3: 多组件版本如何协调？
 
-LiuHao AI OS 各组件独立版本化，但 Helm Chart 锁定一组**经过联测的版本组合**（`appVersion` 矩阵）。生产只部署 Chart 锁定组合，禁止单独升级某组件跳版本。
+Jarvis 各组件独立版本化，但 Helm Chart 锁定一组**经过联测的版本组合**（`appVersion` 矩阵）。生产只部署 Chart 锁定组合，禁止单独升级某组件跳版本。
 
 ### Q4: secrets 轮换需要重新部署吗？
 
