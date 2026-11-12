@@ -9,11 +9,21 @@ RESTful API endpoints for cost management:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed data is opt-in only (env LIUHAO_DEMO_SEED=1).
+
+    Without it cost records start empty; sample costs must never be
+    mixed into production-facing state by default.
+    """
+    return os.environ.get("LIUHAO_DEMO_SEED") == "1"
 
 
 router = APIRouter(prefix="/cost", tags=["cost"])
@@ -62,22 +72,29 @@ _budget_alerts: List[Dict[str, Any]] = []
 
 
 def _seed_sample_data() -> None:
-    """Seed with sample cost data (once)."""
+    """Seed with sample cost data (once, demo mode only).
+
+    Only runs when LIUHAO_DEMO_SEED=1. Amounts are deterministic
+    (category index, not hash(), which is salted per process).
+    """
     if _cost_records:
         return
     now = datetime.utcnow()
     categories = ["ai_provider", "storage", "compute", "network", "third_party"]
     for i in range(30):
         day = now - timedelta(days=i)
-        for cat in categories:
+        for idx, cat in enumerate(categories):
             _cost_records.append({
                 "date": day.strftime("%Y-%m-%d"),
                 "category": cat,
-                "amount": round(10 + i * 0.5 + hash(cat) % 5, 2),
+                "amount": round(10 + i * 0.5 + idx * 1.7, 2),
             })
 
 
-_seed_sample_data()
+# No import-time seeding: demo data loads only when explicitly opted
+# in via LIUHAO_DEMO_SEED=1.
+if _demo_seed_enabled():
+    _seed_sample_data()
 
 
 # =====================================================================
