@@ -37,6 +37,9 @@ export function StubBadge({ source }: { source: DataSource }) {
  *
  * 服务端尚无"生效视角"端点（IA C1），因此这里**不宣称**已切到对方的数据：
  * 明确写出"仍是当前账号的数据"，避免把只读开关误读成真实视角切换。
+ *
+ * // GAP: 视角切换端点未上线——入口（成员页“只读查看”按钮）在 Members.tsx，
+ * 不在本轮文件范围内，故此处只做明确提示，未隐藏入口；端点上线后再由该入口接线。
  */
 export function ReadOnlyBanner({
   principal,
