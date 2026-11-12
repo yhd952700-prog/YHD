@@ -20,6 +20,10 @@ export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
 };
 
 export interface UseTaskOptions {
+  /**
+   * 数据获取函数，未传入时返回空列表。
+   * 未传入 fetcher 时返回空，不代表后端无数据——本组件库未接任何后端。
+   */
   fetcher?: () => Promise<Task[]>;
   onUpdate?: (taskId: string, patch: Partial<Task>) => Promise<void>;
   onCreate?: (task: Omit<Task, 'id' | 'createdAt'>) => Promise<Task>;
