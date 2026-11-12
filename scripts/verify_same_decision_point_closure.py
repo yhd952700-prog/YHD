@@ -58,13 +58,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.kernels import audit as kernel_audit  # noqa: E402
 from src.kernels._crosscutting import (  # noqa: E402
-    PolicyDeferredError,
     PolicyDeniedError,
     _adjudicate,
     _service_actor_policy_shape,
     kernel_action,
 )
-from src.kernels._risk_classification import ENFORCED_TIERS, RiskTier  # noqa: E402
 
 RESULTS: list[tuple[str, str, str]] = []  # (verdict, name, detail)
 
