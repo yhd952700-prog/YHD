@@ -1,6 +1,6 @@
 # 数据库优化
 
-PostgreSQL 是 LiuHao AI OS 的主存储，承载智能体状态、事件流、记忆元数据与审计记录。本文档覆盖索引设计、查询优化、连接管理、分区策略、pgvector 调优与在线迁移。原则：**先用 pg_stat_statements 找到最贵的 10 条查询，优化它们就解决了 90% 的问题。**
+PostgreSQL 是 Jarvis 的主存储，承载智能体状态、事件流、记忆元数据与审计记录。本文档覆盖索引设计、查询优化、连接管理、分区策略、pgvector 调优与在线迁移。原则：**先用 pg_stat_statements 找到最贵的 10 条查询，优化它们就解决了 90% 的问题。**
 
 ---
 
@@ -372,7 +372,7 @@ pgvector:
 
 ### Q5: pgvector 和独立向量库（Qdrant/Milvus）怎么选？
 
-向量量 < 1000 万、已有 PG 运维体系 → pgvector（少一个组件）。> 1000 万、需要复杂过滤/分片/GPU 索引 → 专用向量库。LiuHao AI OS 当前默认使用内置 SQLite 向量表；pgvector 尚未接线，仅作后续选型参考。
+向量量 < 1000 万、已有 PG 运维体系 → pgvector（少一个组件）。> 1000 万、需要复杂过滤/分片/GPU 索引 → 专用向量库。Jarvis 当前默认使用内置 SQLite 向量表；pgvector 尚未接线，仅作后续选型参考。
 
 ---
 
