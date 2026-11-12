@@ -1,6 +1,6 @@
 """桌面层命令行入口。
 
-    python -m src.desktop                      # 默认：鎏灏原生窗口 + 托盘 + 启动网关
+    python -m src.desktop                      # 默认：贾维斯原生窗口 + 托盘 + 启动网关
     python -m src.desktop app --web            # 网页模式：不建窗口，网关就绪后开浏览器
     python -m src.desktop app --status-window  # 排障：旧 tkinter 状态窗口
     python -m src.desktop app --hidden         # 只驻留托盘（自启时使用）
@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="python -m src.desktop",
-        description="鎏灏 Windows 桌面集成（托盘 / 自启 / 防火墙提示 / 诊断包 / 关于页数据源）",
+        description="贾维斯 Windows 桌面集成（托盘 / 自启 / 防火墙提示 / 诊断包 / 关于页数据源）",
         parents=[app_args],
     )
     sub = parser.add_subparsers(dest="command")
@@ -208,7 +208,7 @@ def _cmd_tray_demo(args: argparse.Namespace) -> int:
     if not tray.start():
         print(f"托盘启动失败：{tray.error}", file=sys.stderr)
         return 1
-    print("托盘已启动。请在任务栏通知区找到「鎏灏」图标（可能收在 ^ 折叠区）：", flush=True)
+    print("托盘已启动。请在任务栏通知区找到「贾维斯」图标（可能收在 ^ 折叠区）：", flush=True)
     for _id, name, label in MENU_ITEMS:
         print(f"  - [{_id}] {label} -> {name}", flush=True)
     print("右键应出现以上菜单项；单击 / 双击应分别触发 toggle_status / open_console。", flush=True)
