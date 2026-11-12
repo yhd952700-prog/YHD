@@ -22,7 +22,7 @@ def _clean_payload(root: Path) -> Path:
         "THIRD-PARTY-NOTICES.txt": f"{LOCKUP}\n第三方商标归其各自所有者所有。\n",
         "console/index.html": f"<title>{LOCKUP}</title>\n",
         "console/manifest.webmanifest": json.dumps(
-            {"name": LOCKUP, "short_name": "鎏灏智能中枢"}, ensure_ascii=False
+            {"name": LOCKUP, "short_name": "贾维斯"}, ensure_ascii=False
         ),
         "console/sw.js": "/* service worker */\n",
     }
