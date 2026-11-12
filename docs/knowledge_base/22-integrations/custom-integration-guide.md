@@ -1,6 +1,6 @@
 # 自定义集成开发指南
 
-当官方集成（Slack/GitHub/Jira）不满足需求时，你可以基于 LiuHao AI OS 的**集成框架**开发自定义集成：对接内部 ERP、企业微信、自研 DevOps 平台或任何提供 API/Webhook 的系统。本文档介绍集成的标准结构、插件 SDK、安全规范与发布流程。
+当官方集成（Slack/GitHub/Jira）不满足需求时，你可以基于 Jarvis 的**集成框架**开发自定义集成：对接内部 ERP、企业微信、自研 DevOps 平台或任何提供 API/Webhook 的系统。本文档介绍集成的标准结构、插件 SDK、安全规范与发布流程。
 
 ---
 
