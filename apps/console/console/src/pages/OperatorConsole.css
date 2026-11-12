@@ -1,0 +1,17 @@
+/* 操作台顶部「今天小结」：一句话 + 小字说明，放在聊天区上方，不挡工具箱与输入框。 */
+.os-today {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--os-border, #e5e7eb);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.os-today-note {
+  font-size: 12px;
+  color: var(--os-text-dim);
+}
