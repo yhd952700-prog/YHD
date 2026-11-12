@@ -2,7 +2,7 @@
 
 > 适用：Windows 10 / 11 x64。
 > 本页的安装、启动与卸载行为以 **0.1.1 及以上**为准；旧版本请先升级。
-> **版本差异**：0.1.0 的包只有命令行首启向导（黑窗口里依次问管理员账号、选模型 `1`/`2`/`0`），没有下面说的图形「鎏灏首次设置」窗口；用法见 [END-USER-GUIDE.md](END-USER-GUIDE.md) 开头的版本差异说明。
+> **版本差异**：0.1.0 的包只有命令行首启向导（黑窗口里依次问管理员账号、选模型 `1`/`2`/`0`），没有下面说的图形「贾维斯首次设置」窗口；用法见 [END-USER-GUIDE.md](END-USER-GUIDE.md) 开头的版本差异说明。
 > 安装包**不需要管理员权限**，不写系统目录，不改系统环境变量。
 
 ## 一、当前交付状态（如实说明）
@@ -25,24 +25,24 @@
 
 ## 二、用户安装步骤
 
-1. 双击 `LiuHao-Setup-<版本>.exe`。
+1. 双击 `Jarvis-Setup-<版本>.exe`。
 2. Windows SmartScreen 提示「Windows 已保护你的电脑 / 未知发布者」：
    点「更多信息」→「仍要运行」。安装包是**项目自签名**（2026-11-09 实测 `Get-AuthenticodeSignature` = `Status=Valid`，主体 `CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`），不是公开权威 CA；未导入信任脚本的机器仍会提示「未知发布者」，这不是病毒告警。
 3. 安装前会显示一页中文说明（签名状态、不含模型、数据保留策略）。该页文案与产物一致：**项目自签名、非公开权威 CA**（`installer/liuhao.iss:1055-1066`）；若仍看到「本安装包未做代码签名」，说明用的是旧安装包，请按发布页 SHA256 重新下载。
 4. 选择附加任务：
    - ☑ 创建桌面快捷方式（默认勾选）
-   - ☑ 安装完成后立即启动鎏灏（默认勾选，可取消）
-5. 程序默认装到 `D:\LiuHao`（数据 `D:\LiuHaoData`），不需要 UAC 提权；
+   - ☑ 安装完成后立即启动贾维斯（默认勾选，可取消）
+5. 程序默认装到 `D:\Jarvis`（数据 `D:\LiuHaoData`），不需要 UAC 提权；
    D 盘不可用时程序目录自动回退到 `%LOCALAPPDATA%\Programs\LiuHao`
    （用户级目录，普通双击安装不会弹 UAC；只有主动“以管理员身份运行”安装包时，
    程序才回退到 `%ProgramFiles%\LiuHao`）；没有可用非系统盘（只有 C 盘）时，
    数据目录自动回退到 `%LOCALAPPDATA%\LiuHao\data`。实际位置见程序目录 `data-dir.txt`。
    安装向导里还有一页「数据目录」让你确认（已预填回退位置），点「下一步」即可。
    老版本用户覆盖安装保持原位置不变。
-6. 完成后双击桌面快捷方式或开始菜单「LiuHao AI OS · 鎏灏智能中枢」。
+6. 完成后双击桌面快捷方式或开始菜单「Jarvis · 贾维斯」。
 
-首次启动会出现「LiuHao AI OS · 鎏灏智能中枢」状态窗口（显示启动状态，托盘同时出现鎏灏图标）
-和标题为 **「鎏灏首次设置」** 的窗口（五步：数据目录 → 管理员账号 → 选择模型（可跳过）→
+首次启动会出现「Jarvis · 贾维斯」状态窗口（显示启动状态，托盘同时出现贾维斯图标）
+和标题为 **「贾维斯首次设置」** 的窗口（五步：数据目录 → 管理员账号 → 选择模型（可跳过）→
 完成前请确认 → 自检结果）。第 4 页点 **完成并自检**，第 5 页点 **进入控制台**，
 原生窗口（WebView2）打开登录页，用刚建的账号登录；网页模式才用 `--web` 开浏览器。
 在第 1～4 步点「取消」或直接关窗＝放弃本次设置（不建账号、不启动控制台），重新双击图标可再来一次；
@@ -68,7 +68,7 @@
 
 | 路径 | 内容 | 升级 | 卸载 |
 | --- | --- | --- | --- |
-| `D:\LiuHao`（回退：`%LOCALAPPDATA%\Programs\LiuHao`） | 程序、运行时、控制台（驾驶舱）静态资源、配置模板 | 覆盖替换 | 删除 |
+| `D:\Jarvis`（回退：`%LOCALAPPDATA%\Programs\LiuHao`） | 程序、运行时、控制台（驾驶舱）静态资源、配置模板 | 覆盖替换 | 删除 |
 | `D:\LiuHaoData`（回退：`%LOCALAPPDATA%\LiuHao\data`） | 账号、API Key（加密）、对话、审计、工作区 | **保留** | **默认保留** |
 
 实际数据目录以程序目录下的 `data-dir.txt` 为准。
@@ -81,7 +81,7 @@
 
 卸载流程：
 
-1. 设置 → 应用 → 「LiuHao AI OS · 鎏灏智能中枢」→ 卸载（或开始菜单「卸载」）。
+1. 设置 → 应用 → 「Jarvis · 贾维斯」→ 卸载（或开始菜单「卸载」）。
 2. 卸载器先删程序，然后询问「是否同时删除你的数据？」——**默认「否」**。
 3. 只有你选择「是」，才会弹出**二次确认**；两次都确认才永久删除
    `data-dir.txt` 记录的数据目录（默认 `D:\LiuHaoData`）。
@@ -94,7 +94,7 @@
 前置条件：
 
 - Node.js 18+ / npm
-- Python 3.11+（构建机建议 3.12）+ 项目 `.venv`（已安装依赖）
+- Python 3.12 + 项目 `.venv`（已安装依赖）
 - Inno Setup 6（仅编译 `.exe` 时需要）：<https://jrsoftware.org/isdl.php>
 
 一条命令：
@@ -136,7 +136,7 @@ dist\smoke-report.json               冒烟结果
 dist\release\liuhao-<版本>.zip       升级发布包（ZIP 根即安装树）
 dist\release\LIUHAO_RELEASE.json     升级发布清单（schema liuhao.release-manifest/1）
 dist\release\dev-path-report.txt     开发目录路径扫描结果（排障用，不参与升级）
-dist\installer\LiuHao-Setup-*.exe    安装包（ISCC 可用时）
+dist\installer\Jarvis-Setup-*.exe    安装包（ISCC 可用时）
 dist\installer\SHA256SUMS.txt        校验和
 dist\installer\NOT-COMPILED.txt      无 ISCC 时生成的说明（会明确写“未生成”）
 ```
@@ -194,8 +194,8 @@ iscc /DAppVersion=<版本> installer\liuhao.iss
 
 ## 五、验证与信任安装包签名
 
-安装包 `LiuHao-Setup-*.exe` 使用本项目的**自签名代码签名证书**签名，证书主体
-`CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`，有效期 10 年。它能让 Windows 在属性里
+安装包 `Jarvis-Setup-*.exe` 使用本项目的**自签名代码签名证书**签名，证书主体
+`CN=贾维斯, O=Jarvis, C=CN`，有效期 10 年。它能让 Windows 在属性里
 显示真实签名者，但**不是**公开权威 CA 签发的证书，也不具备公信力信誉。
 
 ### 验证签名
@@ -205,7 +205,7 @@ iscc /DAppVersion=<版本> installer\liuhao.iss
 - 命令行（PowerShell）：
 
 ```powershell
-Get-AuthenticodeSignature "D:\LiuHao-Setup-0.1.1.exe" | Format-List Status, SignerCertificate
+Get-AuthenticodeSignature "D:\Jarvis-Setup-0.1.1.exe" | Format-List Status, SignerCertificate
 ```
 
 未导入信任时，`Status` 可能是 `UnknownError`（证书链终止于不受信任的根证书）；
@@ -247,13 +247,13 @@ powershell -ExecutionPolicy Bypass -File packaging\sign_installer.ps1
 ## 六、已知限制与未验证项
 
 1. **代码签名是项目自签名证书**：安装包用本项目的自签名证书签名（主体
-   `CN=鎏灏智能中枢, O=LiuHao AI OS, C=CN`），**不是**公开权威 CA 证书。
+   `CN=贾维斯, O=Jarvis, C=CN`），**不是**公开权威 CA 证书。
    未运行信任脚本的机器仍会看到「未知发布者 / Windows 已保护你的电脑」，这是
    自签名证书的正常现象；运行 `信任签名证书.cmd` 后，属性里可以看到真实签名者。
    详见上文「五、验证与信任安装包签名」。
 2. **不含任何模型**：安装包与升级包都不含模型权重。首次使用需本机 Ollama 拉模型
    （约 2GB，自行安装 Ollama 并 `ollama pull`）或填云 API Key。
-3. **首次启动是托盘常驻**：出现状态窗口与托盘图标，窗口只显示启动状态、不需要输入；建账号与选模型在「鎏灏首次设置」窗口里完成。**关掉状态窗口只是隐藏到托盘，网关继续运行**；要退出用托盘菜单“退出”。命令行模式需显式运行 `LiuHao.bat --console`（0.1.1+）。
+3. **首次启动是托盘常驻**：出现状态窗口与托盘图标，窗口只显示启动状态、不需要输入；建账号与选模型在「贾维斯首次设置」窗口里完成。**关掉状态窗口只是隐藏到托盘，网关继续运行**；要退出用托盘菜单“退出”。命令行模式需显式运行 `LiuHao.bat --console`（0.1.1+）。
 4. **默认端口 8080**：**首启向导里可以换端口；日常启动如果端口被占，会告诉你占用原因并给出处理办法**（关掉占用程序再试，或改端口后重新启动），见第二节。
 5. **已做真实安装冒烟（服务层）**：0.1.0 交付包（34,731,647 字节，
    SHA256 `01BE18BB…64DA2`）实跑过「静默安装到临时目录 → 启动服务 → 取得控制台首页
@@ -269,7 +269,7 @@ powershell -ExecutionPolicy Bypass -File packaging\sign_installer.ps1
    `invalid_manifest` 三种结果均已实测（`--release-dir`、`--manifest` 两种入口都跑过）；
    但「下载→校验→备份→应用→回滚」未在安装版上实跑。
 8. **开发目录路径：运行文件命中 2（不是 0）**：`scripts/collect_diagnostics.bat:12`、`src/logging_config.py:189`；证据 `dist/release/dev-path-report.txt`（2026-11-08T12:23:16Z）。`-StrictReleaseDevPaths` 会把这类命中当作构建失败，本次构建**未开**该开关，所以包仍然出得来。
-   `docs/` 里另有 484 处开发机历史链接（如 `D:\LiuHao-AI-OS`、`.venv\Scripts\python.exe`），
+   `docs/` 里另有 484 处开发机历史链接（如 `D:\Jarvis-AI-OS`、`.venv\Scripts\python.exe`），
    不影响安装与升级，构建报告会列在“文档引用命中”里。
 9. **清单版本号规则已与代码对齐**：`packaging.version.Version` 接受并归一化
    `v0.2.0`、`0.2.0-beta`；`docs/self-upgrade.md` §2.2.4 已改成一致描述，
