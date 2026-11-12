@@ -1,6 +1,6 @@
 # 安全架构
 
-安全是 LiuHao AI OS 的核心设计原则之一。系统采用纵深防御策略，在内核级别实施多层安全防护，确保人类主权、数据安全和系统完整性。
+安全是 Jarvis 的核心设计原则之一。系统采用纵深防御策略，在内核级别实施多层安全防护，确保人类主权、数据安全和系统完整性。
 
 ---
 
@@ -8,7 +8,7 @@
 
 ### 设计原则
 
-LiuHao AI OS 的安全架构基于以下核心原则：
+Jarvis 的安全架构基于以下核心原则：
 
 1. **人类主权（Human Sovereignty）**：人类拥有最终决策权，AI 的所有行动都在人类授权下进行
 2. **零信任（Zero Trust）**：永不信任，始终验证
@@ -69,7 +69,7 @@ LiuHao AI OS 的安全架构基于以下核心原则：
 
 ### 授权模型
 
-LiuHao AI OS 采用 **RBAC + ABAC** 混合授权模型。
+Jarvis 采用 **RBAC + ABAC** 混合授权模型。
 
 #### RBAC（基于角色的访问控制）
 
@@ -198,7 +198,7 @@ policy:
 
 ### 审计链（Audit Chain）
 
-LiuHao AI OS 的哈希链（hash-chain）设计为确保审计记录的不可篡改性（运行时完整性当前 UNVERIFIED，见 HC-01）。
+Jarvis 的哈希链（hash-chain）设计为确保审计记录的不可篡改性（运行时完整性当前 UNVERIFIED，见 HC-01）。
 
 #### 链结构
 
@@ -260,7 +260,7 @@ print(f"已验证区块数: {result.verified_blocks}")
 
 ## 合规框架
 
-LiuHao AI OS 的安全设计参考以下合规框架：
+Jarvis 的安全设计参考以下合规框架：
 
 ### 支持的合规标准
 
