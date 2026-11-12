@@ -101,7 +101,6 @@ def main() -> int:
           str(sorted(t.value for t in rc.ENFORCED_TIERS)))
 
     # --- 2+3+4. gate behaviour through the real decorator -------------------- #
-    import pytest  # only used for the raises helper below; fall back if absent
 
     # HIGH denied + enforce => raises (Policy C-3 reclassifies this as DEFER:
     # the action requires human sovereignty, OD-010, rather than a permanent
