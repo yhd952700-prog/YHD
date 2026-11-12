@@ -1,5 +1,5 @@
 """
-Rate Limiting Middleware for LiuHao AI OS Gateway
+Rate Limiting Middleware for Jarvis Gateway
 
 Token Bucket algorithm implementation with:
 - Key-dependent limits (per API key)
@@ -914,7 +914,7 @@ def identity_unavailable_payload(reason: str = "unavailable") -> Dict[str, any]:
     retry_after = 30
     if reason == "thread_start_failed":
         code = "IDENTITY_THREAD_START_FAILED"
-        message = "本机无法创建身份校验线程，请重启鎏灏；这次不是你密码的问题"
+        message = "本机无法创建身份校验线程，请重启贾维斯；这次不是你密码的问题"
     elif reason == "busy":
         code = "IDENTITY_UNAVAILABLE"
         message = (
