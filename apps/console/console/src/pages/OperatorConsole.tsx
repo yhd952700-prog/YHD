@@ -13,7 +13,10 @@
  */
 
 import { ChatPanel } from '../components/ChatPanel'
+import { TodaySummary } from '../components/TodaySummary'
+import type { TodaySummaryInput } from '../lib/todaySummary'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
+import './OperatorConsole.css'
 
 export const OPERATOR_CONSOLE_PAGE = {
   key: 'console',
@@ -25,6 +28,7 @@ export function OperatorConsole({
   provider,
   onConfigureModel,
   onOpenUsage,
+  today,
 }: {
   /** 模型状态唯一来源（/v1/health → lib/providerStatus）。 */
   provider: ActiveProviderStatus
@@ -32,10 +36,14 @@ export function OperatorConsole({
   onConfigureModel: () => void
   /** "去用量页调额度"：402 预算拒绝时的可点出口。 */
   onOpenUsage?: () => void
+  /** 今天小结的三项来源（App 层取数后往下传，与侧栏徽标同一批请求，
+      不另发两遍）。不传时不渲染小结条。 */
+  today?: TodaySummaryInput
 }) {
   return (
     <div className="os-grid">
       <div className="os-span-12">
+        {today && <TodaySummary data={today} />}
         <ChatPanel
           provider={provider}
           onConfigureModel={onConfigureModel}
