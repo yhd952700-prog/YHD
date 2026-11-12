@@ -71,7 +71,7 @@ export function Loading({ rows = 3 }: { rows?: number }) {
     <div role="status" aria-busy="true" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
       <p className="os-hint" style={{ margin: 0 }}>
         {slow
-          ? '还在读取。本地服务较忙时会慢一些；如果一直停在这里，请确认鎏灏正在运行，或回到上一页再进来。'
+          ? '还在读取。本地服务较忙时会慢一些；如果一直停在这里，请确认贾维斯正在运行，或回到上一页再进来。'
           : '正在读取…'}
       </p>
       {Array.from({ length: rows }, (_, index) => (
@@ -83,7 +83,7 @@ export function Loading({ rows = 3 }: { rows?: number }) {
 
 export function Failure({ message, onRetry }: { message: string; onRetry?: () => void }) {
   // 标题必须说对对象：服务没起来却写"数据不可用"，用户会去怀疑数据本身，
-  // 而真正该做的是把鎏灏打开。文案里已经带了对象与动作，标题与它保持一致。
+  // 而真正该做的是把贾维斯打开。文案里已经带了对象与动作，标题与它保持一致。
   const offline = isLocalServiceOffline(message)
   return (
     <div className="os-empty" role="alert">
