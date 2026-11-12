@@ -23,7 +23,6 @@ import os
 import sys
 import time
 import tempfile
-import threading
 
 # ── REDIR BEFORE importing any repo module (env is read at call/init time) ──
 _TMP = tempfile.mkdtemp(prefix="emp_bind_")
