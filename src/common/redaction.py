@@ -85,7 +85,7 @@ def mask_user_path(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 _ENV_NAME_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    # 必须带下划线后缀：裸 ``LIUHAO`` 是产品名（"LiuHao AI OS · 鎏灏智能中枢"），不是变量名。
+    # 必须带下划线后缀：裸 ``LIUHAO`` 是产品名（"Jarvis · 贾维斯"），不是变量名。
     re.compile(r"\bLIUHAO_[A-Z0-9_]+\b"),
     re.compile(r"\bAPP_ENV\b"),
     re.compile(r"\bAI_[A-Z0-9_]+\b"),
