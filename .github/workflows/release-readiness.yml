@@ -10,9 +10,14 @@ name: Release Readiness
 
 on:
   push:
-    branches: ['p36']
+    # p36 是门禁契约的原始目标分支；release-0.3.0 是当前发版分支 ——
+    # 只挂 p36 时，在发版分支上的推送永远不跑这条门禁，C3/C12 也就永远
+    # 停留在 NOT VERIFIED（见 2026-11-12 C 组：release_ready=false 的
+    # 部分原因就是这条 workflow 在发版分支上从未触发）。不要另建 workflow：
+    # 同一份 verify_readiness.py --full 只应有一处接线，否则两处会漂移。
+    branches: ['p36', 'release-0.3.0', 'jarvis-0.4.0']
   pull_request:
-    branches: ['p36']
+    branches: ['p36', 'release-0.3.0', 'jarvis-0.4.0']
 
 jobs:
   readiness:

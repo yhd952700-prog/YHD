@@ -60,7 +60,7 @@ jobs:
           fetch-depth: 0   # need history for git diff against HEAD
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       - name: Lint HC-01 audit tamper / evidence-source / compliance claims
         run: python scripts/lint_audit_claims.py --all
         # `--all` scans the whole docs/ tree (+ the documented outward surfaces),

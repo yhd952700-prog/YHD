@@ -12,11 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
-      # 3.11 = declared floor (pyproject: requires-python >=3.11); 3.12 = local dev venv.
-      # Both legs run so a version-specific regression cannot hide in the gap.
+      # 3.12 = 唯一支持版本（pyproject: requires-python >=3.12,<3.13；
+      # .python-version / Dockerfile 同为 3.12）。3.11 腿已在 B组第二轮
+      # 移除：不再维护双腿矩阵。
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.12']
 
     # 真 redis-server：让 TestRealRedisEndToEnd（real redis）在 CI 上**真正执行**，
     # 不再 skip。TestRedisLuaScriptsActuallyExecute 走 fakeredis(+lupa)，两者互补：
