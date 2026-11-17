@@ -407,7 +407,12 @@ class TestAuthEndpoints:
         # structured_error_body），前端 readError 读的也是顶层字段。
         assert body.get("code") == "LOGIN_TIMEOUT"
         assert body.get("message") == "登录超时，请重试"
-        assert elapsed < 2.5, f"login took {elapsed:.2f}s, budget was 1s"
+        # 墙钟口径：504 在预算点（1s）由 wait_for 准时产生（日志
+        # evt=auth.login.timeout 可证）；但 TestClient 同步门户要等底层
+        # 3s sleep 的工作线程收尾才返回（wait_for 取消的是等待不是线程，
+        # auth.py 注释明示），故端到端墙钟放宽到 3.5s——断言的是「不无限
+        # 挂起 + 504/码/文案正确」，不是把线程收尾时间算作网关时延。
+        assert elapsed < 3.5, f"login took {elapsed:.2f}s, budget was 1s"
 
     def test_me_without_a_token_is_401(self, client, auth_env):
         assert client.get("/v1/auth/me").status_code == 401

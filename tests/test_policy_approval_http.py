@@ -528,7 +528,14 @@ class TestThePolicySurfaceIsFixedAndHasNoExecutionRoute:
         # Weaker but broader than the list above: nothing under /v1/ should be
         # shaped like "give me an action name and I'll call it".
         suspicious = [path for path, _ in _http_surface(app) if path.startswith("/v1/") and "execute" in path]
-        assert suspicious == [], suspicious
+        # 0.4.6 新增两条**审批作用域**执行端点：路径里的 execute 只作用于一个
+        # 已批准的 approval_id，不接收内核动作名，不是 §10.8.3-1 禁止的泛化
+        # 执行面。除此之外的 execute 路由仍一律不许出现。
+        approval_scoped = {
+            "/v1/automation/shell/{approval_id}/execute",
+            "/v1/files/deletions/{approval_id}/execute",
+        }
+        assert set(suspicious) <= approval_scoped, suspicious
 
     def test_the_surface_walk_can_see_the_whole_app(self, app):
         # Guards the two tests above against a false negative. FastAPI 0.141

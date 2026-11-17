@@ -445,7 +445,7 @@ def test_lan_write_origins_never_wildcard(monkeypatch):
 #: websocket scope 原样放行。这不是"跳过"——下面的用例会同时断言路由表、
 #: 守卫在 websocket scope 上的真实行为与本标记三者一致；任何一项漂移都会让
 #: 用例变红，逼着把 Host/Origin 校验扩展到 websocket scope 再改这里和文档。
-WS_SCOPE_GUARDED = False
+WS_SCOPE_GUARDED = True  # 2026-11-14 D 组已把 HostGuard 扩展到 websocket scope
 
 #: 与标记同步更新的文档位置（只提示位置，不代写内容）。
 WS_HOST_GUARD_DOC = "docs/knowledge_base/24-security/security-hardening.md"
@@ -555,8 +555,9 @@ def test_websocket_routes_must_not_bypass_the_host_guard(client):
 
 
 def test_gateway_websocket_handshake_is_denied_and_the_channel_is_legacy_only(client):
-    """钉住当前真实状态：网关没有 WS 路由、握手被拒；无鉴权事件通道只在 legacy。"""
-    assert _websocket_route_paths(client.app.routes) == []
+    """钉住当前真实状态：网关只有 a2a 状态通道一条 WS 路由（经 HostGuard）；
+    无鉴权事件通道 /ws/events 握手被拒、只在 legacy。"""
+    assert _websocket_route_paths(client.app.routes) == ["/v1/a2a/ws/status"]
 
     # 无匹配路由时 Starlette 直接发 ``websocket.close``（不 accept）：TestClient
     # 里表现为 ``WebSocketDisconnect``；真实网络栈上是 HTTP 403（见下面的实测）。

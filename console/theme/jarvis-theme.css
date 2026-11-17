@@ -1,0 +1,226 @@
+/* Jarvis · 贾维斯 — espresso / copper theme overlay (0.4.6 themed)
+   Loaded AFTER the built bundle CSS from console/index.html.
+   Pure presentation layer: no bundle JS/CSS is modified, so removing the
+   two <link>/<script> tags in index.html fully rolls this back. */
+
+:root, [data-theme="dark"], [data-theme="light"] {
+  --os-bg: #171009;
+  --os-bg-grad: radial-gradient(1200px 700px at 70% -10%, #2b1d10 0%, #171009 55%);
+  --os-panel: #221910;
+  --os-panel-2: #2a2015;
+  --os-panel-hover: #342818;
+  --os-border: #4a3826;
+  --os-border-soft: #38291b;
+  --os-text: #f5ecdf;
+  --os-text-dim: #cdbba6;
+  --os-text-faint: #a08b74;
+  --os-on-accent: #241708;
+  --os-accent: #d9903f;
+  --os-accent-soft: rgba(217, 144, 63, .16);
+  --os-accent-text: #eda963;
+  --os-focus: #eda963;
+  --os-accent-2: #c98a3d;
+  --os-grid-line: rgba(217, 144, 63, .07);
+  --sc-bg-deep: #120c07;
+  --sc-hairline: rgba(217, 144, 63, .18);
+  color-scheme: dark;
+}
+
+body { background: #171009; }
+
+/* Serif display headings */
+.os-page-title, .os-login-title, .wb-chat-title strong, .wb-jarvis-name,
+.wb-inbox h2, .wb-spaces h2, .wb-dialog h2 {
+  font-family: Georgia, "Songti SC", "STSong", "Noto Serif SC", SimSun, serif;
+  letter-spacing: .02em;
+}
+
+/* ---------- global shell ---------- */
+.os-app { background: #171009; background-image: var(--os-bg-grad); }
+.os-sidebar { background: linear-gradient(180deg, #20160e, #190f08); border-right: 1px solid #38291b; }
+.os-topbar { background: rgba(23, 16, 9, .88); border-bottom: 1px solid #33261a; backdrop-filter: blur(8px); }
+.xiaotie-status-dot { display: none !important; } /* no green status dots */
+
+/* ---------- workbench: two columns, no right rail ---------- */
+.wb-shell { background: #171009 !important; color: #f0e6d8 !important; }
+.wb-right { display: none !important; }            /* 今日小结 / 贾维斯的电脑 整栏隐藏 */
+.wb-main { background: radial-gradient(900px 500px at 60% -10%, #261a0f 0%, #171009 60%); }
+
+/* left rail: only Jarvis / 小铁 stays, everything else blank */
+.wb-rail {
+  background: linear-gradient(180deg, #211710, #1a120b) !important;
+  border-right: 1px solid #3a2a1a !important;
+  width: 240px;
+}
+.wb-rail-top { display: none !important; }         /* search + "+" (新建 Bot) buttons gone */
+.wb-bots, .wb-groups-chat { display: none !important; } /* native Bot list / group chats cleared */
+.wb-jarvis { border-bottom: none !important; padding: 26px 0 10px; }
+.wb-jarvis-btn { border-radius: 16px; padding: 10px 8px; }
+.wb-jarvis-btn.wb-active { background: rgba(217, 144, 63, .13) !important; }
+.wb-jarvis-name { font-size: 17px; color: #f5ecdf; }
+.wb-jarvis-state { display: none !important; }     /* "在线 / 在办" removed */
+.wb-dot { display: none !important; }              /* unread / status dots removed */
+.wb-rail-scroll { padding: 0 10px 16px; }
+.wb-rail-bottom { background: transparent !important; border-top: 1px solid #33261a !important; }
+.wb-workspace-btn { color: #e8dcc8; }
+.wb-grid-btn { background: #2a1e12 !important; border: 1px solid #453322 !important; color: #eda963; border-radius: 12px; }
+.wb-icon-btn { background: #2a1e12 !important; border-color: #453322 !important; color: #e8dcc8; }
+.wb-plus-btn { background: linear-gradient(135deg, #e09a49, #b06f27) !important; }
+.wb-popover, .wb-context-menu, .wb-dialog, .wb-search-panel {
+  background: #241a10 !important; border: 1px solid #4a3826 !important; color: #f0e6d8;
+  box-shadow: 0 18px 48px rgba(0,0,0,.5) !important; border-radius: 16px !important;
+}
+.wb-popover button:hover, .wb-context-menu button:hover { background: rgba(217,144,63,.14) !important; }
+.wb-dialog p, .wb-dialog label { color: #cdbba6 !important; }
+.wb-dialog input, .wb-dialog select, .wb-search-panel input[type="search"] {
+  background: #1a120b !important; border: 1px solid #4a3826 !important; color: #f5ecdf !important; border-radius: 12px;
+}
+.wb-primary-btn { background: linear-gradient(135deg, #e09a49, #b06f27) !important; color: #fff8ef !important; border-radius: 12px; }
+
+/* chat column: wider, calmer */
+.wb-chat { background: transparent !important; }
+.wb-chat-head { background: rgba(32, 22, 14, .82) !important; border-bottom: 1px solid #33261a !important; }
+.wb-chat-title strong { color: #f5ecdf; }
+.wb-chat-status { display: none !important; }      /* "你的工作台主脑 · 在线" removed */
+.wb-help-btn { background: #2a1e12 !important; border-color: #453322 !important; color: #eda963; }
+.wb-msg { max-width: 780px; }
+.wb-msg-body { background: #261a10 !important; border: 1px solid #3a2b1b; color: #f0e6d8; border-radius: 16px !important; }
+.wb-msg-user .wb-msg-body { background: linear-gradient(135deg, #8a5424, #6e421c) !important; color: #fff6ea; border-color: #9a6530; }
+.wb-msg-author { color: #a08b74 !important; }
+.wb-msg-time, .wb-msg-notice { color: #8d7861 !important; }
+.wb-first-open, .wb-intro, .wb-thinking {
+  background: #231910 !important; border: 1px solid #3a2b1b; border-radius: 16px !important; color: #f0e6d8;
+}
+.wb-tries button, .wb-thinking button, .wb-routines button, .wb-mention-picker button {
+  background: #2a1e12 !important; border: 1px solid #453322 !important; color: #e8dcc8; border-radius: 999px !important;
+}
+.wb-tries button:hover { border-color: #d9903f !important; color: #eda963; }
+.wb-composer { background: rgba(26, 18, 11, .92) !important; border-top: 1px solid #33261a !important; }
+.wb-composer textarea {
+  background: #1e150d !important; border: 1px solid #453322 !important; color: #f5ecdf !important; border-radius: 16px !important;
+}
+.wb-composer textarea:focus { outline: none; border-color: #d9903f !important; box-shadow: 0 0 0 3px rgba(217,144,63,.22); }
+.wb-send-btn { background: linear-gradient(135deg, #e09a49, #b06f27) !important; border-radius: 999px !important; }
+.wb-voice-btn { background: #2a1e12 !important; border: 1px solid #453322 !important; color: #e8dcc8; border-radius: 999px !important; }
+.wb-composer-foot { color: #8d7861 !important; }
+.wb-composer-foot select { background: #1e150d; border-color: #453322; color: #e8dcc8; }
+.wb-notice, .wb-voice-confirm { background: #2b2010 !important; color: #eda963 !important; border-color: #4a3826 !important; }
+.wb-editing, .wb-replying { background: #241a10 !important; color: #cdbba6 !important; }
+.wb-inbox-item, .wb-spaces-item, .wb-space-detail, .wb-result-card {
+  background: #231910 !important; border-color: #3a2b1b !important; color: #f0e6d8;
+}
+.wb-inbox-item p { color: #cdbba6 !important; }
+.wb-empty, .wb-empty-chat { color: #8d7861 !important; }
+
+/* ---------- theme-injected right-click groups (page layer) ---------- */
+#jt-hint { color: rgba(205, 187, 166, .38); font-size: 11px; padding: 14px 10px 4px; letter-spacing: .04em; }
+#jt-groups { padding: 2px 0 8px; }
+.jt-group { margin: 6px 0; }
+.jt-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer; color: #cdbba6;
+  font-size: 12px; letter-spacing: .06em; padding: 6px 8px; border-radius: 8px;
+}
+.jt-group-head:hover { background: rgba(217,144,63,.10); color: #eda963; }
+.jt-group-body { color: rgba(205,187,166,.45); font-size: 12px; padding: 2px 8px 6px 26px; }
+.jt-menu {
+  position: fixed; z-index: 200; min-width: 190px; padding: 6px;
+  background: #241a10; border: 1px solid #4a3826; border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.55);
+}
+.jt-menu button {
+  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  color: #f0e6d8; font-size: 14px; padding: 9px 10px; border-radius: 9px;
+}
+.jt-menu button:hover { background: rgba(217,144,63,.16); }
+.jt-menu button.jt-danger { color: #f0937e; }
+.jt-toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 210;
+  background: #2a1e12; color: #f0e6d8; border: 1px solid #4a3826; border-radius: 999px;
+  padding: 9px 18px; font-size: 13px; box-shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+
+/* ---------- v2: Boss hub structure ---------- */
+/* global function sidebar folded away — its real nav stays in the DOM
+   and the Boss panel activates it with real clicks */
+.os-sidebar { display: none !important; }
+/* duplicate chat head removed: welcome card now tops the chat column */
+.wb-chat-head { display: none !important; }
+
+/* Boss card injected at the foot of the Bot rail */
+.jt-boss-card {
+  display: flex; align-items: center; gap: 10px; width: calc(100% - 16px);
+  margin: 8px; padding: 10px 12px; cursor: pointer; text-align: left;
+  background: #241a10; border: 1px solid #453322; border-radius: 16px; color: #f5ecdf;
+  position: relative; flex: none;
+}
+.jt-boss-card:hover { background: #2c2013; border-color: #d9903f; }
+.jt-boss-float {
+  position: fixed; left: 12px; bottom: 12px; z-index: 290; width: 224px; margin: 0;
+  box-shadow: 0 16px 40px rgba(0,0,0,.5);
+}
+.jt-boss-avatar {
+  width: 34px; height: 34px; flex: none; border-radius: 50%;
+  background: linear-gradient(135deg, #e09a49, #b06f27); color: #fff8ef;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 600;
+}
+.jt-boss-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.jt-boss-name { font-size: 14px; color: #f5ecdf; line-height: 1.25; }
+.jt-boss-role { font-size: 11px; color: #a08b74; line-height: 1.25; }
+.jt-boss-chev { color: #a08b74; font-size: 13px; flex: none; }
+.jt-boss-badge {
+  min-width: 19px; height: 19px; padding: 0 5px; border-radius: 999px;
+  background: linear-gradient(135deg, #e09a49, #b06f27); color: #fff8ef;
+  font-size: 11px; line-height: 19px; text-align: center; flex: none;
+}
+
+/* Boss panel ("我的空间") */
+.jt-boss-panel {
+  position: fixed; left: 14px; bottom: 86px; z-index: 300; width: 404px;
+  max-width: calc(100vw - 28px); max-height: min(72vh, 640px);
+  display: flex; flex-direction: column;
+  background: #241a10; border: 1px solid #4a3826; border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.6); color: #f0e6d8;
+  padding: 14px; animation: jt-rise .18s ease-out;
+}
+@keyframes jt-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.jt-hub-head { display: flex; align-items: center; gap: 10px; padding: 2px 2px 12px; }
+.jt-hub-who { flex: 1; min-width: 0; }
+.jt-hub-name { font-size: 15px; color: #f5ecdf; }
+.jt-hub-role { font-size: 11px; color: #a08b74; }
+.jt-seg {
+  display: flex; background: #1a120b; border: 1px solid #453322; border-radius: 999px; padding: 3px;
+  margin-bottom: 12px; flex: none;
+}
+.jt-seg button {
+  flex: 1; background: none; border: none; cursor: pointer; color: #cdbba6;
+  font-size: 13px; padding: 6px 0; border-radius: 999px;
+}
+.jt-seg button.jt-seg-on { background: linear-gradient(135deg, #e09a49, #b06f27); color: #fff8ef; }
+.jt-face { overflow-y: auto; min-height: 0; }
+.jt-face-daily { overflow: visible; }
+.jt-daily-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.jt-group-label { font-size: 11px; color: rgba(205,187,166,.45); letter-spacing: .14em; padding: 10px 2px 6px; }
+.jt-all-list { display: flex; flex-direction: column; gap: 2px; }
+.jt-hub-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: #2a1e12; border: 1px solid #3a2b1b; color: #f0e6d8; cursor: pointer;
+  font-size: 13.5px; padding: 10px 12px; border-radius: 10px; text-align: left; width: 100%;
+}
+.jt-all-list .jt-hub-item { background: none; border: none; padding: 8px 10px; }
+.jt-hub-item:hover { background: rgba(217,144,63,.14); color: #eda963; }
+.jt-hub-item:active { transform: scale(.985); }
+.jt-item-badge { min-width: 17px; height: 17px; line-height: 17px; font-size: 10.5px; }
+.jt-hub-foot { padding-top: 10px; flex: none; }
+.jt-hub-logout {
+  background: none; border: none; cursor: pointer; color: #a08b74; font-size: 12.5px; padding: 4px 2px;
+}
+.jt-hub-logout:hover { color: #f0937e; }
+@media (max-width: 720px) {
+  .jt-boss-panel { left: 8px; bottom: 76px; }
+  .jt-boss-float { width: 196px; }
+}
+/* sidebar hidden => the app grid must collapse to a single column,
+   otherwise .os-main is auto-placed into the 248px sidebar track */
+.os-app { grid-template-columns: 1fr !important; }

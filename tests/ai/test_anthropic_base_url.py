@@ -65,12 +65,21 @@ def test_client_base_url_passed_to_sdk_has_no_trailing_v1():
         provider.close()
 
 
-def test_unnormalized_base_url_reproduces_double_v1():
+def test_unnormalized_base_url_reproduces_double_v1(monkeypatch):
     """根因证据：不经归一化时，SDK 自己确实拼出 ``/v1/v1/messages``。
 
     这条同时是"什么时候可以删掉归一化"的探针：若未来 SDK 改成 URL 解析、
     不再重复拼接，本用例会失败，提示可以简化 ``_anthropic_base_url``。
     """
+    # 环境隔离：本用例只验 URL 字符串拼接（离线）。SDK 默认 httpx 客户端
+    # 会读代理环境变量建 URLPattern，沙箱 no_proxy 里的 [::1] 等方括号
+    # IPv6 条目会让 httpx2 的解析器直接 InvalidURL——与被测行为无关，
+    # 故构造客户端期间清掉代理变量。
+    for var in (
+        "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+        "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
+    ):
+        monkeypatch.delenv(var, raising=False)
     client = anthropic.Anthropic(
         api_key="sk-test", base_url="https://api.anthropic.com/v1"
     )

@@ -82,7 +82,8 @@ class TestSubprocessBackend:
     def test_execute_with_environment(self):
         result = self.backend.execute(
             execution_id="test-004",
-            command=["python", "-c", "import os; print(os.environ.get('TEST_VAR', 'not_set'))"],
+            # 原写死 "python" 别名在无该别名的机器上起不来（环境伪影），改用当前解释器
+            command=[sys.executable, "-c", "import os; print(os.environ.get('TEST_VAR', 'not_set'))"],
             environment={"TEST_VAR": "injected"},
         )
         assert result.success is True
@@ -91,7 +92,7 @@ class TestSubprocessBackend:
     def test_execute_with_input_data(self):
         result = self.backend.execute(
             execution_id="test-005",
-            command=["python", "-c", "import sys; print(sys.stdin.read().strip())"],
+            command=[sys.executable, "-c", "import sys; print(sys.stdin.read().strip())"],
             input_data="test input",
         )
         assert result.success is True

@@ -40,29 +40,46 @@ def test_make_tools_builtin_set_is_exact():
     调用的动作面"都是一次有意识的决定 —— 而不是某天悄悄多出来一只手。
     """
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
+    # 0.4.6 技能页透明化 §9.3 注册闸：默认集 = A 档（3 内置 + 7 插件安全子集
+    # + system_status）。B 档（python_compute / personal_* / read_file /
+    # list_files / manage_reminders 等）默认关，须在技能页显式启用；
+    # 全集精确断言见 test_make_tools_full_set_is_exact_with_disabled_included。
     expected = {
         "search_memory",
         "query_audit",
         "system_status",
-        "python_compute",
-        "personal_set_preference",
-        "personal_add_fact",
-        "personal_set_display_name",
-        # 2026-09-24 新增：受工作区闸门约束的只读文件工具
-        "read_file",
-        "list_files",
-        # 2026-11-05 新增：定时提醒（复用本地排程器，含糊时间会反问）
-        "manage_reminders",
+        "calculate",
+        "base64_text",
+        "hash_text",
+        "convert_units",
+        "timezone_time",
+        "generate_uuid",
+        "roman_numeral",
+        "make_slug",
+    }
+    assert {t.name for t in tools} == expected
+
+
+def test_make_tools_full_set_is_exact_with_disabled_included():
+    """include_disabled=True 时的全集精确断言（注册闸的另一面）。"""
+    tools = make_tools("alice", status_fn=lambda: {"turn": 0}, include_disabled=True)
+    expected = {
+        "search_memory", "query_audit", "system_status",
+        "calculate", "base64_text", "hash_text", "convert_units",
+        "timezone_time", "generate_uuid", "roman_numeral", "make_slug",
+        "python_compute", "personal_set_preference", "personal_add_fact",
+        "personal_set_display_name", "read_file", "list_files",
+        "manage_reminders", "knowledge_search", "web_search",
+        "delegate_to_team", "run_skill",
     }
     assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    # 10 = 原 7 个内置 + read_file / list_files（只读）+ manage_reminders
-    # （293ace94/393ace94 的定时提醒技能）。自动化观测工具默认不出现：三闸关闭时
-    # build_observation_tools 返回空列表。
-    assert len(a._tool_list) == 10
+    # 11 = 0.4.6 A 档默认集（3 内置 + 7 插件安全子集 + system_status），
+    # 见 test_make_tools_builtin_set_is_exact。B 档默认关，不进注册表。
+    assert len(a._tool_list) == 11
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 
@@ -198,8 +215,17 @@ def test_execute_system_status():
     assert "MockProvider" in json.dumps(out, ensure_ascii=False)  # stats 含 provider 类名
 
 
-def test_execute_python_compute_real():
-    """驾驶舱助手的计算工具必须真执行（返回真实计算结果，非模拟）。"""
+def test_execute_python_compute_real(tmp_path, monkeypatch):
+    """驾驶舱助手的计算工具必须真执行（返回真实计算结果，非模拟）。
+
+    python_compute 是 B 档（默认关）：先按技能页的真实路径显式启用
+    （开关文件落在临时工作区，不污染仓库），再走助手执行。
+    """
+    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(tmp_path))
+    from src.gateway.chat_tool_settings import set_chat_tool_enabled
+
+    set_chat_tool_enabled("liuhao.python.compute", True)
+    lh_module._TOOL_CACHE.clear()
     a = make_assistant(name="tool-compute")
     out = a._execute_tool("python_compute", {"code": "result = sum(i * i for i in range(1, 11))"})
     rendered = json.dumps(out, ensure_ascii=False)

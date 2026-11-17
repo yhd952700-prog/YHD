@@ -10,6 +10,16 @@
   关闭后执行仍必须写 G2（不可逆动作放行）。
 * **主机命令可用**：全权模式下不是 0 可用，普通命令直接放行。
 
+2026-11-17 补缺口轮裁决（Hughes 授权按代码证据自行裁决）：0.4.6 新增的防诱导
+管线（broker 步 1c 敏感路径 / 1d 参数校验 / 2c 四件大事）在上述边界之上再加一层，
+且代码自洽、文档明示，属有意收紧，予以保留。受影响的现行语义：
+- AI（actor="autonomous"）经命令层触碰敏感路径：先写触碰审计，然后 **拒绝**
+  执行（details.blocked=True）；actor="human" 与文件层 note_write 仍是只记不拦，
+  与 2026-11-11 边界一致（本文件对应测试不变）。
+- 四件大事（删除/系统设置等）恒走一次人工审批：确认设置关闭只改变
+  confirm_state 留痕（disabled_by_setting）与 G2，不再免除审批。
+- 命令参数里的路径必须落在允许根（数据目录/工作区）内，根外一律拒绝。
+
 审计事件用 ``AUTHORITY_PROTECTED_PATH_TOUCHED``（0.3.0 新增），``details.event``
 固定为 ``authority.protected_path_touched``。边界必须如实：命令层只是字符串包含
 判断，拼接/编码可绕过。这里不假装它是文件系统级边界。
@@ -111,7 +121,11 @@ def test_escalation_is_denied_even_in_full_mode(command):
 # --------------------------------------------------------------------------- #
 # 边界 2：敏感路径（命令层）—— 只记录，不拒绝，带归属
 # --------------------------------------------------------------------------- #
-def test_sensitive_path_command_is_allowed_and_audited(tmp_path):
+def test_sensitive_path_command_is_blocked_and_audited(tmp_path):
+    """0.4.6 防诱导步 1c：AI 触碰敏感路径先写审计、然后拒绝（见文件头裁决）。
+
+    actor="human" 的只记不拦语义不变，见下一个测试。
+    """
     broker, executor = _broker()
     data_root = tmp_path / "data"
     data_root.mkdir(parents=True, exist_ok=True)
@@ -122,8 +136,9 @@ def test_sensitive_path_command_is_allowed_and_audited(tmp_path):
             HostCommandRequest(command=f'del "{target}"', actor="autonomous")
         )
 
-    assert decision.outcome is DecisionOutcome.ALLOW
-    assert [c.command for c in executor.calls] == [f'del "{target}"']
+    assert decision.outcome is DecisionOutcome.DENY
+    assert "sensitive path blocked" in decision.reason
+    assert executor.calls == []
 
     rows = _touches()
     assert rows, "敏感路径触碰没有进审计"
@@ -133,6 +148,7 @@ def test_sensitive_path_command_is_allowed_and_audited(tmp_path):
     assert details["operation"] == "command"
     assert details["mode"] == "full"
     assert details["would_have_blocked"] is True
+    assert details["blocked"] is True
     assert "audit_store.db" in details["command"]
     attribution = details["task_attribution"]
     assert attribution["principal_class"] == "SYSTEM_PRINCIPAL"
@@ -244,10 +260,19 @@ def test_dangerous_command_defers_when_confirmation_enabled():
 
 
 def test_dangerous_command_runs_when_confirmation_disabled_and_is_audited():
+    """确认关闭后的现行语义（见文件头裁决）：四件大事恒走一次人工审批，
+    关闭只改变 confirm_state 留痕；审批通过后执行且 G2 照写。"""
     confirm.set_confirmation_enabled(False, updated_by="liuhao")
     assert confirm.is_confirmation_enabled() is False
 
     broker, executor = _broker()
+    decision = broker.submit(HostCommandRequest(command="diskpart /s wipe.txt"))
+
+    assert decision.outcome is DecisionOutcome.DEFER
+    assert executor.calls == []
+    pending = broker.approvals.pending()
+    assert pending
+    broker.approvals.grant(next(iter(pending)))
     decision = broker.submit(HostCommandRequest(command="diskpart /s wipe.txt"))
 
     assert decision.outcome is DecisionOutcome.ALLOW
@@ -264,13 +289,34 @@ def test_dangerous_command_runs_when_confirmation_disabled_and_is_audited():
     assert "diskpart" in executed[-1]["details"]["command"]
 
 
-def test_normal_delete_is_allowed():
-    """普通文件删除不是危险命令，也不命中受保护路径。"""
+def test_normal_delete_outside_allowed_roots_is_denied():
+    """0.4.6 参数校验（步 1d）：路径不在允许根内（数据目录/工作区）一律拒绝。"""
     broker, executor = _broker()
     decision = broker.submit(
         HostCommandRequest(command=r"del C:\Users\Public\notes.txt")
     )
 
+    assert decision.outcome is DecisionOutcome.DENY
+    assert "path-outside-roots" in decision.reason
+    assert executor.calls == []
+
+
+def test_normal_delete_in_workspace_defers_then_allows(tmp_path, monkeypatch):
+    """工作区内的普通删除属四件大事（步 2c）：先 DEFER，人工批准后执行。"""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(workspace))
+    broker, executor = _broker()
+    command = f'del "{workspace / "notes.txt"}"'
+    decision = broker.submit(HostCommandRequest(command=command))
+
+    assert decision.outcome is DecisionOutcome.DEFER
+    assert executor.calls == []
+    pending = broker.approvals.pending()
+    assert pending
+    broker.approvals.grant(next(iter(pending)))
+
+    decision = broker.submit(HostCommandRequest(command=command))
     assert decision.outcome is DecisionOutcome.ALLOW
     assert len(executor.calls) == 1
 

@@ -36,9 +36,13 @@ def test_autonomous_shell_default_denied():
     assert res.success is False
 
 
-def test_autonomous_shell_armed_allows(monkeypatch):
-    # Under p36-wi-safety shell is gated by the global host-command enablement
-    # switch (LIUHAO_HOST_COMMAND_ENABLED); arm it so the armed policy can proceed.
+def test_autonomous_shell_armed_still_needs_human_approval_for_use_shell(monkeypatch):
+    # 0.4.6 anti-induction §2.2 rule 7: a use_shell=True request ALWAYS needs
+    # human approval (validate.py escalate:param:use-shell) -- an arming
+    # policy alone no longer suffices, and WorldInterface has no approval
+    # channel, so the one-shot execute is refused with the approval reason.
+    # (Pre-0.4.6 this test expected direct execution; that behaviour was
+    # deliberately retired.)
     from src.ai.host_command.enablement import reload as _hc_reload
 
     monkeypatch.setenv("LIUHAO_HOST_COMMAND_ENABLED", "1")
@@ -48,8 +52,9 @@ def test_autonomous_shell_armed_allows(monkeypatch):
         authorize=lambda r: True,  # explicit human arming
     )
     res = wi.execute(_shell_request("echo armed_ok"))
-    assert res.success is True
-    assert "armed_ok" in res.output["stdout"]
+    assert res.success is False
+    assert "human approval" in (res.error or "")
+    assert "use-shell" in (res.error or "")
 
 
 def test_human_shell_default_allowed(monkeypatch):

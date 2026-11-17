@@ -353,7 +353,7 @@ class TestVendorLabel:
             ("deepseek", "https://api.openai.com/v1", "deepseek"),
             ("ollama", "http://localhost:11434", "ollama"),
             ("openai", "http://127.0.0.1:8000/v1", "local"),
-            ("openai", "https://openrouter.ai/api/v1", "openrouter.ai"),
+            ("openai", "https://openrouter.ai/api/v1", "openrouter")  # 0.4.6 归一化: openrouter.ai -> openrouter,
         ],
     )
     def test_vendor_mapping(self, provider, base_url, expected):

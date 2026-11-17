@@ -24,7 +24,7 @@ def _entry(state: str, **extra) -> dict:
 
 def test_completed_copy_is_neutral_chinese():
     title, body = goal_notification_text(_entry("completed"))
-    assert title == "鎏灏任务通知"
+    assert title == "贾维斯任务通知"
     assert "已完成" in body
     assert "failed" not in body.lower()
     assert "目标与任务" in body

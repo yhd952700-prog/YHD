@@ -8,8 +8,10 @@ Provides comprehensive security capabilities including:
 - Input sanitization and validation (input_sanitizer.py)
 - Rate limiting (rate_limit.py)
 - Audit: the only authoritative audit is ``src/kernels/audit``
-  (SQLite + hash chain); the retired ``audit_trail.py`` /
-  ``audit_logger.py`` helpers were deleted 2026-11-12.
+  (SQLite + hash chain); the legacy ``audit_trail.py`` /
+  ``audit_logger.py`` helpers are no longer re-exported from this
+  package root since 2026-11-12 (the files remain for submodule
+  importers such as ``src.security.abac``; they are not evidence-grade).
 
 Legacy public API (jwt_handler / api_keys / vault_crypto
 and the EncryptionManager compatibility layer in encryption.py) is re-exported

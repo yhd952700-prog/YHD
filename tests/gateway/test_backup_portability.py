@@ -54,31 +54,12 @@ def test_model_key_portable_across_different_master_keys(monkeypatch, tmp_path):
     assert public["api_key_masked"].endswith(SOURCE_KEY[-4:])
 
 
-def test_model_key_vault_round_trip_without_plaintext_in_payload(monkeypatch, tmp_path):
-    """包内只有口令包裹的密文；同一口令在目标机仍能解出原 Key。"""
-    import json
-
-    import src.ai.model_config as model_config
-    from src.gateway.account_backup import _open_model_secrets, _seal_model_secrets
-
-    monkeypatch.setenv("LIUHAO_MODEL_CONFIG_KEY", "vault-source-key")
-    monkeypatch.setenv("LIUHAO_MODEL_CONFIG_DB", str(tmp_path / "vault.sqlite3"))
-    monkeypatch.delenv("LIUHAO_MODEL_CONFIG_KEY_FILE", raising=False)
-    source = model_config.ModelConfigStore()
-    created = source.create(
-        {"name": "root-key", "provider": "mock", "model": "mock-1", "api_key": SOURCE_KEY},
-        "root1",
-        owner_principal="root1",
-    )
-
-    vault, count = _seal_model_secrets(source, _raw_model_rows(tmp_path / "vault.sqlite3"),
-                                       "bundle-passphrase-123")
-    assert count == 1
-    # 明文 Key 不出现在包的任何字段里。
-    assert SOURCE_KEY not in json.dumps(vault, ensure_ascii=False)
-    assert _open_model_secrets(vault, "bundle-passphrase-123") == {created["id"]: SOURCE_KEY}
-    # 口令不对时按"未携带"处理，不抛错、不泄露。
-    assert _open_model_secrets(vault, "wrong-passphrase") == {}
+# NOTE(2026-11-17 补缺口): 原 test_model_key_vault_round_trip_* 用例测的是
+# 账号备份包的口令保险箱（_seal_model_secrets/_open_model_secrets）。该机制
+# 已随「Key 不随包」（2026-11-15 规矩）整体删除：导出恒 key_vault={}、
+# 导入忽略旧包里的一切 Key 材料。新契约由
+# test_account_backup_key_isolation.py 的新断言覆盖，存储层 Key 可移植性由
+# 本文件 test_model_key_portable_across_different_master_keys 覆盖。
 
 
 def test_employees_survive_cross_machine(monkeypatch, tmp_path):

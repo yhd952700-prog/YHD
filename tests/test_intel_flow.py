@@ -276,6 +276,6 @@ def test_report_is_written_to_explicit_local_path(tmp_path):
     assert report_path.exists()
     assert result.report_path == str(report_path)
     content = report_path.read_text(encoding="utf-8")
-    assert "鎏灏 · 开源技术雷达周报" in content
+    assert "贾维斯 · 开源技术雷达周报" in content
     assert DISCLAIMER in content
     assert "不扫描全量开源" in content

@@ -278,7 +278,7 @@ class TestServerSurfaceCopy:
         )
 
         for text in (GENERATION_FAILURE_MESSAGE, MODEL_NOT_CONFIGURED_MESSAGE):
-            assert "系统设置 → 模型管理" in text
+            assert "系统设置 → 模型与 Key" in text
             # 环境变量名与不存在的「设置 → 模型」页都不该出现在用户面前。
             assert "AI_PROVIDER_TYPE" not in text
             assert "「设置 → 模型」" not in text

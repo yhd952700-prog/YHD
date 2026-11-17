@@ -29,6 +29,32 @@ def client(monkeypatch, tmp_path):
     import src.kernels.identity as identity_module
 
     monkeypatch.setattr(identity_module, "_global_manager", None)
+    # 环境伪影处理：本机沙箱 DNS 把公网域名解析进 198.18.0.0/15 假 IP 段，
+    # SSRF 守卫会据此拒绝一切公网厂商地址（真实公网 DNS 下不发生）。
+    # 在 net_guard 的真实解析入口处，只对测试用到的公网厂商主机把解析
+    # 结果钉为公网地址；其余主机（含 SSRF 用例的私网地址）仍走真实解析，
+    # 守卫的分类/拒绝行为不变。
+    import socket as _socket
+
+    import src.ai.net_guard as net_guard
+
+    real_getaddrinfo = net_guard._REAL_GETADDRINFO
+    public_hosts = {"api.openai.com", "api.deepseek.com", "api.anthropic.com"}
+
+    def _pinned_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if isinstance(host, str) and host.lower() in public_hosts:
+            return [
+                (
+                    _socket.AF_INET,
+                    type or _socket.SOCK_STREAM,
+                    proto or _socket.IPPROTO_TCP,
+                    "",
+                    ("93.184.216.34", port),
+                )
+            ]
+        return real_getaddrinfo(host, port, family, type, proto, flags)
+
+    monkeypatch.setattr(net_guard, "_REAL_GETADDRINFO", _pinned_getaddrinfo)
     with TestClient(get_app()) as test_client:
         yield test_client
 

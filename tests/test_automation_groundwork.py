@@ -81,13 +81,22 @@ def test_default_gate_registers_zero_tools(monkeypatch):
         {"LIUHAO_AUTOMATION_ENABLED": "0", "LIUHAO_AUTOMATION_BACKEND": "fake"},
         {"LIUHAO_AUTOMATION_ENABLED": "1"},
         {"LIUHAO_AUTOMATION_BACKEND": "fake"},
-        {"LIUHAO_AUTOMATION_ENABLED": "1", "LIUHAO_AUTOMATION_BACKEND": "native"},
     ],
 )
 def test_each_gate_closed_keeps_tools_empty(env):
     gate = AutomationGate(env=env)
     tools = build_automation_tools("liuhao", metadata={"kind": "human"}, gate=gate)
     assert tools == []
+
+
+def test_native_backend_is_supported_since_046():
+    """0.4.6 起 native（Windows 真后端）已接入，不再是关闭的闸：
+    ENABLED=1 + BACKEND=native 应给出工具（与 fake 同口径）。"""
+    gate = AutomationGate(
+        env={"LIUHAO_AUTOMATION_ENABLED": "1", "LIUHAO_AUTOMATION_BACKEND": "native"}
+    )
+    tools = build_automation_tools("liuhao", metadata={"kind": "human"}, gate=gate)
+    assert tools != []
 
 
 def test_service_identity_keeps_tools_empty():

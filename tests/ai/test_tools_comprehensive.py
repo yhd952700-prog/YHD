@@ -26,7 +26,7 @@ from src.ai.tools import (
     ToolStatus,
     ResultStatus,
     CalculatorTool,
-    SearchTool,
+    WebResearchTool,
     CodeRunnerTool,
     MemoryTool,
     DateTimeTool,
@@ -261,7 +261,7 @@ class TestToolRegistry:
         """Test filtering tools by category."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         registry.register(DateTimeTool())
 
         computation = registry.by_category(ToolCategory.COMPUTATION)
@@ -276,15 +276,15 @@ class TestToolRegistry:
         """Test listing all tool names."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         names = registry.list_names()
-        assert names == ["calculator", "search"]
+        assert names == ["calculator", "web_search"]
 
     def test_stats(self):
         """Test registry statistics."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         stats = registry.stats()
         assert stats["total_tools"] == 2
         assert "categories" in stats
@@ -675,7 +675,7 @@ class TestToolExecutor:
         """Create a ToolExecutor with registered tools."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         registry.register(DateTimeTool())
         return ToolExecutor(registry)
 
@@ -700,7 +700,7 @@ class TestToolExecutor:
         """Test tool selection for search queries."""
         candidates = executor.select_tools("find information about python")
         assert len(candidates) > 0
-        assert any(c.tool_name == "search" for c in candidates)
+        assert any(c.tool_name == "web_search" for c in candidates)
 
     def test_tool_candidate_to_dict(self):
         """Test ToolCandidate to_dict."""

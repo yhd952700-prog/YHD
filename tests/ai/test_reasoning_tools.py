@@ -5,7 +5,7 @@ Covers:
 - Reflection engine
 - ReAct agent
 - Tool base framework and registry
-- Built-in tools (calculator, search, memory, datetime, file, code_runner)
+- Built-in tools (calculator, web_search, memory, datetime, file, code_runner)
 - Tool executor
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ from src.ai.tools import (
     ToolStatus,
     ResultStatus,
     CalculatorTool,
-    SearchTool,
+    WebResearchTool,
     CodeRunnerTool,
     MemoryTool,
     DateTimeTool,
@@ -781,18 +781,18 @@ class TestToolRegistry:
         """Test listing all tool names."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
 
         names = registry.list_names()
         assert "calculator" in names
-        assert "search" in names
+        assert "web_search" in names
         assert len(names) == 2
 
     def test_stats(self):
         """Test registry statistics."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
 
         stats = registry.stats()
         assert stats["total_tools"] == 2
@@ -862,39 +862,28 @@ class TestCalculatorTool:
         assert not result.ok
 
 
-class TestSearchTool:
-    """Test the search tool."""
+class TestWebResearchTool:
+    """WebResearchTool replaced the retired fake SearchTool (2026-11-12,
+    0.4.6 C group): SearchTool returned canned dictionary paragraphs, so it
+    was deleted. The replacement does real live research and, with live
+    research disabled by default, fails honestly instead of inventing
+    results. These tests pin that contract (no network needed)."""
 
-    def test_search_finds_results(self):
-        """Test that search returns relevant results."""
-        search = SearchTool()
-        result = search.execute(query="python")
-        assert result.ok
-        assert result.output["total_results"] >= 1
-        assert len(result.output["results"]) >= 1
+    def test_tool_identity(self):
+        tool = WebResearchTool()
+        assert tool.name == "web_search"
 
-    def test_search_no_results(self):
-        """Test search with no matching results."""
-        search = SearchTool()
-        result = search.execute(query="xyzzy_nonexistent_term_12345")
-        assert result.ok
-        assert result.output["total_results"] == 0
+    def test_disabled_research_is_an_honest_failure(self, monkeypatch):
+        monkeypatch.delenv("LIUHAO_WEB_RESEARCH", raising=False)
+        tool = WebResearchTool()
+        result = tool.execute(query="python")
+        assert not result.ok
+        assert "联网检索未开启" in str(result.error)
 
-    def test_search_max_results(self):
-        """Test max_results parameter."""
-        search = SearchTool()
-        result = search.execute(query="a", max_results=2)
-        assert result.ok
-        assert len(result.output["results"]) <= 2
-
-    def test_search_domain_filter(self):
-        """Test domain filtering."""
-        search = SearchTool()
-        result = search.execute(query="python", domain="knowledge://")
-        assert result.ok
-        # All results should have knowledge:// URLs
-        for r in result.output["results"]:
-            assert "knowledge://" in r["url"]
+    def test_query_is_required(self):
+        tool = WebResearchTool()
+        result = tool.execute()
+        assert not result.ok
 
 
 class TestMemoryTool:
@@ -1180,7 +1169,7 @@ class TestToolExecutor:
         """Test tool selection based on task description."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         registry.register(DateTimeTool())
         executor = ToolExecutor(registry)
 
@@ -1193,7 +1182,7 @@ class TestToolExecutor:
         """Test selecting the single best tool."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         executor = ToolExecutor(registry)
 
         best = executor.select_best("what is 2 plus 2")
@@ -1287,12 +1276,12 @@ class TestToolExecutor:
         """Test listing available tools."""
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
         executor = ToolExecutor(registry)
 
         tools = executor.available_tools()
         assert "calculator" in tools
-        assert "search" in tools
+        assert "web_search" in tools
 
     def test_tool_info(self):
         """Test getting tool info."""

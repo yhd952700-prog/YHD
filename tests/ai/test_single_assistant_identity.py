@@ -83,4 +83,4 @@ def test_unconfigured_mock_has_one_reply_not_two_styles(monkeypatch):
     assert "小龙虾" not in demo_text
     # 演示与非演示只差 "[演示数据]" 标注，不差风格：两者都是同一条未配置提示。
     assert "还没有配置模型" in demo_text
-    assert "系统设置 → 模型管理" in demo_text
+    assert "系统设置 → 模型与 Key" in demo_text

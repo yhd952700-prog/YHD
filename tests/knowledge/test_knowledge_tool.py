@@ -27,6 +27,8 @@ def unconfigured_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LIUHAO_ENV", "production")
     monkeypatch.setenv("LIUHAO_EMBEDDING_PROVIDER", "auto")
+    # 本文件测未配置时的 fail-closed：关掉本地哈希回退（其契约另有专属覆盖）。
+    monkeypatch.setenv("LIUHAO_KNOWLEDGE_LOCAL_FALLBACK", "0")
     return monkeypatch
 
 

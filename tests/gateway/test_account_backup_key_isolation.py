@@ -71,7 +71,9 @@ def _seed_root_and_member():
 
 
 def test_scope_all_includes_member_keys_only_in_vault(env, monkeypatch):
-    """解包后 grep：成员 Key 只以不再可读的密文出现，主密钥为空。"""
+    """0.4.6 新契约（Key 不随包）：解包后 grep 不到任何 Key 明文，
+    且包内根本不带 Key 材料——key_vault 恒空、member_keys_included 恒 False，
+    换机后到「设置 → 模型与 Key」重填。（旧契约「成员 Key 只进保险箱」已废。）"""
     from src.gateway import account_backup
     from src.gateway.account_backup import export_bundle
 
@@ -118,26 +120,17 @@ def test_scope_all_includes_member_keys_only_in_vault(env, monkeypatch):
     assert owners == {"root1", "member1"}
     assert len(payload["models"]["rows"]) == 2
 
-    # 成员 Key 只存在于口令保险箱里：同一口令可解出，错口令解不开。
-    vault = payload["models"]["key_vault"]
-    ids = {
-        str(row.get("name")): str(row.get("id"))
-        for row in payload["models"]["rows"]
-    }
-    assert account_backup._open_model_secrets(  # noqa: SLF001
-        vault, PASSPHRASE
-    ) == {ids["root-key"]: ROOT_KEY, ids["member-key"]: MEMBER_KEY}
-    assert account_backup._open_model_secrets(  # noqa: SLF001
-        vault, "wrong-passphrase"
-    ) == {}
+    # 包内不带任何 Key 材料：保险箱恒空。
+    assert payload["models"]["key_vault"] == {}
 
     # 回执字段必须与包内事实一致。
     assert exported["manifest"]["key_scope"] == "subtree"
-    assert exported["manifest"]["member_keys_included"] is True
+    assert exported["manifest"]["member_keys_included"] is False
     assert exported["manifest"]["key_material_included"] is False
-    assert exported["member_keys_included"] is True
+    assert exported["member_keys_included"] is False
     assert exported["key_material_included"] is False
-    assert "成员 Key 可直接使用" in exported["notice"]
+    assert "备份里没有模型 Key" in exported["notice"]
+    assert "重新填" in exported["notice"]
 
     # 审计：谁、何时、范围、是否含密钥材料。
     entry = [item for item in audited if item.get("action") == "account.backup.export"][0]
@@ -145,7 +138,7 @@ def test_scope_all_includes_member_keys_only_in_vault(env, monkeypatch):
     assert entry["details"]["scope"] == "all"
     assert entry["details"]["issued_at"]
     assert entry["details"]["key_material_included"] is False
-    assert entry["details"]["member_keys_included"] is True
+    assert entry["details"]["member_keys_included"] is False
 
 
 def test_export_rejects_non_loopback_then_allows_with_switch(env, monkeypatch, caplog):

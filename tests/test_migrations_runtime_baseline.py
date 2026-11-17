@@ -124,7 +124,9 @@ def test_revision_chain_has_exactly_one_head():
     assert "006" in revisions, "the runtime baseline revision is missing"
     downs = {down for down in revisions.values() if down}
     heads = set(revisions) - downs
-    assert heads == {"006"}, (
+    # 007（任务到期日）叠在 006 runtime baseline 之上，是当前唯一 head；
+    # 006 的 baseline 地位由本文件其他断言继续钉住。
+    assert heads == {"007"}, (
         "alembic requires a single head for `upgrade head`; got %s" % sorted(heads))
     for rev, down in revisions.items():
         if down is not None:

@@ -13,23 +13,35 @@ def test_empty_catalog_matches_nothing():
     assert cat.match(_req()) == []
 
 
-def test_command_glob_match():
+def test_structured_match():
     cat = CapabilityCatalog()
-    cat.register(HostCommandCapability("git", command_glob="git *"))
+    cat.register(HostCommandCapability("git", program="git", arg_patterns=["*"]))
     matched = cat.match(_req("git pull"))
     assert len(matched) == 1
     assert matched[0].capability_id == "git"
 
 
-def test_command_glob_no_match():
+def test_structured_no_match():
     cat = CapabilityCatalog()
-    cat.register(HostCommandCapability("git", command_glob="git *"))
+    cat.register(HostCommandCapability("git", program="git", arg_patterns=["*"]))
     assert cat.match(_req("rm -rf /")) == []
+
+
+def test_legacy_glob_registration_is_rejected():
+    # Anti-induction §1: a grant that only sets command_glob must fail loudly
+    # at registration (the broker never opts into allow_legacy_glob).
+    cat = CapabilityCatalog()
+    try:
+        cat.register(HostCommandCapability("git", command_glob="git *"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("legacy command_glob registration must raise ValueError")
 
 
 def test_adapter_filter():
     cat = CapabilityCatalog()
-    cat.register(HostCommandCapability("shell-ls", command_glob="ls *", adapter="shell"))
+    cat.register(HostCommandCapability("shell-ls", program="ls", arg_patterns=["*"], adapter="shell"))
     # A request arriving on a non-shell adapter must NOT match a shell-only grant.
     assert cat.match(_req("ls -la", adapter="python_compute")) == []
     # A request arriving on the shell adapter matches.
@@ -39,14 +51,14 @@ def test_adapter_filter():
 
 def test_use_shell_filter():
     cat = CapabilityCatalog()
-    cat.register(HostCommandCapability("raw", command_glob="*", require_shell=True))
+    cat.register(HostCommandCapability("raw", program="anything", require_shell=True, allow_shell=True))
     assert cat.match(_req("anything", use_shell=False)) == []
     assert len(cat.match(_req("anything", use_shell=True))) == 1
 
 
 def test_revoked_capability_no_longer_matches():
     cat = CapabilityCatalog()
-    cap = HostCommandCapability("git", command_glob="git *")
+    cap = HostCommandCapability("git", program="git", arg_patterns=["*"])
     cat.register(cap)
     assert cat.match(_req("git x"))
     assert cat.revoke("git") is True
@@ -56,7 +68,7 @@ def test_revoked_capability_no_longer_matches():
 def test_sandbox_propagates_from_capability():
     sb = SandboxSpec(cwd="/workspace", network=False)
     cat = CapabilityCatalog()
-    cat.register(HostCommandCapability("git", command_glob="git *", sandbox=sb))
+    cat.register(HostCommandCapability("git", program="git", arg_patterns=["*"], sandbox=sb))
     matched = cat.match(_req("git x"))
     assert matched[0].sandbox is sb
 

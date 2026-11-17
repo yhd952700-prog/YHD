@@ -126,6 +126,10 @@ def test_restart_recovery_after_commit_no_gap_in_chain(tmp_path):
     store2._conn.close()
 
 
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root 下 chmod 只读位无效，无法制造不可写 DB（环境限制，非代码问题）",
+)
 def test_db_unavailable_fails_closed_no_phantom(tmp_path):
     """A genuinely unavailable database path must make the write fail closed
     (clear error, never a silent success) and must not leave a phantom event.

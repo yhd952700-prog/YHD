@@ -71,9 +71,14 @@ def test_shell_true_with_token_but_unarmed_authorize_is_blocked(monkeypatch):
     assert "deny" in (result.error or "").lower()
 
 
-def test_shell_true_with_token_and_armed_authorize_is_allowed_and_logged(
+def test_shell_true_with_token_and_armed_authorize_is_logged_and_escalated(
     caplog, monkeypatch,
 ):
+    # 0.4.6 anti-induction §2.2 rule 7: use_shell=True always escalates to
+    # human approval (validate.py escalate:param:use-shell); the armed
+    # authorize callback no longer suffices on its own, and WorldInterface
+    # cannot grant approvals, so execution is refused with the approval
+    # reason. The arm-attempt logging/masking contract is unchanged.
     import logging
 
     from src.ai.host_command.enablement import reload as _hc_reload
@@ -99,8 +104,9 @@ def test_shell_true_with_token_and_armed_authorize_is_allowed_and_logged(
     assert "tok-abc" not in "".join(r.message for r in caplog.records)
 
     result = wi.execute(req)
-    assert result.success is True
-    assert "ARMED" in (result.output or {}).get("stdout", "")
+    assert result.success is False
+    assert "human approval" in (result.error or "")
+    assert "use-shell" in (result.error or "")
 
 
 # --------------------------------------------------------------------------- #

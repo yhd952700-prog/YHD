@@ -33,6 +33,7 @@ _PROVIDER_ENVS = (
 def clean_env(monkeypatch):
     for name in _PROVIDER_ENVS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LIUHAO_KNOWLEDGE_LOCAL_FALLBACK", "0")
     yield monkeypatch
 
 

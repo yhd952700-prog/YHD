@@ -1,6 +1,6 @@
 {
   "name": "@liuhao-ai-os/frontend",
-  "version": "0.3.0",
+  "version": "0.4.6",
   "description": "LiuHao AI OS - React + TypeScript UI component library (not a runnable app: no backend connection, no app entry; hooks return empty lists when no fetcher is passed)",
   "type": "module",
   "license": "MIT",

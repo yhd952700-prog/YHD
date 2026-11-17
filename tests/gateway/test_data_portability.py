@@ -172,7 +172,7 @@ def test_export_archive_is_readable_and_private(isolated_stores):
         manifest_json = archive.read("manifest.json").decode("utf-8")
         settings = json.loads(archive.read("settings.json").decode("utf-8"))
         assert "帮我写一个导出脚本" in conversation
-        assert "鎏灏" in conversation
+        assert "贾维斯" in conversation
         assert "2026-11-01T09:00:00" in memories_md
         assert "别人的秘密" not in conversation
         assert "别人的私事" not in archive.read("memories.json").decode("utf-8")
@@ -307,5 +307,5 @@ def test_conversation_markdown_shows_speaker_and_time():
     )
     assert "# 会话：s1" in markdown
     assert "## 我 · " in markdown
-    assert "## 鎏灏 · " in markdown
+    assert "## 贾维斯 · " in markdown
     assert "你好，我在。" in markdown

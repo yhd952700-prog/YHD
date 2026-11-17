@@ -181,7 +181,17 @@ def test_self_registered_account_can_reissue_and_reset_own_password(env, caplog)
         registered = _self_register(client)
         assert registered.status_code == 200, registered.text
         first_code = registered.json()["recovery_code"]
-        token = registered.json()["token"]
+        # 0.4.6 新规矩（Joseph 2026-11-14）：自助注册后是 pending_approval，
+        # 不再发登录令牌；须根账号在 a3m 批准后才能登录。
+        assert "token" not in registered.json()
+        approved = client.post(
+            "/v1/a3m/owner/registrations/carol/approve",
+            headers=_bearer(_root_token(client)),
+        )
+        assert approved.status_code == 200, approved.text
+        login = _login(client, "carol", MEMBER_PASSWORD)
+        assert login.status_code == 200, login.text
+        token = login.json()["access_token"]
 
         # 界面能力位：自助注册账号能自己补发，但不是根。
         me = client.get("/v1/auth/me", headers=_bearer(token))

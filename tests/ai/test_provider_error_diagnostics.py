@@ -228,7 +228,7 @@ def test_m5_retry_delay_has_jitter_and_honours_retry_after():
 def test_l5_dns_and_certificate_failures_are_not_retried():
     assert (
         providers_mod._is_retryable_failure(
-            RuntimeTargetRejected("模型服务地址当前无法解析")
+            RuntimeTargetRejected("模型服务地址当前无法解析", kind="dns_failed")
         )
         is False
     )
@@ -470,7 +470,7 @@ def test_l6_probe_separates_dns_failure_from_private_address():
 
     assert (
         gateway_models._classify_error(
-            RuntimeTargetRejected("模型服务地址当前无法解析，已停止请求；请检查主机名或网络。")
+            RuntimeTargetRejected("模型服务地址当前无法解析，已停止请求；请检查主机名或网络。", kind="dns_failed")
         )
         == "dns_failed"
     )

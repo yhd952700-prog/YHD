@@ -26,7 +26,9 @@ def _gate(monkeypatch):
 
 
 def _git_cap():
-    return HostCommandCapability("git", command_glob="git *")
+    # 0.4.6 anti-induction §1 retired whole-string command_glob; grants are
+    # structural now (program + per-position arg patterns).
+    return HostCommandCapability("git", program="git", arg_patterns=["*"])
 
 
 def test_gate_disabled_denies_even_with_capability():
@@ -85,7 +87,8 @@ def test_requires_approval_defers_then_allows():
     os.environ[ENV_VAR] = "true"
     reload()
     cap = HostCommandCapability(
-        "destructive", command_glob="rm *", requires_approval=True
+        "destructive", program="rm", arg_patterns=["*", "*"],
+        allow_shell=True, requires_approval=True,
     )
     approvals = ApprovalInterface()
     exec_fn = FakeExecutor()
@@ -140,7 +143,7 @@ def test_sandbox_propagated_to_decision():
     os.environ[ENV_VAR] = "true"
     reload()
     sb = SandboxSpec(cwd="/workspace", network=False)
-    cap = HostCommandCapability("git", command_glob="git *", sandbox=sb)
+    cap = HostCommandCapability("git", program="git", arg_patterns=["*"], sandbox=sb)
     broker = build_test_broker(
         enabled=True, capabilities=(cap,), executor=FakeExecutor(), event_sink=_NOOP_SINK
     )

@@ -18,10 +18,7 @@ from src.ai.organization import (
     OrgMember,
     Team,
     Department,
-    Permission,
-    RBACMatrix,
     Organization,
-    DEFAULT_RBAC_MATRIX,
 )
 
 
@@ -295,109 +292,11 @@ class TestDepartment:
 # RBACMatrix Tests (10 tests)
 # ======================================================================
 
-class TestRBACMatrix:
-    """Tests for RBAC permission matrix."""
-
-    def test_default_permissions_exist(self):
-        """Test default RBAC matrix has all roles."""
-        rbac = RBACMatrix()
-        for role in OrgRole:
-            perms = rbac.effective_permissions(role)
-            assert isinstance(perms, set)
-            assert len(perms) >= 1  # each role has at least some perms
-
-    def test_ic_has_view_dashboard(self):
-        """Test individual contributor has view_dashboard permission."""
-        rbac = RBACMatrix()
-        assert rbac.has_permission(
-            OrgRole.INDIVIDUAL_CONTRIBUTOR,
-            Permission.VIEW_DASHBOARD,
-        )
-
-    def test_director_has_admin(self):
-        """Test director has administer_org permission."""
-        rbac = RBACMatrix()
-        assert rbac.has_permission(
-            OrgRole.DIRECTOR,
-            Permission.ADMINISTER_ORG,
-        )
-
-    def test_ic_does_not_have_hire_fire(self):
-        """Test IC does NOT have hire_fire permission."""
-        rbac = RBACMatrix()
-        assert not rbac.has_permission(
-            OrgRole.INDIVIDUAL_CONTRIBUTOR,
-            Permission.HIRE_FIRE,
-        )
-
-    def test_inheritance_manager_has_ic_perms(self):
-        """Test role inheritance: manager has IC's permissions."""
-        rbac = RBACMatrix(inherit_junior=True)
-        ic_perms = rbac.effective_permissions(OrgRole.INDIVIDUAL_CONTRIBUTOR)
-        mgr_perms = rbac.effective_permissions(OrgRole.MANAGER)
-        # Manager should have all IC perms plus more
-        assert ic_perms.issubset(mgr_perms)
-        assert len(mgr_perms) > len(ic_perms)
-
-    def test_no_inheritance(self):
-        """Test RBAC without inheritance."""
-        rbac = RBACMatrix(inherit_junior=False)
-        ic_perms = rbac.effective_permissions(OrgRole.INDIVIDUAL_CONTRIBUTOR)
-        mgr_perms = rbac.effective_permissions(OrgRole.MANAGER)
-        # Without inheritance, they're separate
-        # (Manager may still have some same perms, but not inherited)
-        assert isinstance(mgr_perms, set)
-        assert isinstance(ic_perms, set)
-
-    def test_grant_permission(self):
-        """Test granting a new permission."""
-        rbac = RBACMatrix(inherit_junior=False)
-        assert not rbac.has_permission(
-            OrgRole.INDIVIDUAL_CONTRIBUTOR,
-            Permission.REVIEW_WORK,
-        )
-        rbac.grant(OrgRole.INDIVIDUAL_CONTRIBUTOR, Permission.REVIEW_WORK)
-        assert rbac.has_permission(
-            OrgRole.INDIVIDUAL_CONTRIBUTOR,
-            Permission.REVIEW_WORK,
-        )
-
-    def test_revoke_permission(self):
-        """Test revoking a permission."""
-        rbac = RBACMatrix(inherit_junior=False)
-        assert rbac.has_permission(
-            OrgRole.DIRECTOR,
-            Permission.ADMINISTER_ORG,
-        )
-        rbac.revoke(OrgRole.DIRECTOR, Permission.ADMINISTER_ORG)
-        assert not rbac.has_permission(
-            OrgRole.DIRECTOR,
-            Permission.ADMINISTER_ORG,
-        )
-
-    def test_can_member_do(self):
-        """Test can_member_do convenience method."""
-        rbac = RBACMatrix()
-        member = OrgMember(
-            member_id="m1",
-            name="Test",
-            role=OrgRole.MANAGER,
-        )
-        assert rbac.can_member_do(member, Permission.APPROVE_SPEND)
-
-    def test_all_permissions_exist(self):
-        """Test all expected permissions are defined."""
-        perms = list(Permission)
-        expected = [
-            "VIEW_DASHBOARD", "EDIT_TEAM", "MANAGE_BUDGET",
-            "ASSIGN_TASKS", "REVIEW_WORK", "APPROVE_SPEND",
-            "HIRE_FIRE", "ACCESS_SENSITIVE", "ADMINISTER_ORG",
-        ]
-        for p in expected:
-            assert hasattr(Permission, p), f"Missing permission: {p}"
-        assert len(perms) == 9
-
-
+# NOTE(2026-11-17 补缺口): RBACMatrix / Permission / DEFAULT_RBAC_MATRIX 与
+# Organization.can_member_do 已于 2026-11-12（0.4.6）作为未接线死代码删除
+# （src/ai/organization.py 模块头 NOTE 明示；授权主线改为账号树 scope，
+# 网关从不咨询该矩阵）。原 RBAC 测试类测的正是已删功能，故随之移除；
+# 组织/成本/备份的其余断言全部保留。
 # ======================================================================
 # Organization Structure Tests (10 tests)
 # ======================================================================

@@ -160,7 +160,7 @@ def _console_repo(tmp_path: Path, build_body: str) -> Path:
             {
                 "name": "demo-console",
                 "version": "1.2.3",
-                "scripts": {"build": "node build.js"},
+                "scripts": {"build": "node build.js", "test": "node -e \"process.exit(0)\"", "lint": "node -e \"process.exit(0)\""},  # 0.4.6 G6 扩为 build+test+lint 三连，fixture 须齐三脚本
             }
         ),
         encoding="utf-8",

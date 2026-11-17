@@ -86,7 +86,11 @@ def web_server():
 
 def _hn_provider(base: str, path: str):
     def provider(phrase, limit, timeout, since_days):
-        payload = json.loads(wr.http_get(base + path, timeout))
+        # 0.4.6: wr.http_get 只服务内置三源（https + 主机白名单 SSRF 收口），
+        # 自定义检索源按 web_research 模块明示「自带传输层，不复用 http_get」。
+        # 本 fixture 是自定义源，故用裸 urllib 打本地测试服务器。
+        with urllib.request.urlopen(base + path, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
         items = []
         for hit in payload.get("hits") or []:
             title = str(hit.get("title") or "")

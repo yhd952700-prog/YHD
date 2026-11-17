@@ -34,7 +34,7 @@ server:
     write_seconds: 30
     idle_seconds: 75
   limits:
-    rate_limit_per_minute: 120
+    rate_limit_per_minute: 600   # 2026-11-17 打磨轮上调：控制台单页加载即发出数十个 API 调用，120/min 会被正常使用打满（全局限流按主体计数，误伤读接口）；高成本面另有 per-path 业务限流兜底
   trusted_proxies:
     - "10.0.0.0/8"                  # 内网 LB / Ingress 网段
   compression:

@@ -215,22 +215,22 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
         "why": (
             "configured path of the persisted audit hash-chain. Absence selects "
             "the permissive branch in two of its three readers: "
-            "src/gateway/main.py:419-427 logs 'AUDIT CHECKPOINTER SKIPPED' and "
+            "src/gateway/main.py:1531 resolves AUDIT_DB_PATH first and "
             "keeps serving (the background verifier never starts, so /v1/ready "
             "evidence_status stays 'unverified' forever), and "
-            "src/gateway/health.py:280-298 calls unset a 'configuration state' "
+            "src/gateway/health.py:1071 calls unset a 'configuration state' "
             "(healthy, note only) while it degrades when the var IS set but no "
             "verifier runs. The third reader is deliberately fail-closed, not "
-            "permissive: src/kernels/audit/__init__.py:398-407 raises "
+            "permissive: src/kernels/audit/__init__.py:612-622 raises "
             "RuntimeError rather than defaulting to the frozen project-root "
             "store. Unset therefore does not stop the service -- it silently "
             "leaves the audit chain uncheckpointed. It is also NOT a readiness "
-            "gate by design (src/gateway/main.py:416-418: 'unverified' must not "
+            "gate by design (src/gateway/main.py:1531: 'unverified' must not "
             "503 the deployment), which is exactly why the decision has to be "
             "recorded here instead of inferred from a green signal. Armed at "
             "docker-compose.prod.yml:72 and "
             "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
-            ".github/workflows/ci.yml:806 also pins a temp path, but a CI-only "
+            ".github/workflows/ci.yml:917 also pins a temp path, but a CI-only "
             "setter does NOT count as deployment arming (category "
             "`seed-armed-only-in-ci`), so the two compose setters are what keep "
             "this entry green -- removing both reddens it even while the CI pin "
@@ -238,7 +238,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/health.py:1054",
+            "src/gateway/health.py:1071",  # 2026-11-17 补缺口轮重指（原 1054 已漂移）
             "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
@@ -248,8 +248,8 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             # :793 when the console-readability job was added (2026-11-04), and
             # to :916 when the guardrails job grew its own pin-to-temp step in
             # the same round (the same setter, now cited at both jobs).
-            ".github/workflows/ci.yml:326",
-            ".github/workflows/ci.yml:916",
+            ".github/workflows/ci.yml:327",
+            ".github/workflows/ci.yml:917",
         ),
     },
     {
@@ -312,7 +312,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "shipped system"
         ),
         "refs": (
-            "src/ai/providers.py:3612",
+            "src/ai/providers.py:3681",  # 2026-11-17 重指
             "src/kernels/execution/__init__.py:501",
         ),
     },
@@ -346,7 +346,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
         ),
         "refs": (
             "src/common/data_paths.py:30",
-            "src/gateway/accounts.py:388",
+            "src/gateway/accounts.py:385",  # 2026-11-17 重指
         ),
     },
     {

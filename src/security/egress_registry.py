@@ -231,6 +231,15 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         default_state="关闭",
         disclosed_in=_OPS_DISCLOSURE,
     ),
+    # ── 语音唤醒模型下载（0.4.6 新增 src/voice/wake.py 时漏登记，补缺口补上） ──
+    "alphacephei.com": EgressEntry(
+        feature="语音唤醒词模型下载（Vosk）",
+        trigger="用户在语音设置里显式启动唤醒模型下载（start_small_model_download）",
+        fields="GET 模型 zip 路径；User-Agent: Jarvis/0.4.6（不带任何用户数据）",
+        personal_data="否",
+        default_state="关闭（未显式下载前不请求）",
+        disclosed_in=_OPS_DISCLOSURE,
+    ),
     # ── 第三方集成（只有用户主动连接后才会请求） ─────────────────────────
     "api.airtable.com": EgressEntry(
         feature="Airtable 集成", trigger="用户连接 Airtable 并执行动作",
@@ -503,6 +512,10 @@ EGRESS_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     (
         "依赖漏洞情报（运维显式开启）",
         ("api.osv.dev",),
+    ),
+    (
+        "语音唤醒模型（你显式下载后才会发生）",
+        ("alphacephei.com",),
     ),
     (
         "第三方集成（你主动连接后才会请求）",

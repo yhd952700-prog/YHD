@@ -120,6 +120,10 @@ googleapis-common-protos==1.76.0
     # via
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
+greenlet==3.5.6
+    # via
+    #   liuhao-ai-os (pyproject.toml)
+    #   sqlalchemy (asyncio extra; runtime requirement of ext.asyncio)
 griffelib==2.4.1
     # via fastmcp-slim
 grpcio==1.85.1

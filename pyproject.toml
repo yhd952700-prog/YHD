@@ -26,6 +26,10 @@ dependencies = [
     # requirements.txt 早已锁进该包，这里补齐声明，避免"能 import 却未声明"。
     "python-dotenv>=1.0.0",
     "prometheus-client>=0.19.0",
+    # SQLAlchemy asyncio（ext.asyncio）运行期硬依赖 greenlet：干净环境只按
+    # 本声明安装时缺它会让知识库等 async DB 收集/导入直接失败（0.4.6 体检
+    # 实证）。sqlalchemy 本身只把它列为 async extra，故这里显式声明。
+    "greenlet>=3.0.0",
     # 1.45.1 是安全基线：opentelemetry-api <1.45.1 命中 CVE-2026-114603
     # （TraceState.from_header ReDoS）。三个包必须同档：sdk 1.45.1 硬依赖
     # api==1.45.1 与 semantic-conventions==0.66b1，instrumentation 同步 0.66b1。

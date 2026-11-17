@@ -122,9 +122,10 @@ def test_export_contains_raw_key_material_not_dpapi_ciphertext(manager):
     assert encryption.DPAPI_PREFIX not in text
     assert encryption.RAW_PREFIX not in text
 
-    model_entry = _entry(payload, "data/model_config.key")
-    assert _content(model_entry) == MODEL_KEY
-    assert model_entry["machine_bound"] == {"file": "model_config.key"}
+    # 2026-11-15 规矩：model_config.key 与 model_registry.sqlite3 不进任何
+    # 备份包（backup_manager._NEVER_ARCHIVE_BASENAMES），换机后到设置重填。
+    files = payload["data"]["user_data"]["files"]
+    assert "data/model_config.key" not in files
 
     integrity_entry = _entry(payload, "config/integrity.key")
     assert _content(integrity_entry) == INTEGRITY_KEY.encode("utf-8")
@@ -164,21 +165,14 @@ def test_cross_machine_restore_rewraps_with_target_dpapi(manager, tmp_path, monk
     )
     assert result["status"] == "restored"
     assert set(purposes) >= {
-        backup_mod._dpapi_purpose_for("model_config.key"),
         backup_mod._dpapi_purpose_for("integrity.key"),
         backup_mod._jwt_dpapi_purpose(),
         backup_mod._env_secret_purpose("SECRET_KEY"),
     }
 
+    # model_config.key 不进备份包（2026-11-15 规矩），恢复后不存在、无从重包。
     model_file = target / "data" / "model_config.key"
-    raw = model_file.read_bytes()
-    assert encryption.is_machine_bound_payload(raw)
-    plain, _mode = encryption.unwrap_machine_bound(
-        raw, purpose=backup_mod._dpapi_purpose_for("model_config.key")
-    )
-    assert plain == MODEL_KEY
-    if os.name == "nt":
-        assert raw.startswith(encryption.DPAPI_PREFIX.encode("ascii"))
+    assert not model_file.exists()
 
     integrity_file = target / "config" / "integrity.key"
     integrity_raw = integrity_file.read_bytes()

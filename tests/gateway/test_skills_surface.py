@@ -98,7 +98,7 @@ def test_create_list_edit_delete(client):
     assert created["risk"] == "low"
     assert created["permissions"] == []
     assert created["used_by"] == []
-    assert created["enabled"] is True
+    assert created["enabled"] is False  # 0.4.6 §5.4: 新建技能默认关，须显式启用
     assert created["capabilities"] == []
 
     body = client.get("/v1/skills", headers=_headers()).json()

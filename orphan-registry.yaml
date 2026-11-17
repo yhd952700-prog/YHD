@@ -66,23 +66,12 @@ acknowledged:
   # （谁在启动时装配协调后端 / C15 deny 门装在哪）仍待实施。
 
   # --- library / staged code (no consumer yet; not a defect) ----------------
-  - module: src.gateway.validation
-    classification: library-staged
-    reason: >-
-      8 request-validation helpers. Not referenced: the gateway validates via
-      pydantic request models declared inline on its routes.
 
   # 注：src.logging_config 与 src.observability.logging_utils 已被删除。
   # 运行期日志现在只有一条生效路径：config/logging.yaml（由三个入口以
   # uvicorn --log-config / log_config= 加载）。保留两套“看起来能用、实际无人
   # 调用”的日志配置，等于给后来者留下两个错误答案，所以删掉而不是登记。
 
-  - module: src.observability.alerts
-    classification: library-staged
-    reason: >-
-      Alert definition module with a single public function and no consumer.
-      Prometheus metrics are exposed live (src/observability/production.py), but
-      no alert rules are wired to them yet.
 
   - module: src.pipelines.etl
     classification: library-staged
@@ -90,17 +79,7 @@ acknowledged:
       ETL pipeline (4 classes, 11 methods) with no consumer. Staged ingestion
       capability; not on any runtime path.
 
-  - module: src.pipelines.parser
-    classification: library-staged
-    reason: >-
-      Document parser (4 classes, 9 methods) with no consumer. Staged ingestion
-      capability; not on any runtime path.
 
-  - module: src.plugins.marketplace
-    classification: library-staged
-    reason: >-
-      Plugin marketplace store (register/get/list). No consumer; the plugin
-      kernel (src/kernels/plugin) is the live plugin path.
 
   - module: src.plugins.plugin_manager
     classification: library-staged
@@ -109,13 +88,6 @@ acknowledged:
       live plugin authority is src/kernels/plugin.
 
   # --- tooling and non-runtime artifacts ------------------------------------
-  - module: src.performance.benchmarks
-    classification: tooling
-    reason: >-
-      Benchmark harness meant to be invoked manually, not imported by the app;
-      this is why it has no importer. NOTE: it consumes LRUCache from
-      src/performance/cache.py, so a human run must stay green (the Phase 8
-      cache work kept this in mind).
 
   - module: src.infra.infra_charts
     classification: infra-artifact
@@ -146,3 +118,13 @@ acknowledged:
   # *history*, not as a live orphan, per the convention at the top of this file:
   # leaving it in the acknowledged list would make the guard report it stale.
   # Recovery: `git log -- src/integrations/cloud_models.py`, or the backup above.
+
+  # --- 2026-11-17 补缺口轮登记 -------------------------------------------------
+  - module: src.ai.email_rules
+    classification: legacy-not-wired
+    reason: >-
+      Rule engine for automatic handling of incoming mail, added in 0.4.6
+      but never wired: no importer anywhere, and the module itself states
+      no real mailbox account is connected (Gmail/IMAP not hooked up).
+      Kept as staged feature code pending a wiring decision; deleting it
+      would destroy the only copy of the 0.4.6 work.

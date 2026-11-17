@@ -471,9 +471,8 @@ class TestBackupCommands:
         )
         assert (target / "config" / "human_identities.json").is_file()
         assert (target / "config" / "auth_secrets.json").is_file()
-        assert (target / "data" / "model_config.key").read_text(encoding="utf-8") == (
-            "model-master-key"
-        )
+        # model_config.key 自 2026-11-15 起不进备份包，恢复后自然不存在（须重填）。
+        assert not (target / "data" / "model_config.key").exists()
         assert (target / "data" / "knowledge_vectors.sqlite3").read_bytes() == (
             b"knowledge-bytes"
         )

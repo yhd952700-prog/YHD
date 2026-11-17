@@ -105,7 +105,16 @@ def test_account_user_text_has_no_hierarchy_words(_isolate):
         )
         assert response.status_code == 200, response.text
         _assert_neutral(response.json())
-        member = _bearer(response.json()["access_token"])
+        # 0.4.6：自助注册不再直接发令牌（pending_approval）；根批准后登录取令牌。
+        approved = client.post(
+            "/v1/a3m/owner/registrations/self1/approve", headers=root
+        )
+        assert approved.status_code == 200, approved.text
+        member_login = client.post(
+            "/v1/auth/login", json={"principal": "self1", "secret": "selfpass123"}
+        )
+        assert member_login.status_code == 200, member_login.text
+        member = _bearer(member_login.json()["access_token"])
 
         # 5) 重复注册的拒绝文案
         response = client.post(

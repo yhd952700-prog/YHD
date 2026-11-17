@@ -103,8 +103,8 @@ class CreateAgentReq(BaseModel):
 
 ### 本机回环网关的 Host / Origin 守卫
 
-- **现网状态**：`HostGuardMiddleware` 只覆盖 HTTP，WebSocket scope（`scope["type"] == "websocket"`）不做 Host/Origin 校验；网关当前**未挂载任何 WS 路由**（`src/api/events_ws.py` 那个无鉴权、订阅全量事件的事件通道只挂在 legacy 独立服务 `src/api/server.py`），实测网关 WS 握手返回 403。
-- **挂载前提**：任何 WS 路由接入网关之前，必须先把 Host 校验（以及写语义的 Origin 校验）扩展到 websocket scope，否则就是跨站 WebSocket 读取面。`tests/gateway/test_loopback_defaults_and_host_guard.py` 在“出现 WS 路由但 scope 未覆盖”时直接变红。
+- **现网状态**（2026-11-17 补缺口轮同步）：`HostGuardMiddleware` 已于 2026-11-14（D 组修复）扩展到 WebSocket scope，伪造 Host 的 WS 握手会被 `websocket.close` 拒绝、合法回环 Host 放行（`tests/gateway/test_loopback_defaults_and_host_guard.py` 的 `WS_SCOPE_GUARDED = True` 钉住）。网关当前挂载一条 WS 路由 `/v1/a2a/ws/status`（a2a 状态通道，无 Origin/令牌校验，靠 HostGuard + 回环绑定收口，取舍见 `src/gateway/a2a.py` 模块说明）；`src/api/events_ws.py` 那个无鉴权、订阅全量事件的事件通道仍只挂在 legacy 独立服务 `src/api/server.py`，其握手在网关上返回 403。
+- **挂载前提**：任何新的 WS 路由接入网关，必须保持 Host 校验覆盖 websocket scope（写语义的通道还须加 Origin 校验），否则就是跨站 WebSocket 读取面。上述测试在“出现 WS 路由但 scope 未覆盖”时直接变红。
 - **畸形 Host 不按漏洞处理**：Host 端口不校验（`127.0.0.1:9999` 也放行），且按第一个冒号截断（`127.0.0.1:8081:evil.example.com` 被解析成 `127.0.0.1`）。浏览器 URL 解析不会产生这两种 authority，而非浏览器客户端本就能直连并任意伪造头，所以这里只作为解析宽松记录，不当作漏网。
 
 ---

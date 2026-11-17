@@ -54,7 +54,7 @@ def make_assistant(name: str = "karen-test", provider=None):
 
 
 def test_set_preference_tool_writes_real_profile(isolate_state):
-    tools = make_tools("alice", status_fn=lambda: {"turn": 0})
+    tools = make_tools("alice", status_fn=lambda: {"turn": 0}, include_disabled=True)  # personal_* 为 B 档默认关，本文件测其行为故取全集
     fn = next(t.fn for t in tools if t.name == "personal_set_preference")
     out = fn(key="语言", value="简体中文", confidence=0.9)
     payload = json.loads(out)
@@ -71,7 +71,7 @@ def test_add_fact_tool_writes_pending_not_profile(isolate_state):
     '提议 + 用户确认' 两阶段（工具只返回 pending_fact，UI 确认后才落库）」），
     实现见 ``src/ai/tools/kernel_tools.py`` 的 ``personal_add_fact`` -> ``propose_fact``。
     """
-    tools = make_tools("alice", status_fn=lambda: {"turn": 0})
+    tools = make_tools("alice", status_fn=lambda: {"turn": 0}, include_disabled=True)  # personal_* 为 B 档默认关，本文件测其行为故取全集
     fn = next(t.fn for t in tools if t.name == "personal_add_fact")
     payload = json.loads(fn(key="公司", value="鎏灏科技"))
     assert payload["status"] == "pending_confirmation"
@@ -84,7 +84,7 @@ def test_add_fact_tool_writes_pending_not_profile(isolate_state):
 
 
 def test_set_display_name_tool_writes_real_profile(isolate_state):
-    tools = make_tools("alice", status_fn=lambda: {"turn": 0})
+    tools = make_tools("alice", status_fn=lambda: {"turn": 0}, include_disabled=True)  # personal_* 为 B 档默认关，本文件测其行为故取全集
     fn = next(t.fn for t in tools if t.name == "personal_set_display_name")
     fn(display_name="辛宏达")
     profile = isolate_state["personal"].get_profile("alice")

@@ -11,9 +11,9 @@ Round 82 评审核实：``src/adapters/`` 整个目录在运行时不被任何 s
 
 这一组护栏保证：
 
-* MCP 适配器保持 ``adapter-only`` 声明（适配层已就绪：stdio / streamable HTTP /
-  server 模式，但**未接入对话主链路**，运行时入口受 LIUHAO_MCP_ADAPTER_ENABLED
-  控制且默认关闭；真正接线需先满足 mcp_adapter.py 顶部安全前置条件）；
+* MCP 适配器声明与接线状态一致：0.4.6 起 ``src/gateway/mcp.py`` 已正式
+  import 该适配器（状态 ``internal-callable``）；除该装配点外，运行时仍不得
+  偷偷 import src/adapters；
 * 网关装配处不得把被取代的 ``src/adapters/observability`` 接进去；
 * 被标为未接线的 src/adapters 模块不得被 ``src/gateway/`` 或 ``src/ai/``
   偷偷 import（防止"声明未接线、事实已漂移"）。
@@ -47,21 +47,20 @@ def _read(p: pathlib.Path) -> str:
 
 
 class TestMCPWiring:
-    def test_mcp_adapter_declares_adapter_only(self):
-        """MCP 适配器必须保持 adapter-only；一旦接线须同步改声明与测试。
+    def test_mcp_adapter_declares_internal_callable(self):
+        """MCP 适配器声明必须与接线事实一致（本测试自带约定：接线即同步改）。
 
-        2026-11-05（阶段 B1）：适配层已重写（FastMCP），但**没有**接进对话主链路，
-        因此状态从 ``not-wired`` 改为 ``adapter-only``；下面
-        ``TestAdaptersNotImportedByRuntime`` 仍机械保证 src/gateway 与 src/ai
-        不得 import 该适配器，防止"声明未接线、事实已漂移"。
+        2026-11-05（阶段 B1）状态为 ``adapter-only``（未接主链路）；
+        0.4.6 起 ``src/gateway/mcp.py`` 正式 import 并装配该适配器，
+        ``MCP_WIRING_STATUS`` 已同步改为 ``internal-callable``。
         """
         tree = ast.parse(_read(MCP_ADAPTER_PY))
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "MCP_WIRING_STATUS":
-                        assert node.value.value == "adapter-only", (
-                            "MCP_WIRING_STATUS 不再是 'adapter-only'；"
+                        assert node.value.value == "internal-callable", (
+                            "MCP_WIRING_STATUS 不再是 'internal-callable'；"
                             "若确实已接线，请同步更新本测试与模块 docstring"
                         )
                         return
@@ -91,11 +90,19 @@ class TestGatewayUsesAuthoritativeObservability:
 class TestAdaptersNotImportedByRuntime:
     @pytest.mark.parametrize("runtime_dir", [GATEWAY_DIR, AI_DIR])
     def test_runtime_does_not_import_adapters_modules(self, runtime_dir):
-        """src/gateway/ 与 src/ai/ 不得 import src/adapters 下的任何模块。"""
+        """src/gateway/ 与 src/ai/ 不得 import src/adapters 下的任何模块。
+
+        唯一例外（0.4.6 正式接线）：``src/gateway/mcp.py`` import
+        ``src.adapters.mcp``——与 MCP_WIRING_STATUS=internal-callable 同步。
+        observability 等其他 adapters 模块仍全面禁止。
+        """
         offenders = []
         for py in sorted(runtime_dir.rglob("*.py")):
             for lineno, line in enumerate(_read(py).splitlines(), 1):
                 if _ADAPTERS_IMPORT_RE.search(line):
+                    if py.name == "mcp.py" and py.parent.name == "gateway" \
+                            and "observability" not in line:
+                        continue  # 0.4.6 正式接线点，见上
                     offenders.append(
                         f"{py.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}"
                     )

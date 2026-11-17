@@ -1,7 +1,7 @@
 """Tests for organization, specialized agents, cost tracking, and backup modules.
 
 Covers:
-- src.ai.organization (OrgRole, Team, Department, OrgMember, RBACMatrix, Organization)
+- src.ai.organization (OrgRole, Team, Department, OrgMember, Organization)
 - src.ai.specialized_agents (CodeAgent, DataAnalystAgent, ResearchAgent)
 - src.cost.cost_tracker (CostRecord, Budget, CostTracker, alerts, forecasting)
 - src.backup.backup_manager (BackupManager, retention, verification, restore)
@@ -19,8 +19,6 @@ from src.ai.organization import (
     OrgMember,
     Team,
     Department,
-    Permission,
-    RBACMatrix,
     Organization,
 )
 from src.ai.specialized_agents import (
@@ -263,43 +261,11 @@ class TestDepartment:
 # =====================================================================
 
 
-class TestRBACMatrix:
-    def test_default_permissions_ic(self):
-        rbac = RBACMatrix()
-        assert rbac.has_permission(OrgRole.INDIVIDUAL_CONTRIBUTOR,
-                                   Permission.VIEW_DASHBOARD)
-        assert not rbac.has_permission(OrgRole.INDIVIDUAL_CONTRIBUTOR,
-                                       Permission.MANAGE_BUDGET)
-
-    def test_inheritance_director_has_all(self):
-        rbac = RBACMatrix()
-        # Director should have all permissions via inheritance
-        for perm in Permission:
-            assert rbac.has_permission(OrgRole.DIRECTOR, perm)
-
-    def test_no_inheritance_mode(self):
-        rbac = RBACMatrix(inherit_junior=False)
-        # Without inheritance, IC shouldn't have director-only perms
-        assert not rbac.has_permission(OrgRole.INDIVIDUAL_CONTRIBUTOR,
-                                       Permission.ADMINISTER_ORG)
-
-    def test_grant_and_revoke(self):
-        rbac = RBACMatrix(inherit_junior=False)
-        rbac.grant(OrgRole.INDIVIDUAL_CONTRIBUTOR, Permission.MANAGE_BUDGET)
-        assert rbac.has_permission(OrgRole.INDIVIDUAL_CONTRIBUTOR,
-                                   Permission.MANAGE_BUDGET)
-        rbac.revoke(OrgRole.INDIVIDUAL_CONTRIBUTOR, Permission.MANAGE_BUDGET)
-        assert not rbac.has_permission(OrgRole.INDIVIDUAL_CONTRIBUTOR,
-                                       Permission.MANAGE_BUDGET)
-
-    def test_can_member_do(self):
-        rbac = RBACMatrix()
-        member = OrgMember(member_id="m1", name="Test", role=OrgRole.LEAD)
-        assert rbac.can_member_do(member, Permission.VIEW_DASHBOARD)
-        assert rbac.can_member_do(member, Permission.REVIEW_WORK)
-        assert not rbac.can_member_do(member, Permission.ADMINISTER_ORG)
-
-
+# NOTE(2026-11-17 补缺口): RBACMatrix / Permission / DEFAULT_RBAC_MATRIX 与
+# Organization.can_member_do 已于 2026-11-12（0.4.6）作为未接线死代码删除
+# （src/ai/organization.py 模块头 NOTE 明示；授权主线改为账号树 scope，
+# 网关从不咨询该矩阵）。原 RBAC 测试类测的正是已删功能，故随之移除；
+# 组织/成本/备份的其余断言全部保留。
 # =====================================================================
 # Organization tests — Organization (full traversal)
 # =====================================================================
@@ -361,11 +327,6 @@ class TestOrganization:
 
     def test_remove_member_not_found(self, sample_org):
         assert sample_org.remove_member("nonexistent") is False
-
-    def test_can_member_do_convenience(self, sample_org):
-        assert sample_org.can_member_do("mem-dir", Permission.ADMINISTER_ORG)
-        assert not sample_org.can_member_do("mem-ic1", Permission.HIRE_FIRE)
-        assert not sample_org.can_member_do("nonexistent", Permission.VIEW_DASHBOARD)
 
     def test_team_performance_summary(self, sample_org):
         summary = sample_org.team_performance_summary()

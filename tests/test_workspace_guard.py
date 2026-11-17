@@ -155,7 +155,7 @@ class TestToolLayerIsConstrainedByWorkspace:
         monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(root))
         from src.ai.tools import make_tools
 
-        return {t.tool_id: t for t in make_tools("alice", status_fn=lambda: {"turn": 0})}
+        return {t.tool_id: t for t in make_tools("alice", status_fn=lambda: {"turn": 0}, include_disabled=True)}  # file.* 为 B 档默认关，本文件测其工作区约束故取全集
 
     def test_file_tools_are_exposed(self, tmp_path, monkeypatch):
         tools = self._tools(tmp_path, monkeypatch)

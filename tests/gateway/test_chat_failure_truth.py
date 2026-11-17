@@ -290,7 +290,7 @@ def test_d4_mock_provider_is_explicit_not_internal_state(monkeypatch):
     assert "还没有配置模型" in text
     assert "请先配置模型密钥" in text
     assert "演示数据" not in text
-    assert "系统设置 → 模型管理" in text and "密钥" in text
+    assert "系统设置 → 模型与 Key" in text and "密钥" in text
     assert "LiuHao AI OS status" not in text
     assert "supports_streaming" not in text
 
@@ -314,7 +314,7 @@ def test_d4_demo_seed_labels_mock_reply_as_demo(monkeypatch):
     assert text == DEMO_MODEL_NOT_CONFIGURED_MESSAGE
     assert "演示数据" in text
     assert "还没有配置模型" in text
-    assert "系统设置 → 模型管理" in text
+    assert "系统设置 → 模型与 Key" in text
 
 
 def _serve_upstream(monkeypatch, *, status: int, payload: dict) -> None:

@@ -21,20 +21,25 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from src.security import (
-    RBACManager,
-    Role,
-    Permission,
-    PermissionAction,
-    ResourceType,
-    RoleStatus,
     KeyScope,
     KeyStatus,
     APIKeyManager,
     JWTHandler,
     TokenType,
     VaultTransitCrypto,
-    CryptoAuditLogger,
 )
+# 2026-11-12（0.4.6）起包根不再 re-export legacy RBAC 与 CryptoAuditLogger
+# （网关主线改为账号树 scope，见 src/gateway/main.py 同日注释）；类本身仍在
+# 子模块里（abac 等仍在用），故测试改为子模块 import。
+from src.security.rbac import (
+    RBACManager,
+    Role,
+    Permission,
+    PermissionAction,
+    ResourceType,
+    RoleStatus,
+)
+from src.security.audit_logger import CryptoAuditLogger
 from src.security.rbac_store import get_rbac_manager, rbac_store
 from src.security.abac import (
     ABACEngine,

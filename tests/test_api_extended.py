@@ -316,13 +316,15 @@ class TestKnowledgeAPI:
         response = client.delete(f"/knowledge/{kb_id}")
         assert response.status_code == 204
 
-    def test_semantic_search(self, client):
+    def test_semantic_search_shell_endpoint_is_removed(self, client):
+        # 2026-11-14（A2a 决定）：旧壳端点 POST /knowledge/{kb_id}/search 已删
+        # ——它永远返回 search_unavailable 空结果却长得像能用。真搜索走主线
+        # 网关 POST /v1/knowledge/search（见 tests/test_knowledge_live.py）。
+        # 本用例钉住删除，防空壳悄悄回来。
         create_resp = client.post("/knowledge", json={"name": "Search KB"})
         kb_id = create_resp.json()["id"]
         response = client.post(f"/knowledge/{kb_id}/search", params={"query": "test"})
-        assert response.status_code == 200
-        data = response.json()
-        assert "results" in data
+        assert response.status_code == 404
 
     def test_list_documents(self, client):
         create_resp = client.post("/knowledge", json={"name": "Docs KB"})

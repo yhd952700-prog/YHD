@@ -238,7 +238,7 @@ def test_gate_falls_back_to_health_on_old_gateway(monkeypatch: pytest.MonkeyPatc
 def test_gate_rejects_foreign_service_on_legacy_health(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1：/v1/health 回 2xx 但不是鎏灏的服务，不能算就绪。"""
+    """P1：/v1/health 回 2xx 但不是贾维斯的服务，不能算就绪。"""
     def fake_http(url: str, timeout: float = 2.0) -> dict[str, Any]:
         if url.endswith(startup.STARTUP_PATH):
             return {"ok": False, "status": 404, "body": None, "error": "HTTP 404"}
@@ -322,7 +322,8 @@ def test_desktop_boot_pipeline_reports_gate_through_event_queue(
         monkeypatch.setattr(desktop_app.webbrowser, "open", lambda url: opened.append(url))
         app, tray = _app_with_stubs()
         app.service.port = port
-        monkeypatch.setattr(app.service, "start", lambda timeout=120.0: True)
+        # 0.4.6: DesktopApp 以 allow_port_fallback=True 调用 service.start，stub 须收下新 kwarg。
+        monkeypatch.setattr(app.service, "start", lambda timeout=120.0, **_kw: True)
         monkeypatch.setattr(app.service, "is_running", lambda: proc.poll() is None)
 
         app._boot()
@@ -337,7 +338,7 @@ def test_desktop_boot_pipeline_reports_gate_through_event_queue(
         assert payload["gate"]["state"] == "degraded"
         app._apply_boot_result(payload)
         assert opened == [f"http://127.0.0.1:{port}/?mode=web"]
-        assert tray.notices[-1][0] == "鎏灏已启动（部分组件未就绪）"
+        assert tray.notices[-1][0] == "贾维斯已启动（部分组件未就绪）"
         assert "SMTP 未配置" in tray.notices[-1][1]
     finally:
         _stop_runner(proc, handle, log_path)
@@ -356,7 +357,7 @@ def test_desktop_opens_console_only_when_gate_allows(
 
     if state == "ready":
         gate = _gate_result(monkeypatch, {"state": "ready"})
-        expected_notice = "鎏灏已就绪"
+        expected_notice = "贾维斯已就绪"
     elif state == "degraded":
         gate = _gate_result(
             monkeypatch,
@@ -365,7 +366,7 @@ def test_desktop_opens_console_only_when_gate_allows(
                 "background": {"errors": [{"step": "情报", "error": "SMTP 未配置"}]},
             },
         )
-        expected_notice = "鎏灏已启动（部分组件未就绪）"
+        expected_notice = "贾维斯已启动（部分组件未就绪）"
     elif state == "timeout":
         _fake_probe(
             monkeypatch,
@@ -374,10 +375,10 @@ def test_desktop_opens_console_only_when_gate_allows(
         gate = startup.wait_until_ready(
             "http://127.0.0.1:8080", timeout=0.0, log_dir=tmp_path, sleep=lambda _s: None
         )
-        expected_notice = "鎏灏启动超时"
+        expected_notice = "贾维斯启动超时"
     else:
         gate = startup.unavailable_gate("网关在 120s 内未通过 /v1/health", log_dir=tmp_path)
-        expected_notice = "鎏灏启动失败"
+        expected_notice = "贾维斯启动失败"
 
     app._apply_boot_result({"started": state != "failed", "gate": gate})
 

@@ -592,7 +592,9 @@ def test_kernel_tools_register_exactly_four_read_only_observation_tools(monkeypa
     principal = f"{_KERNEL_PRINCIPAL_BASE}-human"
     _register_identity(principal, "human")
 
-    tools = make_tools(principal)
+    # 0.4.6 注册闸：observation 工具在 chat_tool_settings 里默认关，
+    # 本用例测的是「开关打开时恰好注册 4 个只读观测工具」，故取全集。
+    tools = make_tools(principal, include_disabled=True)
     observation_tools = [
         item
         for item in tools

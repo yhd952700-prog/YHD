@@ -517,12 +517,13 @@ class TestCiOnlyArming:
 #: The sites the entry's `why` claims. Kept next to the assertions so a reworded
 #: `why` that quietly drops one of them is caught.
 _AUDIT_DB_PATH_EVIDENCE = (
-    "src/gateway/main.py:419",
-    "src/gateway/health.py:280",
-    "src/kernels/audit/__init__.py:398",
+    # 行号随代码漂移，2026-11-17 补缺口轮按现行代码重指（读点见 why 原文）。
+    "src/gateway/main.py:1531",
+    "src/gateway/health.py:1071",
+    "src/kernels/audit/__init__.py:612",
     "docker-compose.prod.yml:72",
     "infra/staging/docker-compose.yml:59",
-    ".github/workflows/ci.yml:806",
+    ".github/workflows/ci.yml:917",
 )
 
 

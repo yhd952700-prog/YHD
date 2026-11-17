@@ -348,8 +348,9 @@ class TestMCPServerMode:
 class TestMCPAdapterSwitch:
     """显式开关：默认关闭，且不静默。"""
 
-    def test_wiring_status_is_adapter_only(self):
-        assert MCP_WIRING_STATUS == "adapter-only"
+    def test_wiring_status_is_internal_callable(self):
+        # 0.4.6 起 src/gateway/mcp.py 正式装配该适配器，状态同步为 internal-callable。
+        assert MCP_WIRING_STATUS == "internal-callable"
 
     def test_switch_defaults_to_disabled(self, monkeypatch):
         monkeypatch.delenv(MCP_ADAPTER_ENABLED_ENV, raising=False)

@@ -462,10 +462,15 @@ def _create_model(
 
 
 def test_model_key_scope_and_borrowing(tree, client):
+    """0.4.6 新规矩（Joseph 2026-11-14）：Key 不共用。
+
+    模型只对主人本人可见可用：根账号的列表里不再出现成员的模型，
+    也不存在任何共享开关端点（PATCH /v1/accounts/{id}/key-sharing 已删）。
+    """
     child1_model = _create_model(client, tree.root, name="key-child1", owner="child1")
     child2_model = _create_model(client, tree.child2, name="key-child2")
 
-    # 列表：各层只在自己的可见范围内。
+    # 列表：每层只见自己的模型；根也不见成员的。
     child1_ids = {m["id"] for m in client.get("/v1/models", headers=tree.child1).json()["models"]}
     child2_ids = {m["id"] for m in client.get("/v1/models", headers=tree.child2).json()["models"]}
     root_ids = {m["id"] for m in client.get("/v1/models", headers=tree.root).json()["models"]}
@@ -473,11 +478,11 @@ def test_model_key_scope_and_borrowing(tree, client):
 
     assert child1_ids == {child1_model["id"]}
     assert child2_ids == {child2_model["id"]}
-    assert {child1_model["id"], child2_model["id"]} <= root_ids
+    assert child1_model["id"] not in root_ids
+    assert child2_model["id"] not in root_ids
     assert grand_ids == set()
 
-    # 成员不能用别人的 Key：兄弟的模型既不可读也不可改。
-    # 越权读必须与"不存在"同形（中性 404），否则可以按状态码枚举 model_id。
+    # 成员不能用别人的 Key：兄弟的模型既不可读也不可改（中性 404）。
     foreign = client.get(f"/v1/models/{child2_model['id']}", headers=tree.child1)
     missing = client.get("/v1/models/no-such-model", headers=tree.child1)
     assert foreign.status_code == 404, foreign.text
@@ -495,31 +500,26 @@ def test_model_key_scope_and_borrowing(tree, client):
     assert assign.status_code == 403, assign.text
     assert _error_code(assign) == "ACCOUNT_KEY_NOT_OWNED"
 
-    # 根：未开启共享时拿不到成员 Key（中性 404，避免 403/404 对比枚举）；
-    # 成员本人开启后可借用；再撤销即失效。
+    # 根读成员模型：恒中性 404（没有共享可开）。
     before = client.get(f"/v1/models/{child1_model['id']}", headers=tree.root)
     assert before.status_code == 404, before.text
 
+    # 共享开关端点已删除：任何账号调用都是 404。
     shared = client.patch(
         "/v1/accounts/child1/key-sharing", json={"allow": True}, headers=tree.child1
     )
-    assert shared.status_code == 200, shared.text
+    assert shared.status_code == 404, shared.text
     after = client.get(f"/v1/models/{child1_model['id']}", headers=tree.root)
-    assert after.status_code == 200, after.text
-
-    revoked = client.patch(
-        "/v1/accounts/child1/key-sharing", json={"allow": False}, headers=tree.child1
-    )
-    assert revoked.status_code == 200, revoked.text
-    again = client.get(f"/v1/models/{child1_model['id']}", headers=tree.root)
-    assert again.status_code == 404, again.text
+    assert after.status_code == 404, after.text
 
 
 def test_borrowed_key_usage_is_attributed_to_borrower(tree, client):
+    """Key 不共用后：根拿成员的 model_id 发请求会被拒，且不产生任何用量。
+
+    旧契约（借用记借用者账）已随共享机制整体删除；本用例钉住新契约：
+    借用不存在、成员账上不出现别人的调用、兄弟看成员用量仍是中性 404。
+    """
     model = _create_model(client, tree.root, name="borrow-key", owner="child1")
-    assert client.patch(
-        "/v1/accounts/child1/key-sharing", json={"allow": True}, headers=tree.child1
-    ).status_code == 200
 
     chat = client.post(
         "/v1/chat",
@@ -530,24 +530,14 @@ def test_borrowed_key_usage_is_attributed_to_borrower(tree, client):
         },
         headers=tree.root,
     )
-    assert chat.status_code == 200, chat.text
+    assert chat.status_code != 200, chat.text
 
-    # 根视角：这笔调用真实存在，调用者是 root1，Key 主人是 child1。
-    root_view = client.get("/v1/accounts/child1/usage", headers=tree.root)
-    assert root_view.status_code == 200, root_view.text
-    payload = root_view.json()
-    assert payload["callers_visible"] is True
-    assert {row["actor"]: row["calls"] for row in payload["by_actor"]}["root1"] >= 1
-    assert {row["key_owner"]: row["calls"] for row in payload["by_key_owner"]}["child1"] >= 1
-
-    # 成员本人视角：自己一次都没调用，不能被记成"我的用量"。
+    # 成员本人视角：自己一次都没调用，账上是零。
     member_view = client.get("/v1/accounts/child1/usage", headers=tree.child1)
     assert member_view.status_code == 200, member_view.text
     member_payload = member_view.json()
     assert member_payload["calls"] == 0
     assert member_payload["total_tokens"] == 0
-    assert "by_actor" not in member_payload
-    assert all(row["calls"] == 0 for row in member_payload["by_key_owner"])
 
     # 兄弟看 child1 的用量：中性 404。
     _assert_neutral_404(
@@ -558,11 +548,10 @@ def test_borrowed_key_usage_is_attributed_to_borrower(tree, client):
 def test_explicit_model_selection_cannot_bypass_key_sharing_consent(tree, client):
     """显式 ``model_id`` 与自动路由共用同一套授权口径。
 
-    曾经只有"读详情 / 改配置"走 ``KeyScope.can_use``，而真正发请求的
-    ``/v1/chat`` 在指定 ``model_id`` 时只看可见性 —— 于是成员把
-    ``allow_superior_key_use`` 关掉后，主账号仍能拿它的 Key 出网。
+    0.4.6 起 Key 不共用：根显式指定成员的模型，得到 409
+    ACCOUNT_KEY_NOT_CONFIGURED（对根而言该模型就是不可用配置），
+    且没有任何共享开关能改变这一点。
     """
-
     model = _create_model(client, tree.root, name="consent-key", owner="child1")
     body = {
         "message": "用成员 Key 回一句",
@@ -571,18 +560,17 @@ def test_explicit_model_selection_cannot_bypass_key_sharing_consent(tree, client
     }
 
     denied = client.post("/v1/chat", json=body, headers=tree.root)
-    assert denied.status_code == 403, denied.text
+    assert denied.status_code == 409, denied.text
     payload = denied.json()
-    assert payload.get("code") == "ACCOUNT_KEY_CONSENT_REQUIRED", payload
-    assert payload.get("correlation_id"), payload
+    assert payload.get("code") == "ACCOUNT_KEY_NOT_CONFIGURED", payload
     _assert_no_hierarchy_leak(payload)
 
-    # 成员本人开启授权后，同一请求才被放行。
+    # 共享开关端点已删除，调了也开不了。
     assert client.patch(
         "/v1/accounts/child1/key-sharing", json={"allow": True}, headers=tree.child1
-    ).status_code == 200
-    allowed = client.post("/v1/chat", json=body, headers=tree.root)
-    assert allowed.status_code == 200, allowed.text
+    ).status_code == 404
+    still_denied = client.post("/v1/chat", json=body, headers=tree.root)
+    assert still_denied.status_code == 409, still_denied.text
 
 
 def test_member_can_maintain_own_key_and_cannot_touch_siblings(tree, client):
@@ -909,9 +897,6 @@ def test_multi_root_artifact_view_is_confined_to_subtree():
 
 def test_session_history_isolation(tree, client):
     model = _create_model(client, tree.root, name="chat-key", owner="child1")
-    assert client.patch(
-        "/v1/accounts/child1/key-sharing", json={"allow": True}, headers=tree.child1
-    ).status_code == 200
     chat = client.post(
         "/v1/chat",
         json={"message": "child1 的私密会话", "session_id": "shared-name", "model_id": model["id"]},
