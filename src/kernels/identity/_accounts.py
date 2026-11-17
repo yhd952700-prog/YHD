@@ -8,7 +8,10 @@ Why this module exists
 
 * 主账号（根）管整棵树；成员只能管自己的直接下级；
 * 越级/横向操作一律拒绝，且拒绝文案中性（不暴露层级结构）；
-* Key 只能向下借用，且必须目标账号显式授权（``allow_superior_key_use``）；
+* Key 不共用（Joseph 2026-11-14 新规矩，取代旧的“向下借用”口径）：
+  每个账号只用自己的 Key；``allow_superior_key_use`` 开关已彻底移除
+  （2026-11-15：后端接口、前端开关、文档口径一并清掉），见
+  :func:`can_borrow_key`；历史库里的旧值是惰性字段，不再被任何判定读取。
 * 权限变更、停用、改 Key 归属都要让**已签发凭据在下一个请求即失效**（
   账号上的 ``security_epoch`` 与令牌里的 epoch 比对）。
 
@@ -23,8 +26,9 @@ Why this module exists
 * 根账号**隐式持有**全部可授予作用域（否则一个"没有任何 permission"的老账号
   无法管理成员）。成员默认只拿一组非敏感作用域（看子树、建下级、读审计/用量、
   用自己的 Key）。
-* ``account:key_borrow`` 是**结构性特权**，任何账号都不能把它授予别人；它只
-  属于"拥有该账号祖先关系"的账号，规则见 :func:`can_borrow_key`。
+* ``account:key_borrow`` 是**结构性特权**，任何账号都不能把它授予别人；它也不
+  属于任何祖先——:func:`can_borrow_key` 只认自己（Joseph 2026-11-14 定：Key
+  不共用，主账号也不能用子账号的 Key）。
 """
 from __future__ import annotations
 
@@ -52,7 +56,9 @@ SCOPE_AUDIT_READ = "account:audit_read"  # 读自己子树内的审计
 SCOPE_USAGE_READ = "account:usage_read"  # 读自己子树内的用量
 SCOPE_MODEL_MANAGE = "model:manage"  # 配置模型 / 绑定 Key
 SCOPE_MODEL_USE = "model:use"  # 使用模型
-#: 结构性特权，不可授予。主账号（目标账号的祖先）天然具备。
+#: 结构性特权，不可授予；没有任何账号靠祖先关系天然具备它
+#: （:func:`can_borrow_key` 只认自己）。名字留着不动：它是权限系统
+#: 里的既有作用域名，改名会动授权判定、审计历史与测试。
 SCOPE_KEY_BORROW = "account:key_borrow"
 
 #: 成员账号创建时的默认作用域：够用，但不含"授权"与"Key 借用"。
@@ -101,6 +107,10 @@ ROOT_IMPLICIT_SCOPES: Tuple[str, ...] = GRANTABLE_SCOPES
 ACCOUNT_STATUS_ACTIVE = "active"
 ACCOUNT_STATUS_SUSPENDED = "suspended"
 ACCOUNT_STATUS_DELETED = "deleted"
+#: 注册后等主账号批准的状态（Joseph 2026-11-14 新规矩：自助注册不再直接
+#: 开通）。该状态的账号登录即被拒（``gateway/auth.py`` 只放行 active），
+#: 任何业务接口也过不了 ``require_account_principal`` 的 active 检查。
+ACCOUNT_STATUS_PENDING = "pending_approval"
 
 ACCOUNT_MAX_DEPTH_ENV = "LIUHAO_ACCOUNT_MAX_DEPTH"
 #: 出厂值 2 = 3 层（根 0 层、成员 1 层、成员的下级 2 层）。可配置 0-7。
@@ -134,7 +144,6 @@ CODE_PRIVILEGE_ESCALATION = "ACCOUNT_PRIVILEGE_ESCALATION"
 CODE_CROSS_SUBTREE_DENIED = "ACCOUNT_CROSS_SUBTREE_DENIED"
 CODE_KEY_UPWARD_DENIED = "ACCOUNT_KEY_UPWARD_DENIED"
 CODE_KEY_NOT_OWNED = "ACCOUNT_KEY_NOT_OWNED"
-CODE_KEY_CONSENT_REQUIRED = "ACCOUNT_KEY_CONSENT_REQUIRED"
 CODE_KEY_PLAINTEXT_FORBIDDEN = "ACCOUNT_KEY_PLAINTEXT_FORBIDDEN"
 CODE_MEMORY_FOREIGN_DENIED = "ACCOUNT_MEMORY_FOREIGN_DENIED"
 CODE_MEMORY_WRITE_FOREIGN = "ACCOUNT_MEMORY_WRITE_FOREIGN"
@@ -400,23 +409,15 @@ def can_read(nodes: Dict[str, AccountNode], viewer: str, target: str) -> bool:
 def can_borrow_key(nodes: Dict[str, AccountNode], actor: str, owner: str) -> bool:
     """谁能使用 ``owner`` 的 Key。
 
-    * 主账号（根）：子树内任意账号，但还需目标账号的知情授权（见
-      :func:`key_borrow_authorized`）；
-    * 普通账号：**只能**自己的 Key。
+    新规矩（Joseph 2026-11-14 亲口定，取代旧的“主账号可借用子账号 Key”
+    口径，见 ``docs/account-master-sub.md``）：**Key 不共用，任何账号
+    只能用自己的 Key**。主账号也不能用子账号的 Key，子账号也不能用主
+    账号的 Key。旧的 ``allow_superior_key_use`` 开关已彻底移除
+    （2026-11-15），历史库里的旧值是惰性字段，不再被读取。
     """
-    actor_node = nodes.get(actor)
-    if actor_node is None:
-        return False
     if actor == owner:
         return True
-    if not actor_node.is_root:
-        return False
-    return is_within_subtree(nodes, actor, owner)
-
-
-def key_borrow_authorized(nodes: Dict[str, AccountNode], owner: str) -> bool:
-    node = nodes.get(owner)
-    return bool(node and node.is_active and node.allow_superior_key_use)
+    return False
 
 
 def grant_decision(
@@ -588,11 +589,11 @@ limiter = AttemptLimiter()
 # --------------------------------------------------------------------------- #
 
 
-def public_member(node: AccountNode, *, show_key_authorization: bool) -> Dict[str, object]:
+def public_member(node: AccountNode) -> Dict[str, object]:
     """成员列表条目：**不含** parent/depth/root 等结构字段。
 
-    ``show_key_authorization`` 只有根账号视图为 True；普通成员看不到
-    "别人的 Key 可能被借用"这一事实（产品要求：不让成员感知层级）。
+    Key 不共用（Joseph 2026-11-14 亲口定，2026-11-15 彻底移除开关）：
+    不再返回任何 Key 共享授权字段；每个账号的 Key 归属只体现在模型配置层。
     """
     payload: Dict[str, object] = {
         "principal": node.principal,
@@ -600,9 +601,6 @@ def public_member(node: AccountNode, *, show_key_authorization: bool) -> Dict[st
         "status": node.status,
         "created_at": node.created_at,
     }
-    if show_key_authorization:
-        payload["allow_superior_key_use"] = bool(node.allow_superior_key_use)
-        payload["key_auth_source"] = node.key_auth_source
     return payload
 
 
@@ -626,8 +624,6 @@ def tree_view(
             "permissions": sorted(node.permissions),
             "status": node.status,
             "created_at": node.created_at,
-            "key_auth_source": node.key_auth_source,
-            "allow_superior_key_use": bool(node.allow_superior_key_use),
             "children": children,
         }
 

@@ -95,6 +95,11 @@ class Preference:
     confidence: float = 0.5   # 0.0-1.0，偏好置信度
     source: str = "explicit"  # 来源：explicit（用户明说）/ inferred（推断）
     updated_at: float = field(default_factory=time.time)
+    #: 是否已写穿到 Memory Kernel（``profile:{principal}:preference:{key}``）。
+    #: 同步失败时为 False（画像本身已落盘，只记 warning）；调用方据此在
+    #: 回执里标 ``kernel_synced=false``，而不是把返回值悄悄丢掉（2026-11-12
+    #: 审计核实第 13 条：此前两处调用点都丢弃了 _sync_to_memory 的返回值）。
+    kernel_synced: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -103,6 +108,7 @@ class Preference:
             "confidence": self.confidence,
             "source": self.source,
             "updated_at": self.updated_at,
+            "kernel_synced": self.kernel_synced,
         }
 
 
@@ -280,7 +286,8 @@ class PersonalContextManager:
                  confidence, source, now),
             )
             self._conn.commit()
-        self._sync_to_memory(principal_id, f"preference:{key}", value)
+        synced = self._sync_to_memory(principal_id, f"preference:{key}", value)
+        pref.kernel_synced = synced
         return pref
 
     def get_preference(self, principal_id: str, key: str) -> Optional[Preference]:
@@ -324,8 +331,13 @@ class PersonalContextManager:
         key: str,
         value: Any,
         source: str = "explicit",
-    ) -> None:
-        """记录一条事实性画像（城市/角色/语言等）。"""
+    ) -> bool:
+        """记录一条事实性画像（城市/角色/语言等）。
+
+        返回是否写穿到 Memory Kernel（``profile:{principal}:fact:{key}``）；
+        同步失败时返回 False（画像本身已落盘，只记 warning），调用方据此
+        在回执里标 ``kernel_synced=false``。
+        """
         now = time.time()
         with self._lock:
             self._conn.execute(
@@ -335,7 +347,7 @@ class PersonalContextManager:
                  source, now),
             )
             self._conn.commit()
-        self._sync_to_memory(principal_id, f"fact:{key}", value)
+        return self._sync_to_memory(principal_id, f"fact:{key}", value)
 
     def get_facts(self, principal_id: str) -> Dict[str, Any]:
         """返回该主体全部事实。"""

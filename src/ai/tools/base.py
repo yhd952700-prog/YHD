@@ -484,7 +484,7 @@ class ToolRegistry:
 
         registry = ToolRegistry()
         registry.register(CalculatorTool())
-        registry.register(SearchTool())
+        registry.register(WebResearchTool())
 
         tool = registry.get("calculator")
         tools = registry.by_category(ToolCategory.COMPUTATION)

@@ -47,7 +47,7 @@ _CAPABILITY_LIMIT = 50
 #: 导入报告最多保留多少条（防止一份超大 frontmatter 把记录撑爆）。
 _IMPORT_REPORT_LIMIT = 50
 
-_ALLOWED_SOURCES = ("user", "imported")
+_ALLOWED_SOURCES = ("user", "imported", "learned")
 
 _WS_RE = re.compile(r"\s+")
 
@@ -242,7 +242,10 @@ class SkillStore:
         declared_risk: Any = "",
         content: Optional[str] = None,
         origin: Optional[str] = None,
-        enabled: bool = True,
+        # 技能页透明化 §5.4：新建技能默认**关**（安装后由人显式启用）；
+        # 与 _install_parsed(enabled=False) 一致。显式传 enabled=True 的
+        # 调用方（测试）不受影响。
+        enabled: bool = False,
         fmt: str = "manual",
         license: Any = "",
         allowed_tools: Any = None,
@@ -338,6 +341,32 @@ class SkillStore:
                     record["name"] = clean_name
                 if description is not None:
                     record["description"] = normalize_description(description)
+                record["updated_at"] = _now()
+                document["skills"][skill_id] = record
+                self._write_document(document)
+                return dict(record)
+
+    def set_metadata(self, skill_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """合并更新一条技能的 metadata（学习循环改审核状态用）。
+
+        只动 metadata 一个键，不碰名字/开关/内容；key 必须是非空字符串。
+        """
+        if not isinstance(updates, dict):
+            raise ValueError("metadata 更新必须是 dict")
+        with _PROCESS_WRITE_LOCK:
+            with self._lock:
+                document = self._load_document()
+                record = document["skills"].get(skill_id)
+                if not isinstance(record, dict):
+                    raise SkillNotFound(skill_id)
+                metadata = record.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                for key, value in updates.items():
+                    if not isinstance(key, str) or not key.strip():
+                        raise ValueError("metadata 的 key 必须是非空字符串")
+                    metadata[key] = value
+                record["metadata"] = metadata
                 record["updated_at"] = _now()
                 document["skills"][skill_id] = record
                 self._write_document(document)

@@ -732,6 +732,8 @@ class EmployeeStore:
                 {
                     "id": name,
                     "name": name,
+                    # 归属账号（2026-11-12 名册过滤用）：空串 = 旧数据，默认归根。
+                    "owner_account_id": str(data.get("owner_account_id") or ""),
                     "agent_count": int(data.get("agent_count", len(agents)) or 0),
                     "agents": agents,
                     "total_tasks_submitted": int(data.get("total_tasks_submitted") or 0),

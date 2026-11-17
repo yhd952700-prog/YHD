@@ -54,6 +54,7 @@ server:
         "Content-Type",
         "X-Request-Id",
         "X-Liuhao-Token",
+        "X-Liuhao-View-As",
         "X-Trace-ID",
         "X-LiuHao-Local-Proof",
         "X-LiuHao-Reset-Proof",

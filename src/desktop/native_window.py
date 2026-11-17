@@ -214,7 +214,8 @@ def _page(title: str, body: str) -> str:
   h1 {{ font-size: 21px; font-weight: 600; margin: 22px 0 10px; }}
   p {{ line-height: 1.75; color: #9fb0c3; font-size: 14px; margin: 8px 0; }}
   .reason {{ color: #c9d6e2; background: #121a24; border: 1px solid #21303f;
-    border-radius: 10px; padding: 14px 16px; text-align: left; word-break: break-word; }}
+    border-radius: 10px; padding: 14px 16px; text-align: left; word-break: break-word;
+    white-space: pre-line; }}
   .spinner {{
     width: 34px; height: 34px; margin: 30px auto 6px;
     border: 3px solid #24384c; border-top-color: #58a6ff; border-radius: 50%;
@@ -338,6 +339,7 @@ class NativeWindow:
         width: int = 1280,
         height: int = 860,
         hidden: bool = False,
+        on_visibility: Any = None,
     ) -> None:
         self._title = title
         self._storage_dir = Path(storage_dir)
@@ -345,6 +347,10 @@ class NativeWindow:
         self._width = width
         self._height = height
         self._hidden = hidden
+        #: 可见性回调（C-pet）：窗口显示/藏起时通知桌面壳，好让桌宠在
+        #: “操作台左上角主脑位”和“桌面上”之间切换（两个地方只能有一个小铁）。
+        #: 从 WebView 线程回调，只做轻量通知，绝不在这里直接碰别的窗口。
+        self._on_visibility = on_visibility
         self._window: Any = None
         self._webview: Any = None
         self._quitting = False
@@ -400,8 +406,16 @@ class NativeWindow:
         self._ready.set()
         logger.info("原生窗口已就绪（WebView2）")
 
+    def _notify_visibility(self, visible: bool) -> None:
+        cb = self._on_visibility
+        if cb is None:
+            return
+        with contextlib.suppress(Exception):
+            cb(bool(visible))
+
     def _on_shown(self) -> None:
         self._visible = True
+        self._notify_visibility(True)
 
     def _on_closing(self) -> bool:
         """返回 True 允许关闭，返回 False 取消关闭（隐藏到托盘）。"""
@@ -411,6 +425,7 @@ class NativeWindow:
         with contextlib.suppress(Exception):
             self._window.hide()
         logger.info("原生窗口已关闭到托盘（进程继续运行）")
+        self._notify_visibility(False)
         return False
 
     def _on_loaded(self) -> None:
@@ -523,12 +538,14 @@ class NativeWindow:
         self._visible = True
         with contextlib.suppress(Exception):
             self._window.restore()
+        self._notify_visibility(True)
 
     def hide(self) -> None:
         if self._window is None:
             return
         self._window.hide()
         self._visible = False
+        self._notify_visibility(False)
 
     def destroy(self) -> None:
         self._quitting = True

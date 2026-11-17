@@ -82,7 +82,7 @@ class _ShellBrokerDelegatePolicy:
         )
 
         # 完全授权模式：主机命令一并放开（老板 2026-11-11 的决定）。
-        # 提权拒绝、危险命令一次确认在 broker 管线里；敏感路径只记录、不拦截。
+        # 提权拒绝、危险命令一次确认、敏感路径拦截在 broker 管线里。
         if is_full():
             return HostCommandDecision(
                 DecisionOutcome.ALLOW,
@@ -221,16 +221,20 @@ class FilesystemAdapter(WorldAdapter):
         action = request.action
         path = self._resolve(request.params.get("path"))
         if action == "write":
-            # 0.3.0：敏感路径（审计库/密钥/程序本体/模式配置）**只记录、不拦截**。
-            # 先写审计，再照常落盘；用户本人的手动操作不写这条记录。
+            # 0.4.6 起：敏感路径（审计库/密钥/程序本体/模式配置）**拦截**。
+            # 先写审计，再拒绝写入；用户本人的手动操作不走这条拦截。
             if str(request.metadata.get("actor") or "").strip().lower() != "human":
-                from ..security.protected_paths import note_write
+                from ..security.protected_paths import check_write_blocked
 
-                note_write(
+                blocked = check_write_blocked(
                     path,
                     actor=str(request.metadata.get("actor") or "ai"),
                     correlation_id=request.correlation_id,
                 )
+                if blocked:
+                    raise ValueError(
+                        f"sensitive_path_blocked ({blocked})：AI 不可写入该路径"
+                    )
             content = request.params.get("content", "")
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             # A crashed process may leave ``<path>.<...>.tmp`` siblings behind.

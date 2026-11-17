@@ -1,9 +1,19 @@
 """Knowledge base API endpoints for LiuHao AI OS.
 
+.. deprecated::
+    本模块是**未挂进网关主路由**的旧壳（见 ``docs/knowledge-memory-mainline.md``），
+    只留给旧测试做回归；不要再往里面加功能。主线是
+    ``src/api/routes/knowledge.py``（网关挂载的 ``/v1/knowledge``，真实 RAG 管线），
+    前端实际走 ``POST /v1/knowledge/search``（``apps/console/console/src/lib/knowledge.ts``）。
+
+    语义搜索空壳已删除（2026-11-14，A2a 决定）：本模块以前的
+    ``POST /{kb_id}/search`` 没有向量模型、没有索引，永远返回
+    ``search_unavailable`` 空结果，却长得像个能用的搜索接口。删掉它，
+    不要留着空壳假装能用；需要搜索请走主线 ``/v1/knowledge/search``。
+
 RESTful API endpoints for knowledge base management:
 - KB management (create, list, get, update, delete)
 - Document upload
-- Semantic search
 - Collection management
 """
 
@@ -77,19 +87,6 @@ class DocumentListResponse(BaseModel):
     limit: int
     offset: int
     items: List[DocumentResponse]
-
-
-class SearchResponse(BaseModel):
-    """Semantic search response."""
-    query: str
-    kb_id: str
-    total: int
-    limit: int
-    results: List[Dict[str, Any]]
-    # No vector retrieval backend is wired: searches always report
-    # unavailable (see semantic_search) instead of fabricated scores.
-    search_unavailable: bool = False
-    detail: Optional[str] = None
 
 
 class CollectionCreate(BaseModel):
@@ -341,52 +338,12 @@ async def delete_document(kb_id: str, doc_id: str) -> None:
 
 
 # =====================================================================
-# Semantic Search Endpoint
+# Semantic Search Endpoint — 已删除（见模块头 docstring 与
+# docs/knowledge-memory-mainline.md）。以前这里是个空壳：没有向量模型、
+# 没有索引，永远返回 search_unavailable 空结果，却长得像能用的搜索。
+# 前端实际走主线 POST /v1/knowledge/search（真实 RAG 管线），删掉空壳
+# 不影响前端；不要把空壳加回来。
 # =====================================================================
-
-
-@router.post("/{kb_id}/search", response_model=SearchResponse)
-async def semantic_search(
-    kb_id: str,
-    query: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(10, ge=1, le=50, description="Max results"),
-    threshold: float = Query(0.7, ge=0.0, le=1.0, description="Similarity threshold"),
-) -> Dict[str, Any]:
-    """Perform semantic search on a knowledge base.
-
-    NOT IMPLEMENTED as real retrieval: no embedding model, chunk
-    index, or vector store is wired in this module, so no relevance
-    scores or document excerpts can be produced. Returns an empty
-    result set explicitly marked ``search_unavailable`` instead of
-    fabricated scores. (``threshold`` is accepted for API
-    compatibility and ignored.)
-
-    Args:
-        kb_id: Knowledge base identifier.
-        query: Search query.
-        limit: Maximum results.
-        threshold: Similarity threshold (ignored; no retrieval backend).
-
-    Returns:
-        Empty search results with ``search_unavailable=True``.
-
-    Raises:
-        HTTPException: 404 if KB not found.
-    """
-    _get_kb_or_404(kb_id)
-    return {
-        "query": query,
-        "kb_id": kb_id,
-        "total": 0,
-        "limit": limit,
-        "results": [],
-        "search_unavailable": True,
-        "detail": (
-            "Semantic search is unavailable: no embedding model, chunk "
-            "index, or vector store is wired for this knowledge base, "
-            "so no results or similarity scores can be produced."
-        ),
-    }
 
 
 # =====================================================================

@@ -148,6 +148,55 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         default_state="未配置即关闭",
         disclosed_in=_MODEL_DISCLOSURE,
     ),
+    # MiniMax（2026-11-13 D 组门禁 NO-GO 修复轮窄口例外补登，见
+    # ~/workspace/verify-d-20261113/gate/egress-exception.md）：
+    # 国际 api.minimax.io/v1、国内 api.minimaxi.com/v1 是 MiniMax 公开的
+    # OpenAI 兼容端点（docs/more-vendors-candidates.md；2026-11-13 无 Key
+    # 探针 GET /v1/models 回 401，证明端点存在）；src/ai/model_config.py
+    # 已有这两个主机的厂商归属映射（minimax）。用户在 OpenAI 兼容配置里
+    # 填入该端点并发消息时，本进程真实向其发请求，故 egress=True。
+    # MiniMax 暂未进预设（未拿真 Key 跑通 T1–T7），登记先行是为让出站
+    # 扫描（tests/security/test_egress_registry.py）不再把注释/映射里
+    # 已出现的真实端点当成"未登记"。
+    "api.minimax.io": EgressEntry(
+        feature="云端模型（MiniMax 国际端点）",
+        trigger="用户在 OpenAI 兼容配置里填入 MiniMax 国际端点并发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
+    "api.minimaxi.com": EgressEntry(
+        feature="云端模型（MiniMax 国内端点）",
+        trigger="用户在 OpenAI 兼容配置里填入 MiniMax 国内端点并发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
+    # Muse Wonder（2026-11-14，A3r 厂商预设）：api.meta.ai 是 Muse Wonder
+    # 预设的 OpenAI 兼容端点（base_url https://api.meta.ai/v1，见
+    # src/ai/vendor_presets.py）。用户选该预设并填 Key 发消息时，本进程
+    # 真实向其发请求，故 egress=True；没配 Key 就不发生。
+    "api.meta.ai": EgressEntry(
+        feature="云端模型（Muse Wonder）",
+        trigger="用户选择 Muse Wonder 预设并填入 Key 后发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
+    # 杰夫AI（2026-11-14，A3r 厂商预设）：jiefuai.cc 是杰夫AI聚合平台的
+    # OpenAI 兼容端点（base_url https://jiefuai.cc/v1）。同上，用户选预设
+    # 并填 Key 后才真实出站。
+    "jiefuai.cc": EgressEntry(
+        feature="云端模型（杰夫AI聚合）",
+        trigger="用户选择杰夫AI预设并填入 Key 后发消息",
+        fields="系统提示、最近对话、当前问题、知识片段；Authorization: Bearer",
+        personal_data="是",
+        default_state="未配置即关闭",
+        disclosed_in=_MODEL_DISCLOSURE,
+    ),
     # ── 联网检索（默认关闭，开启需在设置页显式授权） ──────────────────────
     "hn.algolia.com": EgressEntry(
         feature="联网检索（Hacker News）",
@@ -278,6 +327,19 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         fields="手机号、短信内容、Account SID/Token", personal_data="是",
         default_state="未连接", disclosed_in=_INTEGRATION_DISCLOSURE,
     ),
+    # Google Workspace（2026-11-14，A3 连接后端）：Gmail 读未读/发邮件、
+    # Calendar 读建改删走这两个域名（见 src/integrations/google_workspace.py）。
+    # 只有用户主动连接 Google 账号并授权后才请求。
+    "gmail.googleapis.com": EgressEntry(
+        feature="Google 集成（Gmail）", trigger="用户连接 Google 账号后读未读邮件、发邮件",
+        fields="邮件标题/正文、收发件人；OAuth 令牌", personal_data="是",
+        default_state="未连接", disclosed_in=_INTEGRATION_DISCLOSURE,
+    ),
+    "www.googleapis.com": EgressEntry(
+        feature="Google 集成（Calendar）", trigger="用户连接 Google 账号后读建改删日历事件",
+        fields="日程标题/时间/参与人；OAuth 令牌", personal_data="是",
+        default_state="未连接", disclosed_in=_INTEGRATION_DISCLOSURE,
+    ),
     "app.asana.com": EgressEntry(
         feature="Asana 集成", trigger="用户连接 Asana 并执行动作",
         fields="任务内容与 Token", personal_data="视配置",
@@ -332,6 +394,11 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
     "example.com": EgressEntry(
         feature="文档/示例占位域名", trigger="仅出现在注释与 docstring",
         fields="无", personal_data="否", default_state="仅链接",
+        egress=False,
+    ),
+    "api.example.com": EgressEntry(
+        feature="自定义模型地址报错文案里的示例地址", trigger="仅出现在 src/gateway/a3s.py 的报错提示里（“例如 https://api.example.com/v1”），不发起请求",
+        fields="无", personal_data="否", default_state="仅示例",
         egress=False,
     ),
     "example": EgressEntry(
@@ -389,6 +456,20 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         default_state="仅链接",
         egress=False,
     ),
+    # www.twilio.com（2026-11-13 D 组门禁 NO-GO 修复轮窄口例外补登，见
+    # ~/workspace/verify-d-20261113/gate/egress-exception.md）：只出现在
+    # src/ai/channels.py 的 WhatsApp 接通指引文案里（"注册一个 Twilio 账号
+    # （https://www.twilio.com）"），是给用户点开注册账号的链接，由系统
+    # 浏览器打开，本进程从不向它发请求；真正的 Twilio API 请求发往已登记
+    # 的 api.twilio.com。故 egress=False，仅链接。
+    "www.twilio.com": EgressEntry(
+        feature="Twilio 账号注册页（WhatsApp 接通指引里的链接）",
+        trigger="用户在 WhatsApp 接通指引里看到注册链接，点击后由系统默认浏览器打开；本进程不发起请求",
+        fields="无（仅展示）",
+        personal_data="否",
+        default_state="仅链接",
+        egress=False,
+    ),
 }
 
 #: 「关于与隐私」页的功能分组：组名 -> 主机清单（主机名仍是登记表的键，
@@ -405,6 +486,10 @@ EGRESS_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "api.deepseek.com",
             "api.moonshot.cn",
             "api.moonshot.ai",
+            "api.minimax.io",
+            "api.minimaxi.com",
+            "api.meta.ai",
+            "jiefuai.cc",
         ),
     ),
     (
@@ -441,6 +526,8 @@ EGRESS_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "api.telegram.org",
             "api.trello.com",
             "api.twilio.com",
+            "gmail.googleapis.com",
+            "www.googleapis.com",
             "app.asana.com",
             "discord.com",
             "gitlab.com",
@@ -514,6 +601,15 @@ def lookup(host: str) -> EgressEntry | None:
     return EGRESS_REGISTRY.get(str(host or "").strip().lower())
 
 
+#: 永不登记的主机（Joseph 底线）：出现在代码里也不进 ``EGRESS_REGISTRY``，
+#: ``missing_hosts()`` 会跳过它们——不是放行，而是反过来：登记表是“允许出站”
+#: 的清单，把禁用的主机写进登记表本身就是错的。``api.x.ai`` 只在
+#: ``src/ai/vendor_presets.py`` 里以“未注册预设”出现（Grok 预设，见该文件
+#: 注释）：没有 Key、不进信任名单，``src/ai/net_guard.py`` 会在鉴权之前拦掉
+#: 任何对它的真实请求；本进程永远不会向它发请求。
+NEVER_REGISTER_HOSTS: frozenset = frozenset({"api.x.ai"})
+
+
 def missing_hosts(hosts: Iterable[str]) -> List[str]:
     """返回未登记的出站主机（已排序、去重）；回环地址不算出站。"""
     return sorted(
@@ -522,6 +618,7 @@ def missing_hosts(hosts: Iterable[str]) -> List[str]:
             for host in hosts
             if str(host).strip() and not is_loopback(str(host))
             and str(host).strip().lower() not in EGRESS_REGISTRY
+            and str(host).strip().lower() not in NEVER_REGISTER_HOSTS
         }
     )
 
@@ -531,6 +628,7 @@ __all__ = [
     "EGRESS_REGISTRY",
     "EgressEntry",
     "LOOPBACK_HOSTS",
+    "NEVER_REGISTER_HOSTS",
     "grouped_egress",
     "is_loopback",
     "lookup",

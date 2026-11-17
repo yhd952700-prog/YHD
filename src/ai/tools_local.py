@@ -173,7 +173,7 @@ def _model_failure(exc: BaseException) -> Dict[str, Any]:
     else:
         error = (
             f"默认模型调用失败（{type(exc).__name__}）：{exc}。"
-            "请检查「设置 → 模型管理」里的模型服务与网络后重试。"
+            "请检查「设置 → 模型与 Key」里的模型服务与网络后重试。"
         )
     return {"success": False, "status": "failed", "error": error}
 

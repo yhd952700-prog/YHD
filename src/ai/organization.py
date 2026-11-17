@@ -11,10 +11,17 @@ carries a real identity, memory and policy), reusing the ``Role`` enum and
 
 The module also provides an organizational-structure layer — hierarchical
 ``OrgRole`` levels, ``OrgMember`` chart nodes, capacity-tracking ``Team``s,
-``Department`` groupings, and a role-based access-control matrix
-(``Permission`` / ``RBACMatrix``) — integrated with the same ``Organization``
+``Department`` groupings, — integrated with the same ``Organization``
 container so org-chart traversal (reporting lines, subordinates, capacity)
 works alongside the Phase-12 engine.
+
+NOTE (2026-11-12): the former ``Permission`` / ``DEFAULT_RBAC_MATRIX`` /
+``RBACMatrix`` permission-decision code was deleted: it was un-wired dead
+code and the gateway never consulted it. Authorization mainline is the
+account-tree scope (see docs/account-hierarchy.md). ``OrgRole`` values
+remain as plain job-title labels on member records; the seniority
+ordering helpers (``hierarchy`` / ``is_senior_to`` / ``is_junior_to``)
+are display ordering only and NEVER authorize anything.
 
 Layering:
 
@@ -93,6 +100,15 @@ class Member:
 # =====================================================================
 # Role Hierarchy (organizational chart layer)
 # =====================================================================
+# NOTE (2026-11-12, jarvis-0.4.6-big): ``OrgRole`` here is only a
+# job-title label on an org member record. It NEVER decides any
+# permission: the gateway does not consult it, and no code may translate
+# "manager in the org chart" into account permissions. Authorization
+# mainline is the account-tree scope (see docs/account-hierarchy.md).
+# The former ``DEFAULT_RBAC_MATRIX`` / ``RBACMatrix`` permission-decision
+# code was deleted in the same change (un-wired dead code). The
+# seniority ordering helpers below (``hierarchy`` / ``is_senior_to`` /
+# ``is_junior_to``) are display ordering only and NEVER authorize.
 
 
 class OrgRole(str, Enum):
@@ -283,120 +299,6 @@ class Team:
             self.performance_metrics.get(metric, 0.0) + delta
         )
 
-
-# =====================================================================
-# RBAC — Role-based access control matrix
-# =====================================================================
-
-
-class Permission(str, Enum):
-    """Standard permission identifiers used in the RBAC matrix."""
-
-    VIEW_DASHBOARD = "view_dashboard"
-    EDIT_TEAM = "edit_team"
-    MANAGE_BUDGET = "manage_budget"
-    ASSIGN_TASKS = "assign_tasks"
-    REVIEW_WORK = "review_work"
-    APPROVE_SPEND = "approve_spend"
-    HIRE_FIRE = "hire_fire"
-    ACCESS_SENSITIVE = "access_sensitive"
-    ADMINISTER_ORG = "administer_org"
-
-
-# Default RBAC matrix: which roles have which permissions.
-DEFAULT_RBAC_MATRIX: Dict[OrgRole, Set[Permission]] = {
-    OrgRole.INDIVIDUAL_CONTRIBUTOR: {
-        Permission.VIEW_DASHBOARD,
-        Permission.ASSIGN_TASKS,
-    },
-    OrgRole.LEAD: {
-        Permission.VIEW_DASHBOARD,
-        Permission.ASSIGN_TASKS,
-        Permission.REVIEW_WORK,
-        Permission.EDIT_TEAM,
-    },
-    OrgRole.MANAGER: {
-        Permission.VIEW_DASHBOARD,
-        Permission.EDIT_TEAM,
-        Permission.ASSIGN_TASKS,
-        Permission.REVIEW_WORK,
-        Permission.APPROVE_SPEND,
-        Permission.MANAGE_BUDGET,
-        Permission.HIRE_FIRE,
-    },
-    OrgRole.DIRECTOR: {
-        Permission.VIEW_DASHBOARD,
-        Permission.EDIT_TEAM,
-        Permission.MANAGE_BUDGET,
-        Permission.ASSIGN_TASKS,
-        Permission.REVIEW_WORK,
-        Permission.APPROVE_SPEND,
-        Permission.HIRE_FIRE,
-        Permission.ACCESS_SENSITIVE,
-        Permission.ADMINISTER_ORG,
-    },
-}
-
-
-@dataclass
-class RBACMatrix:
-    """Role-based access control matrix.
-
-    Maps each ``OrgRole`` to the set of ``Permission`` values it holds.
-    Supports role inheritance (senior roles get all junior permissions
-    plus their own) when configured.
-    """
-
-    _matrix: Dict[OrgRole, Set[Permission]] = field(default_factory=dict)
-    inherit_junior: bool = True
-
-    def __post_init__(self) -> None:
-        if not self._matrix:
-            # Start from defaults but allow override
-            for role, perms in DEFAULT_RBAC_MATRIX.items():
-                self._matrix[role] = set(perms)
-
-    def has_permission(self, role: OrgRole, permission: Permission) -> bool:
-        """Check whether *role* holds *permission*.
-
-        When ``inherit_junior`` is True (default), a senior role
-        automatically inherits all permissions of every more-junior role.
-        """
-        effective = self.effective_permissions(role)
-        return permission in effective
-
-    def effective_permissions(self, role: OrgRole) -> Set[Permission]:
-        """Return the full set of permissions for *role*.
-
-        Includes inherited permissions when inheritance is enabled.
-        """
-        perms = set(self._matrix.get(role, set()))
-        if self.inherit_junior:
-            for junior in OrgRole.hierarchy():
-                if junior.is_junior_to(role):
-                    perms.update(self._matrix.get(junior, set()))
-        return perms
-
-    def grant(self, role: OrgRole, permission: Permission) -> None:
-        """Grant a permission to a role."""
-        if role not in self._matrix:
-            self._matrix[role] = set()
-        self._matrix[role].add(permission)
-
-    def revoke(self, role: OrgRole, permission: Permission) -> None:
-        """Revoke a permission from a role."""
-        if role in self._matrix:
-            self._matrix[role].discard(permission)
-
-    def can_member_do(
-        self,
-        member: Any,
-        permission: Permission,
-    ) -> bool:
-        """Convenience: check whether a member has a permission."""
-        return self.has_permission(member.role, permission)
-
-
 # =====================================================================
 # Organization — top-level container / engine
 # =====================================================================
@@ -422,7 +324,6 @@ class Organization:
         self.policies: List[str] = []
         self.memory: Dict[str, Any] = {}
         self.audit_log: List[Dict[str, Any]] = []
-        self.rbac: RBACMatrix = RBACMatrix()
         self._audit("create_organization", name=name, budget=budget)
 
     # ------------------------------------------------------------------ audit
@@ -782,13 +683,3 @@ class Organization:
             }
         return summary
 
-    # ------------------------------------------------------------------
-    # RBAC convenience
-    # ------------------------------------------------------------------
-
-    def can_member_do(self, member_id: str, permission: Permission) -> bool:
-        """Check whether a member has a given permission."""
-        member = self.members.get(member_id)
-        if not member:
-            return False
-        return self.rbac.can_member_do(member, permission)

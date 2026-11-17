@@ -53,6 +53,7 @@ PROVIDER_LABELS: Dict[str, str] = {
     "ollama": "本地 Ollama",
     "moonshot": "月之暗面 Kimi",
     "deepseek": "DeepSeek",
+    "meta": "Meta（Muse Wonder）",
     "local": "本地模型",
 }
 

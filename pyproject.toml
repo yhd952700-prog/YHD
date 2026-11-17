@@ -1,16 +1,17 @@
 [project]
 name = "liuhao-ai-os"
-version = "0.3.0"
+version = "0.4.6"
 description = "Jarvis · 贾维斯 - Y1 Implementation"
 readme = "README.md"
 # 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
 license = { text = "Proprietary" }
-# 上界 <3.13 是**有意**的：numpy 1.26.4 / scipy 1.13.1（arize-phoenix 链路锁定）
-# 没有 cp313 轮子，3.13 下只能走 sdist，实测因无 C 编译器直接
-# metadata-generation-failed。下界 3.12 与 .python-version / Dockerfile /
-# CI 矩阵单腿 3.12 一致（B组第二轮统一：不再维护 3.11 腿）。要支持 3.13
-# 需先升级 numpy/scipy 并重解整条 phoenix 依赖链，风险/成本远高于收窄解释器
-# 版本。详见 docs/audit/findings-deps-license.md（DEP-01）。
+# 上界 <3.13 是**有意**的：3.13 尚未验证通过（本轮不扩解释器范围），
+# 下界 3.12 与 .python-version / Dockerfile / CI 矩阵单腿 3.12 一致
+# （B组第二轮统一：不再维护 3.11 腿）。注意：旧注释称“numpy 1.26.4 /
+# scipy 1.13.1 由 arize-phoenix 链路锁定、故无 cp313 轮子”是过期理由——
+# phoenix 已于 0.4.6 移除（见下），该理由随之失效；要支持 3.13 须先在
+# 3.13 上重解整条依赖并跑通测试，另行排期，不在本轮做。
+# 详见 docs/audit/findings-deps-license.md（DEP-01）。
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "openai>=1.0.0",
@@ -37,6 +38,11 @@ dependencies = [
     # Windows 桌面集成（系统托盘）使用 pywin32 直接调用 Win32；
     # 仅 Windows 安装（Linux CI/Docker 不拉取），由 src/desktop/tray.py 平台限定加载。
     "pywin32>=306; sys_platform == 'win32'",
+    # 0.4.6 电脑操控真后端（仅 Windows）：pywinauto（BSD-3-Clause）做聚焦/
+    # 关闭窗口，uiautomation（Apache-2.0）只读前台窗口控件结构；Linux 上
+    # 懒加载、缺依赖时如实报错，绝不静默降级。
+    "pywinauto>=0.6.8; sys_platform == 'win32'",
+    "uiautomation>=2.0.0; sys_platform == 'win32'",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     # hypothesis 驱动 Policy 执法链的属性测试（tests/test_policy_properties.py）。
@@ -50,7 +56,13 @@ dependencies = [
     "langchain-openai>=0.2.0",
     "langchain-community>=0.3.0",
     "langfuse>=4.0.0",
-    "arize-phoenix>=3.0.0",
+    # arize-phoenix 已于 0.4.6 从分发依赖中移除：它是 Elastic-2.0 许可证，
+    # 打包合规门禁（packaging/third_party_notices.py）禁止随安装包分发；
+    # 其传递依赖 arize-phoenix-evals（Elastic-2.0）与 ldap3（LGPL v3）同理。
+    # 代码侧已有优雅降级：src/adapters/observability/observability_adapter.py
+    # 用 try/except import，缺失时 PHOENIX_AVAILABLE=False，本机 .venv 本来就
+    # 没装它，后端 9,976 个用例照样全过。Phoenix 可观测后端如需恢复，须先解决
+    # 许可证问题（例如改走 Langfuse，后者已在依赖里）。
     # MCP SDK：src/adapters/mcp/mcp_adapter.py 顶层 `from mcp.types import ...`，
     # 因此它是硬依赖，不是可选依赖。此前未在此声明，只靠
     # arize-phoenix → fastmcp-slim[client,server] → mcp 这条**受 extras 控制**的
@@ -58,7 +70,8 @@ dependencies = [
     #
     # 2026-11-05（阶段 B1）上界收到 2.x：适配层已改用 FastMCP，而
     # `fastmcp-slim[client,server]==4.0.3` 明确要求 `mcp>=2.0,<3.0`；requirements.txt
-    # 锁定的也正是 mcp==2.1.1。⚠️ 本机 .venv 原为 mcp 1.29.0（由 CI 用的独立扫描器
+    # 锁定的也正是 mcp==2.3.0（与 uv.lock 一致；此前注释写 2.1.1 已过期，
+    # 2026-11-13 按 requirements.txt 与 uv.lock 2.3.0 改对）。⚠️ 本机 .venv 原为 mcp 1.29.0（由 CI 用的独立扫描器
     # semgrep 1.183.0 的 `mcp==1.29.0` 硬钉造成漂移），升级后 semgrep CLI 在本机
     # .venv 内会因 `import mcp.server.fastmcp` 失败；semgrep 不是本项目的声明依赖
     # （CI 的 architecture-gate 在**独立 job 独立环境**里 `pip install semgrep`），
@@ -67,11 +80,22 @@ dependencies = [
     # FastMCP：MCP 适配层的客户端（stdio / streamable HTTP）与服务端实现。
     # Apache-2.0，已登记 oss-registry.yaml。必须显式声明：mcp_adapter.py 顶层
     # `from fastmcp import Client` / `from fastmcp.server import FastMCP`。
-    # 版本钉死与 requirements.txt（fastmcp-slim==4.0.3）一致 —— 不钉会随 phoenix
-    # 的 `<5,>=4` 约束漂到其它 4.x；也不能降到 3.x（phoenix 要求 >=4）。
+    # 版本钉死 ==4.0.3：这是随 0.4.6 实测通过的版本，且与 mcp>=2.0,<3.0
+    # 的约束相容。旧注释称“不钉会随 phoenix 的 <5,>=4 约束漂到其它 4.x；
+    # 不能降到 3.x（phoenix 要求 >=4）”是过期理由——phoenix 已移除，
+    # 该约束来源已不存在；钉死只为“用实测过的版本”，放宽须先跑通 MCP 测试。
     "fastmcp-slim[client,server]==4.0.3",
     "hvac>=2.0.0",
     "cryptography>=42.0.0",
+    # TOTP 设置二维码：segno 是纯 Python 库（BSD-3-Clause，合规可进包），
+    # 无 Pillow 也能输出 SVG；缺失时惰性导入失败，前端退到手动输入密钥
+    # （见 src/gateway/totp.py qr_svg_data_uri），绝不因此拦住设置。
+    "segno>=1.6.0",
+    # 密码散列是核心路径（src/security/encryption.py 主路径用 bcrypt；
+    # 缺失时才退到 PBKDF2-SHA256），不是可选项：2026-11-13 D 组门禁
+    # NO-GO 修复轮把它从 [security] extra 加回基础依赖——新包默认不含
+    # bcrypt 时密码哈希只能走回退，见 packaging/dropped-packages.md。
+    "bcrypt>=4.1.0",
     # kernel foundation（LiuHao-O/packages/kernel）显式依赖：
     # redis 是 config 里的必填项；qdrant-client 此前只靠传递依赖"碰巧可 import"。
     "redis>=5.0.0",
@@ -173,6 +197,13 @@ dependencies = [
     # typing_extensions：桌面壳/桥接代码在运行期用到 4.16 的类型特性，
     #   锁死版本保证离线运行时与构建环境一致。
     "typing_extensions==4.16.0",
+    # sherpa-onnx：唤醒词“贾维斯”（KWS）与声纹认人（3D-Speaker）的引擎，
+    #   Apache-2.0（含 onnxruntime MIT，由 sherpa-onnx-core 一并带走）。
+    #   本来在 voice extra 里，但那两个功能已经是随包交付的正式功能：
+    #   引擎不在包里，Joseph 的 Windows 上永远接不通（只能 pip install，
+    #   他不会、也不该让他弄；模型文件仍按需下载，不随包带走）。
+    #   因此放运行期依赖而不是 extras（与 pywebview 同款道理）。
+    "sherpa-onnx>=2.0.1",
 ]
 
 # 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮
@@ -223,13 +254,14 @@ ops = [
     "websockets>=12.0",
 ]
 # 密码散列与 TOTP 的强实现。**可选**（惰性 import + 优雅降级）：
-# src/security/encryption.py 的 argon2/bcrypt 主路径缺失时退到 PBKDF2-SHA256，
+# src/security/encryption.py 的 argon2 主路径缺失时退到 PBKDF2-SHA256，
 # src/security/authentication.py 的 pyotp 缺失时退到手写 HMAC-SHA1 TOTP。
 # 兜底让开发机不装也能跑，但"装没装"必须是声明过的选择而不是环境运气 ——
 # 生产部署想要 argon2id / RFC 6238 真实现时显式 `pip install -e .[security]`。
+# bcrypt 不在这里：2026-11-13 D 组修复轮把它加回了基础依赖（见上），
+# 因为密码哈希是核心路径、PBKDF2 只是回退。
 security = [
     "argon2-cffi>=23.1.0",
-    "bcrypt>=4.1.0",
     "pyotp>=2.9.0",
 ]
 # src/ai/providers.py `GoogleProvider.generate()` 惰性导入 `google.genai`
@@ -272,6 +304,43 @@ taskiq-redis = [
 # 不为一个试点拖慢生产安装。
 dbos = [
     "dbos>=3.4.0,<4.0",
+]
+# 0.4.6 F 组（语音 / OCR / 日历记账）：全部**可选 extra**，不进运行期依赖。
+# 基础包不拉模型、不拉重框架；缺了时各端点返回 503 + 安装提示，不编结果。
+# 许可证（已核实，见 docs/voice-ocr-calendar-mobile.md）：
+#   faster-whisper MIT（模型权重也是 MIT）；kokoro-onnx Apache-2.0
+#   （Kokoro-82M 权重 Apache-2.0）；rapidocr-onnxruntime Apache-2.0；
+#   sherpa-onnx Apache-2.0（含 onnxruntime MIT）；3D-Speaker ERes2Net-Base
+#   模型权重 Apache-2.0（模型文件不随包带走，打开声纹时按需下载一次）；
+#   icalendar BSD-2-Clause；caldav 双许可，本项目按 Apache-2.0 使用。
+#   Piper（GPL-3.0）、Radicale（GPL-3.0）绝不进包；Kokoro 中文发音
+#   需要的 espeak-ng（GPL-3.0）是用户自行安装的系统组件，不随包分发。
+# 模型文件不在代码仓里：whisper 模型首次使用自动下载；Kokoro 模型文件
+# 需手动下到 <数据目录>/voice/kokoro/；RapidOCR 模型首次识别自动下载。
+voice = [
+    "faster-whisper>=1.2.1,<2.0",
+    # PyAV 钉死 14.x：faster-whisper 1.2.1 + av 19 不兼容（`metadata_errors`
+    # 参数被删，文件路径转写抛 TypeError；见 src/voice/stt.py 的 wav 兜底）。
+    "av>=14,<15",
+    "kokoro-onnx>=0.4.0",
+    "misaki[zh]>=0.9.0",
+    # 语音唤醒（0.4.6 语音段）：vosk Apache-2.0、sounddevice MIT。
+    # 注意：vosk 只是状态上报与模型下载用；唤醒词“贾维斯”走 sherpa-onnx
+    # KWS 专用模型（2026-11-15 第 5 段已接通，检出 23/24、误唤 0/31，
+    # 实测见 src/voice/wake.py），常驻监听默认不开，设置里能开能关。
+    "vosk>=0.3.45",
+    "sounddevice>=0.4.6",
+    # 声纹认人（2026-11-15 第 4 段）：说话人模型是 3D-Speaker ERes2Net-Base
+    # （Apache-2.0，约 38MB），模型文件不随包带走，打开声纹时按需下载一次
+    # （见 src/voice/voiceprint.py）。引擎 sherpa-onnx 已移到运行期依赖
+    # （见 dependencies 末尾的注释），不在 extra 里。
+]
+ocr = [
+    "rapidocr-onnxruntime>=1.4.0",
+]
+calendar = [
+    "icalendar>=7.3.0",
+    "caldav>=3.7.0",
 ]
 
 [project.scripts]

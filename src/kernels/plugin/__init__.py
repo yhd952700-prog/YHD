@@ -791,18 +791,40 @@ def register_builtin_plugins() -> None:
 # ``initialize()``，因此「存在即 READY」的不变量仍然成立。
 
 
-# Plugin audit logging helper
+# Plugin audit logging helper — writes to the ONE mainline audit chain
+# (``src/kernels/audit``, SQLite + hash chain). The former target,
+# ``src/security/audit_policy`` (in-memory, volatile, non-authoritative),
+# was retired 2026-11-12; plugin lifecycle events now land in the
+# tamper-evident chain as ``PLUGIN_LIFECYCLE`` with the original plugin
+# action preserved in details.
 def audit_log(event_type, principal_id, permission, scope="L1", result="unknown",
               reason="", correlation_id=None, metadata=None):
-    """Log plugin-related audit events."""
-    from src.security.audit_policy import audit_log as _audit_log
-    return _audit_log(
-        event_type=event_type,
-        principal_id=principal_id,
-        permission=permission,
-        scope=scope,
-        result=result,
-        reason=reason,
-        correlation_id=correlation_id,
-        metadata=metadata,
-    )
+    """Log plugin-related audit events to the mainline audit chain."""
+    import logging as _logging
+
+    try:
+        from src.kernels.audit import AuditEventType, AuditScope, log_event
+
+        try:
+            _scope = AuditScope(scope)
+        except ValueError:
+            _scope = AuditScope.L1
+        details = {"plugin_action": str(event_type), "permission": permission}
+        if reason:
+            details["reason"] = reason
+        if metadata:
+            details["metadata"] = metadata
+        log_event(
+            event_type=AuditEventType.PLUGIN_LIFECYCLE,
+            principal_id=str(principal_id),
+            scope=_scope,
+            outcome=str(result),
+            details=details,
+            correlation_id=correlation_id,
+        )
+        return True
+    except Exception as exc:  # fail-loud-not-fatal: never block plugin ops
+        _logging.getLogger(__name__).warning(
+            "plugin audit failed for %r (%s): %s", event_type, principal_id, exc
+        )
+        return False

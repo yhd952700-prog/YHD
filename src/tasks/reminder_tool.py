@@ -19,7 +19,11 @@ import json
 from typing import Any, Dict, Optional
 
 from src.ai.tool_registry import Tool
-from src.tasks.reminders import ReminderService, get_reminder_service
+from src.tasks.reminders import (
+    ReminderService,
+    get_reminder_service,
+    read_account_timezone,
+)
 from src.tasks.reminder_time import NeedsClarification
 
 _ACTIONS = (
@@ -134,7 +138,11 @@ def build_reminder_tool(
                             else "请提供 text，例如「每天十点提醒我喝水」。"
                         }
                     )
-                result = svc.create(user_id=principal, text=reminder_text)
+                result = svc.create(
+                    user_id=principal,
+                    text=reminder_text,
+                    tz=read_account_timezone(principal),
+                )
                 return _dumps(
                     {
                         "status": "ok",
@@ -144,7 +152,11 @@ def build_reminder_tool(
                 )
 
             if act == "list":
-                reminders = svc.list(principal, include_cancelled=False)
+                reminders = svc.list(
+                    principal,
+                    include_cancelled=False,
+                    tz=read_account_timezone(principal),
+                )
                 return _dumps(
                     {
                         "status": "ok",

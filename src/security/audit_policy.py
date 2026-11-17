@@ -1,4 +1,11 @@
-"""Audit Kernel — Full audit trail with hash chain integrity (VOLATILE / IN-MEMORY ONLY / NON-AUTHORITATIVE)
+"""DEPRECATED — RETIRED 2026-11-12 (jarvis-0.4.6-big).
+
+Audit Kernel — Full audit trail with hash chain integrity (VOLATILE / IN-MEMORY ONLY / NON-AUTHORITATIVE)
+
+Do NOT use for new code: the only authoritative audit is ``src/kernels/audit``
+(SQLite + hash chain). This module is kept ONLY because tests import its
+``AuditKernel`` directly; its runtime callers have been rewired to the
+mainline (see ``src/kernels/plugin/__init__.py::audit_log``).
 
 WARNING — VOLATILE, IN-MEMORY ONLY, NON-AUTHORITATIVE:
     The Audit Kernel (HC-10) holds entries in ``self._entries`` ONLY. There is

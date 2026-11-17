@@ -369,12 +369,74 @@ def _safe_error(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+#: ``http_get`` 只服务内置检索源：目标主机必须是写死在这里的三个公开
+#: API（查询词只进 URL 参数，绝不决定主机名）。重定向同样受此约束。
+#: 自定义检索源（``register_provider``）请自带传输层，不要复用本函数。
+_ALLOWED_RESEARCH_HOSTS = frozenset(PROVIDER_HOSTS.values())
+
+
+def _check_target(url: str) -> None:
+    """SSRF 检查：每次出网前校验目标，失败抛 ``RuntimeTargetRejected``。
+
+    两层，缺一不可：
+
+    1. 主机白名单 + ``https`` + 无 URL 内嵌凭据 —— 目标主机是写死的三个
+       公开 API，查询词进不了主机名，302 跳到别的站也会被拦；
+    2. 直连环境下复用 ``src.ai.net_guard`` 做 DNS 解析校验（私网/链路
+       本地/保留/回环一律拒绝，解析结果线程级固定，消除 DNS rebinding
+       的 TOCTOU 窗口）。
+
+    第 2 层只在**直连**时做：走代理时实际建连目标是代理本身，源站的本地
+    解析结果与真实连接无关（沙箱的出网代理就是这样：公网域名在本地解析
+    到沙箱内网段，直接校验会把所有公开源都误杀，见 2026-11-12 实测）。
+    代理本身是否可信由运行环境决定，不在本函数判定。代理判断与 DNS 层
+    校验都收敛到 ``src.ai.net_guard`` 的共享 helper（同一份代理判断、
+    同一份三层规则），这里只保留“主机必须是写死的三个检索源”这一层。
+    """
+    from urllib.parse import urlparse as _urlparse
+
+    from .net_guard import (
+        RuntimeTargetRejected,
+        assert_safe_runtime_target,
+        request_uses_proxy,
+    )
+
+    parsed = _urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        raise RuntimeTargetRejected("联网检索只允许 https 目标，已按安全策略拒绝。")
+    if parsed.username or parsed.password:
+        raise RuntimeTargetRejected("联网检索地址不能包含用户名或密码，已按安全策略拒绝。")
+    if host not in _ALLOWED_RESEARCH_HOSTS:
+        raise RuntimeTargetRejected("联网检索目标不在内置检索源白名单内，已按安全策略拒绝。")
+    try:
+        # urllib.request.getproxies() 读环境代理（本函数走 urllib 建连，
+        # 这就是它实际会用的配置）；走代理时守卫跳过第 2 层 DNS 检查。
+        assert_safe_runtime_target(
+            url, context="联网检索", proxied=request_uses_proxy(url)
+        )
+    except RuntimeTargetRejected:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 校验本身异常也按拒绝处理
+        raise RuntimeTargetRejected(f"联网检索目标校验失败：{type(exc).__name__}") from exc
+
+
+class _CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """跟随重定向前重新校验新目标：防止校验时是公网、302 后跳到内网。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN202
+        _check_target(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def http_get(url: str, timeout: float, headers: Optional[Dict[str, str]] = None) -> str:
+    _check_target(url)
     request_headers = {"User-Agent": _USER_AGENT, "Accept": "*/*"}
     if headers:
         request_headers.update(headers)
     request = urllib.request.Request(url, headers=request_headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    opener = urllib.request.build_opener(_CheckedRedirectHandler())
+    with opener.open(request, timeout=timeout) as response:
         raw = response.read()
     return raw.decode("utf-8", errors="replace")
 
@@ -647,6 +709,53 @@ def _audit_search(
         logger.warning("web research audit failed: %s", type(exc).__name__)
 
 
+def answer_with_verification(
+    query: str,
+    *,
+    limit: int = 6,
+    timeout: Optional[float] = None,
+    providers: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """查资料回答的核实检查点（A3r §3）：有来源才说，没来源标“没来源”，
+    查不到老实说查不到。
+
+    这是 researcher 角色的执行链路检查点，不是提示词文案：它跑一次
+    :func:`search`，只把**真实返回的来源**写进回答——每条结论都带
+    来源 URL；检索不到任何来源时结论就是“查不到”，依据写“没找到依据”，
+    绝不编造来源和数字。调用方（``MultiAgentTeam.research``）直接用
+    这份回答，不再让模型凭空补结论。
+    """
+    report = search(query, limit=limit, timeout=timeout, providers=providers)
+    sources = [
+        {
+            "title": item.title,
+            "url": item.url,
+            "site": item.site,
+            "published_at": item.published_at,
+        }
+        for item in report.sources
+    ]
+    if report.ok and sources:
+        return {
+            "query": query,
+            "ok": True,
+            "conclusion": f"查到 {len(sources)} 条来源，见依据。",
+            "reasons": [f"{item['title']}（{item['site']}）" for item in sources],
+            "evidence": [item["url"] for item in sources],
+            "sources": sources,
+            "note": "每条结论都有来源 URL；没来源的不说。",
+        }
+    return {
+        "query": query,
+        "ok": False,
+        "conclusion": f"查不到：{report.error or '检索没有返回任何来源'}",
+        "reasons": [],
+        "evidence": [],
+        "sources": [],
+        "note": "没找到依据。",
+    }
+
+
 def format_sources(sources: Sequence[SourceItem], fetched_at: str) -> str:
     """A deterministic, citable source block. No model involvement."""
     if not sources:
@@ -690,6 +799,7 @@ __all__ = [
     "SourceItem",
     "TIMEOUT_ENV",
     "build_search_phrase",
+    "answer_with_verification",
     "disclosure_text",
     "enabled",
     "sanitize_phrase",

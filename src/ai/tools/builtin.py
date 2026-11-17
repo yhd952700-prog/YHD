@@ -3,7 +3,11 @@
 Provides a set of ready-to-use tools that cover common operations:
 
 - **CalculatorTool** — Evaluate math expressions safely.
-- **SearchTool** — Simulated/web search interface.
+- **WebResearchTool** — Real live web search (Hacker News / GitHub / arXiv).
+  The old hardcoded ``SearchTool`` was removed 2026-11-12 (0.4.6, C group):
+  it returned canned paragraphs from a built-in dictionary and must never
+  appear in any callable list again. Use ``web_search`` for live search and
+  ``knowledge_search`` for the local knowledge base.
 - **CodeRunnerTool** — Execute Python code with sandbox restrictions.
 - **MemoryTool** — Read/write to the memory system.
 - **DateTimeTool** — Current time and date calculations.
@@ -173,18 +177,25 @@ class CalculatorTool(BaseTool):
 
 
 # ======================================================================
-# Search Tool
+# Web Search Tool (real live research -- replaces the retired fake SearchTool)
 # ======================================================================
 
-class SearchTool(BaseTool):
-    """Simulated/web search interface.
+class WebResearchTool(BaseTool):
+    """Real live web search backed by :mod:`src.ai.web_research`.
 
-    Provides a search interface that can be backed by real web search
-    or a simulated knowledge base. Supports querying with various options.
+    Queries the public, key-free providers (Hacker News / GitHub / arXiv)
+    and returns real sources with real URLs and publication timestamps.
+    Every result carries its source site and ``published_at``; nothing is
+    invented. When live research is disabled (``LIUHAO_WEB_RESEARCH`` /
+    settings toggle, default off) or every provider fails, the tool raises
+    an honest error instead of returning canned text.
     """
 
-    name = "search"
-    description = "Search for information on a given topic"
+    name = "web_search"
+    description = (
+        "Search the live web for time-sensitive information; returns real "
+        "sources with URLs and publication dates (Hacker News, GitHub, arXiv)"
+    )
     category = ToolCategory.INFORMATION
     parameters = [
         ParameterSchema(
@@ -200,66 +211,41 @@ class SearchTool(BaseTool):
             type=int,
             description="Maximum number of results to return",
             required=False,
-            default=5,
+            default=6,
             min_value=1,
-            max_value=20,
-        ),
-        ParameterSchema(
-            name="domain",
-            type=str,
-            description="Restrict search to a specific domain",
-            required=False,
-            default="",
+            max_value=12,
         ),
     ]
 
-    # Simulated knowledge base
-    _KNOWLEDGE_BASE: Dict[str, str] = {
-        "python": "Python is a high-level, interpreted programming language known for its readability and versatility.",
-        "machine learning": "Machine learning is a subset of AI that enables systems to learn and improve from experience.",
-        "liuhao": "贾维斯（Jarvis）是一个具备多智能体能力的自主 AI 操作系统。",
-        "neural network": "A neural network is a computing system inspired by biological neural networks in animal brains.",
-        "algorithm": "An algorithm is a finite sequence of rigorous instructions, typically used to solve a class of specific problems.",
-        "data structure": "A data structure is a data organization, management, and storage format that enables efficient access and modification.",
-        "database": "A database is an organized collection of data stored and accessed electronically.",
-        "api": "An API (Application Programming Interface) is a set of definitions and protocols for building and integrating application software.",
-        "cloud computing": "Cloud computing is the on-demand availability of computer system resources, especially data storage and computing power.",
-        "git": "Git is a distributed version control system that tracks changes in source code during software development.",
-    }
+    def _execute(self, query: str, max_results: int = 6) -> Any:
+        from src.ai import web_research
 
-    def _execute(self, query: str, max_results: int = 5, domain: str = "") -> Any:
-        """Execute a search query."""
-        query_lower = query.lower().strip()
-        results: List[Dict[str, Any]] = []
-
-        # Search in knowledge base
-        for key, value in self._KNOWLEDGE_BASE.items():
-            if query_lower in key or query_lower in value.lower():
-                # Simple relevance scoring
-                relevance = 1.0 if query_lower == key else 0.7
-                results.append({
-                    "title": key.title(),
-                    "snippet": value,
-                    "relevance": relevance,
-                    "source": "knowledge_base",
-                    "url": f"knowledge://{key.replace(' ', '_')}",
-                })
-
-        # Sort by relevance
-        results.sort(key=lambda r: r["relevance"], reverse=True)
-
-        # Apply domain filter
-        if domain:
-            results = [r for r in results if domain in r.get("url", "")]
-
-        # Limit results
-        results = results[:max_results]
-
+        if not web_research.enabled():
+            raise ValueError(
+                "联网检索未开启：请在设置里打开联网检索（只发送提炼后的关键词，"
+                "不发送对话内容），或设置 LIUHAO_WEB_RESEARCH=1。"
+            )
+        report = web_research.search(query, limit=max_results)
+        if not report.ok:
+            raise ValueError(
+                f"联网检索失败，未返回任何来源：{report.error or '各检索源均无结果'}"
+            )
         return {
-            "query": query,
-            "total_results": len(results),
-            "results": results,
-            "has_more": len(results) >= max_results,
+            "query": report.query,
+            "search_phrase": report.search_phrase,
+            "fetched_at": report.fetched_at,
+            "providers": report.providers,
+            "total_results": len(report.sources),
+            "results": [
+                {
+                    "title": item.title,
+                    "url": item.url,
+                    "site": item.site,
+                    "published_at": item.published_at,
+                    "snippet": item.snippet,
+                }
+                for item in report.sources
+            ],
         }
 
 
@@ -839,8 +825,17 @@ class FileTool(BaseTool):
             }
 
         elif operation == "write":
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(content, encoding="utf-8")
+            # 两个 Bot 同时改一个文件要排队（A2a 第 7 项）：后到的等前一个
+            # 写完再写，不互相覆盖；等不到（默认 60 秒）就报人话、这次不写。
+            from src.gateway.a2a import FILE_WRITE_QUEUE
+
+            def _do_write() -> None:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                resolved.write_text(content, encoding="utf-8")
+
+            outcome = FILE_WRITE_QUEUE.write_queued(str(resolved), _do_write)
+            if not outcome["ok"]:
+                raise TimeoutError(outcome["message"])
             return {
                 "operation": "write",
                 "path": path,
@@ -849,9 +844,17 @@ class FileTool(BaseTool):
             }
 
         elif operation == "append":
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            with open(resolved, "a", encoding="utf-8") as f:
-                f.write(content)
+            # 同上：追加也要排队，否则两段内容会互相插坏。
+            from src.gateway.a2a import FILE_WRITE_QUEUE
+
+            def _do_append() -> int:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                with open(resolved, "a", encoding="utf-8") as f:
+                    return f.write(content)
+
+            outcome = FILE_WRITE_QUEUE.write_queued(str(resolved), _do_append)
+            if not outcome["ok"]:
+                raise TimeoutError(outcome["message"])
             return {
                 "operation": "append",
                 "path": path,

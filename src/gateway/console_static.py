@@ -206,22 +206,54 @@ def is_installed(app: FastAPI) -> bool:
     return callable(handler) and getattr(handler, "__name__", "") == FALLBACK_HANDLER_NAME
 
 
-def resolve_console_dist() -> Optional[Path]:
-    """Return the usable build output, or ``None`` when there is nothing to serve."""
-    configured = (os.environ.get(CONSOLE_DIST_ENV) or "").strip()
-    candidate = Path(configured).expanduser() if configured else DEFAULT_CONSOLE_DIST
+def _has_entry_page(candidate: Path) -> bool:
+    """True when ``candidate`` is a directory with a usable entry page."""
     if not candidate.is_dir():
-        return None
-    if not (candidate / "index.html").is_file():
-        # A directory without an entry page would register and then 404 on
-        # every request -- worse than not registering, because it looks like
-        # it worked.
-        logger.warning(
-            "console build output at %s has no index.html -- not serving it "
-            "(run `npm run build` in apps/console/console)", candidate,
-        )
-        return None
-    return candidate
+        return False
+    if (candidate / "index.html").is_file():
+        return True
+    # A directory without an entry page would register and then 404 on
+    # every request -- worse than not registering, because it looks like
+    # it worked.
+    logger.warning(
+        "console build output at %s has no index.html -- not serving it "
+        "(run `npm run build` in apps/console/console)", candidate,
+    )
+    return False
+
+
+#: Installed-payload layout: the one-click package copies the built console
+#: to ``<程序根>/console`` (see ``packaging/stage_payload.py``), which is
+#: ``parents[2]`` of this file -- ``src/gateway/console_static.py`` -- when
+#: the gateway runs from the installed tree.
+_PAYLOAD_CONSOLE_DIRNAME = "console"
+
+
+def resolve_console_dist() -> Optional[Path]:
+    """Return the usable build output, or ``None`` when there is nothing to serve.
+
+    Resolution order:
+
+    1. ``LIUHAO_CONSOLE_DIST`` when set -- explicit configuration wins, and
+       a bad explicit value is refused (never silently overridden).
+    2. The source-tree default, ``apps/console/console/dist`` -- the dev /
+       worktree layout.
+    3. The installed-payload layout, ``<程序根>/console`` -- v10 走查 V10-F1:
+       the desktop service's ``-c`` bootstrap (and any launcher that does not
+       set the env var) must still find the console instead of serving the
+       API only and answering ``/`` with a 404. The launchers normally set
+       the env var, so this only fires when they do not.
+    """
+    configured = (os.environ.get(CONSOLE_DIST_ENV) or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        return candidate if _has_entry_page(candidate) else None
+    if _has_entry_page(DEFAULT_CONSOLE_DIST):
+        return DEFAULT_CONSOLE_DIST
+    payload = Path(__file__).resolve().parents[2] / _PAYLOAD_CONSOLE_DIRNAME
+    if _has_entry_page(payload):
+        return payload
+    return None
 
 
 def _warm_mimetypes() -> None:

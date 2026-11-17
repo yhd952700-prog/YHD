@@ -142,7 +142,7 @@ def describe_owner_origin(manager) -> Dict[str, Any]:
 
 def _member_entry(node: _accounts.AccountNode) -> Dict[str, Any]:
     """Owner 视角的成员条目：不含 parent/depth/root 等结构字段。"""
-    entry = _accounts.public_member(node, show_key_authorization=True)
+    entry = _accounts.public_member(node)
     entry["is_owner"] = bool(node.is_root)
     return entry
 
@@ -424,7 +424,8 @@ class OwnerInviteRequest(BaseModel):
     display_name: Optional[str] = Field(None, max_length=80)
     role: Optional[str] = Field(None, description="角色预设：viewer / operator / manager")
     permissions: Optional[List[str]] = None
-    allow_key_sharing: bool = False
+    # Key 不共用（Joseph 2026-11-14 亲口定，2026-11-15 彻底移除开关）：
+    # 邀请成员不再接受任何共享授权字段；请求体里即使带上也被忽略。
 
 
 @router.post("/members", status_code=201)
@@ -444,7 +445,6 @@ def owner_invite(
         permissions=payload.permissions,
         role=payload.role,
         display_name=payload.display_name,
-        allow_key_sharing=payload.allow_key_sharing,
     )
     written = _audit_owner(
         "owner.member.create",

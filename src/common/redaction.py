@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import getpass
 import re
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 #: 占位符变更或规则扩展时递增；诊断包的 manifest 会记录它。
-REDACTION_VERSION = "4"
+#: v5（0.4.6）：补 Grok ``xai-`` 与 Anthropic ``sk-ant-``（之前只有通用
+#: ``sk-`` 规则兜底；显式列出后自检与脱敏各自独立覆盖，漏一类能被发现）。
+REDACTION_VERSION = "5"
 
 REDACTED = "***REDACTED***"
 USER_PLACEHOLDER = "<用户>"
@@ -190,6 +192,11 @@ _SECRET_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (_PRIVATE_KEY_BLOCK, "***PRIVATE-KEY-REDACTED***"),
     (_COOKIE_HEADER, rf"\1{REDACTED}"),
     (re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{8,})"), "sk-***REDACTED***"),
+    # Anthropic：``sk-ant-api03-...``（通用 sk- 规则已兜底，这里显式列出，
+    # 避免将来改短 sk- 下限时悄悄漏掉最长的那一家）。
+    (re.compile(r"\b(sk-ant-[A-Za-z0-9_-]{8,})"), "sk-ant-***REDACTED***"),
+    # Grok（xAI）：``xai-...``—— 之前两套清单都没有，日志里会明文漏出。
+    (re.compile(r"\b(xai-[A-Za-z0-9]{16,})"), "xai-***REDACTED***"),
     # Stripe：``sk_live_`` / ``sk_test_`` / ``rk_live_``（连字符规则覆盖不到）
     (re.compile(r"\b((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,})"), "sk_***REDACTED***"),
     (re.compile(r"\b(hf_[A-Za-z0-9]{20,})"), "hf_***REDACTED***"),
@@ -320,6 +327,8 @@ _LEAK_FEATURES: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     # 密钥与令牌（各家独立模式，避免与脱敏共用同一条正则）
     ("密钥或令牌", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("密钥或令牌", re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}")),
+    ("密钥或令牌", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}")),
+    ("密钥或令牌", re.compile(r"\bxai-[A-Za-z0-9]{16,}")),
     # 下面这批前缀与 ``_SECRET_PATTERNS`` 一一对应，但正则各写一遍：
     # 自检必须独立于脱敏，否则"漏一类"会被同一份规则原样漏过去。
     ("密钥或令牌", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}")),
@@ -415,3 +424,25 @@ __all__ = [
     "redact_text",
     "sanitize_text",
 ]
+
+
+def redact_secrets(details: Dict[str, Any]) -> Dict[str, Any]:
+    """Redact sensitive values from a details dictionary.
+
+    Moved here 2026-11-12 from the deleted ``src/security/audit_logger.py``
+    (audit unification): the helper itself is a generic dict redactor, not
+    audit-specific. Any key containing 'secret', 'key', 'token', 'password',
+    or 'passphrase' (case-insensitive) has its value replaced with
+    '[REDACTED]'. String values longer than 512 characters are truncated
+    to 128 + '...[truncated]' (142 chars total).
+    """
+    safe_details: Dict[str, Any] = {}
+    if details:
+        for k, v in details.items():
+            if any(word in k.lower() for word in ("secret", "key", "token", "password", "passphrase")):
+                safe_details[k] = "[REDACTED]"
+            elif isinstance(v, str) and len(v) > 512:
+                safe_details[k] = v[:128] + "...[truncated]"
+            else:
+                safe_details[k] = v
+    return safe_details

@@ -462,10 +462,10 @@ capability-registry:
     name: Multi-Agent Collaboration — team/peer protocols
     module: src/ai/collaboration.py
     status: PARTIAL
-    reachability: UNREACHABLE
-    tests: tests/test_collaboration.py
-    test_count: 12
-    notes: MS:§68-69 network-mandatory chain reuse; no fake agents; HONESTY 2026-10-02 module+12 tests exist but ZERO non-test src/ importers => no product path invokes it, reachability UNREACHABLE until wired (was falsely IMPLEMENTED)
+    reachability: REACHABLE
+    tests: tests/test_collaboration.py + tests/test_team_service.py
+    test_count: 32
+    notes: "MS:§68-69 network-mandatory chain reuse; no fake agents; 2026-11-13 (7-3 Step 2/3/4) wired into product path: src/ai/team_service.py imports MultiAgentTeam (captain singleton), src/gateway/ai_management.py exposes POST /v1/team/delegate + stop-all + approve/reject, src/ai/tools/kernel_tools.py exposes liuhao.team.delegate chat tool (B-grade, default off); async delegate + team_store persistence + approval hold + stop-all all tested. Still PARTIAL: A2A real transport NOT implemented (single-machine build does not need it), pipeline() still synchronous, members share captain model unless per-member model configured."
   - id: LHX-L-003
     phase: Phase 11
     name: Perception — Observation + Perceiver + WorldModel

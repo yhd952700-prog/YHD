@@ -864,6 +864,26 @@ class WorkflowRuntime:
             approval_id, decision=decision, decided_by=decided_by, comment=comment
         )
         run_id = str(approval["run_id"])
+        if not run_id:
+            # 临时卡片 / 计划审批不挂任何工作流运行：决定已落库（计划状态已在
+            # decide_approval 里同事务同步），这里只写审计，不找运行、不续跑。
+            _audit(
+                "workflow.approval.decided",
+                principal_id=decided_by,
+                outcome="success" if decision == "approved" else "deny",
+                details={
+                    "run_id": "",
+                    "approval_id": approval_id,
+                    "kind": approval.get("kind", ""),
+                    "ref_id": approval.get("ref_id", ""),
+                    "decision": decision,
+                    "comment": comment,
+                    "submitted_by": approval.get("submitted_by", ""),
+                    "operation": approval.get("operation", ""),
+                },
+                correlation_id=approval_id,
+            )
+            return {"approval": approval, "run": None}
         node_id = str(approval["node_id"])
         step_id = str(approval["step_id"])
         run = self.store.get_run(run_id)
@@ -949,20 +969,23 @@ class WorkflowRuntime:
             run_id = str(approval["run_id"])
             step_id = str(approval["step_id"])
             try:
-                self.store.finish_step(
-                    step_id,
-                    status="failed",
-                    outputs={"outcome": "expired", "approval_id": approval["approval_id"]},
-                    error="审批超时自动失效",
-                    error_code="approval_expired",
-                )
-                self.store.finish_run(
-                    run_id,
-                    status="cancelled",
-                    outcome="expired",
-                    error="审批超时自动失效，流程已终止",
-                    error_code="approval_expired",
-                )
+                if run_id:
+                    self.store.finish_step(
+                        step_id,
+                        status="failed",
+                        outputs={"outcome": "expired", "approval_id": approval["approval_id"]},
+                        error="审批超时自动失效",
+                        error_code="approval_expired",
+                    )
+                    self.store.finish_run(
+                        run_id,
+                        status="cancelled",
+                        outcome="expired",
+                        error="审批超时自动失效，流程已终止",
+                        error_code="approval_expired",
+                    )
+                # run_id 为空的是临时卡片：过期只置状态，不终结任何运行。
+                # 超时默认拒绝：卡片过期即什么都没执行，聊天里由调用方如实说明。
                 _audit(
                     "workflow.approval.expired",
                     principal_id="system",
@@ -970,16 +993,17 @@ class WorkflowRuntime:
                     details={
                         "run_id": run_id,
                         "approval_id": approval["approval_id"],
+                        "kind": approval.get("kind", ""),
                         "expires_at": approval.get("expires_at"),
                     },
-                    correlation_id=run_id,
+                    correlation_id=run_id or str(approval["approval_id"]),
                 )
                 _publish_event(
                     "workflow.approval.expired",
                     {"run_id": run_id, "approval_id": approval["approval_id"]},
-                    correlation_id=run_id,
+                    correlation_id=run_id or str(approval["approval_id"]),
                 )
-                affected.append(run_id)
+                affected.append(run_id or str(approval["approval_id"]))
             except Exception:  # noqa: BLE001 - 单条失败不阻断其它过期
                 logger.exception("expire approval failed: %s", approval.get("approval_id"))
         return affected

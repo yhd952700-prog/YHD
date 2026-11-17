@@ -17,6 +17,7 @@ Why this module exists
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -25,6 +26,17 @@ from fastapi import Depends, HTTPException
 from ..kernels.identity import _accounts
 from ..kernels.identity import get_identity_manager
 from .policy import require_bearer_payload, _human_claims
+
+#: 前端 ViewAs 视角请求头（见 console ``lib/auth.ts`` 的 ``tokenHeaders``）。
+VIEW_AS_HEADER = "X-Liuhao-View-As"
+
+#: 当前请求的 ViewAs 目标（由 :class:`gateway.view_as.ViewAsReadOnlyMiddleware`
+#: 在路由前校验后写入；纯 ASGI 中间件与端点在同一任务内，上下文变量直达）。
+#: ``require_account_principal`` 据此把读视角换成目标账号；未开视角时为 None。
+#: 中间件在请求结束后复位，不会漏到下一个请求。
+view_as_target_var: ContextVar[Optional[str]] = ContextVar(
+    "liuhao_view_as_target", default=None
+)
 
 #: 中性文案常量（响应里只允许出现这些，不拼层级信息）。
 NEUTRAL_DENIED = _accounts.NEUTRAL_FORBIDDEN_MESSAGE
@@ -38,8 +50,9 @@ class KeyScope:
 
     * ``visible_to``：列表/默认模型可见的归属账号集合；
     * ``allow_unowned``：账号体系上线前的历史模型归根账号所有，仅根可见；
-    * ``allow_owners``：本次允许**实际使用其 Key** 的集合（含知情授权判定）。
-      自动路由只在集合内挑选，避免静默借用未授权 Key。
+    * ``allow_owners``：本次允许**实际使用其 Key** 的集合。Key 不共用
+      （Joseph 2026-11-14 新规矩）：恒为调用者自己（+ 无归属历史模型
+      的空串占位），不再含任何其他账号，哪怕对方开过共享授权。
     """
 
     principal: str
@@ -62,6 +75,8 @@ class AccountContext:
     node: _accounts.AccountNode
     subtree: Tuple[str, ...]
     standalone: bool = False
+    #: ViewAs 只读视角下为查看者本人（谁在以该成员视角查看）；正常请求为 None。
+    viewed_as_by: Optional[str] = None
 
     @property
     def is_root(self) -> bool:
@@ -88,9 +103,7 @@ class AccountContext:
         return self.node.has(scope)
 
     def public_self(self) -> dict:
-        return _accounts.public_member(
-            self.node, show_key_authorization=self.is_root
-        )
+        return _accounts.public_member(self.node)
 
 
 def _standalone_node(principal: str) -> _accounts.AccountNode:
@@ -104,10 +117,49 @@ def _standalone_node(principal: str) -> _accounts.AccountNode:
     )
 
 
+def validate_view_as(viewer: str, target: str) -> None:
+    """校验一次 ViewAs 请求是否合法；非法时 raise 403（中性文案）。
+
+    规则（与前端 ``accountCaps.canViewAs`` 同口径：根或能管下级）：
+
+    * 目标必须存在、状态为 active、不能是查看者本人；
+    * 目标必须在查看者的子树内；
+    * 查看者须为根，或能管理该目标（直接下级）。
+    """
+    viewer = (viewer or "").strip()
+    target = (target or "").strip()
+    if not viewer or not target or viewer == target:
+        raise deny(403, "VIEW_AS_DENIED", "无权以该视角查看")
+    manager = get_identity_manager()
+    target_node = manager.get_account(target)
+    if target_node is None or target_node.status != _accounts.ACCOUNT_STATUS_ACTIVE:
+        raise deny(403, "VIEW_AS_DENIED", "无权以该视角查看")
+    viewer_node = manager.get_account(viewer)
+    if viewer_node is None:
+        # 独立根 / 老部署令牌：没有树，就没有“别人的视角”。
+        raise deny(403, "VIEW_AS_DENIED", "无权以该视角查看")
+    if target not in manager.subtree_principals(viewer):
+        raise deny(403, "VIEW_AS_DENIED", "无权以该视角查看")
+    if not viewer_node.is_root and not _accounts.can_manage(
+        manager.account_nodes(), viewer, target
+    ):
+        raise deny(403, "VIEW_AS_DENIED", "无权以该视角查看")
+
+
 def require_account_principal(
     payload=Depends(require_bearer_payload),
 ) -> AccountContext:
-    """Authenticated human + tree position. Never trusts a body-supplied name."""
+    """Authenticated human + tree position. Never trusts a body-supplied name.
+
+    ViewAs：:class:`ViewAsReadOnlyMiddleware` 在路由前校验过目标并把
+    ``X-Liuhao-View-As`` 头的值放进请求上下文变量（见 ``view_as`` 模块）；
+    这里读到目标时返回**目标账号**的视角（读范围随目标走；写操作已由
+    中间件在路由前拦掉）。目标非法时这里同样 403，绝不静默回落到查看者本人。
+
+    签名刻意不加 ``Request`` 参数：``ai_management`` / ``audit`` 等模块会
+    直接位置调用 ``require_account_principal(payload)``，加参会把 payload
+    错位成 Request（已踩过一次，见提交说明）。
+    """
     subject, _metadata = _human_claims(payload)
     manager = get_identity_manager()
     node = manager.get_account(subject)
@@ -120,6 +172,19 @@ def require_account_principal(
     subtree = tuple(manager.subtree_principals(subject)) if not standalone else (subject,)
     if not subtree:
         subtree = (subject,)
+    target = (view_as_target_var.get() or "").strip()
+    if target:
+        validate_view_as(subject, target)
+        target_node = manager.get_account(target)
+        assert target_node is not None  # validate_view_as 已保证存在
+        target_subtree = tuple(manager.subtree_principals(target)) or (target,)
+        return AccountContext(
+            principal=target,
+            node=target_node,
+            subtree=target_subtree,
+            standalone=False,
+            viewed_as_by=subject,
+        )
     return AccountContext(
         principal=subject,
         node=node,
@@ -202,10 +267,18 @@ def key_scope_for(
 ) -> KeyScope:
     """构造 Key 使用视角。
 
-    * 根账号：可见整棵子树；可借用**已开启共享授权**的成员 Key；
-    * 普通账号：只可见/只可使用自己的 Key；
-    * 无账号节点的老部署：等同"只有自己"的根（历史模型归属自己）。
+    新规矩（Joseph 2026-11-14，Key 不共用）：**任何账号只用自己的
+    Key**。根账号也不再借用成员的 Key（哪怕对方开过共享授权）——
+    ``allow_owners`` 恒为 ``(自己, "")``，``""`` 只代表上线前无归属的
+    历史模型（单机老部署，归根账号自己所有），不代表别人的 Key。
+    成员：只可见/只可使用自己的 Key；无归属历史模型也不可用。
+    无账号节点的老部署：等同“只有自己”的根（历史模型归属自己）。
+
+    注意：``visible_to`` 同样只含自己——根账号的模型列表/详情里不再出现
+    成员的模型配置（哪怕只是名字与掩码）；成员“配没配 Key”这个管理信息
+    走 ``/v1/a3m`` 的 Owner 汇总（只给 bool，不给 Key、不给掩码）。
     """
+
     if context is None:
         if not principal:
             raise ValueError("key scope needs a context or principal")
@@ -235,23 +308,23 @@ def key_scope_for(
             allow_owners=(context.principal,),
         )
 
-    manager = get_identity_manager()
-    authorized = tuple(
-        p
-        for p in context.subtree
-        if p != context.principal and manager.key_borrow_status(context.principal, p)[0]
-    )
+    # 根账号：Key 不共用，不再把已授权成员的 Key 放进 allow_owners；
+    # 可见范围也只含自己（列表/详情里不再出现成员的模型配置）。
     return KeyScope(
         principal=context.principal,
         is_root=True,
-        visible_to=tuple(context.subtree),
+        visible_to=(context.principal,),
         allow_unowned=True,
-        allow_owners=(context.principal, "") + authorized,
+        allow_owners=(context.principal, ""),
     )
 
 
 def enforce_key_use(scope: KeyScope, owner: Optional[str]) -> None:
-    """显式模型选择时的 Key 归属判定（定稿码见 §5.2）。"""
+    """显式模型选择时的 Key 归属判定（定稿码见 §5.2）。
+
+    Key 不共用（Joseph 2026-11-14 亲口定，2026-11-15 彻底移除开关）：
+    别人的模型配置一律不能用，没有任何授权能把它打开。
+    """
     if scope.can_use(owner):
         return
     owner = owner or ""
@@ -259,8 +332,8 @@ def enforce_key_use(scope: KeyScope, owner: Optional[str]) -> None:
         raise deny(403, _accounts.CODE_KEY_NOT_OWNED, NEUTRAL_DENIED)
     raise deny(
         403,
-        _accounts.CODE_KEY_CONSENT_REQUIRED,
-        "该模型配置未开启共享授权，无法使用",
+        _accounts.CODE_KEY_NOT_OWNED,
+        "该模型配置属于其他账号，不能使用",
     )
 
 

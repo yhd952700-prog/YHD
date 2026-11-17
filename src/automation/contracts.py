@@ -53,7 +53,9 @@ __all__ = [
 
 
 class BackendKind(str, Enum):
-    """自动化后端类型。本轮仅 ``FAKE`` 可用，其余为下一轮预留。"""
+    """自动化后端类型。``FAKE`` 是确定性假后端；``NATIVE`` 是 0.4.6 接入的
+    Windows 真后端（只做「看」和「开」，见
+    ``src/automation/backends/native_windows.py``）；其余为下一轮预留。"""
 
     FAKE = "fake"
     NATIVE = "native"

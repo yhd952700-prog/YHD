@@ -27,6 +27,19 @@ class DecisionRequest(BaseModel):
     comment: str = Field(default="", max_length=1000)
 
 
+class CardRequest(BaseModel):
+    """危险动作确认卡的创建请求（模块级：FastAPI 要在模块全局解析到它）。"""
+
+    title: str = Field(min_length=1, max_length=200)
+    action_text: str = Field(min_length=1, max_length=2000)
+    targets: List[str] = Field(min_length=1, max_length=100)
+    risk_note: str = Field(default="", max_length=2000)
+    impact: str = Field(default="", max_length=2000)
+    consequence: str = Field(default="", max_length=2000)
+    proposer: str = Field(default="jarvis", max_length=100)
+    source: str = Field(default="user_said", max_length=20)
+
+
 def _no_viewer() -> None:  # pragma: no cover
     return None
 
@@ -168,8 +181,111 @@ def build_router(viewer_dependency: Optional[Callable[..., Any]] = None) -> APIR
         run = _store().get_run(str(approval["run_id"]))
         if run is not None:
             item["steps"] = [_stamp(step) for step in _store().list_steps(str(run["run_id"]))]
-        item["audit"] = _audit_trail(str(approval["run_id"]))
+        # 卡片/计划审批不挂运行，审计按 approval_id 关联。
+        item["audit"] = _audit_trail(str(approval["run_id"]) or approval_id)
         return {"approval": item}
+
+    # ── 危险动作确认卡（任务 4）─────────────────────────────────
+
+    def _audit_event(
+        action: str,
+        *,
+        principal_id: str,
+        outcome: str,
+        details: Dict[str, Any],
+        correlation_id: str,
+    ) -> None:
+        try:
+            from src.kernels.audit import AuditEventType, AuditScope, log_event
+
+            log_event(
+                AuditEventType.STATE_CHANGE,
+                principal_id or "system",
+                AuditScope.L1,
+                outcome,
+                {"action": action, **details},
+                correlation_id=correlation_id,
+            )
+        except Exception:  # noqa: BLE001 - 审计写不进去不能拖垮建卡
+            logger.warning("approval audit failed: %s", action)
+
+    @router.post("/cards", status_code=201)
+    def create_action_card(
+        payload: CardRequest, viewer: Any = Depends(dependency)
+    ) -> Dict[str, Any]:
+        """建一张危险动作确认卡（30 分钟过期，超时默认拒绝）。
+
+        与工作流审批共用 workflow_approvals 一张表（kind='action_card'），
+        决定走同一条 approve/reject，审批中心与聊天卡片看到同一条记录。
+        只有 Owner 能建卡；来源不是 Joseph 亲口说的（粘贴/文件/网页）
+        一律不建卡——那是数据不是指令，防诱导第 0 关。
+        """
+        if not _is_root(viewer):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "not_owner", "message": "只有 Owner 能创建危险动作确认卡"},
+            )
+        owner = _principal(viewer)
+        source = (payload.source or "").strip()
+        if source != "user_said":
+            _audit_event(
+                "workflow.approval.card_refused",
+                principal_id=owner,
+                outcome="deny",
+                details={
+                    "source": source,
+                    "action_text": payload.action_text,
+                    "reason": "动作来源不是 Joseph 亲口说的，不建卡、不执行",
+                },
+                correlation_id="",
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "induced_source_refused",
+                    "message": f"动作来源不是你亲口说的（来源：{source}），我不建卡、也不执行",
+                },
+            )
+        targets = [str(target).strip() for target in payload.targets if str(target).strip()]
+        if not targets:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "empty_targets", "message": "目标清单不能为空，要逐项列出真实目标"},
+            )
+        for target in targets:
+            if any(char in target for char in "*?["):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "unexpanded_glob",
+                        "message": f"目标清单里不能只给通配符（{target}），要先展开成逐项清单",
+                    },
+                )
+        card = _store().create_action_card(
+            title=payload.title.strip(),
+            action_text=payload.action_text.strip(),
+            targets=targets,
+            risk_note=payload.risk_note.strip(),
+            impact=payload.impact.strip(),
+            consequence=payload.consequence.strip(),
+            proposer=(payload.proposer or "jarvis").strip(),
+            source=source,
+            submitted_by=owner,
+            owner_account_id=owner,
+        )
+        _audit_event(
+            "workflow.approval.card_created",
+            principal_id=owner,
+            outcome="success",
+            details={
+                "approval_id": card["approval_id"],
+                "action_text": payload.action_text,
+                "targets": targets,
+                "source": source,
+            },
+            correlation_id=str(card["approval_id"]),
+        )
+        return {"approval": _enrich(card)}
 
     def _audit_trail(run_id: str) -> List[Dict[str, Any]]:
         try:

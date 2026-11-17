@@ -91,6 +91,10 @@ _PROTECTED_BACKUP_NAMES = frozenset(
         # 真实的主密钥文件名。旧版排除集误写成 ``model_config_key.bin``，
         # 导致 ``model_config.key`` 被原样打进备份。
         "model_config.key",
+        # 模型注册库：里面是各模型 ``api_key_enc`` 密文。2026-11-15 起的规矩
+        # 「备份不带 Key」——升级备份也不带它；回滚时磁盘上那份原样保留，
+        # 模型配置不会被备份覆盖（与 model_config.key 的处理一致）。
+        "model_registry.sqlite3",
         # 身份库签名密钥与身份库本体：两者都能让持有者伪造/读取本机身份。
         "integrity.key",
         "human_identities.json",
@@ -107,6 +111,16 @@ _PROTECTED_BACKUP_NAMES = frozenset(
         "admin.token",
         "devices.json",
         "relay.json",
+        # TOTP 双重验证材料（2026-11-15）：密钥密文与 AES-GCM 钥匙文件。
+        # 备份不带 Key 的规矩同样适用：丢了它们顶多重新开启双重验证，
+        # 绝不能让一张备份包把别人的第二步验证也带走。
+        "totp.json",
+        "totp.key",
+        # 声纹认人材料（2026-11-15）：加密后的声纹特征与 AES-GCM 钥匙文件。
+        # 隐私规矩写死“只有账号本人能看、不进备份”：备份包里绝不能有
+        # 任何人的声纹，丢了顶多重新录 2–3 句注册。
+        "voiceprint.json",
+        "voiceprint.key",
     }
 )
 

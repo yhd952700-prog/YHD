@@ -61,6 +61,10 @@ ACTION_TOGGLE_PAUSE_EMPLOYEES = "toggle_pause_employees"
 ACTION_LOGOUT = "logout"
 #: 「清除本机免密」：只删凭据文件（不解密、不额外确认）+ 回登录页。
 ACTION_CLEAR_AUTO_LOGIN = "clear_auto_login"
+#: 「叫小铁出来」：桌宠飞出来＋操作台弹出来（随叫随到一期，Ctrl+J 同款）。
+ACTION_SHOW_PET = "show_pet"
+#: 「收起桌宠」：桌宠飞回操作台左上角主脑位，桌面上不再有小铁。
+ACTION_HIDE_PET = "hide_pet"
 
 #: 第二个桌面实例唤起已有窗口用的注册消息（跨进程，按类名找隐藏窗口）。
 SHOW_MESSAGE_NAME = "LiuHao.ShowStatusWindow"
@@ -92,6 +96,8 @@ LABEL_PAUSE_EMPLOYEES = "暂停 AI 员工接活"
 LABEL_RESUME_EMPLOYEES = "恢复 AI 员工接活"
 LABEL_LOGOUT = "退出登录"
 LABEL_CLEAR_AUTO_LOGIN = "清除本机免密（下次需输密码）"
+LABEL_SHOW_PET = "叫小铁出来（桌宠＋操作台）"
+LABEL_HIDE_PET = "收起桌宠"
 
 #: 暂停菜单的解释口径：只影响已有员工的指派，不阻止用户直接对话。
 #: 菜单项本身没有 tooltip（Win32 弹出菜单不支持），因此这句话写进托盘图标
@@ -115,6 +121,8 @@ def pause_label(*, paused: bool, count: int | None) -> str:
 #: 自动打开浏览器。
 MENU_ITEMS: tuple[tuple[int, str, str], ...] = (
     (1001, ACTION_OPEN_CONSOLE, LABEL_OPEN_CONSOLE),
+    (1011, ACTION_SHOW_PET, LABEL_SHOW_PET),
+    (1012, ACTION_HIDE_PET, LABEL_HIDE_PET),
     (1002, ACTION_SHOW_STATUS, LABEL_SHOW_STATUS),
     (1008, ACTION_TOGGLE_PAUSE_EMPLOYEES, LABEL_PAUSE_EMPLOYEES),
     (1007, ACTION_RESTART_SERVICE, LABEL_RESTART_SERVICE),
@@ -852,17 +860,20 @@ class SystemTray:
 
 __all__ = [
     "ACTION_CLEAR_AUTO_LOGIN",
+    "ACTION_HIDE_PET",
     "ACTION_LOGOUT",
     "ACTION_OPEN_BROWSER",
     "ACTION_OPEN_CONSOLE",
     "ACTION_OPEN_LOGS",
     "ACTION_QUIT",
     "ACTION_RESTART_SERVICE",
+    "ACTION_SHOW_PET",
     "ACTION_SHOW_STATUS",
     "ACTION_STOP_SERVICE",
     "ACTION_TOGGLE_PAUSE_EMPLOYEES",
     "ACTION_TOGGLE_STATUS",
     "LABEL_CLEAR_AUTO_LOGIN",
+    "LABEL_HIDE_PET",
     "LABEL_LOGOUT",
     "LABEL_OPEN_BROWSER",
     "LABEL_OPEN_CONSOLE",
@@ -871,6 +882,7 @@ __all__ = [
     "LABEL_QUIT",
     "LABEL_RESTART_SERVICE",
     "LABEL_RESUME_EMPLOYEES",
+    "LABEL_SHOW_PET",
     "LABEL_SHOW_STATUS",
     "LABEL_STOP_SERVICE",
     "MENU_ITEMS",

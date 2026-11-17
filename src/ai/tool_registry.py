@@ -490,6 +490,31 @@ class ToolRegistry:
             )
             return ActionResult(action_id=tool_id, success=False, error=error)
 
+        # ---- 聊天工具开关（技能页 B 栏）：关了的工具执行层直接拒绝 ----
+        # 注册闸（make_tools）只管“新会话看不到它”；已经拿到旧工具表的会话、
+        # MCP 等旁路仍可能调到这里，执行闸是第二道。只拦分档表里登记在案的
+        # 聊天工具 id——注册表里别处的同名/未知工具不受影响。函数内懒导入，
+        # 避免 ai → gateway 的模块级循环。
+        from src.gateway import chat_tool_settings as _chat_tool_settings
+
+        if tool.tool_id in _chat_tool_settings.CHAT_TOOL_GRADES and (
+            not _chat_tool_settings.is_chat_tool_enabled(tool.tool_id)
+        ):
+            error = (
+                f"工具 {tool.name}（{tool.tool_id}）已经关了，"
+                "在技能页打开后才能用"
+            )
+            self._audit_execution(
+                tool=tool, tool_id=tool_id, principal=principal,
+                correlation_id=cid, outcome="denied", reason=error,
+                error_class="ChatToolDisabled", duration_ms=elapsed(),
+                inputs=safe_inputs,
+            )
+            return ActionResult(
+                action_id=tool_id, success=False, error=error,
+                output={"success": False, "status": "denied", "error": error},
+            )
+
         # ---- 权限：声明的 permission 必须在执行路径被真正消费 ----
         permission_checked = False
         permission_allowed = True

@@ -98,12 +98,19 @@ def _memory_visible_to(
 def make_tools(
     principal: str,
     status_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    *,
+    include_disabled: bool = False,
 ) -> List[Tool]:
     """构建鎏灏内置工具集（绑定 principal 上下文）。
 
     Args:
         principal: 主体 ID（审计/记忆归因）。
         status_fn: 可选，返回系统状态 dict 的回调（绑定到 assistant.stats）。
+        include_disabled: 为 True 时返回全部工具（含技能页已关的），供
+            ``GET /v1/skills/chat-tools`` 列表用；聊天本身（默认 False）
+            只注册开关打开的工具——这就是注册闸（技能页透明化 §9.3）。
+            关掉的工具即使模型在旧提示词里见过，执行层
+            （``ToolRegistry.execute``）也会再拦一次。
     """
     tools: List[Tool] = []
 
@@ -276,7 +283,7 @@ def make_tools(
         except (TypeError, ValueError):
             conf = 0.8
         p = pcm.set_preference(principal, k, v, confidence=conf)
-        return _serialize({"status": "ok", "key": p.key, "value": p.value, "confidence": p.confidence})
+        return _serialize({"status": "ok", "key": p.key, "value": p.value, "confidence": p.confidence, "kernel_synced": p.kernel_synced})
 
     def personal_add_fact(key: str = "", value: str = "", **kwargs: Any) -> str:
         """提议一条用户背景事实，进入待确认区（不直接写长期记忆）。
@@ -486,7 +493,272 @@ def make_tools(
 
     tools.append(build_reminder_tool(principal))
 
+    # ============ 插件安全子集 + 知识库/联网检索（0.4.6，5-4/6-4） ============
+    # 只接纯计算、无外部依赖、无写文件的插件子集（计算、base64、hash、
+    # 单位换算、时区）+ 真知识库检索 + 真联网检索；假 SearchTool 已删，
+    # 二维码因“要写文件出图/无库回退是假图案”本轮不接。见 plugin_tools.py。
+    from .plugin_tools import build_plugin_tools
+
+    tools.extend(build_plugin_tools())
+
+    # ============ 派给一队（7-3 Step 2：聊天接线） ============
+    # 队长（贾维斯本体）把子任务派给底下的队员：异步执行、返回任务 id，
+    # 不当场等结果；含危险动作时 approval_required=True，先挂起等批。
+    # 注册闸同样管它（B 档默认关，Owner 在技能页开了才进聊天工具集）。
+    def delegate_to_team(
+        role: str = "",
+        task: str = "",
+        plan_id: str = "",
+        approval_required: bool = False,
+        danger_kind: str = "",
+        **kwargs: Any,
+    ) -> str:
+        """把子任务派给一名队员（查资料/整理/提醒/写代码），异步执行。"""
+        role_value = (role or kwargs.get("member_role") or "").strip().lower()
+        task_text = (task or kwargs.get("text") or "").strip()
+        if role_value not in ("researcher", "analyst", "reminder", "coder"):
+            return _serialize(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"没有这个队员角色：{role_value}（只认 researcher / "
+                        "analyst / reminder / coder；队长不接派活）"
+                    ),
+                }
+            )
+        if not task_text:
+            return _serialize({"status": "failed", "error": "任务不能为空"})
+        from ..team_service import get_team_service
+
+        try:
+            result = get_team_service().dispatch(
+                principal,
+                role_value,
+                task_text,
+                plan_id=str(plan_id or ""),
+                approval_required=bool(approval_required),
+                danger_kind=str(danger_kind or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - 派活失败如实回给模型
+            return _serialize({"status": "failed", "error": str(exc)})
+        return _serialize(result)
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.team.delegate",
+            name="delegate_to_team",
+            version="1.0.0",
+            description=(
+                "把子任务派给贾维斯底下的队员（researcher 查资料 / analyst 整理 / "
+                "reminder 提醒 / coder 写代码），异步执行，返回任务 id 与状态；"
+                "含危险动作时 approval_required=true，先挂起等 Joseph 批了才跑"
+            ),
+            capability="team.delegate",
+            schema={
+                "type": "object",
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "enum": ["researcher", "analyst", "reminder", "coder"],
+                    },
+                    "task": {"type": "string"},
+                    "plan_id": {"type": "string", "default": ""},
+                    "approval_required": {"type": "boolean", "default": False},
+                    "danger_kind": {
+                        "type": "string",
+                        "enum": ["", "delete_file", "code_merge", "send_message"],
+                        "default": "",
+                    },
+                },
+                "required": ["role", "task"],
+            },
+            fn=delegate_to_team,
+            risk="MEDIUM",
+        )
+    )
+
+    # ============ 已安装技能（Q1：聊天接线，复用 SkillRuntime.run） ============
+    # 人类聊天以前调不到任何技能：技能提示词注入与 SkillRuntime.run 只在
+    # 员工目标链路，聊天链路只有内置工具（审计第 9 条 FAIL）。这里加一个
+    # 技能执行工具，让模型经现有工具循环调技能——不另起大重构。
+    #   * 只暴露已启用的技能：描述里只列 enabled 的技能与入口；调用时
+    #     再实时读一次技能库，未启用/未安装/无入口一律诚实拒绝（描述
+    #     过期也骗不了执行层）。
+    #   * 首次运行须确认：SkillRuntime.run 无授权时只返回 pending_approval
+    #     审批单、不启动任何进程；确认后才执行（见 POST /v1/skills/{id}/run）。
+    #   * 注册闸同样管它：分档见 chat_tool_settings（B 档默认关，Owner 在
+    #     技能页开了才进聊天工具集）。
+    def _enabled_skill_summaries() -> List[Dict[str, Any]]:
+        """当前已启用的技能（id/名/入口）；技能库读不到时返回空列表。"""
+        try:
+            from src.gateway.skill_runtime import SkillRuntime
+            from src.gateway.skill_store import SkillStore
+
+            runtime = SkillRuntime()
+            out: List[Dict[str, Any]] = []
+            for record in SkillStore().list_records():
+                if not record.get("enabled"):
+                    continue
+                package = runtime.package(str(record.get("id") or ""))
+                entrypoints = ((package or {}).get("runtime") or {}).get("entrypoints") or []
+                out.append(
+                    {
+                        "skill_id": str(record.get("id") or ""),
+                        "name": str(record.get("name") or ""),
+                        "entrypoints": [
+                            str(item.get("id") or "")
+                            for item in entrypoints
+                            if isinstance(item, dict) and str(item.get("id") or "")
+                        ],
+                    }
+                )
+            return out
+        except Exception:  # noqa: BLE001 - 技能库不可用时聊天不能跟着挂
+            return []
+
+    _skill_summaries = _enabled_skill_summaries()
+    if _skill_summaries:
+        _skill_catalog = "; ".join(
+            f"{item['name']}（id={item['skill_id']}，入口："
+            f"{'、'.join(item['entrypoints']) or '无可执行入口'}）"
+            for item in _skill_summaries
+        )
+        _skill_description = (
+            "运行一个已安装并启用的技能（脚本入口）。只能运行下面列出的技能；"
+            "未启用、未安装、没有入口的技能一律拒绝。首次运行需要 Joseph 在"
+            "技能页确认，确认前只返回审批单、不会执行。"
+            f"已启用的技能：{_skill_catalog}。"
+            "没有列出的技能不要编 id，先回用户说没装/没启用。"
+        )
+    else:
+        _skill_description = (
+            "运行一个已安装并启用的技能（脚本入口）。当前没有已启用的技能，"
+            "不要编技能 id，先回用户说没有可用的技能、请先在技能中心安装并启用。"
+        )
+
+    def run_skill(
+        skill_id: str = "",
+        entrypoint: str = "",
+        params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """运行已安装技能的脚本入口（首次运行须确认，只返回审批单）。"""
+        sid = (skill_id or kwargs.get("skill") or "").strip()
+        if not sid:
+            # 无参数时返回实时可用技能清单，供模型先选再调（描述可能过期，
+            # 以这里实时读到的为准）。
+            return _serialize(
+                {"status": "list", "skills": _enabled_skill_summaries()}
+            )
+        ep = (entrypoint or kwargs.get("entrypoint_id") or "").strip()
+        if not ep:
+            return _serialize(
+                {"status": "failed", "error": "请提供 entrypoint 参数（技能的运行入口 id）。"}
+            )
+        try:
+            from src.gateway.skill_runtime import (
+                SkillRunRefused,
+                SkillRuntime,
+                SkillRuntimeError,
+            )
+            from src.gateway.skill_store import SkillNotFound, SkillStore
+
+            try:
+                record = SkillStore().get(sid)
+            except SkillNotFound:
+                return _serialize(
+                    {"status": "failed", "error": f"没有这个技能：{sid}。请先在技能中心安装。"}
+                )
+            if not record.get("enabled"):
+                return _serialize(
+                    {
+                        "status": "failed",
+                        "error": f"技能「{record.get('name') or sid}」未启用，请先在技能中心启用。",
+                    }
+                )
+            try:
+                state, body = SkillRuntime().run(
+                    record=record,
+                    entrypoint_id=ep,
+                    params=dict(params or {}),
+                    requester=principal,
+                )
+            except SkillRunRefused as exc:
+                return _serialize({"status": "failed", "error": str(exc)})
+            except SkillRuntimeError as exc:
+                return _serialize({"status": "failed", "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - 技能库读失败也要如实回给模型
+            return _serialize({"status": "failed", "error": f"技能运行失败：{exc}"})
+        if state == "pending_approval":
+            return _serialize(
+                {
+                    "status": "pending_approval",
+                    "skill_id": sid,
+                    "approval_id": body.get("approval_id"),
+                    "skill_name": body.get("skill_name"),
+                    "entrypoint": body.get("entrypoint"),
+                    "message": (
+                        "首次运行需要 Joseph 在技能页确认，确认前不会执行。"
+                        "请把审批单转告用户，等他确认后再跑。"
+                    ),
+                }
+            )
+        return _serialize({"status": "finished", "skill_id": sid, "run": body})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.skill.run",
+            name="run_skill",
+            version="1.0.0",
+            description=_skill_description,
+            capability="skill.run",
+            schema={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "entrypoint": {"type": "string"},
+                    "params": {"type": "object"},
+                },
+                "required": ["skill_id", "entrypoint"],
+            },
+            fn=run_skill,
+            risk="MEDIUM",
+        )
+    )
+
+    if not include_disabled:
+        # 注册闸：只把技能页开关打开的聊天工具交给模型。函数内懒导入
+        # gateway 模块（与 skill_prompt.py 的做法一致），避免模块级循环。
+        from src.gateway.chat_tool_settings import is_chat_tool_enabled
+
+        tools = [tool for tool in tools if is_chat_tool_enabled(tool.tool_id)]
+
     return tools
+
+
+def tools_for_role(
+    principal: str,
+    role: str,
+    status_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    *,
+    include_disabled: bool = False,
+) -> List[Tool]:
+    """某队员角色能调的聊天工具子集（7-3 Step 3）。
+
+    队员的工具是贾维斯工具集的子集（``collaboration.ROLE_TOOL_ALLOWLIST``），
+    角色表里没有的 capability 调不到；``make_tools()`` 里没有的工具不会
+    凭空出现（不编能力）。未知角色返回空列表。注册闸同样生效。
+    """
+    from ..collaboration import ROLE_TOOL_ALLOWLIST
+
+    allowed = ROLE_TOOL_ALLOWLIST.get((role or "").strip().lower())
+    if allowed is None:
+        return []
+    return [
+        tool
+        for tool in make_tools(principal, status_fn, include_disabled=include_disabled)
+        if tool.capability in allowed
+    ]
 
 
 def _tool_params_hint(tool: Tool) -> str:

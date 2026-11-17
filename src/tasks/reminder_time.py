@@ -15,7 +15,8 @@
 十点，因此这里先按本地时区解析，再换算成 naive UTC。
 
 本地时区优先级：``LIUHAO_TIMEZONE_OFFSET_HOURS`` → ``TZ``（IANA 名，
-如 ``Asia/Shanghai``）→ 默认 ``Asia/Shanghai`` → 系统时区 → UTC。
+如 ``Asia/Shanghai``）→ 系统时区 → UTC。**不**再硬编码上海作默认
+（走查 F14：会让身在别处的用户说的“明天早上 8 点”提前 16 小时响）。
 注意 ``LIUHAO_TIMEZONE_OFFSET_HOURS`` 是**固定偏移**，不随夏令时（DST）
 变化；需要 DST 语义时请用 ``TZ=America/New_York`` 这类 IANA 时区名。
 """
@@ -176,6 +177,11 @@ def local_timezone() -> tzinfo:
 
     ``LIUHAO_TIMEZONE_OFFSET_HOURS`` 是**固定偏移**，不随夏令时变化，主要
     给测试/无 tzdata 环境用；需要 DST 语义请设 ``TZ`` 为 IANA 时区名。
+
+    注意：这里**不**再硬编码某个城市作默认——以前默认 ``Asia/Shanghai``
+    会让身在别处的用户（例如 Joseph 在 America/Tijuana）说的“明天早上
+    8 点”被读成上海时间、提前 16 小时响（走查 F14）。没显式设置时就用
+    本机系统时区（安装版就是用户电脑的时区），再退回 UTC。
     """
     raw = os.environ.get("LIUHAO_TIMEZONE_OFFSET_HOURS")
     if raw:
@@ -186,11 +192,12 @@ def local_timezone() -> tzinfo:
                 "LIUHAO_TIMEZONE_OFFSET_HOURS must be a number, "
                 f"got {raw!r}"
             ) from exc
-    name = (os.environ.get("TZ") or "").strip() or "Asia/Shanghai"
-    try:
-        return ZoneInfo(name)
-    except Exception:  # noqa: BLE001 - 缺 tzdata / 非法 TZ 时退回系统时区
-        pass
+    name = (os.environ.get("TZ") or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:  # noqa: BLE001 - 缺 tzdata / 非法 TZ 时退回系统时区
+            pass
     tz = datetime.now().astimezone().tzinfo
     return tz or timezone.utc
 

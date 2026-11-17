@@ -117,12 +117,15 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
-def warn_if_exposed(host: str, port: int) -> None:
+def warn_if_exposed(host: str, port: int, remote_mode: str = "off") -> None:
     """打印"已对外暴露"的醒目警告。
 
     绑定回环之外的地址意味着同局域网的其它机器（以及任何能路由到本机的
     设备）都能访问这个网关。这不是默认行为，所以必须显式触发、显式告警，
     不能像以前那样"默认就对外、用户永远不知道"。
+
+    远程模式（``LIUHAO_REMOTE_MODE=tailscale``）下多打一行：只说明“经
+    Tailscale 虚拟局域网可达、未暴露公网端口”，不改变警告本身。
     """
     if is_loopback_host(host):
         return
@@ -135,6 +138,9 @@ def warn_if_exposed(host: str, port: int) -> None:
     print("!" * 62)
     print(f"!! 警告：网关已绑定 {host}:{port}，已对外暴露，局域网可访问。")
     print("!! 如非必要，请改用默认的 127.0.0.1（只本机可达）。")
+    if (remote_mode or "").strip().lower() == "tailscale":
+        print("!! 远程模式已开（Tailscale）：手机在外面经 Tailscale 虚拟局域网可达，")
+        print("!! 未暴露公网端口、未做端口转发；电脑关机后手机照样连不上。")
     print("!" * 62)
 
 
@@ -275,6 +281,25 @@ def resolve_timeout_options() -> dict:
 def main() -> int:
     host, requested_port = resolve_bind()
 
+    # 7-2 远程访问：显式“远程模式”开关（默认 off）。模式 tailscale 时，
+    # 默认的回环绑定才改成 0.0.0.0；off 时一个字节都不改。显式指定的 HOST
+    # 优先（见 remote_access.effective_bind_host）。
+    from .remote_access import effective_bind_host, resolve_remote_mode
+
+    remote_mode, remote_source, remote_note = resolve_remote_mode()
+    if remote_note:
+        print(f"[remote] {remote_note}", flush=True)
+    if remote_mode == "tailscale" and host != effective_bind_host(host, remote_mode):
+        host = effective_bind_host(host, remote_mode)
+        print(
+            "[remote] 远程模式已开（Tailscale，来源："
+            f"{'环境变量' if remote_source == 'env' else '设置'}）："
+            "网关改绑 0.0.0.0，手机在外面经 Tailscale 虚拟局域网可达；"
+            "未暴露公网端口、未做端口转发。",
+            flush=True,
+        )
+    os.environ["LIUHAO_REMOTE_MODE_ACTIVE"] = remote_mode
+
     # 端口被占自动顺延（默认开启）：8080 被占就试 8081、8082……直到找到空闲
     # 端口。顺延发生在抢单实例锁之前，这样实例锁里登记的 URL、应用层读到的
     # LIUHAO_LISTEN_PORT、数据目录的 gateway.port 都是最终端口，不会各说各话。
@@ -342,7 +367,7 @@ def main() -> int:
             port=port,
             started_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         )
-        return _run(host, port)
+        return _run(host, port, remote_mode)
     finally:
         guard.clear_metadata()
         guard.release()
@@ -488,7 +513,7 @@ def _record_boot_startup_failure() -> None:
         )
 
 
-def _run(host: str, port: int) -> int:
+def _run(host: str, port: int, remote_mode: str = "off") -> int:
     # 磁盘满时控制台 stdout 也可能写不进去（桌面壳会把子进程 stdout 落到数据
     # 目录）。logging 默认会把 handler 自身的写入失败打成整段英文
     # "--- Logging error ---" traceback；用户看到的应该是日志文件 handler
@@ -521,7 +546,7 @@ def _run(host: str, port: int) -> int:
     _startup_profile.mark("入口 main() 开始（解析 server.timeouts）")
     timeout_options = resolve_timeout_options()
     _startup_profile.mark("入口配置解析完成")
-    warn_if_exposed(host, port)
+    warn_if_exposed(host, port, remote_mode)
     print(f"贾维斯网关启动： http://{display_host(host)}:{port}  (log_level={log_level})")
     _startup_profile.mark("uvicorn.run：绑定端口并运行 lifespan 启动")
     try:

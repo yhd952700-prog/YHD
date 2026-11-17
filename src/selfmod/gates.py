@@ -472,8 +472,7 @@ def verify_console_provenance(root: Path) -> Tuple[bool, str]:
     except Exception as exc:  # noqa: BLE001 - 校验失败一律保守拒绝
         return False, f"产物同源校验异常：{exc}"
     return True, (
-        f"控制台构建通过，产物与源码同源（指纹 {source_fp[:12]}）；"
-        "本门当前只放行 build，spec §3 的 run test / run lint 尚未放行"
+        f"控制台构建通过，产物与源码同源（指纹 {source_fp[:12]}）"
     )
 
 
@@ -485,24 +484,31 @@ def console_build_gate(changed: Sequence[str], root: Path, run_cmd: Any) -> Gate
             "本次提案未涉及 apps/console/console/，G6 不适用（未改动前端，无需构建）",
             not_applicable=True,
         )
-    result = run_cmd("G6", _DEFAULT_G6_A[0])
-    if result.status != "pass":
-        return GateResult(
-            "G6",
-            GATE_NAMES["G6"],
-            "fail",
-            f"控制台构建失败：{result.reason}",
-            duration_ms=result.duration_ms,
-            commands=[result],
-        )
+    # spec §3：G6 跑 build + test + lint 三条命令，任一失败即 G6 FAIL。
+    # 先 build（产物同源校验依赖它），再 test，最后 lint。
+    _G6_LABELS = {"build": "构建", "test": "测试", "lint": "Lint"}
+    results: List[CommandResult] = []
+    for command in _DEFAULT_G6_A:
+        result = run_cmd("G6", command)
+        results.append(result)
+        if result.status != "pass":
+            label = _G6_LABELS.get(command[-1], command[-1])
+            return GateResult(
+                "G6",
+                GATE_NAMES["G6"],
+                "fail",
+                f"控制台{label}失败：{result.reason}",
+                duration_ms=sum(r.duration_ms for r in results),
+                commands=results,
+            )
     ok, reason = verify_console_provenance(root)
     return GateResult(
         "G6",
         GATE_NAMES["G6"],
         "pass" if ok else "fail",
-        reason,
-        duration_ms=result.duration_ms,
-        commands=[result],
+        reason + "；build + test + lint 三条命令均已通过" if ok else reason,
+        duration_ms=sum(r.duration_ms for r in results),
+        commands=results,
     )
 
 
@@ -831,7 +837,10 @@ _DEFAULT_G5_A = (
 _DEFAULT_G6_A = (
     # 执行时直接传 Popen，Windows 上必须用 which 解析出的 npm.cmd 绝对路径；
     # 白名单校验侧由 commands.normalise_command 做同样的钉定。
+    # spec §3：G6 跑 build + test + lint 三条命令（顺序：build → test → lint）。
     (shutil.which("npm") or "npm", "--prefix", "apps/console/console", "run", "build"),
+    (shutil.which("npm") or "npm", "--prefix", "apps/console/console", "run", "test"),
+    (shutil.which("npm") or "npm", "--prefix", "apps/console/console", "run", "lint"),
 )
 _DEFAULT_G12_A = (
     (sys.executable, "-m", "pytest", "tests/test_import_integrity.py", "-q"),

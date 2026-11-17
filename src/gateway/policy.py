@@ -790,6 +790,11 @@ class AuthorityModeRequest(BaseModel):
 
     mode: str = Field(..., description="standard / full")
     reason: str = Field("", max_length=500, description="切换理由（记入审计）")
+    # 0.4.6 起：开启全权（→ full）必须由 Owner 本人二次确认。调用方须显式
+    # 置 confirm=True，表示「我知道这会放开高风险动作的逐次确认」；只传
+    # mode=full 不带 confirm 会被 400 拒绝，什么都不改。收回（→ standard）
+    # 不需要 confirm（收紧方向越容易越好）。
+    confirm: bool = Field(False, description="开启全权时的二次确认")
 
 
 @router.get("/policy/authority-mode", response_model=dict[str, Any])
@@ -816,6 +821,10 @@ def set_authority_mode(
     再把盘上的值写回 standard，所以重启也不会"复活"全权。放宽（→ full）只写盘，
     必须重启 —— 避免一次任务中途出现"半套权限"的窗口。
 
+    0.4.6 起开启全权多两道闸：① 必须是账号树根（Owner），管理员（非根）
+    只能收回、不能开启；② 必须带 ``confirm=True`` 二次确认。缺任何一道
+    都 403/400 拒绝，配置不动。
+
     切换记录本身进审计（``AUTHORITY_MODE_CHANGED``）：谁、何时、从什么切到
     什么、为什么。收回时顺带撤销该主体名下所有仍有效的审批凭据 —— 全权期间
     签出去的授权不应在收紧之后继续活着。
@@ -830,6 +839,29 @@ def set_authority_mode(
             status_code=400,
             detail="模式只能是 standard 或 full，本次没有修改任何配置。",
         )
+
+    if wanted == authority_mode.MODE_FULL:
+        # 闸①：Owner 才能开。账号树根即 Owner；树外单机部署按独立根处理
+        # （与 auth._account_is_root 同口径）。
+        from .auth import _account_is_root
+
+        if not bool(_account_is_root(principal).get("is_root")):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "FULL_AUTHORITY_OWNER_ONLY",
+                    "message": "只有最高权限账号（Owner）才能开启完全授权，管理员只能收回。",
+                },
+            )
+        # 闸②：二次确认。
+        if not req.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "FULL_AUTHORITY_CONFIRM_REQUIRED",
+                    "message": "开启完全授权需要二次确认：请再次确认你知道这会放开高风险动作的逐次确认。",
+                },
+            )
 
     before = authority_mode.describe()
     authority_mode.set_stored_mode(wanted, updated_by=principal)

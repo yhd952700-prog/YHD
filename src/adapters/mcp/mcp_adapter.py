@@ -11,8 +11,12 @@ Enables integration with external tools and resources via MCP servers.
 3. ``build_mcp_server()``：把鎏灏现有工具反向暴露成 MCP Server（当前暴露
    ``memory.search`` 与 ``system.status`` 两个 capability）。
 
-接线状态（2026-11-05，阶段 B1）：**适配层已修好，但未接入对话主链路**。
-主链路接入涉及工具协议从自研 JSON 切到 function calling，风险大，单独立项。
+接线状态（2026-11-13，7-3 Step 1）：**内部只读工具已接进网关**。
+``POST /v1/mcp/call``（``src/gateway/mcp.py``，Owner 专属、受
+``LIUHAO_MCP_ADAPTER_ENABLED`` 开关控制）可调通进程内 MCP Server 的
+``memory.search`` / ``system.status``（见 ``call_internal_tool``，走真实
+FastMCP 客户端 + 进程内传输）。开关关闭时 503、不静默。聊天主循环尚未
+自动调 MCP 工具（不在 make_tools 里），外部 MCP Server 仍默认不启用。
 运行时入口 ``initialize_mcp()`` 受 ``LIUHAO_MCP_ADAPTER_ENABLED`` 开关控制，
 默认关闭。
 """
@@ -47,8 +51,21 @@ from ...brand import BRAND_LOCKUP
 
 logger = logging.getLogger(__name__)
 
-# 接线状态：适配层就绪但未接入对话主链路（见模块 docstring）。
-MCP_WIRING_STATUS = "adapter-only"
+# 接线状态：网关 /v1/mcp/call 已能调通内部只读工具（7-3 Step 1）。
+# 聊天主循环尚未自动调 MCP 工具，外部 MCP Server 仍默认不启用。
+MCP_WIRING_STATUS = "internal-callable"
+
+#: 网关可调的内部 MCP 工具白名单（与 build_mcp_server 的暴露清单同一批，
+#: 只读两个；再加工具要先过技能分级与审批，不能悄悄扩）。
+MCP_INTERNAL_TOOLS = ("memory.search", "system.status")
+
+
+class MCPDisabledError(RuntimeError):
+    """MCP 开关未开（LIUHAO_MCP_ADAPTER_ENABLED 默认关）：调工具前先开。"""
+
+
+class MCPToolError(RuntimeError):
+    """内部 MCP 工具调用本身返回了错误（不含开关未开、未知工具、超时）。"""
 
 # 显式开关。默认关闭 —— 打开后 initialize_mcp() 才会真正建立连接。
 MCP_ADAPTER_ENABLED_ENV = "LIUHAO_MCP_ADAPTER_ENABLED"
@@ -605,6 +622,25 @@ class MCPAdapter:
                 timeout=timeout,
                 follow_redirects=False,
             )
+        except httpx.InvalidURL:
+            # 环境代理变量畸形时（例如 NO_PROXY 含裸 ::1，httpx 会拼出
+            # all://*[::1] 这种非法挂载），httpx 在建 Client 时即抛 InvalidURL，
+            # 与目标服务无关；探针只读状态码，改直连（trust_env=False）再试一次。
+            # 注意 InvalidURL 不是 HTTPError 的子类，下面两个 except 接不住它。
+            try:
+                response = httpx.get(
+                    config.url,
+                    headers=config.headers,
+                    timeout=timeout,
+                    follow_redirects=False,
+                    trust_env=False,
+                )
+            except httpx.TimeoutException:
+                return (MCPFailureReason.TIMEOUT, "连接探针超时")
+            except httpx.HTTPError as exc:
+                return (MCPFailureReason.CONNECT, f"连接探针失败: {exc}")
+            except httpx.InvalidURL as exc:
+                return (MCPFailureReason.CONNECT, f"连接探针失败: {exc}")
         except httpx.TimeoutException:
             return (MCPFailureReason.TIMEOUT, "连接探针超时")
         except httpx.HTTPError as exc:
@@ -767,6 +803,81 @@ async def shutdown_mcp() -> None:
     if _adapter:
         await _adapter.disconnect_all()
         _adapter = None
+
+
+async def call_internal_tool(
+    tool_name: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    principal: str = "",
+    *,
+    status_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    timeout: float = 30.0,
+) -> str:
+    """经真实 MCP 协议调一次内部只读工具（7-3 Step 1）。
+
+    链路：``build_mcp_server()``（进程内 FastMCP Server，只暴露
+    ``memory.search`` / ``system.status``）→ FastMCP ``Client``（进程内传输）
+    → ``call_tool``。不是直接调 ``tool.fn``：协议层（序列化 / 工具分发 /
+    错误形态）真实走了一遍，调不通就是调不通，不伪装成功。
+
+    开关关闭（默认）时抛 :class:`MCPDisabledError`（网关侧译为 503），
+    不静默返回空结果；未知工具抛 :class:`ValueError`；工具本身报错抛
+    :class:`MCPToolError`；超时（默认 30 秒，与 MCPServerConfig 同一口径）
+    抛 :class:`asyncio.TimeoutError`。
+    """
+    if not is_adapter_enabled():
+        raise MCPDisabledError(
+            "MCP 未启用：请先在环境变量里打开 LIUHAO_MCP_ADAPTER_ENABLED=1"
+            "（默认关闭；打开后只调内部只读工具）"
+        )
+    if tool_name not in MCP_INTERNAL_TOOLS:
+        raise ValueError(
+            f"内部 MCP 工具只开放 {list(MCP_INTERNAL_TOOLS)}，"
+            f"不接受 {tool_name!r}（再加工具要先过技能分级与审批）"
+        )
+    server = build_mcp_server(principal, status_fn)
+    async with Client(server) as client:
+        result = await asyncio.wait_for(
+            client.call_tool(tool_name, arguments or {}), timeout=timeout
+        )
+    texts: List[str] = []
+    for content in getattr(result, "content", None) or []:
+        text = getattr(content, "text", None)
+        if isinstance(text, str) and text:
+            texts.append(text)
+    joined = "\n".join(texts).strip()
+    if getattr(result, "is_error", False):
+        raise MCPToolError(joined or f"MCP 工具 {tool_name} 返回错误")
+    if not joined and getattr(result, "data", None) is not None:
+        return str(result.data)
+    return joined
+
+
+def call_internal_tool_sync(
+    tool_name: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    principal: str = "",
+    *,
+    status_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    timeout: float = 30.0,
+) -> str:
+    """``call_internal_tool`` 的同步包装（测试 / 脚本入口用）。
+
+    已有事件循环在跑时拒绝（不要在异步网关端点里调它，走 async 版）。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            call_internal_tool(
+                tool_name, arguments, principal,
+                status_fn=status_fn, timeout=timeout,
+            )
+        )
+    raise RuntimeError(
+        "call_internal_tool_sync 不能在已有事件循环里调用，"
+        "请改用 await call_internal_tool(...)"
+    )
 
 
 async def run_health_checks(adapter: MCPAdapter, interval: int = 60) -> None:

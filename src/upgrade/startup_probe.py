@@ -357,6 +357,22 @@ def _child_env(
     env["PYTHONIOENCODING"] = "utf-8"
     env["HOME"] = str(home_dir)
     env["USERPROFILE"] = str(home_dir)
+    # HOME 重定向只隔离应用数据，不应改变子进程的 Python 环境：解释器按 HOME
+    # 解析用户 site-packages，父进程在用户 site 里装的依赖（如本沙箱 venv 之
+    # 外 ~/.local 里的 fastapi）会被子进程丢掉，自检报"依赖导入失败"。把父进程
+    # 的用户基目录显式传过去，让子进程看到与父进程同一套包；父进程没有用户
+    # site 时不传，行为不变。
+    try:
+        import site
+
+        _user_site = site.getusersitepackages()
+        _user_sites = (
+            _user_site if isinstance(_user_site, (list, tuple)) else [_user_site]
+        )
+        if any(_path and os.path.isdir(str(_path)) for _path in _user_sites):
+            env.setdefault("PYTHONUSERBASE", site.getuserbase())
+    except Exception:  # noqa: BLE001 - 拿不到用户基目录时不影响自检本身
+        pass
     env["LIUHAO_DATA_DIR"] = str(data_dir)
     env["LIUHAO_SELF_CHECK"] = "1"
     console_dir = sandbox / "console"

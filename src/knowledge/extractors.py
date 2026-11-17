@@ -61,9 +61,15 @@ _TEXT_SUFFIXES = frozenset({".txt", ".md"})
 _PDF_SUFFIXES = frozenset({".pdf"})
 _DOCX_SUFFIXES = frozenset({".docx"})
 _HTML_SUFFIXES = frozenset({".html", ".htm"})
+#: 图片后缀：走 RapidOCR 识字后入库（0.4.6 F 组，6-3）。识别结果永远带
+#: ``ocr_needs_review`` 元数据，前端与检索结果里标明\"识别结果请核对\"。
+#: 扫描版 PDF 仍走原来的 422（该 PDF 无文本层，需要 OCR，暂不支持）——
+#: 整页 PDF 的 OCR 是下一步，不在本轮把 PDF 拆图去认。
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp"})
 
 SUPPORTED_SUFFIXES = (
     _TEXT_SUFFIXES | _PDF_SUFFIXES | _DOCX_SUFFIXES | _HTML_SUFFIXES
+    | _IMAGE_SUFFIXES
 )
 
 #: Exact wording required by the product contract for a scanned PDF.
@@ -176,6 +182,13 @@ class LowQualityText(ExtractionError):
     def __init__(self, message: str, quality: "TextQuality") -> None:
         super().__init__(message)
         self.quality = quality
+
+
+class OcrUnavailableError(ExtractionError):
+    """图片 OCR 引擎没装：503 + 安装提示，不编识别结果。"""
+
+    code = "ocr_unavailable"
+    http_status = 503
 
 
 #: Characters that signal a broken text layer: U+FFFD replacement glyphs,
@@ -355,16 +368,55 @@ def extract_document(
         return _extract_docx(source, caps, allow_low_quality)
     if suffix in _HTML_SUFFIXES:
         return _extract_html(source, caps, allow_low_quality)
+    if suffix in _IMAGE_SUFFIXES:
+        return _extract_image_ocr(source, caps)
 
     raise UnsupportedFileType(
         f"不支持的文件类型：{suffix or '未知后缀'}；"
-        "支持 .txt / .md / .pdf / .docx / .html / .htm"
+        "支持 .txt / .md / .pdf / .docx / .html / .htm / .png / .jpg / .jpeg / .webp / .bmp"
     )
 
 
 # ---------------------------------------------------------------------------
 # Plain text
 # ---------------------------------------------------------------------------
+
+
+def _extract_image_ocr(
+    source: ExtractionSource, limits: ExtractionLimits
+) -> ExtractedDocument:
+    """图片 -> RapidOCR 识字 -> 可入库的文本（0.4.6 F 组，6-3）。
+
+    识别结果永远带 ``ocr_needs_review=True`` 元数据：OCR 会错字，入库的
+    是\"识别结果\"不是原文，检索结果页必须标明\"识别结果请核对\"。
+    图片里一个字都没认出来时按空文档拒绝，不存空条目。
+    """
+    from src.common.engines import EngineUnavailableError
+    from src.ocr import ocr_image_bytes
+
+    data = _read_source_bytes(source)
+    if len(data) > 20 * 1024 * 1024:
+        raise FileTooLarge("图片太大（上限 20MB），请压缩后再上传")
+    try:
+        result = ocr_image_bytes(data, "image.png")
+    except EngineUnavailableError as exc:
+        raise OcrUnavailableError(
+            f"{exc.detail} {exc.install_hint}".strip()
+        ) from exc
+    except ValueError as exc:
+        raise EmptyDocument(str(exc)) from exc
+    if not result.text.strip():
+        raise EmptyDocument("图片里没认出任何文字（可能是空白图或手写体太潦草）")
+    _check_chars(result.text, limits)
+    return ExtractedDocument(
+        text=result.text,
+        file_type="image",
+        metadata={
+            "ocr_engine": result.engine,
+            "ocr_needs_review": True,
+            "ocr_note": "识别结果请核对",
+        },
+    )
 
 
 def _extract_plain_text(

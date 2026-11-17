@@ -14,12 +14,16 @@
 
 端点
 ====
-* ``GET  /v1/tasks``                     按状态/负责人/目标查询 + 分页
+* ``GET  /v1/tasks``                     按状态/负责人/目标/分桶查询 + 分页
 * ``GET  /v1/tasks/{task_id}``           任务详情（含子步骤与执行记录）
 * ``GET  /v1/tasks/{task_id}/steps``     子步骤
 * ``GET  /v1/tasks/{task_id}/runs``      执行记录（最新在前）
 * ``POST /v1/tasks/{task_id}/retry``     失败重试（委托现有 ``retry_task``）
 * ``POST /v1/tasks/{task_id}/takeover``  人工接管（执行中 409）
+* ``POST /v1/tasks/{task_id}/subtasks``  新建子任务
+* ``PATCH /v1/tasks/{task_id}/subtasks/{step_key}``  改子任务（改名/改状态/改负责人）
+* ``DELETE /v1/tasks/{task_id}/subtasks/{step_key}`` 删子任务
+* ``POST /v1/tasks/batch``               批量改状态 / 批量派活 / 批量删除 / 批量移桶
 * ``GET  /v1/tasks/ledger/status``       台账概览 + 落后自检（仅根账号）
 * ``POST /v1/tasks/ledger/migrate``      幂等迁移（仅根账号）
 * ``POST /v1/tasks/ledger/repair``       写穿透失败后的补偿（仅根账号）
@@ -49,6 +53,47 @@ class RetryRequest(BaseModel):
 
 class TakeoverRequest(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class CreateSubtaskRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=500, description="子任务名字")
+    description: str = Field(default="", max_length=2000)
+    status: str = Field(default="pending", description="七态之一，默认待执行")
+    assignee_type: str = Field(default="none", max_length=32)
+    assignee_id: str = Field(default="", max_length=128)
+    assignee_name: str = Field(default="", max_length=128)
+
+
+class UpdateSubtaskRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    status: Optional[str] = Field(default=None, description="七态之一")
+    assignee_type: Optional[str] = Field(default=None, max_length=32)
+    assignee_id: Optional[str] = Field(default=None, max_length=128)
+    assignee_name: Optional[str] = Field(default=None, max_length=128)
+
+
+class BatchTasksRequest(BaseModel):
+    task_ids: List[str] = Field(..., min_length=1, max_length=200, description="要批量操作的任务 id")
+    action: str = Field(..., description="set_status（批量改状态）/ assign（批量派活）/ delete（批量删除）/ set_deferred（批量移桶：进行中 ↔ 以后再说）")
+    status: Optional[str] = Field(default=None, description="set_status 用：七态之一")
+    assignee_type: Optional[str] = Field(default=None, description="assign 用：human/employee/agent")
+    assignee_id: Optional[str] = Field(default=None)
+    assignee_name: Optional[str] = Field(default=None)
+    deferred: Optional[bool] = Field(default=None, description="set_deferred 用：true=移到以后再说，false=移回进行中")
+
+
+def _visible_task_or_none(ledger, viewer: Any, task_id: str) -> Optional[Dict[str, Any]]:
+    """可见性收敛的单条取任务：不可见与不存在都返回 None（不抛 404，批量汇总用）。"""
+    task = ledger.get_task(task_id)
+    if task is None:
+        return None
+    from .ai_management import _as_viewer
+
+    real = _as_viewer(viewer)
+    if real is not None and not real.sees(task):
+        return None
+    return task
 
 
 class MigrateRequest(BaseModel):
@@ -194,6 +239,7 @@ def build_router(viewer_dependency: Optional[Callable[..., Any]] = None) -> APIR
         assignee_id: Optional[str] = Query(default=None),
         assignee_name: Optional[str] = Query(default=None),
         goal_id: Optional[str] = Query(default=None),
+        deferred: Optional[bool] = Query(default=None, description="true=只看以后再说，false=只看进行中"),
         limit: int = Query(default=20, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
         sort_by: str = Query(default="created_at"),
@@ -216,6 +262,7 @@ def build_router(viewer_dependency: Optional[Callable[..., Any]] = None) -> APIR
                 assignee_name=assignee_name,
                 goal_id=goal_id,
                 owners=_owners_for(viewer),
+                deferred=deferred,
                 limit=limit,
                 offset=offset,
                 sort_by=sort_by,
@@ -370,6 +417,172 @@ def build_router(viewer_dependency: Optional[Callable[..., Any]] = None) -> APIR
         except LedgerError as exc:
             raise _http_from_ledger(exc) from exc
         return {"task": task}
+
+    # ── 手动子任务 ────────────────────────────────────────────
+
+    @router.post("/{task_id}/subtasks", status_code=201)
+    def create_subtask_endpoint(
+        task_id: str,
+        req: CreateSubtaskRequest,
+        viewer: Any = Depends(dependency),
+    ) -> Dict[str, Any]:
+        """手动给任务拆一个子任务（挂父任务下、带七态；与 goal 投影步骤同一张表）。"""
+        from .ai_management import _as_viewer
+
+        ledger = _ledger()
+        _require_visible(ledger, viewer, task_id)
+        real = _as_viewer(viewer)
+        try:
+            step = ledger.create_subtask(
+                task_id,
+                name=req.name,
+                description=req.description,
+                status=req.status,
+                assignee_type=req.assignee_type,
+                assignee_id=req.assignee_id,
+                assignee_name=req.assignee_name,
+                actor=real.principal if real is not None else "",
+            )
+        except LedgerError as exc:
+            raise _http_from_ledger(exc) from exc
+        return {"task_id": task_id, "step": step}
+
+    @router.patch("/{task_id}/subtasks/{step_key}")
+    def update_subtask_endpoint(
+        task_id: str,
+        step_key: str,
+        req: UpdateSubtaskRequest,
+        viewer: Any = Depends(dependency),
+    ) -> Dict[str, Any]:
+        """改一个子任务：改名 / 改状态 / 改负责人。"""
+        from .ai_management import _as_viewer
+
+        ledger = _ledger()
+        _require_visible(ledger, viewer, task_id)
+        real = _as_viewer(viewer)
+        try:
+            step = ledger.update_subtask(
+                task_id,
+                step_key,
+                name=req.name,
+                description=req.description,
+                status=req.status,
+                assignee_type=req.assignee_type,
+                assignee_id=req.assignee_id,
+                assignee_name=req.assignee_name,
+                actor=real.principal if real is not None else "",
+            )
+        except LedgerError as exc:
+            raise _http_from_ledger(exc) from exc
+        return {"task_id": task_id, "step": step}
+
+    @router.delete("/{task_id}/subtasks/{step_key}")
+    def delete_subtask_endpoint(
+        task_id: str,
+        step_key: str,
+        viewer: Any = Depends(dependency),
+    ) -> Dict[str, Any]:
+        """删一个子任务（删前记一条执行记录，可追溯）。"""
+        from .ai_management import _as_viewer
+
+        ledger = _ledger()
+        _require_visible(ledger, viewer, task_id)
+        real = _as_viewer(viewer)
+        if not ledger.delete_subtask(
+            task_id, step_key, actor=real.principal if real is not None else ""
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "step_not_found", "message": f"任务 {task_id} 下不存在子任务 {step_key}"},
+            )
+        return {"task_id": task_id, "step_key": step_key, "deleted": True}
+
+    # ── 批量操作 ──────────────────────────────────────────────
+
+    @router.post("/batch")
+    def batch_tasks(
+        req: BatchTasksRequest,
+        viewer: Any = Depends(dependency),
+    ) -> Dict[str, Any]:
+        """批量操作一批任务：批量改状态 / 批量派活 / 批量删除 / 批量移桶。
+
+        逐条汇总结果：看不见的任务按 ``not_found`` 计（与不存在同形，
+        不泄露存在性）；某条失败不影响其他条。批量删除来自目标同步的
+        任务时，响应里如实提醒"下次同步可能重新出现"。
+        """
+        from .ai_management import _as_viewer
+
+        action = str(req.action or "").strip()
+        if action not in ("set_status", "assign", "delete", "set_deferred"):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "invalid_batch_action", "message": "action 只能是 set_status / assign / delete / set_deferred"},
+            )
+        if action == "set_status":
+            if req.status is None or str(req.status).strip().lower() not in ALL_STATUSES:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "invalid_status", "message": f"未知状态：{req.status}；可选 {', '.join(ALL_STATUSES)}"},
+                )
+        if action == "set_deferred" and req.deferred is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "deferred_required", "message": "批量移桶要指定 deferred（true=以后再说，false=进行中）"},
+            )
+        if action == "assign" and not (req.assignee_id or req.assignee_name):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "assignee_required", "message": "批量派活要指定负责人（assignee_id 或 assignee_name）"},
+            )
+        ledger = _ledger()
+        real = _as_viewer(viewer)
+        actor = real.principal if real is not None else ""
+        results: List[Dict[str, Any]] = []
+        goal_sourced_deleted = False
+        for task_id in dict.fromkeys(str(item) for item in req.task_ids):
+            task = _visible_task_or_none(ledger, viewer, task_id)
+            if task is None:
+                results.append({"task_id": task_id, "status": "not_found"})
+                continue
+            try:
+                if action == "set_status":
+                    ledger.set_task_status(
+                        task_id, status=str(req.status or "").strip().lower(), actor=actor
+                    )
+                elif action == "assign":
+                    ledger.set_assignee(
+                        task_id,
+                        assignee_type=str(req.assignee_type or "human"),
+                        assignee_id=str(req.assignee_id or ""),
+                        assignee_name=str(req.assignee_name or ""),
+                        actor=actor,
+                    )
+                elif action == "set_deferred":
+                    ledger.set_deferred(
+                        task_id, deferred=bool(req.deferred), actor=actor
+                    )
+                else:
+                    summary = ledger.delete_task(task_id)
+                    if summary is not None and summary.get("source") == "goal":
+                        goal_sourced_deleted = True
+                results.append({"task_id": task_id, "status": "ok"})
+            except LedgerError as exc:
+                results.append(
+                    {"task_id": task_id, "status": "error", **exc.detail()}
+                )
+        succeeded = sum(1 for item in results if item["status"] == "ok")
+        response: Dict[str, Any] = {
+            "action": action,
+            "results": results,
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+        }
+        if goal_sourced_deleted:
+            response["warning"] = (
+                "其中有来自目标同步的任务被删掉，下次目标同步/迁移时可能重新出现；"
+                "要彻底去掉请先在目标侧取消该目标。"
+            )
+        return response
 
     return router
 
