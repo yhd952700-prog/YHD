@@ -148,7 +148,7 @@ _NEXT_STEPS = {
     "installation_incomplete": "用同一个安装包重新安装（或重新解压）补齐缺失文件；若杀毒软件隔离了文件，先从隔离区恢复。",
     "directory_not_writable": "把数据目录改到当前用户可写的位置（例如 %LOCALAPPDATA%\\LiuHao\\data），或让管理员给该目录写权限。",
     "port_conflict": "在任务管理器结束占用该端口的程序后重试；不确定是哪个程序时，生成诊断包，ports.json 会写明进程名和 PID。",
-    "model_key_invalid": "打开「系统设置 → 模型管理」，重新填写 Key 并点「测试」。",
+    "model_key_invalid": "打开「系统设置 → 模型与 Key」，重新填写 Key 并点「测试」。",
     "model_network_unreachable": "检查网络、代理和防火墙，确认能访问模型服务地址后重试。",
     "console_assets_missing": "重新安装以补齐 console 目录；不要只复制可执行文件。",
     "database_corrupt": "先备份数据目录，再把损坏的数据库文件改名或移走，重启后会自动重建空库。",
@@ -483,7 +483,8 @@ def _is_gateway_process(item: dict[str, Any]) -> bool:
 
     桌面壳自己（``src.desktop``）、诊断命令（``diagnose``）同样是贾维斯进程，
     但它们在服务死掉时仍然存在；拿它们当"网关还活着"的证据会误判。
-    网关的实际启动命令是 ``python -m src.desktop._runner``。
+    网关的实际启动命令是 ``-c`` 引导拉起 ``src.desktop._runner``
+    （见 ``service._GATEWAY_BOOTSTRAP``；命令行里看不到 ``-m``）。
     """
     text = f"{item.get('name') or ''} {item.get('command') or ''}".lower()
     if "diagnose" in text or "tray-demo" in text:
@@ -1871,7 +1872,7 @@ def _build_diagnosis(
                 "id": "model_key_invalid",
                 "title": "模型 Key 无效",
                 "status": "inconclusive",
-                "conclusion": "日志里没有鉴权失败记录，无法判定 Key 是否有效（需要在「系统设置 → 模型管理」测试一次）",
+                "conclusion": "日志里没有鉴权失败记录，无法判定 Key 是否有效（需要在「系统设置 → 模型与 Key」测试一次）",
                 "evidence": [_evidence("model_health.json", "log_signals.counts", {})],
             }
         )
@@ -2236,9 +2237,9 @@ def _build_summary(
         )
         if quota:
             action = "给这把 Key 充值，或换成一把有额度的 Key 后重启贾维斯。"
-            extra_actions.append("在「系统设置 → 模型管理」重新填 Key 并点「测试连接」")
+            extra_actions.append("在「系统设置 → 模型与 Key」重新填 Key 并点「测试连接」")
         else:
-            action = "打开「系统设置 → 模型管理」，重新填写 Key 并点「测试连接」。"
+            action = "打开「系统设置 → 模型与 Key」，重新填写 Key 并点「测试连接」。"
             extra_actions.append("额度耗尽（402 / quota_exhausted）则充值或换 Key")
         chosen = check
     elif status("model_network_unreachable") == "detected":

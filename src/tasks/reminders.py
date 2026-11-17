@@ -41,7 +41,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, List, Optional
 
 from src.tasks.local_scheduler import LocalScheduler, QueueFull
@@ -961,9 +961,15 @@ class ReminderService:
 
     # -- CRUD -------------------------------------------------------------
 
-    def create(self, user_id: str, text: str, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    def create(
+        self, user_id: str, text: str, *, now: Optional[datetime] = None,
+        tz: Optional[tzinfo] = None,
+    ) -> Dict[str, Any]:
+        """自然语言创建。``tz`` 没给时用服务默认时区；网关层传账号时区进来
+        （走查 F14：账号设置里的时区默认 America/Tijuana，以前服务层根本
+        不用它，提醒全按上海时间算）。"""
         now_dt = now if now is not None else self.scheduler.now()
-        spec = parse_reminder(text, now_dt, tz=self.tz)
+        spec = parse_reminder(text, now_dt, tz=tz or self.tz)
         reminder_id = uuid.uuid4().hex[:12]
         record = self.store.create(
             reminder_id=reminder_id,
@@ -982,17 +988,95 @@ class ReminderService:
                 "title": spec.title,
             },
         )
-        return self.describe(record)
+        return self.describe(record, tz)
 
-    def list(self, user_id: str, *, include_cancelled: bool = True) -> List[Dict[str, Any]]:
+    def create_explicit(
+        self,
+        user_id: str,
+        *,
+        title: str,
+        run_at_local: str,
+        repeat: str = "once",
+        now: Optional[datetime] = None,
+        tz: Optional[tzinfo] = None,
+    ) -> Dict[str, Any]:
+        """表单式创建（提醒页用）：标题 + 本地时间 + 重复规则，不走自然语言解析。
+
+        ``run_at_local`` 是本地时间 ISO（``2026-11-13T08:00`` 或带时区偏移）；
+        无偏移时按本机时区理解。过去的时间、空标题、非法重复规则一律
+        ``ValueError``（网关层转 422），不猜、不静默改时间。``tz`` 没给时
+        用服务默认时区；网关层传账号时区进来（走查 F14）。
+        """
+        zone = tz or self.tz
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("提醒内容不能为空。")
+        if repeat not in ("once", "daily", "weekly"):
+            raise ValueError("repeat 只能是 once / daily / weekly。")
+        try:
+            local_dt = datetime.fromisoformat((run_at_local or "").strip())
+        except ValueError:
+            raise ValueError("时间格式不对，请用 2026-11-13 08:00 这样的时间。") from None
+        if local_dt.tzinfo is None:
+            local_dt = local_dt.replace(tzinfo=zone)
+        else:
+            local_dt = local_dt.astimezone(zone)
+        now_dt = now if now is not None else self.scheduler.now()
+        if local_dt <= self._to_local(now_dt):
+            raise ValueError("提醒时间必须是未来的时间。")
+        if repeat == "daily":
+            time_text = f"每天 {local_dt.hour:02d}:{local_dt.minute:02d}"
+        elif repeat == "weekly":
+            time_text = (
+                f"每周{WEEKDAY_NAMES[local_dt.weekday()]} "
+                f"{local_dt.hour:02d}:{local_dt.minute:02d}"
+            )
+        else:
+            time_text = local_dt.strftime("%Y-%m-%d %H:%M")
+        spec = ReminderSpec(
+            title=title,
+            run_at=self._to_utc_naive(local_dt),
+            repeat_kind=repeat,
+            weekday=local_dt.weekday() if repeat == "weekly" else None,
+            hour=local_dt.hour,
+            minute=local_dt.minute,
+            time_text=time_text,
+            source_text="",
+        )
+        reminder_id = uuid.uuid4().hex[:12]
+        record = self.store.create(
+            reminder_id=reminder_id,
+            user_id=user_id,
+            spec=spec,
+            now_iso=_iso(now_dt),
+        )
+        self._enqueue(record, _iso(spec.run_at))
+        self._audit(
+            "reminder.created",
+            "success",
+            {
+                "reminder_id": reminder_id,
+                "repeat": spec.repeat_kind,
+                "run_at": _iso(spec.run_at),
+                "title": spec.title,
+            },
+        )
+        return self.describe(record, tz)
+
+    def list(
+        self, user_id: str, *, include_cancelled: bool = True,
+        tz: Optional[tzinfo] = None,
+    ) -> List[Dict[str, Any]]:
         records = self.store.list(user_id)
         if not include_cancelled:
             records = [item for item in records if item["status"] == "active"]
-        return [self.describe(item) for item in records]
+        return [self.describe(item, tz) for item in records]
 
-    def get(self, user_id: str, reminder_id: str) -> Optional[Dict[str, Any]]:
+    def get(
+        self, user_id: str, reminder_id: str, *, tz: Optional[tzinfo] = None,
+    ) -> Optional[Dict[str, Any]]:
         record = self.store.get(reminder_id, user_id=user_id)
-        return self.describe(record) if record else None
+        return self.describe(record, tz) if record else None
 
     def cancel(self, user_id: str, reminder_id: str) -> Dict[str, Any]:
         record = self.store.get(reminder_id, user_id=user_id)
@@ -1029,7 +1113,10 @@ class ReminderService:
             "reminder": self.describe(current) if current else None,
         }
 
-    def update(self, user_id: str, reminder_id: str, text: str) -> Dict[str, Any]:
+    def update(
+        self, user_id: str, reminder_id: str, text: str,
+        *, tz: Optional[tzinfo] = None,
+    ) -> Dict[str, Any]:
         record = self.store.get(reminder_id, user_id=user_id)
         if record is None:
             return {"status": "not_found", "message": "没有这个提醒。"}
@@ -1040,7 +1127,7 @@ class ReminderService:
                 "reminder": self.describe(record),
             }
         now_dt = self.scheduler.now()
-        spec = parse_reminder(text, now_dt, tz=self.tz)
+        spec = parse_reminder(text, now_dt, tz=tz or self.tz)
         new_version = int(record["version"]) + 1
 
         rearmed = self.store.rearm(
@@ -1070,7 +1157,114 @@ class ReminderService:
                 "cancelled_jobs": cancelled_jobs,
             },
         )
-        return {"status": "updated", "reminder": self.describe(rearmed)}
+        return {"status": "updated", "reminder": self.describe(rearmed, tz)}
+
+    def update_explicit(
+        self,
+        user_id: str,
+        reminder_id: str,
+        *,
+        title: Optional[str] = None,
+        run_at_local: Optional[str] = None,
+        repeat: Optional[str] = None,
+        now: Optional[datetime] = None,
+        tz: Optional[tzinfo] = None,
+    ) -> Dict[str, Any]:
+        """表单式修改：只改给出的字段，没给的沿用原值。
+
+        与 ``update``（自然语言全文重解析）互补：标题只改标题、时间只改
+        时间，不用把整句提醒重新说一遍。改完旧排程先撤再排新版本，
+        与 ``update`` 同一顺序（反了会把新 job 一起取消）。``tz`` 没给时
+        用服务默认时区；网关层传账号时区进来（走查 F14）。
+        """
+        zone = tz or self.tz
+        record = self.store.get(reminder_id, user_id=user_id)
+        if record is None:
+            return {"status": "not_found", "message": "没有这个提醒。"}
+        if record["status"] != "active":
+            return {
+                "status": "noop",
+                "message": f"提醒已经是「{record['status']}」，不能修改。",
+                "reminder": self.describe(record),
+            }
+        new_title = (
+            str(record.get("title") or "")
+            if title is None
+            else str(title).strip()
+        )
+        if not new_title:
+            raise ValueError("提醒内容不能为空。")
+        new_repeat = str(record.get("repeat_kind") or "once") if repeat is None else str(repeat)
+        if new_repeat not in ("once", "daily", "weekly"):
+            raise ValueError("repeat 只能是 once / daily / weekly。")
+        now_dt = now if now is not None else self.scheduler.now()
+        if run_at_local is not None:
+            try:
+                local_dt = datetime.fromisoformat(str(run_at_local).strip())
+            except ValueError:
+                raise ValueError(
+                    "时间格式不对，请用 2026-11-13 08:00 这样的时间。"
+                ) from None
+            if local_dt.tzinfo is None:
+                local_dt = local_dt.replace(tzinfo=zone)
+            else:
+                local_dt = local_dt.astimezone(zone)
+            if local_dt <= self._to_local(now_dt):
+                raise ValueError("提醒时间必须是未来的时间。")
+        else:
+            # 只改标题/重复规则时沿用原来的响铃时刻（UTC 存量转回本地）。
+            stored = str(record.get("run_at") or "")
+            try:
+                utc_naive = datetime.fromisoformat(stored)
+            except ValueError:
+                raise ValueError("这条提醒的原定时间读不出来，无法修改。") from None
+            local_dt = self._to_local(utc_naive, zone)
+        if new_repeat == "daily":
+            time_text = f"每天 {local_dt.hour:02d}:{local_dt.minute:02d}"
+        elif new_repeat == "weekly":
+            time_text = (
+                f"每周{WEEKDAY_NAMES[local_dt.weekday()]} "
+                f"{local_dt.hour:02d}:{local_dt.minute:02d}"
+            )
+        else:
+            time_text = local_dt.strftime("%Y-%m-%d %H:%M")
+        spec = ReminderSpec(
+            title=new_title,
+            run_at=self._to_utc_naive(local_dt),
+            repeat_kind=new_repeat,
+            weekday=local_dt.weekday() if new_repeat == "weekly" else None,
+            hour=local_dt.hour,
+            minute=local_dt.minute,
+            time_text=time_text,
+            source_text=str(record.get("source_text") or ""),
+        )
+        new_version = int(record["version"]) + 1
+        rearmed = self.store.rearm(
+            reminder_id,
+            user_id,
+            spec=spec,
+            version=new_version,
+            now_iso=_iso(now_dt),
+        )
+        if rearmed is None:
+            return {"status": "noop", "message": "提醒状态已变化，没有修改。"}
+        cancelled_jobs = self.scheduler.cancel_jobs_by_prefix(
+            reminder_key_prefix(reminder_id)
+        )
+        self._enqueue(rearmed, _iso(spec.run_at))
+        self._audit(
+            "reminder.updated",
+            "success",
+            {
+                "reminder_id": reminder_id,
+                "version": new_version,
+                "repeat": spec.repeat_kind,
+                "run_at": _iso(spec.run_at),
+                "cancelled_jobs": cancelled_jobs,
+            },
+        )
+        return {"status": "updated", "reminder": self.describe(rearmed, tz)}
+
 
     # -- settings ---------------------------------------------------------
 
@@ -2145,13 +2339,14 @@ class ReminderService:
             candidate = candidate.replace(tzinfo=self.tz)
         return self._to_utc_naive(candidate).isoformat()
 
-    def _to_local(self, utc_naive: datetime) -> datetime:
-        return utc_naive.replace(tzinfo=timezone.utc).astimezone(self.tz)
+    def _to_local(self, utc_naive: datetime, zone: Optional[tzinfo] = None) -> datetime:
+        return utc_naive.replace(tzinfo=timezone.utc).astimezone(zone or self.tz)
 
     def _to_utc_naive(self, local_dt: datetime) -> datetime:
         return local_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
-    def _human_time(self, record: Dict[str, Any]) -> str:
+    def _human_time(self, record: Dict[str, Any], tz: Optional[tzinfo] = None) -> str:
+        zone = tz or self.tz
         kind = record["repeat_kind"]
         if kind == "daily":
             return f"每天 {int(record['hour']):02d}:{int(record['minute']):02d}"
@@ -2159,9 +2354,12 @@ class ReminderService:
             name = WEEKDAY_NAMES[int(record["weekday"])]
             return f"每周{name} {int(record['hour']):02d}:{int(record['minute']):02d}"
         run_at = datetime.fromisoformat(record["run_at"])
-        return self._to_local(run_at).strftime("%Y-%m-%d %H:%M")
+        return self._to_local(run_at, zone).strftime("%Y-%m-%d %H:%M")
 
-    def describe(self, record: Dict[str, Any]) -> Dict[str, Any]:
+    def describe(self, record: Dict[str, Any], tz: Optional[tzinfo] = None) -> Dict[str, Any]:
+        """给前端/接口的展示字段。``tz`` 没给时用服务默认时区；网关层传
+        账号时区进来（走查 F14：响铃时刻对了，显示的时间不能还是错的）。"""
+        zone = tz or self.tz
         run_at = datetime.fromisoformat(record["run_at"])
         return {
             "id": record["id"],
@@ -2169,8 +2367,8 @@ class ReminderService:
             "status": record["status"],
             "repeat": record["repeat_kind"],
             "run_at": record["run_at"],
-            "run_at_local": self._to_local(run_at).isoformat(),
-            "human_time": self._human_time(record),
+            "run_at_local": self._to_local(run_at, zone).isoformat(),
+            "human_time": self._human_time(record, zone),
             "time_text": record.get("time_text") or "",
             "version": int(record["version"]),
             "last_fired_at": record.get("last_fired_at"),
@@ -2182,6 +2380,55 @@ class ReminderService:
 
 
 # -- process-wide service (scheduler handler / AI tool share one instance) ---
+
+def read_account_timezone(principal: str):
+    """读账号设置里的时区（与 ``src/gateway/a2a.py`` 同一份 ``a2a_state.json``）。
+
+    聊天层（助手兜底、提醒工具）拿不到网关的 ``get_account_settings``，
+    在这里直接读状态文件：文件名与环境变量以 a2a.py 为准。文件读不到
+    （新装机上设置一次没写过，文件根本不存在）、名字非法时返回账号默认
+    时区 America/Tijuana（与 a2a.py 的 DEFAULT_TIMEZONE 一致）；只有连
+    这个默认值都建不出来（缺 tzdata）时才返回 None，调用方退回服务默认
+    时区。绝不抛错。
+    """
+    try:
+        import json
+        from zoneinfo import ZoneInfo
+
+        from src.common.atomic_write import read_text_with_retry
+        from src.common.data_paths import resolve_store_path
+
+        path = resolve_store_path(
+            "a2a_state.json",
+            os.path.join("data", "a2a_state.json"),
+            env_var="LIUHAO_A2A_STATE_FILE",
+        )
+        raw = json.loads(read_text_with_retry(path))
+        name = str(
+            (raw.get("settings") or {})
+            .get(str(principal) or "", {})
+            .get("timezone")
+            or ""
+        ).strip()
+        if not name:
+            # 没存过时账号设置的默认值就是 America/Tijuana（与
+            # src/gateway/a2a.py 的 DEFAULT_TIMEZONE 一致）；不能返回
+            # None——那样会退回上海/系统时区，等于没修。
+            name = "America/Tijuana"
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - 读不到时区就用账号默认值
+        # 新装机：a2a_state.json 还没生成（设置一次没写过），上面整个
+        # try 都走不通。直接返回 None 会让调用方退回系统时区——沙箱是
+        # UTC，“明天早上 8 点”就被读成 UTC 8 点，Tijuana 午夜响（走查
+        # v8-F1）。所以这里也要给账号默认值；只有连默认值都建不出来
+        # （缺 tzdata）时才返回 None。
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo("America/Tijuana")
+        except Exception:  # noqa: BLE001 - 缺 tzdata 时退回服务默认
+            return None
+
 
 _default_service: Optional[ReminderService] = None
 _default_service_lock = threading.Lock()

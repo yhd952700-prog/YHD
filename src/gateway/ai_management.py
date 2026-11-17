@@ -4906,6 +4906,355 @@ def list_employee_capabilities() -> Dict[str, Any]:
     }
 
 
+# ─── 团队视图（任务 6 / 7-3 §9）：只读，看情况，不是指挥台 ─────────
+#
+# 队员是贾维斯的“手下”（5 个角色，按需出现，没派过活时列表为空），
+# Joseph 只跟贾维斯一个人说话；这里没有任何“给某队员派活”的入口，
+# 派活只走聊天主循环里的队长拆解（C 组接线时调 MultiAgentTeam.delegate_async）。
+# 队员任务与进度数字的唯一来源是 src/ai/team_store.py，前端只展示。
+
+
+def _team_viewer_or_404(viewer: Optional[GoalViewer]) -> None:
+    """团队只属于队长（贾维斯）名下：非根账号按“不在自己子树内”给 404，
+    不透露队伍存在与否；内部/测试调用（viewer 为 None）不做过滤。"""
+    if viewer is not None and not viewer.is_root:
+        raise HTTPException(
+            status_code=404,
+            detail="没有找到团队。请刷新后重试。",
+        )
+
+
+@router.get("/team")
+def get_team(
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """团队总览：队员 + 每人当前任务与最近结果。
+
+    空白开局：没派过活时队员列表为空；派活时队员按需出现。
+    """
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_store import get_team_store
+
+    store = get_team_store()
+    return {
+        "members": store.list_members(),
+        "summary": store.team_summary(),
+    }
+
+
+@router.get("/team/members/tasks")
+def list_team_tasks(
+    role: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """队员任务列表（最新在前；可按角色 / 状态筛）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_store import TEAM_ROLES, get_team_store
+
+    if role is not None and role not in TEAM_ROLES:
+        raise HTTPException(status_code=400, detail=f"没有这个队员角色：{role}。")
+    store = get_team_store()
+    tasks = store.list_tasks(role=role, status=status, limit=limit)
+    return {"tasks": tasks, "count": len(tasks)}
+
+
+@router.get("/team/members/tasks/{task_id}")
+def get_team_task(
+    task_id: str,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """一条队员任务 + 它的队内消息记录（同一 correlation_id）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_store import get_team_store
+
+    store = get_team_store()
+    try:
+        task = store.get_task(task_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail="没有找到这条队员任务。请刷新后重试。"
+        ) from None
+    return {
+        "task": task,
+        "messages": store.list_messages(task.get("correlation_id") or task_id),
+    }
+
+
+@router.post("/team/members/tasks/{task_id}/cancel")
+def cancel_team_task(
+    task_id: str,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """叫停一条在跑的队员任务：记录标已取消；后台晚归的结果不再采用
+    （team_store 的终态守卫 + collaboration 的终态守卫双重拦住）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    result = get_team_service().cancel_task(
+        task_id, viewer.principal if viewer is not None else "root", "Joseph 叫停"
+    )
+    if result.get("status") != "cancelled":
+        raise HTTPException(
+            status_code=404, detail="没有找到这条队员任务。请刷新后重试。"
+        )
+    return {"cancelled": True, "task": result["record"]}
+
+
+class TeamDelegateRequest(BaseModel):
+    role: str = ""
+    task: str = ""
+    plan_id: str = ""
+    step_total: int = 1
+    timeout: float = 120.0
+    approval_required: bool = False
+    danger_kind: str = ""
+
+
+class TeamRejectRequest(BaseModel):
+    reason: str = ""
+
+
+class TeamModelRequest(BaseModel):
+    model_config_id: str = ""
+
+
+class TeamSummarizeRequest(BaseModel):
+    plan_id: str = ""
+    task_ids: List[str] = []
+
+
+@router.post("/team/delegate")
+def delegate_team_task(
+    payload: TeamDelegateRequest,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """队长派活（7-3 Step 2）：Joseph 一句话进来，队长拆给队员。
+
+    队员没有独立入口，派活只走这里（或聊天里的队长拆解）；同一队员
+    已有在跑任务时 409、不并行抢占；含危险动作（approval_required）
+    时只登记、不执行，等批了才跑。
+    """
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    if not (payload.timeout and 1 <= float(payload.timeout) <= 600):
+        raise HTTPException(
+            status_code=422, detail="超时秒数要在 1–600 秒之间。"
+        )
+    from src.ai.team_service import get_team_service
+
+    try:
+        result = get_team_service().dispatch(
+            viewer.principal if viewer is not None else "root",
+            payload.role,
+            payload.task,
+            plan_id=payload.plan_id,
+            step_total=payload.step_total,
+            timeout=float(payload.timeout),
+            approval_required=payload.approval_required,
+            danger_kind=payload.danger_kind,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "没有这个队员角色" in message or "任务不能为空" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=422, detail=message) from exc
+    if result.get("status") == "failed" and "no available" in str(
+        result.get("error") or ""
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="这名队员正在忙，第二次派活不并行抢占。请等它做完或先叫停。",
+        )
+    return {"delegation": result}
+
+
+@router.post("/team/stop-all")
+def stop_all_team_tasks(
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """急停（7-3 Step 4）：在跑 + 待批的队员任务全部停下（目标 5 秒内）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    return get_team_service().stop_all(
+        viewer.principal if viewer is not None else "root"
+    )
+
+
+@router.post("/team/recover")
+def recover_team_tasks(
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """重启恢复：上次中断前还在跑的任务标失败并写清原因，待批的保留。
+
+    显式调用（重启后由 Joseph 或启动流程点一次）：全量恢复。
+    """
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    return get_team_service().recover_unfinished(only_stale=False)
+
+
+@router.post("/team/members/tasks/{task_id}/approve")
+def approve_team_task(
+    task_id: str,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """Joseph 批了待批任务：开始执行（7-3 Step 4）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    result = get_team_service().approve_task(
+        task_id, viewer.principal if viewer is not None else "root"
+    )
+    if result.get("status") != "accepted":
+        raise HTTPException(
+            status_code=409, detail=str(result.get("error") or "批不了这条任务")
+        )
+    return {"approved": True, "delegation": result}
+
+
+@router.post("/team/members/tasks/{task_id}/reject")
+def reject_team_task(
+    task_id: str,
+    payload: TeamRejectRequest,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """Joseph 拒了待批任务：标 rejected，什么都没执行。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    result = get_team_service().reject_task(
+        task_id,
+        viewer.principal if viewer is not None else "root",
+        payload.reason,
+    )
+    if result.get("status") != "rejected":
+        raise HTTPException(
+            status_code=404, detail="没有找到这条队员任务。请刷新后重试。"
+        )
+    return {"rejected": True, "task": result["record"]}
+
+
+@router.get("/team/members/{role}/model")
+def get_team_member_model(
+    role: str,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """一名队员配的模型（P6；没配就是与贾维斯共用默认模型）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    try:
+        member = get_team_service().get_member_model(role)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KeyError:
+        # 空白开局：队员还没出现（没派过活），不是 500。
+        raise HTTPException(
+            status_code=404,
+            detail="这名队员还没出现：先让贾维斯派个活，队员出现后再看。",
+        ) from None
+    return {
+        "role": member["role"],
+        "display_name": member["display_name"],
+        "model_config_id": member.get("model_config_id") or "",
+        "model_provider": member.get("model_provider") or "",
+        "model_name": member.get("model_name") or "",
+        "model_base_url": member.get("model_base_url") or "",
+    }
+
+
+@router.post("/team/members/{role}/model")
+def set_team_member_model(
+    role: str,
+    payload: TeamModelRequest,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """给一名队员配模型（P6）：只认设置里已保存的模型配置 id。
+
+    不接受直传 provider/model/base_url：队员不直接存 Key，Key 只由
+    Joseph 在设置 → 模型管理里填一次。空 id = 清掉，回到共用默认模型。
+    """
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    try:
+        member = get_team_service().set_member_model(
+            role, model_config_id=payload.model_config_id
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "模型配置找不到了" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        if "没有这个队员角色" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=422, detail=message) from exc
+    except KeyError:
+        # 空白开局：配模型不能成为偷偷种队员的口子；队员还没出现就 404。
+        raise HTTPException(
+            status_code=404,
+            detail="这名队员还没出现：先让贾维斯派个活，队员出现后再配模型。",
+        ) from None
+    return {
+        "role": member["role"],
+        "model_config_id": member.get("model_config_id") or "",
+        "model_provider": member.get("model_provider") or "",
+        "model_name": member.get("model_name") or "",
+        "model_base_url": member.get("model_base_url") or "",
+    }
+
+
+@router.get("/team/members/tasks/{task_id}/artifact/{name}")
+def get_team_task_artifact(
+    task_id: str,
+    name: str,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """读一条队员任务的产物文件（P5：真实落盘的文件，不是编的）。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    try:
+        return {
+            "artifact": get_team_service().read_artifact(task_id, name)
+        }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/team/summarize")
+def summarize_team_tasks(
+    payload: TeamSummarizeRequest,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """汇总：结论在前、依据在后、来源标清；部分失败如实报。"""
+    viewer = _as_viewer(viewer)
+    _team_viewer_or_404(viewer)
+    from src.ai.team_service import get_team_service
+
+    return get_team_service().summarize(
+        task_ids=payload.task_ids or None, plan_id=payload.plan_id
+    )
+
+
 @router.post("/employees")
 def hire_employee(
     req: HireEmployeeRequest,

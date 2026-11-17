@@ -48,6 +48,7 @@ from typing import Any
 from . import CONSOLE_DIST, DATA_DIR, LOG_DIR, dpi, tray_state
 from .about import APP_NAME
 from .auto_login import AutoLogin
+from .desktop_shortcut import ensure_on_first_success
 from .diagnostics import format_bytes, probe_directory_writable, service_guidance
 from .probe import describe_port_owner, http_json, pick_port, port_is_free
 from .service import (
@@ -60,12 +61,14 @@ from .startup import STARTUP_TIMEOUT, unavailable_gate, wait_until_ready
 from .stop_log import describe_stop_attribution
 from .tray import (
     ACTION_CLEAR_AUTO_LOGIN,
+    ACTION_HIDE_PET,
     ACTION_LOGOUT,
     ACTION_OPEN_BROWSER,
     ACTION_OPEN_CONSOLE,
     ACTION_OPEN_LOGS,
     ACTION_QUIT,
     ACTION_RESTART_SERVICE,
+    ACTION_SHOW_PET,
     ACTION_SHOW_STATUS,
     ACTION_STOP_SERVICE,
     ACTION_TOGGLE_PAUSE_EMPLOYEES,
@@ -412,6 +415,10 @@ class DesktopApp:
     _token_expires: float = 0.0
     #: "暂停 AI 员工接活"的持久化意图（重启后仍生效）。
     _paused: bool = False
+    #: 桌宠（C-pet）：控制器 / 窗口 / 推送订阅。建不起来也不挡操作台。
+    _pet: Any = None
+    _pet_window: Any = None
+    _pet_feed: Any = None
     #: 托盘状态轮询器与最近一次快照。
     _state_poller: Any = None
     _tray_snapshot: dict[str, Any] | None = None
@@ -484,6 +491,9 @@ class DesktopApp:
         self._tray_snapshot: dict[str, Any] | None = None
         self._pause_thread: threading.Thread | None = None
         self._auth_lock = threading.Lock()
+        self._pet: Any = None
+        self._pet_window: Any = None
+        self._pet_feed: Any = None
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -604,6 +614,7 @@ class DesktopApp:
                 storage_dir=DATA_DIR / "webview",
                 js_api=_NativeBridge(self),
                 hidden=self.hidden,
+                on_visibility=self._pet_console_visible,
             )
             self._native.create()
         except Exception:  # noqa: BLE001 - 缺包/初始化失败都不能静默退出
@@ -688,7 +699,10 @@ class DesktopApp:
     def _boot(self) -> None:
         """后台启动网关并过启动门；结果经 ``events`` 交回 UI 线程。"""
         try:
-            started = self.service.start()
+            # 桌面双击启动就是自动恢复场景：端口被占 / 启动瞬间被抢走时
+            # 自动换空闲端口（service 会记日志、状态窗口会写明地址变了），
+            # 而不是让用户对着"启动失败"自己去找端口。
+            started = self.service.start(allow_port_fallback=True)
         except Exception as exc:  # noqa: BLE001 - 启动异常不能把 UI 线程带下水
             logger.exception("网关启动异常")
             self._boot_result = {
@@ -776,6 +790,14 @@ class DesktopApp:
         console_ready = bool(gate.get("console_ok"))
 
         if console_ready:
+            # 首次启动成功：在桌面建一个「贾维斯」快捷方式（小铁图标）。
+            # 后台线程跑，PowerShell 再慢也不能卡住界面；函数本身永不抛异常，
+            # 建失败只记日志。桌面上已有同名快捷方式时直接跳过，不重复建。
+            threading.Thread(
+                target=ensure_on_first_success,
+                name="liuhao-desktop-shortcut",
+                daemon=True,
+            ).start()
             # 只在"能进门"之后才开始健康轮询，避免启动中把文案覆盖成"未探测"。
             # 重启时复用已有轮询线程，避免多个线程同时往队列里写状态。
             if self._health_thread is None or not self._health_thread.is_alive():
@@ -795,6 +817,7 @@ class DesktopApp:
                         else "贾维斯窗口：已就绪（首屏为登录页）"
                     )
             self._start_state_poller()
+            self._pet_ensure()
             if self.window_mode == WINDOW_NATIVE and self._native is not None:
                 # 健康检查 200 之后才加载控制台：不会出现白屏或"无法连接"页。
                 self._native.load_console(
@@ -817,8 +840,15 @@ class DesktopApp:
         if self._tray is not None and not self._closing:
             state = gate.get("state")
             detail = str(gate.get("detail") or "")[:250]
+            switched = getattr(self.service, "port_switched_from", None)
             if state == "ready":
-                self._tray.notify("贾维斯已就绪", "双击托盘图标，或选「打开贾维斯窗口」。")
+                if switched:
+                    self._tray.notify(
+                        "贾维斯已就绪",
+                        f"端口 {switched} 被占用，已自动改用 {self.service.port}。",
+                    )
+                else:
+                    self._tray.notify("贾维斯已就绪", "双击托盘图标，或选「打开贾维斯窗口」。")
             elif state == "degraded":
                 self._tray.notify("贾维斯已启动（部分组件未就绪）", detail, warning=True)
             elif state == "timeout":
@@ -1046,6 +1076,151 @@ class DesktopApp:
 
     def _console_url_with_proof(self) -> str:
         return self._with_local_proof(self._console_url())
+
+    # ------------------------------------------------------------------ #
+    # 桌宠小铁（C-pet）：透明置顶窗口＋真实后端事件驱动
+    # ------------------------------------------------------------------ #
+    def _pet_ensure(self) -> None:
+        """网关就绪后起桌宠：控制器＋订阅＋窗口。任何一步失败都不挡操作台。
+
+        桌宠默认停在操作台左上角主脑位（``docked=True``）；操作台窗口
+        藏起来（``_hide_to_tray`` / 原生窗口 X 按钮）时才站回桌面上。
+        """
+        if self._pet is not None or self._closing:
+            return
+        try:
+            from .pet import PetController, PetFeed, load_pet_settings
+            from .pet_window import PetWindow, PetWindowUnavailable
+
+            settings = load_pet_settings(DATA_DIR)
+            self._pet = PetController(settings)
+            self._pet_feed = PetFeed(
+                self.service.base_url or "",
+                self._get_token,
+                self._pet_on_event,
+            )
+            self._pet_feed.start()
+            self._pet_sync_settings()
+            if not settings.pet_enabled:
+                logger.info("桌宠已在设置里关掉，不建窗口")
+                return
+            window = PetWindow(
+                self._pet,
+                on_open_console=lambda: self.events.put(("action", ACTION_OPEN_CONSOLE)),
+            )
+            try:
+                window.start()
+            except PetWindowUnavailable as exc:
+                logger.warning("桌宠窗口不可用（%s）：只跑控制器与订阅，不建窗口", exc)
+                return
+            self._pet_window = window
+        except Exception:  # noqa: BLE001 - 桌宠任何失败都不许挡住操作台
+            logger.warning("桌宠启动失败，只跑操作台", exc_info=True)
+            self._pet = None
+            self._pet_window = None
+            self._pet_feed = None
+
+    def _pet_sync_settings(self) -> None:
+        """从后端 ``GET /v1/pet/settings`` 同步桌宠开关（控制台设置页同源）。
+
+        没连上/没登录就用本机文件里的设置，不编、不阻断。
+        """
+        if self._pet is None:
+            return
+        try:
+            import json as _json
+            from urllib.request import Request, urlopen
+
+            base = self.service.base_url or ""
+            token = self._get_token()
+            if not base or not token:
+                return
+            req = Request(base.rstrip("/") + "/v1/pet/settings")
+            req.add_header("Authorization", f"Bearer {token}")
+            with urlopen(req, timeout=5) as resp:  # noqa: S310 - 只连本机网关
+                body = _json.loads(resp.read().decode("utf-8"))
+            if isinstance(body, dict):
+                from .pet import PetSettings
+
+                merged = PetSettings.from_dict({**self._pet.settings.to_dict(), **body})
+                self._pet.update_settings(merged)
+        except Exception:  # noqa: BLE001 - 同步不到就用本机设置
+            logger.warning("桌宠设置同步失败，用本机文件里的设置", exc_info=True)
+
+    def _pet_on_event(self, event: dict[str, Any]) -> None:
+        """推送事件到了：先翻成姿态/说话，该弹就弹（只在主动开关开着时弹）。"""
+        pet = self._pet
+        if pet is None:
+            return
+        try:
+            pet.apply_event(event)
+        except Exception:  # noqa: BLE001 - 一条坏事件不杀订阅
+            logger.warning("桌宠事件处理失败", exc_info=True)
+            return
+        if not pet.console_should_pop or not pet.settings.proactive_speech_enabled:
+            return
+        pet.pop_consumed()
+        try:
+            if self._pet_window is not None:
+                self._pet_window.pop_to_front()
+            self._open_console()
+        except Exception:  # noqa: BLE001 - 弹不出来不影响事件本身
+            logger.warning("桌宠有事想弹出来，但没弹成", exc_info=True)
+
+    def _pet_console_visible(self, visible: bool) -> None:
+        """操作台窗口显示/藏起：两个地方只能有一个小铁。
+
+        从 WebView/托盘线程回调，只碰控制器（带锁）与窗口命令队列，
+        不直接操作任何窗口。桌宠还没起（``_pet is None``）就什么都不做。
+        """
+        pet = self._pet
+        if pet is None:
+            return
+        try:
+            if visible:
+                if pet.docked:
+                    return  # 已经在主脑位了（原生窗口 show/hide 回调会重复报，不重复飞）
+                pet.dock()
+                if self._pet_window is not None:
+                    self._pet_window.fly_home()
+            else:
+                if not pet.docked:
+                    return  # 已经站在桌面上了，不重复站
+                pet.undock()
+        except Exception:  # noqa: BLE001 - 切换失败不影响窗口本身
+            logger.warning("桌宠显隐切换失败", exc_info=True)
+
+    def _pet_show(self) -> None:
+        """托盘「叫小铁出来」：桌宠飞出来＋操作台弹出来（随叫随到一期）。"""
+        self._pet_ensure()
+        pet = self._pet
+        if pet is None:
+            return
+        pet.summon("tray")
+        if self._pet_window is not None:
+            self._pet_window.pop_to_front()
+        self._open_console()
+
+    def _pet_hide(self) -> None:
+        """托盘「收起桌宠」：飞回操作台左上角主脑位。"""
+        pet = self._pet
+        if pet is None:
+            return
+        pet.dock()
+        if self._pet_window is not None:
+            self._pet_window.fly_home()
+
+    def _pet_stop(self) -> None:
+        """退出时停掉订阅与窗口（失败也不挡退出）。"""
+        feed, window = self._pet_feed, self._pet_window
+        self._pet_feed = None
+        self._pet_window = None
+        self._pet = None
+        for closer in (feed, window):
+            if closer is None:
+                continue
+            with contextlib.suppress(Exception):
+                closer.stop()
 
     def _tooltip_text(self) -> str:
         if self._boot_pending:
@@ -1332,6 +1507,9 @@ class DesktopApp:
             return
         if self._tray is not None:
             self._tray.set_tooltip(self._tooltip_text())
+        # 原生窗口的 hide() 已通过 on_visibility 回调通知过；这里是状态窗口
+        # 的分支（以及回调重复报时的幂等兜底），桌宠站回桌面上。
+        self._pet_console_visible(False)
 
     def _show_window(self) -> None:
         if self.window_mode == WINDOW_NATIVE and self._native is not None:
@@ -1348,6 +1526,8 @@ class DesktopApp:
         self._root.focus_force()
         if os.name == "nt":
             _raise_foreground(self._root.winfo_id())
+        # 状态窗口分支：操作台出来了，桌宠飞回左上角主脑位。
+        self._pet_console_visible(True)
 
     def _toggle_window(self) -> None:
         if self.window_mode == WINDOW_NATIVE and self._native is not None:
@@ -1775,6 +1955,7 @@ class DesktopApp:
         self._closing = True
         self._stop_event.set()
         self._stop_state_poller()
+        self._pet_stop()
         boot = self._boot_thread
         if boot is not None and boot.is_alive():
             # 启动线程若还在 start()/启动门里，给它一点时间退出；它自己会看到
@@ -1875,6 +2056,10 @@ class DesktopApp:
     def _handle_action(self, action: str) -> None:
         if action == ACTION_OPEN_CONSOLE:
             self._open_console()
+        elif action == ACTION_SHOW_PET:
+            self._pet_show()
+        elif action == ACTION_HIDE_PET:
+            self._pet_hide()
         elif action == ACTION_OPEN_BROWSER:
             self._open_in_browser()
         elif action == ACTION_SHOW_STATUS:

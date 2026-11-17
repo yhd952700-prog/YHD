@@ -138,6 +138,7 @@ INSTALL_ROOTS = (
     "capability-registry.yaml",
     "error_types.py",
     "LiuHao.bat",
+    "start-jarvis.bat",
     "START-HERE.txt",
     "pyproject.toml",
     "requirements.txt",

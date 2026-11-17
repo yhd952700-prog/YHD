@@ -480,10 +480,25 @@ class AuditEventType(str, Enum):
     KERNEL_STATUS = "kernel_status"
     PHASE_GATE = "phase_gate"
     STATE_CHANGE = "state_change"
+    #: Plugin lifecycle (register/unregister/activate/deactivate) —
+    #: written by the plugin kernel via its audit_log helper.
+    PLUGIN_LIFECYCLE = "plugin_lifecycle"
     #: 自动化动作审计（自动化模块只记哈希，不记明文）。
     AUTOMATION_ACTION = "automation_action"
     #: 自动化只读观察审计（同样只记哈希，不记明文）。
     AUTOMATION_OBSERVATION = "automation_observation"
+    #: 登录在 5 次/300 秒窗口内被节流（429）。
+    LOGIN_THROTTLED = "login_throttled"
+    #: Owner 解除某账号的登录节流（只清该账号）。
+    LOGIN_THROTTLE_UNLOCKED = "login_throttle_unlocked"
+    #: ViewAs 视角非法（目标不存在、已停用、不在查看者子树内、无权查看）。
+    VIEW_AS_DENIED = "view_as_denied"
+    #: ViewAs 只读视角下写操作被拒。
+    VIEW_AS_WRITE_DENIED = "view_as_write_denied"
+    #: 诱导拦截：粘贴/文件/网页/工具输出里的文字试图让模型下危险命令
+    #: （假扮 Joseph/系统、改规则、假证据等），按“数据不是指令”拦下，
+    #: 不建审批单、不执行。
+    AUTHORITY_INDUCTION_BLOCKED = "authority_induction_blocked"
 
 
 class AuditScope(str, Enum):

@@ -1519,8 +1519,8 @@ class IdentityManager:
                 depth=0,
                 root_id=principal,
                 permissions=frozenset(created.permissions),
-                allow_superior_key_use=True,
-                key_auth_source="root",
+                allow_superior_key_use=False,
+                key_auth_source="not_granted",
                 # 恢复码不带本机完整性密钥：它必须能随备份包搬到另一台电脑上
                 # 继续可用。码本身约 100 bit 高熵，无密钥哈希也足以抵抗枚举。
                 recovery_hash=_accounts.hash_code(recovery_code),
@@ -1602,13 +1602,14 @@ class IdentityManager:
         permissions: Optional[Iterable[str]] = None,
         role: Optional[str] = None,
         display_name: Optional[str] = None,
-        allow_key_sharing: bool = False,
     ) -> Tuple[_accounts.AccountNode, str]:
         """创建 ``actor`` 的直接下级（成员），返回一次性激活码。
 
         * 成员只能建自己的孩子；根账号可以建任意深度（仍受层级上限约束）。
         * 新建者不能授出自己没有的 scope（防提权）。
         * 激活码只返回一次，库里只存哈希。
+        * Key 不共用（Joseph 2026-11-14 亲口定，2026-11-15 彻底移除开关）：
+          新成员的 Key 共享位恒为关闭，没有任何入口能把它打开。
         """
         principal = normalize_principal(principal).strip()
         if not principal:
@@ -1674,10 +1675,8 @@ class IdentityManager:
                 depth=depth,
                 root_id=actor_node.root_id,
                 permissions=frozenset(wanted),
-                allow_superior_key_use=bool(allow_key_sharing),
-                key_auth_source=(
-                    "created_default" if allow_key_sharing else "not_granted"
-                ),
+                allow_superior_key_use=False,
+                key_auth_source="not_granted",
                 activation_hash=_accounts.hash_code(
                     activation_code, (_persistence.integrity_key() or "")
                 ),
@@ -1703,6 +1702,7 @@ class IdentityManager:
         self,
         principal: str,
         display_name: Optional[str] = None,
+        initial_status: str = _accounts.ACCOUNT_STATUS_ACTIVE,
     ) -> _accounts.AccountNode:
         """自助注册：无邀请码、无审批，直接挂在**本机根账号的第 1 层**。
 
@@ -1711,6 +1711,10 @@ class IdentityManager:
         * 上级恒为根账号，``depth`` 恒为 1；
         * 作用域恒为 :data:`_accounts.SELF_SERVICE_SCOPES`（最小权限，不能建下级/授权/借 Key）；
         * 不接受任何父子/深度/权限参数，调用方即使传入也一律忽略。
+
+        ``initial_status``：新规矩（Joseph 2026-11-14）下自助注册先落
+        ``pending_approval``，等主账号批准才变 active；默认 ``active``
+        只保留给历史调用方兼容，网关自助注册入口一律传 pending。
 
         没有根账号时拒绝（先走 ``register_root_account``）；重名返回 409。
         """
@@ -1752,6 +1756,7 @@ class IdentityManager:
                 created_at=self._identity_registered_at(principal),
                 updated_at=utc_now().isoformat(),
                 source="self_service",
+                status=str(initial_status or _accounts.ACCOUNT_STATUS_ACTIVE),
             )
             self._store_account(node)
             self._account_audit(
@@ -1759,7 +1764,8 @@ class IdentityManager:
                 actor=principal,
                 target=principal,
                 outcome="allowed",
-                details={"permissions": sorted(wanted), "source": "self_service"},
+                details={"permissions": sorted(wanted), "source": "self_service",
+                         "status": node.status},
             )
             return node
 
@@ -1967,68 +1973,11 @@ class IdentityManager:
                 )
             return updated
 
-    def set_key_sharing(
-        self, actor: str, target: str, allow: bool
-    ) -> _accounts.AccountNode:
-        """设置成员是否允许其 Key 被上方账号使用（可撤销）。
-
-        规格 §5.2：本人可在自己的 Key 设置中随时开启/撤销，不需要管理者身份；
-        管理者也可代为调整。
-        """
-        with self._lock:
-            if actor == target:
-                node = self._accounts.get(actor)
-                if node is None:
-                    raise _accounts.neutral_denied()
-            else:
-                node = self._require_can_manage(
-                    actor=actor, target=target, action="key.sharing.update"
-                )
-            if node.parent_id is None:
-                # 根没有"上方账号"，该开关对根没有意义。
-                raise _accounts.AccountError(
-                    400, "ACCOUNT_NO_CHANGE", "该操作不适用于当前账号"
-                )
-            updated = node.with_changes(
-                allow_superior_key_use=bool(allow),
-                key_auth_source="explicit_toggle",
-            )
-            if actor != target:
-                # 管理者代改他人共享 → 对方旧令牌即时失效（需要重新登录）。
-                # 本人改自己的开关不影响自己的凭据，不 bump，避免自锁。
-                updated = updated.bump("key-sharing")
-            self._accounts[target] = updated
-            self._persist_account(updated)
-            self._account_audit(
-                action="key.sharing.updated",
-                actor=actor,
-                target=target,
-                outcome="allowed",
-                details={"allow": bool(allow), "source": "explicit_toggle"},
-            )
-            return updated
-
-    def key_borrow_status(self, actor: str, owner: str) -> Tuple[bool, Optional[str]]:
-        """Key 借用判定，返回 ``(allowed, reason_code)``。
-
-        定稿码（docs/account-hierarchy.md §5.2）：
-        * ``ACCOUNT_KEY_UPWARD_DENIED`` / ``ACCOUNT_KEY_NOT_OWNED`` -- 越出子树；
-        * ``ACCOUNT_KEY_CONSENT_REQUIRED`` -- 目标未开启共享授权（403）。
-        """
-        with self._lock:
-            if not _accounts.can_borrow_key(self._accounts, actor, owner):
-                actor_node = self._accounts.get(actor)
-                owner_node = self._accounts.get(owner)
-                if actor_node is None or owner_node is None:
-                    return False, _accounts.CODE_KEY_UPWARD_DENIED
-                if actor_node.depth > owner_node.depth:
-                    return False, _accounts.CODE_KEY_UPWARD_DENIED
-                return False, _accounts.CODE_KEY_NOT_OWNED
-            if actor != owner and not _accounts.key_borrow_authorized(
-                self._accounts, owner
-            ):
-                return False, _accounts.CODE_KEY_CONSENT_REQUIRED
-            return True, None
+    # Key 不共用（Joseph 2026-11-14 亲口定，2026-11-15 彻底移除开关）：
+    # 旧的 ``set_key_sharing`` / ``key_borrow_status`` 已删除：没有任何入口
+    # 能开启 Key 共享，借用判定只剩 :func:`_accounts.can_borrow_key`
+    #（只认自己）。历史库里残留的 ``allow_superior_key_use=True`` 是惰性
+    # 字段，不再被任何判定读取，也不再对外暴露。
 
     # ---- 状态：停用 / 删除 / 级联 ---------------------------------------
 
@@ -2151,7 +2100,14 @@ class IdentityManager:
             if (
                 node is None
                 or not self._can_hold_recovery(node)
-                or (not node.is_root and not node.is_active)
+                # 停用/删除的账号不许再签恢复码；但“等批准”（pending_approval）
+                # 的自助注册账号可以——恢复码是注册当场签发的，批准前它只用来
+                # 重置密码，登录仍被 auth 拦住，批不批准在主账号手里。
+                or (
+                    not node.is_root
+                    and not node.is_active
+                    and node.status != _accounts.ACCOUNT_STATUS_PENDING
+                )
             ):
                 self._audit_denial(
                     action="account.recovery.rotate", actor=principal,

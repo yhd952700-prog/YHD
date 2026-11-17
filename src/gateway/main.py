@@ -42,7 +42,7 @@ from fastapi.encoders import jsonable_encoder  # noqa: E402
 from fastapi.exceptions import RequestValidationError  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
-from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
+from ..security import get_jwt_handler  # noqa: E402
 from ..common.input_guard import (  # noqa: E402
     body_model_from_field,
     field_label_from_info,
@@ -234,6 +234,7 @@ def development_loopback_origins() -> list:
     """
     http_ports: list = []
     for candidate in (
+        (os.environ.get("LIUHAO_LISTEN_PORT") or "").strip(),
         (os.environ.get("PORT") or "").strip(),
         (os.environ.get("LIUHAO_API_PORT") or "").strip(),
         "8080",
@@ -261,20 +262,46 @@ def _lan_ipv4_addresses() -> list:
     import socket
 
     found: list = []
-    try:
-        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
-    except OSError:
-        return found
-    for info in infos:
-        ip = info[4][0]
+
+    def _accept(ip: str) -> None:
         try:
             parsed = ipaddress.ip_address(ip)
         except (ValueError, IndexError):
-            continue
+            return
         if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
-            continue
+            return
         if ip not in found:
             found.append(ip)
+
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        infos = []
+    for info in infos:
+        _accept(info[4][0])
+    if not found:
+        # 主机名常常只解析到回环（例如 /etc/hosts 里 hostname -> 127.0.1.1），
+        # 此时仅靠 getaddrinfo 会漏掉真实网卡，手机端反而连不上。退而枚举网卡。
+        try:
+            import psutil
+
+            for addrs in psutil.net_if_addrs().values():
+                for addr in addrs:
+                    if getattr(addr, "family", None) == socket.AF_INET:
+                        _accept(addr.address)
+        except Exception:  # noqa: BLE001 - 枚举是尽力而为，失败即返回已有的结果
+            pass
+    # 7-2 远程访问：Tailscale 虚拟地址（100.64/10）也要进白名单，否则手机
+    # 经 Tailscale IP 访问会被 Host 校验 400。getaddrinfo 常常只返回局域网
+    # 地址、漏掉 Tailscale 虚拟网卡，所以这里总是额外补一份（探测不到时
+    # 返回空列表，不影响原有行为）。
+    try:
+        from .remote_access import tailscale_ipv4_addresses
+
+        for ip in tailscale_ipv4_addresses():
+            _accept(ip)
+    except Exception:  # noqa: BLE001 - 探测失败时只影响远程访问，不影响局域网
+        pass
     return found
 
 
@@ -508,6 +535,7 @@ def load_runtime_config() -> Dict[str, Any]:
                     "Content-Type",
                     "X-Request-Id",
                     "X-Liuhao-Token",
+                    "X-Liuhao-View-As",
                     # 桌面端一次性证明（取恢复码 / 重置密码各一枚）
                     "X-LiuHao-Local-Proof",
                     "X-LiuHao-Reset-Proof",
@@ -835,6 +863,11 @@ class HostGuardMiddleware:
     1) **Host**：只放行白名单里的主机名（去端口、大小写不敏感、支持 IPv6）。
        陌生 Host 返回 400。这是 DNS rebinding 的第一道闸：恶意域名解析到
        127.0.0.1 后，浏览器发来的请求就是 ``Host: evil.example.com``。
+       WebSocket scope 同样过 Host 闸门（2026-11-14 D 组修复：A2a 把
+       ``/v1/a2a/ws/status`` 挂进网关后，WS 路由不再是“不存在所以安全”；
+       伪造 Host 的 WS 握手发 ``websocket.close`` 1008 拒绝，不到达内层应用。
+       WS 端点自身的 Origin/令牌校验不在这里做，见 ``a2a.py`` 的备注与
+       ``tests/gateway/test_loopback_defaults_and_host_guard.py`` 的说明）。
     2) **Origin**：写方法若带 ``Origin`` 且与白名单**完整来源**（scheme +
        host + port）不完全一致，直接 403 并写安全日志。**不按主机名回落**：
        IP 字面量或同主机不同端口/协议都不是同源。不能只靠 CORS —— CORS 只
@@ -915,6 +948,25 @@ class HostGuardMiddleware:
         return value == canonical_origin(f"http://{host}:{self.lan_port}")
 
     async def __call__(self, scope, receive, send):
+        if scope.get("type") == "websocket":
+            # WebSocket scope 也过 Host 闸门：伪造 Host 的握手发 websocket.close
+            # 1008 拒绝，不调用内层应用；合法回环 Host 正常放行。
+            from starlette.datastructures import Headers
+
+            headers = Headers(scope=scope)
+            raw_host = headers.get("host", "")
+            host = hostname_of(raw_host)
+            client = scope.get("client") or ("", 0)
+            if not host or not self._host_allowed(host):
+                logger.warning(
+                    "SECURITY_REJECTED reason=untrusted_host method=WS path=%s "
+                    "host=%r client=%s",
+                    scope.get("path"), raw_host, client[0],
+                )
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            await self.app(scope, receive, send)
+            return
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -1054,8 +1106,29 @@ async def lifespan(app: FastAPI):
     get_jwt_handler()
     logger.info("JWT Handler initialized")
 
-    rbac_mgr = get_rbac_manager()
-    logger.info(f"RBAC Manager initialized: {len(rbac_mgr._roles)} roles")
+    # 2026-11-12: legacy RBACManager deleted (un-wired dead code; the
+    # account-tree scope is the only authorization mainline). A leftover
+    # on-disk rbac.json is ignored, never consulted; it is kept on disk
+    # for one more major version so the Owner can confirm its removal.
+    from ..common.data_paths import resolve_store_path as _resolve_store_path
+
+    for _rbac_candidate in (
+        Path(_resolve_store_path("rbac.json", Path.home() / ".liuhao" / "rbac.json")),
+        Path.home() / ".liuhao" / "rbac.json",
+    ):
+        if _rbac_candidate.exists():
+            logger.info("检测到未使用的 rbac.json，已忽略（旧 RBAC 未参与任何判定）: %s", _rbac_candidate)
+            break
+
+    # RBAC 主线就是账号树（2026-11-12 起，legacy RBACManager 已删，见上）：
+    # 这里物化身份管理器并读一次账号根，确认授权主线可用，再打点。
+    # 与就绪探针的 account_tree / rbac_manager 检查是同一调用；身份存储
+    # 本身损坏时这里直接抛错导致启动失败——与后面“身份存储加载完成”
+    # 处的原有行为一致，只是提前到密钥/JWT 初始化之后，让打点名副其实。
+    from ..kernels.identity import get_identity_manager as _get_id_mgr
+
+    _id_mgr = _get_id_mgr()
+    _id_mgr.account_root()
 
     _startup_mark("密钥 / JWT / RBAC 初始化完成")
 
@@ -1669,7 +1742,17 @@ async def lifespan(app: FastAPI):
                 or os.environ.get("HOST")
                 or "127.0.0.1"
             ),
-            port=int((os.environ.get("PORT") or "8080").strip() or "8080"),
+            # 实际监听端口：网关入口在端口被占时可能已自动顺延（见
+            # ``src/gateway/__main__.py``），``LIUHAO_LISTEN_PORT`` 是它写下
+            # 的最终端口；只读 ``PORT`` 会把 8080 记成已启动端口，排障会走偏。
+            port=int(
+                (
+                    os.environ.get("LIUHAO_LISTEN_PORT")
+                    or os.environ.get("PORT")
+                    or "8080"
+                ).strip()
+                or "8080"
+            ),
             console_dist=resolve_console_dist(),
         )
         # 有降级组件时补 evt=startup.degraded（与 /v1/startup.degraded 同源）。
@@ -1716,6 +1799,49 @@ async def lifespan(app: FastAPI):
         if not prewarm_roster_payload():
             raise RuntimeError("roster prewarm failed")
 
+    def _startup_self_check_and_rollback() -> None:
+        """开机自检 + 坏了自动回滚（本轮 item 6 接进开机自检链）。
+
+        跑在首屏发出去之后的后台线程里，网关已经在监听：端口自检按真实
+        监听端口（``resolve_listen_port()``，LIUHAO_LISTEN_PORT 优先）重算。
+        只有 fail 才回滚；10 分钟内已有回滚记录就跳过（防回滚循环）。
+        回滚了或回滚失败都大声记日志并进降级标记；自检本身跑不起来只记
+        警告，绝不拖垮启动。
+        """
+        from .a3s import startup_self_check_and_rollback as _impl
+
+        result = _impl(listen_port=resolve_listen_port())
+        if result.get("rolled_back"):
+            logger.error(
+                "STARTUP SELF-CHECK FAILED -- 已自动回滚到上一个好的版本：%s",
+                result.get("message"),
+            )
+            from ..observability.boot_report import add_degraded as _add_degraded
+
+            _add_degraded(
+                "startup_rollback",
+                "a3s.startup_self_check_and_rollback",
+                str(result.get("message") or ""),
+                "degraded: 开机自检没过，已自动回到上一个好的版本；"
+                "详见 GET /v1/a3s/upgrade/rollback-records",
+            )
+        elif result.get("failed_checks"):
+            logger.error(
+                "STARTUP SELF-CHECK FAILED -- 自检没过但没有回滚：%s",
+                result.get("message"),
+            )
+            from ..observability.boot_report import add_degraded as _add_degraded
+
+            _add_degraded(
+                "startup_self_check",
+                "a3s.startup_self_check_and_rollback",
+                str(result.get("message") or ""),
+                "degraded: 开机自检没过且没有回滚（可能 10 分钟内已回滚过，"
+                "或没有可恢复的备份）；请手动看一眼",
+            )
+        elif not result.get("ok"):
+            logger.warning("开机自检没跑成：%s", result.get("message"))
+
     def _warm_chat_stack() -> None:
         _bg_started()
         _run_background_step("初始化追踪（OpenTelemetry SDK）", _warm_observability)
@@ -1724,6 +1850,7 @@ async def lifespan(app: FastAPI):
         # 首个 /v1/dashboard/roster 不再承担一次性导入/读盘成本。
         _run_background_step("预热名册（员工存储 / 注册表 / 服务商）", _warm_roster_employees)
         _run_background_step("预热对话链（LLM/provider/会话存储）", _warm_chat)
+        _run_background_step("开机自检与自动回滚", _startup_self_check_and_rollback)
         _bg_finished()
 
     # 首屏优先：对话链预热会同步导入 LLM / provider / 会话存储，占着 GIL 时
@@ -1854,6 +1981,27 @@ async def lifespan(app: FastAPI):
     )
     _sched_thread.start()
     app.state.scheduler_host_thread = _sched_thread
+
+    def _routines_tick() -> None:
+        """例程到点检查：每 60 秒跑一次到点的定时例程。
+
+        守护线程，永不抛错拖垮网关；例程本身的失败记在运行记录里，
+        不在这里重试。停机期间错过的到点不补跑（run_due 只跑一次并跳到下一次）。
+        """
+        while True:
+            try:
+                time.sleep(60)
+                from src.tasks.routines import RoutineRunner
+
+                RoutineRunner().run_due()
+            except Exception:  # noqa: BLE001 - tick 失败只记日志，下轮继续
+                logger.exception("routines tick failed")
+
+    _routines_thread = threading.Thread(
+        target=_routines_tick, name="routines-tick", daemon=True
+    )
+    _routines_thread.start()
+    app.state.routines_tick_thread = _routines_thread
     _warm_thread = threading.Thread(
         target=_deferred_background, name="chat-stack-warmup", daemon=True
     )
@@ -2188,6 +2336,17 @@ def get_app() -> FastAPI:
 
     # ==================== Middleware ====================
 
+    # 恢复码重置后一并关双重验证的窄钩子（任务 4(a)）：必须最先注册 = 最内层。
+    # 后注册的中间件在外层，GZip 在外层会把响应体压成 gzip，钩子就读不到原始
+    # JSON；最内层时下游直接就是路由，拿到的是恢复接口原样返回的 JSONResponse
+    # 字节。只认 POST /v1/accounts/recovery/reset + 200，其他请求零影响。
+    # 实现与"为什么不用其他路子"见 src/gateway/totp.py 的
+    # RecoveryTotpHookMiddleware；recovery_reset 本体在禁区 accounts.py 里，
+    # 钩子不碰它。
+    from .totp import install_recovery_totp_hook
+
+    install_recovery_totp_hook(app)
+
     # Rate limiting —— 覆盖配置里列出的高成本/写入面（默认 chat + goals）。
     # 必须比 CORS **先注册**：后注册的中间件在外层，这样 429 也会经过 CORS
     # 拿到跨域响应头，控制台才能读懂"限流了"而不是只看到 CORS 报错。
@@ -2227,6 +2386,14 @@ def get_app() -> FastAPI:
     # 必填字段预检：注册在速率限制之后 => 位于其外层，422 才能抢在
     # RateLimitMiddleware 的 503 IDENTITY_UNAVAILABLE 之前返回。
     app.add_middleware(BodyPreflightMiddleware, fastapi_app=app)
+
+    # ViewAs 只读视角（权限统一第 6 步，方案 A）：请求带
+    # ``X-Liuhao-View-As`` 头时，写方法在路由前一律 403，读请求由
+    # ``require_account_principal`` 换成目标账号视角。没有该头的请求零影响。
+    # 纯 ASGI 中间件，不依赖 BaseHTTPMiddleware 的任务/上下文语义。
+    from .view_as import ViewAsReadOnlyMiddleware
+
+    app.add_middleware(ViewAsReadOnlyMiddleware)
 
     # 全局单客户端每分钟预算（server.limits.rate_limit_per_minute）。
     if int(limits.get("rate_limit_per_minute") or 0) > 0:
@@ -2737,6 +2904,8 @@ def get_app() -> FastAPI:
     # /v1/workflows/{goal_id} 抢占同一路径段。
     from .workflow import build_router as _build_workflow_router
     from .approvals import build_router as _build_approval_router
+    from .plans import build_router as _build_plan_router
+    from .mcp import build_router as _build_mcp_router
     from .ai_management import _goal_viewer as _workflow_viewer
     app.include_router(
         _build_workflow_router(_workflow_viewer),
@@ -2746,6 +2915,29 @@ def get_app() -> FastAPI:
         _build_approval_router(_workflow_viewer),
         dependencies=[Depends(_require_human)],
     )
+    app.include_router(
+        _build_plan_router(_workflow_viewer),
+        dependencies=[Depends(_require_human)],
+    )
+    # MCP 内部只读工具（7-3 Step 1）：唯一允许引用适配层 mcp 子包的
+    # 网关入口（见 tests/test_adapters_wiring_status.py 的白名单），
+    # Owner 专属、开关默认关闭。
+    app.include_router(
+        _build_mcp_router(_workflow_viewer),
+        dependencies=[Depends(_require_human)],
+    )
+    # 多渠道接入准备（七家合并 P4）：只有占位，不实际接任何渠道。
+    from .channels import build_router as _build_channels_router
+
+    app.include_router(
+        _build_channels_router(_workflow_viewer),
+        dependencies=[Depends(_require_human)],
+    )
+    # 例程：webhook 端点不走人类登录（只认密钥），所以整组路由不挂全局
+    # _require_human，鉴权在各端点内做（见 src/gateway/routines.py）。
+    from .routines import build_router as _build_routine_router
+
+    app.include_router(_build_routine_router(_workflow_viewer))
     _startup_mark("路由：ai_management / dashboard / roster / profile / kernels 完成")
 
     # 审计可解释性查询面（P8）：真实哈希链的**只读**查询/校验入口。
@@ -2764,8 +2956,10 @@ def get_app() -> FastAPI:
     app.include_router(identity_router, dependencies=[Depends(_require_human)])
 
     # 工作区文件可观测面（P1 产品缺口 #1）：把 AI 员工**真实写出的产物**摊开给
-    # 人看 —— 浏览/读取工作区内的文件。严格只读：本模块没有任何写入口，写仍由
-    # 执行内核的 file_write 工具经执行围栏负责，避免开一条绕过审计的落盘侧门。
+    # 人看 —— 浏览/读取工作区内的文件。0.4.6 起补了一个写入口
+    # ``POST /v1/files/upload``（只写进自己的账号空间，见 files.py），
+    # 除此之外没有其它写入口；改/删仍由执行内核的 file_write 工具经执行围栏
+    # 负责，避免开一条绕过审计的落盘侧门。
     # 路径统一经 src.ai.workspace.resolve_in_workspace 收敛到工作区根之内，
     # 越界即 400。与其余业务面一样挂人类主权闸门 —— 工作区内容不匿名可读。
     from .files import router as files_router
@@ -2828,7 +3022,7 @@ def get_app() -> FastAPI:
     app.include_router(upgrade_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：upgrade（升级管理）完成")
 
-    # 账号树面（注册 / 成员 / 权限 / Key 共享 / 状态 / 恢复 / 备份）。
+    # 账号树面（注册 / 成员 / 权限 / Key 不共用 / 状态 / 恢复 / 备份）。
     # 不挂全局人类闸门：``/register``、``/activate``、``/recovery/reset``、
     # ``/backup/import``、``/roles`` 必须在登录前可用（首个注册者就是主账号）；
     # 其余端点在 router 内逐个依赖 ``require_account_principal``（令牌 → 主体），
@@ -2837,6 +3031,21 @@ def get_app() -> FastAPI:
     app.include_router(accounts_router)
     _startup_mark("路由：accounts（账号树）完成")
 
+    # 已有账号合并导入外部备份（/v1/accounts/backup/import-existing）：
+    # 与 accounts 同一挂载口径——不挂全局人类闸门，端点内逐个依赖
+    # require_account_principal；全新实例认领仍走 accounts 里的 /backup/import。
+    from .account_backup import router as account_backup_router
+
+    app.include_router(account_backup_router)
+    _startup_mark("路由：account_backup（已有账号合并导入）完成")
+
+    # TOTP 双重验证 + 备用码（查看/重新生成）：端点内部逐个依赖
+    # ``require_account_principal``，ViewAs 只读视角一律拒绝；不挂全局
+    # 人类闸门之外的额外闸门，与 accounts 同一挂载口径。
+    from .totp import router as totp_router
+    app.include_router(totp_router)
+    _startup_mark("路由：totp（双重验证）完成")
+
     # Owner（超级管理员）面：全局总览 / 全部成员 / 全部任务 / 审计。
     # 无公开端点，全部走 require_owner（非 Owner 一律 403）；再套一层人类
     # 闸门做纵深防御。Owner 身份只来自账号树根位置，不来自请求体或令牌 claim。
@@ -2844,11 +3053,62 @@ def get_app() -> FastAPI:
     app.include_router(owner_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：owner（超级管理员）完成")
 
+    # 出站白名单管理（Owner 专属）：增删改只 Owner 能动，同样套人类闸门。
+    from .net_guard_admin import router as net_guard_admin_router
+    app.include_router(net_guard_admin_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：net-guard allowlist（出站白名单）完成")
+
+    # 主机命令白名单管理（Owner 专属）：增删改只 Owner 能动，同样套人类闸门。
+    # 出厂为空；改动需二次确认，写后下一次命令即生效，可回滚上一版。
+    from .host_command_allowlist import router as host_command_allowlist_router
+    app.include_router(host_command_allowlist_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：host-command allowlist（主机命令白名单）完成")
+
     # 记忆面（列表 / 检索 / 导出 / 代管开关）。每个端点都按令牌主体 + 账号树
     # 收敛 owner：别人的条目一律 404；主账号只读聚合整棵子树，不提供改写入口。
     from .account_memory import router as memory_router
     app.include_router(memory_router)
     _startup_mark("路由：memory（账号记忆）完成")
+
+    # A2a 第二批后端能力（/v1/a2a）：记忆导入、备份可见性、推送合同、
+    # 语言时区、邀请链接、用量上限、通知、自检、人话报错、恢复入口、
+    # 多设备同步、每天 8 点待办。端点内部都要人类登录（_require_human）。
+    from .a2a import router as a2a_router
+
+    app.include_router(a2a_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：a2a（第二批后端能力）完成")
+
+    # A2b 第二批后端能力（/v1/a2b）：多人对话、搁置承接、Bot 协调、拉人进流程、
+    # 操作可靠、审批核查、只报结果、问一句、一句话找东西、搬家、归类、休息提醒、
+    # 只响一边、晚间小结、推送发送点。端点内部都要人类登录（_require_human）。
+    from .a2b import router as a2b_router
+
+    app.include_router(a2b_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：a2b（第二批后端能力）完成")
+
+    # C-pet 桌宠设置（/v1/pet）：总开关 / 漫游 / 主动说话 / 动效，控制台
+    # 设置页与桌面桌宠窗口读同一份。端点内部都要人类登录（_require_human）。
+    from .pet import router as pet_router
+
+    app.include_router(pet_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：pet（桌宠设置）完成")
+
+    # A3s 补齐七件后端能力（/v1/a3s）：自定义第三方模型地址、群聊不漏秘密、
+    # 说错能纠正、升级坏了自动回滚、主账号总上限、语音危险命令须屏幕确认、
+    # 数据通用格式导出。端点内部都要人类登录（_require_human）。
+    from .a3s import router as a3s_router
+
+    app.include_router(a3s_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：a3s（补齐七件后端能力）完成")
+
+    # A3m 主/子账号规矩后端能力（/v1/a3m）：注册＋批准、Key 各用各的、记忆
+    # 与技能单向吸取、主账号操控子账号 Bot、等你确认收件箱归属、助手改名、
+    # 回收站 30 天。端点内部都要人类登录（_require_human）；Owner 专属接口
+    # 再由模块内的 _require_owner 收口，子账号调一律 403。
+    from .a3m import router as a3m_router
+
+    app.include_router(a3m_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：a3m（主/子账号规矩后端能力）完成")
 
     # 数据可携带性：一键导出「我的全部数据」（人可读 ZIP）、会话 Markdown 导出，
     # 以及记忆 / 知识库的回导。所有端点都按令牌主体过滤，根账号也不在这里
@@ -2874,6 +3134,28 @@ def get_app() -> FastAPI:
     from .auth import router as auth_router
     app.include_router(auth_router)
 
+    # 0.4.6 D 组：电脑操控（5-3）、小队分工、自己改代码（6-2）。
+    # 三个路由都只对登录的人类开放；Owner 专属的端点在各自模块内再验根账号。
+    from .automation import router as automation_router
+
+    app.include_router(automation_router, dependencies=[Depends(_require_human)])
+    from .team import router as team_router
+
+    app.include_router(team_router, dependencies=[Depends(_require_human)])
+    from .selfmod import router as selfmod_router
+
+    app.include_router(selfmod_router, dependencies=[Depends(_require_human)])
+
+    # 0.4.6-big A1 组：协作空间（创建/列表/任务墙/成员，SQLite 持久化）。
+    from .spaces import router as spaces_router
+
+    app.include_router(spaces_router, dependencies=[Depends(_require_human)])
+
+    # 补修轮：工作台 Bot / 分组 / 群聊 / 置顶后端（原先只活在浏览器 localStorage）。
+    from .workbench import router as workbench_router
+
+    app.include_router(workbench_router, dependencies=[Depends(_require_human)])
+
     # 手机设备的会话换发：只对「回环 + 中继共享密钥」签发，手机永远不输密码。
     from .device_sessions import router as device_auth_router
     app.include_router(device_auth_router)
@@ -2881,6 +3163,37 @@ def get_app() -> FastAPI:
     # 同一 Wi-Fi 手机访问开关（默认关闭；只绑一个局域网地址，不是 0.0.0.0）。
     from .lan_access import router as lan_access_router
     app.include_router(lan_access_router)
+
+    # 7-2 远程访问开关（默认关闭；Tailscale 组网，出门也能连家里电脑）。
+    # 只做“开关与状态”，登录/鉴权/审批/审计全部复用已有机制。
+    from .remote_access import router as remote_access_router
+    app.include_router(remote_access_router)
+
+    # 0.4.6 F 组：语音 / OCR / 日历记账（全部走人类主权闸门；引擎没装时
+    # 各端点自己返回 503 + 安装提示，不编结果）。
+    from .calendar_ledger import calendar_router as f_calendar_router
+    from .calendar_ledger import ledger_router as f_ledger_router
+    from .ocr import router as f_ocr_router
+    from .voice import router as f_voice_router
+
+    app.include_router(f_voice_router, dependencies=[Depends(_require_human)])
+    app.include_router(f_ocr_router, dependencies=[Depends(_require_human)])
+    app.include_router(f_calendar_router, dependencies=[Depends(_require_human)])
+    app.include_router(f_ledger_router, dependencies=[Depends(_require_human)])
+
+    # A3 集成与会议组：视频会议（会前入口 + 会后整理，Bot 不进会）与
+    # 连接总览（Gmail / 日历 / GitHub / WhatsApp / 杰夫AI 状态与接线）。
+    from .meetings import router as a3_meetings_router
+    from .connections import router as a3_connections_router
+
+    app.include_router(a3_meetings_router, dependencies=[Depends(_require_human)])
+    app.include_router(a3_connections_router, dependencies=[Depends(_require_human)])
+
+    # 0.4.6 E 组：提醒 HTTP API（5-10）。提醒本身是现成的 SQLite 存储 +
+    # 网关进程内托管的 LocalScheduler，这里只补操作台要用的 HTTP 入口。
+    from .reminders import router as reminders_router
+
+    app.include_router(reminders_router, dependencies=[Depends(_require_human)])
 
     # 单端口化：把驾驶舱构建产物挂到同源根路径，供桌面/网页/手机三端复用。
     # 机制是 **404 异常处理器**（见 console_static.py）：只在没有任何路由匹配时

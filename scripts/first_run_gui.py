@@ -756,7 +756,7 @@ def commit(
         except Exception as exc:  # noqa: BLE001
             return _fail(
                 dir_value,
-                "登记本机 Ollama 模型失败：请确认 Ollama 已安装并正在运行，或先跳过（稍后可在「系统设置 → 模型管理」添加）。",
+                "登记本机 Ollama 模型失败：请确认 Ollama 已安装并正在运行，或先跳过（稍后可在「系统设置 → 模型与 Key」添加）。",
                 detail=f"configure_ollama failed: {type(exc).__name__}: {exc}",
             )
     elif mode == "cloud":
@@ -974,7 +974,7 @@ def check_default_model(expected_name: str = "") -> CheckResult:
             key="model",
             title="默认模型",
             ok=False,
-            detail="本次选择了跳过，之后可在「系统设置 → 模型管理」配置。",
+            detail="本次选择了跳过，之后可在「系统设置 → 模型与 Key」配置。",
             action="去模型页测试连接",
             blocking=False,
             advice="不阻塞进入控制台：账号和数据已就绪；需要真实回复时再配置模型。",
@@ -1474,7 +1474,7 @@ class _WizardWindow:
             frame, text="第 3 步 · 选择模型（可跳过）", font=("Microsoft YaHei UI", 11, "bold")
         ).pack(anchor="w", pady=(0, 6))
         self._tk.Radiobutton(
-            frame, text="跳过，稍后在「系统设置 → 模型管理」里添加",
+            frame, text="跳过，稍后在「系统设置 → 模型与 Key」里添加",
             variable=self.mode_var, value="skip", command=self._sync_model_fields,
         ).pack(anchor="w")
         self._tk.Radiobutton(
@@ -1516,7 +1516,7 @@ class _WizardWindow:
                 "Key 只保存在本机数据目录的 data\\model_registry.sqlite3，"
                 "由 AES-256-GCM 加密，不会写进明文配置；"
                 "解密用的 data\\model_config.key 在同目录，仅当前 Windows 用户可读。\n"
-                "删除：系统设置 → 模型管理 → 删除该模型，Key 会一起删除。\n"
+                "删除：系统设置 → 模型与 Key → 删除该模型，Key 会一起删除。\n"
                 "联网：保存后，对话内容会直接发送到你填写的 base_url，不经过贾维斯服务器；"
                 "本机 Ollama 的推理只连 127.0.0.1，不出网。\n"
                 "「联网检索」默认关闭；开启后才把提炼后的关键词发到 hn.algolia.com / api.github.com / export.arxiv.org 三个公开接口。"
@@ -1553,8 +1553,7 @@ class _WizardWindow:
             text=(
                 "加密：只加密 API Key；对话、知识库、审计是本地明文 SQLite，"
                 "依赖 Windows 账号权限保护。\n"
-                "备份：退出程序后复制整个数据目录（含 data\\model_config.key 与 "
-                "data\\model_registry.sqlite3），缺一个已存 Key 就解不开。\n"
+                "备份：退出程序后复制整个数据目录。备份里没有模型 Key；换电脑恢复后请到「设置 → 模型与 Key」重新填一次。\n"
                 "卸载：默认保留数据，连续两次确认才会删除。\n"
                 "联网：只有你配置云端模型后，对话内容与检索到的知识片段才会发到你填的 "
                 "base_url；本机 Ollama 的推理只连 127.0.0.1，不出网。\n"

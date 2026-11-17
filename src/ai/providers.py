@@ -24,6 +24,7 @@ from .net_guard import (
     RuntimeTargetRejected,
     assert_safe_runtime_target,
     is_local_service_target,
+    request_uses_proxy,
     resolve_connection_target,
 )
 from .observability import observe
@@ -128,7 +129,7 @@ _UPSTREAM_CONTEXT_TOKENS = (
 # 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
 # 绝不直接展示给用户，也不写进会话历史。
 GENERATION_FAILURE_MESSAGE = (
-    "这次没有拿到回复，请稍后再试。若持续失败，请到「系统设置 → 模型管理」检查密钥与网络连接。"
+    "这次没有拿到回复，请稍后再试。若持续失败，请到「系统设置 → 模型与 Key」检查密钥与网络连接。"
 )
 
 #: 空回复的专属文案。与通用失败分开：用户需要知道"模型这次什么都没说"，
@@ -161,7 +162,7 @@ LOCAL_CONNECTION_FAILURE_MESSAGE = (
     "连不上本地服务，请确认本地模型服务已启动、端口正确。"
 )
 INVALID_KEY_MESSAGE = (
-    "API Key 无效或已失效，请到「系统设置 → 模型管理」更新密钥。"
+    "API Key 无效或已失效，请到「系统设置 → 模型与 Key」更新密钥。"
 )
 
 # 「额度/余额不足」「模型不存在」「被限流」各自是一句能行动的话：
@@ -1708,14 +1709,14 @@ def demo_mode_enabled() -> bool:
 # 下的文案见 DEMO_MODEL_NOT_CONFIGURED_MESSAGE。
 MODEL_NOT_CONFIGURED_MESSAGE = (
     "还没有配置模型，请先配置模型密钥。"
-    "请到「系统设置 → 模型管理」填写密钥并选择模型服务，然后重新发送这条消息。"
+    "请到「系统设置 → 模型与 Key」填写密钥并选择模型服务，然后重新发送这条消息。"
 )
 
 #: 演示模式（``LIUHAO_DEMO_SEED=1``）下的同一提示：与默认文案同一含义，
 #: 但明确标注 "[演示数据]"，让人一眼看出这不是真实模型回答。
 DEMO_MODEL_NOT_CONFIGURED_MESSAGE = (
     "[演示数据] 还没有配置模型，因此无法生成真实回答。"
-    "请到「系统设置 → 模型管理」填写密钥并选择模型服务，然后重新发送这条消息。"
+    "请到「系统设置 → 模型与 Key」填写密钥并选择模型服务，然后重新发送这条消息。"
 )
 
 # Provider type enumeration
@@ -2185,7 +2186,7 @@ class ProviderChainError(RuntimeError):
         super().__init__(
             "所有已配置的模型都没有成功返回，按以下顺序尝试过：\n"
             + "\n".join(lines)
-            + "\n请到「系统设置 → 模型管理」逐个点「测试连接」排查，或换一个可用模型。"
+            + "\n请到「系统设置 → 模型与 Key」逐个点「测试连接」排查，或换一个可用模型。"
         )
 
 
@@ -2443,6 +2444,7 @@ def _guarded_transport_cls(module):
                 "allow_private_service": allow_private_service,
             }
             self._proxied = kwargs.get("proxy") is not None
+            self._explicit_proxy = kwargs.get("proxy")
             super().__init__(**kwargs)
 
         def handle_request(self, request):
@@ -2484,8 +2486,16 @@ def _guarded_transport_cls(module):
 
         def _validated_targets(self, request):
             try:
+                # 建连层只认显式代理：httpx.Client 传了显式 transport 后不再从
+                # 环境变量建代理挂载（见 _guard_target），所以 trust_env=False；
+                # 显式代理时守卫跳过域名主机的 DNS 层，IP 字面量照常校验。
+                proxied = request_uses_proxy(
+                    _guard_base_url(request.url),
+                    explicit_proxy=self._explicit_proxy,
+                    trust_env=False,
+                )
                 return resolve_connection_target(
-                    _guard_base_url(request.url), **self._guard_kwargs
+                    _guard_base_url(request.url), proxied=proxied, **self._guard_kwargs
                 )
             except RuntimeTargetRejected as exc:
                 # fail-closed：零连接，报错沿用守卫的中性文案（不带内网地址）。
@@ -2592,9 +2602,20 @@ class OpenAIProvider(BaseProvider):
         return self._env_proxy_applies()
 
     def _guard_target(self) -> None:
-        """每次真实请求前重新校验目标（防 DNS rebinding/私网端点）。"""
+        """每次真实请求前重新校验目标（防 DNS rebinding/私网端点）。
+
+        ``proxied`` 取自本客户端真实的传输配置：显式 ``proxy``（``OPENAI_PROXY``）
+        才走代理；环境代理不走（httpx.Client 传了显式 transport 后不再从环境
+        变量建代理挂载，见 test_openai_provider_wires_guarded_transport_and_no_env_proxy），
+        所以 ``trust_env=False``。
+        """
         assert_safe_runtime_target(
-            self.base_url, context="模型服务", has_credential=bool(self.api_key)
+            self.base_url,
+            context="模型服务",
+            has_credential=bool(self.api_key),
+            proxied=request_uses_proxy(
+                self.base_url, explicit_proxy=self.proxy, trust_env=False
+            ),
         )
 
     def _guard_upstream_error(self, exc: BaseException) -> None:
@@ -3138,6 +3159,9 @@ class OllamaProvider(BaseProvider):
             context="Ollama 服务",
             allow_private_service=True,
             allow_loopback=True,
+            # 本函数走 requests 且显式 proxies={"http": None, "https": None}：
+            # 直连，不走代理，DNS 层照常执行。
+            proxied=False,
             # OllamaProvider 的默认 api_key 是 "[REDACTED]" 哨兵，不是真凭据：
             # 若按 bool() 判定，会把 http://127.0.0.1:<自定义端口> 误判成
             # "带 Key 的明文请求"，直接打断 Ollama 用户的正常用法。
@@ -3208,6 +3232,9 @@ class OllamaProvider(BaseProvider):
             context="Ollama 服务",
             allow_private_service=True,
             allow_loopback=True,
+            # 本函数走 requests 且显式 proxies={"http": None, "https": None}：
+            # 直连，不走代理，DNS 层照常执行。
+            proxied=False,
             # OllamaProvider 的默认 api_key 是 "[REDACTED]" 哨兵，不是真凭据：
             # 若按 bool() 判定，会把 http://127.0.0.1:<自定义端口> 误判成
             # "带 Key 的明文请求"，直接打断 Ollama 用户的正常用法。
@@ -3275,6 +3302,9 @@ class OllamaProvider(BaseProvider):
             context="Ollama 服务",
             allow_private_service=True,
             allow_loopback=True,
+            # 本函数走 requests 且显式 proxies={"http": None, "https": None}：
+            # 直连，不走代理，DNS 层照常执行。
+            proxied=False,
             # OllamaProvider 的默认 api_key 是 "[REDACTED]" 哨兵，不是真凭据：
             # 若按 bool() 判定，会把 http://127.0.0.1:<自定义端口> 误判成
             # "带 Key 的明文请求"，直接打断 Ollama 用户的正常用法。
@@ -3353,6 +3383,8 @@ class MoonshotProvider(BaseProvider):
             base_url,
             context="Moonshot 服务",
             has_credential=api_key != "[REDACTED]",
+            # 下方 requests 显式 proxies={"http": None, "https": None}：直连。
+            proxied=False,
         )
         try:
             response = requests.post(
@@ -3461,6 +3493,9 @@ class DeepSeekProvider(BaseProvider):
             base_url,
             context="DeepSeek 服务",
             has_credential=api_key != "[REDACTED]",
+            # 下方 requests 显式 proxies={"http": None, "https": None}：直连。
+            # 本沙箱解析到 198.18/15 时由第 1 层内置厂商身份放行（B 类）。
+            proxied=False,
         )
         try:
             response = requests.post(
@@ -4028,9 +4063,9 @@ def resolve_provider(
     ``visible_to`` 是 Key 归属视角：给定后，指向他人 Key 的显式请求会抛出
     ``ModelConfigError(403, KEY_OWNER_DENIED)``，绝不静默回退到 ``.env``。
 
-    ``allow_owners`` 在可见之上再加知情授权：显式 ``model_id`` 指向未开启
-    ``allow_superior_key_use`` 的成员 Key 时抛出 ``ACCOUNT_KEY_CONSENT_REQUIRED``。
-    自动路由与显式选择因此共用同一套授权口径。
+    ``allow_owners`` 在可见之上再加归属收窄（Key 不共用）：显式 ``model_id``
+    指向别人的 Key 时抛出 ``ACCOUNT_KEY_NOT_OWNED``。自动路由与显式选择
+    因此共用同一套归属口径。
 
     ``allow_env_fallback=False``（成员账号）时，明明有其他模型却都不可见的情况下
     返回 409，而不是拿机器级 ``.env`` Key 顶上 —— 成员只能用自己的 Key。
