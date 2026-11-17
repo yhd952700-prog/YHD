@@ -9,6 +9,20 @@
 
 环境变量 ``LIUHAO_HOST_COMMAND_CONFIRM=off`` 可强制关闭（运维/测试用，优先级
 最高）；除此之外由设置页写入的数据目录文件决定。
+
+两层确认（防诱导 §3.1，2026-11-13 起）：
+
+* **一般危险命令层**（:func:`is_confirmation_enabled`）：可关。关掉后
+  一般危险命令不再走一次确认（关闭本身记 G3）。
+* **四件大事层**（:func:`is_big_action_confirmation_enabled`）：**恒为开，
+  没有任何开关能关**。删文件 / 改代码 / 装软件 / 动系统设置永远要 Joseph
+  先点头——确认开关关掉也不例外，全权模式也不例外。
+
+注意：目前 ``danger.py`` 里的全部危险模式（format/diskpart/bcdedit/递归强删/
+关机重启）同时都是四件大事，所以实践中一般层不再单独决定任何一条命令的
+放行——它只决定审计里 ``confirm_state`` 写 ``required`` 还是
+``disabled_by_setting``。开关本身保留：G3/G4 审计与设置页仍引用它，将来若
+有“危险但不是四件大事”的命令，一般层会重新起作用。
 """
 
 from __future__ import annotations
@@ -96,6 +110,17 @@ def is_confirmation_enabled() -> bool:
     return enabled
 
 
+def is_big_action_confirmation_enabled() -> bool:
+    """四件大事是否需要确认——**恒为 True，没有任何开关能关掉**。
+
+    删文件 / 改代码 / 装软件 / 动系统设置永远要 Joseph 先点头（防诱导
+    §3.1）。这一层不读环境变量、不读设置文件、不接受参数——写死 True，
+    就是为了让“关掉确认”这件事永远够不着四件大事。broker 的第 2c 步
+    凭这一层强制 DEFER。
+    """
+    return True
+
+
 def set_confirmation_enabled(enabled: bool, *, updated_by: str = "") -> dict[str, Any]:
     """持久化开关；**立即生效**（确认不是权限放宽，不需要重启）。
 
@@ -128,6 +153,7 @@ def describe() -> dict[str, Any]:
     enabled = is_confirmation_enabled()
     return {
         "confirmation_enabled": enabled,
+        "big_action_confirmation_enabled": is_big_action_confirmation_enabled(),
         "stored_enabled": stored_enabled(),
         "env_override": _env_override() is not None,
         "env_var": ENV_VAR,
@@ -136,5 +162,7 @@ def describe() -> dict[str, Any]:
         "note": (
             "开启时，危险命令（格式化/分区/关机重启/递归强删）执行前要一次确认；"
             "关闭后不再询问，关闭动作本身会记入审计。"
+            "四件大事（删文件/改代码/装软件/动系统设置）不受此开关影响，"
+            "永远要先确认（big_action_confirmation_enabled 恒为 True）。"
         ),
     }

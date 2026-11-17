@@ -7,9 +7,11 @@ Provides comprehensive security capabilities including:
 - Authorization and RBAC (authorization.py)
 - Input sanitization and validation (input_sanitizer.py)
 - Rate limiting (rate_limit.py)
-- Security audit trail (audit_trail.py)
+- Audit: the only authoritative audit is ``src/kernels/audit``
+  (SQLite + hash chain); the retired ``audit_trail.py`` /
+  ``audit_logger.py`` helpers were deleted 2026-11-12.
 
-Legacy public API (jwt_handler / rbac / api_keys / audit_logger / vault_crypto
+Legacy public API (jwt_handler / api_keys / vault_crypto
 and the EncryptionManager compatibility layer in encryption.py) is re-exported
 here as well: the gateway, the health probe and the existing test suite import
 these names from the package root. Where the new modules define a name that
@@ -19,7 +21,7 @@ name; the new-style definitions remain importable from their submodules
 (e.g. ``src.security.authentication.TokenType``).
 
 Import order matters to avoid circular imports: dependency-free base modules
-(encryption) are imported before dependents (jwt_handler / rbac / vault_crypto).
+(encryption) are imported before dependents (jwt_handler / vault_crypto).
 """
 
 from __future__ import annotations
@@ -72,8 +74,7 @@ from .authentication import (
     TotpMfaProvider,
 )
 # NOTE: authorization.{Permission, ResourceType, Role, RoleStatus} are
-# intentionally NOT re-exported here; those package-level names come from the
-# legacy rbac module (see below).
+# intentionally NOT re-exported here.
 from .authorization import (
     AbacPolicy,
     Action,
@@ -112,19 +113,6 @@ from .rate_limit import (
     TieredRateLimits,
     TokenBucketLimiter,
 )
-from .audit_trail import (
-    AuditEvent,
-    AuditEventType,
-    AuditLogStatus,
-    AuditRetentionPolicy,
-    AuditSeverity,
-    AuditStore,
-    AuditTrailManager,
-    ComplianceReport,
-    HashChainAuditor,
-    InMemoryAuditStore,
-    SuspiciousActivityDetector,
-)
 
 # --- Legacy surface consumed by the gateway / health probe / test suite ---
 from .api_keys import (
@@ -143,20 +131,6 @@ from .jwt_handler import (
     JWT_PRIVATE_KEY_ENV,
     JWT_PUBLIC_KEY_ENV,
     JWT_ALGORITHM_ENV,
-)
-from .rbac import (
-    RBACManager,
-    Role,
-    Permission,
-    PermissionAction,
-    ResourceType,
-    RoleStatus,
-    get_rbac_manager,
-)
-from .audit_logger import (
-    CryptoAuditLogger,
-    CryptoAuditEvent,
-    CryptoOperation,
 )
 from .vault_crypto import VaultTransitCrypto
 
@@ -237,17 +211,6 @@ __all__ = [
     "TieredRateLimits",
     "TokenBucketLimiter",
     # Audit trail (new-style)
-    "AuditEvent",
-    "AuditEventType",
-    "AuditLogStatus",
-    "AuditRetentionPolicy",
-    "AuditSeverity",
-    "AuditStore",
-    "AuditTrailManager",
-    "ComplianceReport",
-    "HashChainAuditor",
-    "InMemoryAuditStore",
-    "SuspiciousActivityDetector",
     # API keys (legacy)
     "APIKeyManager",
     "KeyScope",
@@ -263,18 +226,6 @@ __all__ = [
     "JWT_PRIVATE_KEY_ENV",
     "JWT_PUBLIC_KEY_ENV",
     "JWT_ALGORITHM_ENV",
-    # RBAC (legacy)
-    "RBACManager",
-    "Role",
-    "Permission",
-    "PermissionAction",
-    "ResourceType",
-    "RoleStatus",
-    "get_rbac_manager",
-    # Crypto audit (legacy)
-    "CryptoAuditLogger",
-    "CryptoAuditEvent",
-    "CryptoOperation",
     # Vault transit crypto (legacy)
     "VaultTransitCrypto",
 ]

@@ -23,7 +23,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from .net_guard import RuntimeTargetRejected, assert_safe_runtime_target
+from .net_guard import (
+    RuntimeTargetRejected,
+    assert_safe_runtime_target,
+    request_uses_proxy,
+)
 from .providers import classify_upstream_error
 
 logger = logging.getLogger("liuhao.ai.model_discovery")
@@ -157,13 +161,23 @@ def fetch_model_list(
     headers.update(_auth_headers(provider, (api_key or "").strip()))
 
     try:
+        # requests.get 默认读环境代理：proxied 按它真实会用的配置算；
+        # 回环/本地目标 request_uses_proxy 本来就返回 False。
         assert_safe_runtime_target(
             url,
             context="模型服务",
             allow_private_service=is_ollama,
             allow_loopback=is_ollama,
+            proxied=request_uses_proxy(url),
         )
-    except RuntimeTargetRejected:
+    except RuntimeTargetRejected as exc:
+        if getattr(exc, "kind", "") == "address_class_b_untrusted":
+            # B 类拒绝单独给一句：说清是什么 + 谁能怎么办（设计稿 §5.4）。
+            return _failure(
+                "rejected_target",
+                detail="这个地址解析到了运营商保留段，且域名不在可信名单里；"
+                "Owner 可在设置里加白名单，或直接手填模型名。",
+            )
         return _failure("rejected_target")
 
     try:

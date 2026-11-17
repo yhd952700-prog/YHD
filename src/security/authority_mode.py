@@ -193,6 +193,11 @@ def describe() -> dict[str, Any]:
         "next_source": pending_source,
         "restart_required": pending != effective,
         "available_modes": sorted(_VALID_MODES),
+        # 0.4.6 核实结论：默认关闭（缺省 standard）；开启全权必须由 Owner
+        # 本人二次确认（见 PUT /v1/policy/authority-mode 的 confirm 字段），
+        # 管理员（非根）只能收回，不能开启。
+        "default_mode": MODE_STANDARD,
+        "enable_requires_owner_second_confirm": True,
         "env_var": ENV_VAR,
         "env_value": os.environ.get(ENV_VAR, ""),
     }

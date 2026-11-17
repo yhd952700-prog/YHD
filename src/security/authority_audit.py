@@ -250,12 +250,12 @@ def record_protected_touched(
     command: str | None = None,
     channel: str = "filesystem",
     operation: str = "write",
+    blocked: bool = True,
 ):
-    """AI 触碰敏感路径（**只记录，动作照常放行**）。
+    """AI 触碰敏感路径（0.4.6 起：**拦截**，调用方凭返回值拒绝操作）。
 
-    2026-11-11 老板拍板：审计库 / 日志 / 凭据 / 程序本体 / 全权配置不再对 AI
-    只读，标准模式与全权模式一致。这条记录回答「谁想动、动了哪里、属于哪一类」，
-    不构成拒绝；写失败也不改变动作（由调用方决定是否降级）。
+    这条记录回答「谁想动、动了哪里、属于哪一类、有没有被拦下」，写失败
+    也不改变调用方的拦截决定（由调用方决定是否降级）。
     """
     AuditEventType, AuditScope, log_event = _audit()
     details: dict[str, Any] = {
@@ -268,13 +268,14 @@ def record_protected_touched(
         "command": redact_command(command) if command else None,
         "mode": _current_mode(),
         "would_have_blocked": True,
+        "blocked": bool(blocked),
         "task_attribution": _attribution_payload(),
     }
     return log_event(
         AuditEventType.AUTHORITY_PROTECTED_PATH_TOUCHED,
         _principal_of(actor),
         AuditScope[_SCOPE_EXECUTION],
-        "allowed",
+        "denied" if blocked else "allowed",
         details,
         correlation_id,
     )

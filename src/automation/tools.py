@@ -1,7 +1,7 @@
 """自动化工具注册：默认三重关闭，任一闸未开即返回空列表。
 
-本轮只注册会话控制面（open / close / status / emergency_stop）；
-真实键鼠后端工具**不注册**，下一轮再接入。
+本轮只注册会话控制面（open / close / status / emergency_stop）；真实键鼠
+后端工具经网关 ``/v1/automation`` 走（0.4.6），不直接注册进聊天工具集。
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def build_automation_tools(
         return json.dumps(payload, ensure_ascii=False, default=str)
 
     def open_session(backend: str = "", **kwargs: Any) -> str:
-        """打开自动化会话（本轮仅 fake 后端）。"""
+        """打开自动化会话（fake 或 native 后端）。"""
         requested = str(backend or kwargs.get("backend") or decision.backend_kind.value)
         if requested != decision.backend_kind.value:
             return _json({"status": "error", "error": "backend_not_allowed"})
@@ -154,7 +154,7 @@ def build_automation_tools(
             tool_id="liuhao.automation.session.open",
             name="automation.session.open",
             version="1.0.0",
-            description="打开自动化会话（本轮仅 fake 后端，默认无允许目标）",
+            description="打开自动化会话（fake / native 后端，默认无允许目标）",
             capability="automation.session.open",
             schema={
                 "type": "object",

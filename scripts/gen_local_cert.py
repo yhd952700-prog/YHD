@@ -11,6 +11,9 @@ PWA 可安装性要求「安全上下文」——即 HTTPS 或 localhost。局�
 本脚本生成一张自签证书，SAN 包含：
 - ``localhost`` / ``127.0.0.1`` / ``::1``
 - 本机所有非回环 IPv4 地址（局域网 IP，手机通过它访问）
+- 本机 Tailscale 虚拟 IP（100.64/10，7-2 远程访问用；未装 Tailscale
+  或未登录时这一项为空，不影响局域网 SAN——出门想用 PWA 安装时，
+  请在装好 Tailscale 之后重新生成一次证书）
 
 证书写到 ``deploy/cloud/certs/liuhao-local.pem`` + ``.key``（启动器默认找这里）。
 
@@ -26,7 +29,9 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import shutil
 import socket
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -67,6 +72,35 @@ def lan_ipv4_addresses() -> List[str]:
     return addrs
 
 
+def tailscale_ipv4_addresses() -> List[str]:
+    """本机 Tailscale 虚拟 IPv4 地址（只读 ``tailscale ip``）。
+
+    未安装、未登录、超时一律返回空列表——调用方按“没有”处理，
+    不影响局域网 SAN。
+    """
+    exe = shutil.which("tailscale")
+    if not exe:
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "ip"], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    found: List[str] = []
+    for line in (proc.stdout or "").splitlines():
+        candidate = line.strip()
+        try:
+            parsed = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, ipaddress.IPv4Address) and candidate not in found:
+            found.append(candidate)
+    return found
+
+
 def generate_certificate(cert_path: Path, key_path: Path,
                          extra_sans: Optional[List[str]] = None,
                          days: int = 3650) -> dict:
@@ -78,6 +112,11 @@ def generate_certificate(cert_path: Path, key_path: Path,
 
     sans = ["localhost", "127.0.0.1", "::1"]
     sans.extend(lan_ipv4_addresses())
+    # 7-2：Tailscale 虚拟 IP 也进 SAN，手机在外面走 https 才能认这张证书；
+    # 探测不到时这一项为空，局域网 SAN 不受影响。
+    for ip in tailscale_ipv4_addresses():
+        if ip not in sans:
+            sans.append(ip)
     if extra_sans:
         for name in extra_sans:
             if name and name not in sans:

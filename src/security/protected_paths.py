@@ -1,24 +1,28 @@
-"""敏感路径观察名单（**只记录，不拦截**）。
+"""敏感路径拦截（0.4.6 起：**拦截**，不再只记录）。
 
-老板 2026-11-11 拍板：撤掉「审计库 / 日志 / 凭据 / 程序本体 / 全权配置对 AI
-只读」这条限制。2026-11-11 第二轮进一步确认：**标准模式与全权模式一致放开**，
-不再有「命中即拒绝」的分支。
+2026-11-12 之前是「只记录、不拦截」（老板 2026-11-11 第二轮决定）。0.4.6
+D 组按总规划 5-3 / 5-8 改为拦截，理由：Joseph 在睡觉问不了，而「大事
+先问」是给他的安全承诺；AI 碰审计库 / 密钥 / 程序本体 / 全权配置时，
+先拦下来、写审计、等人确认，而不是先写了再说。
 
 现在的行为：
 
-* AI 通过本程序的写路径（``FilesystemAdapter.execute(action="write")``）碰到
-  这些路径 → 先写一条审计，然后**照常落盘**。
-* ``host_command`` 的命令字符串点名这些路径 → 先写一条审计，然后**照常走**
-  策略/确认/执行管线。
-* 用户本人（``actor="human"``）不写这类记录。
+* AI 通过本程序的写路径（``FilesystemAdapter.execute(action="write")``）
+  碰到这些路径 → 写一条审计，然后**拒绝写入**（``check_write_blocked``
+  返回原因码，调用方必须拒绝，不得继续落盘）。
+* ``host_command`` 的命令字符串点名这些路径 → 写一条审计，然后
+  **拒绝执行**（broker 在策略之前直接 DENY）。
+* 用户本人（``actor="human"``）不走这条拦截：他是在自己电脑上手动操作，
+  拦他等于锁死正常使用；但他的操作仍可被审计（调用方决定）。
 
 **老实说清能力边界**（对外报告必须照这个口径写，不许含糊）：
 
-* 本模块只负责「认出这是敏感路径」并交给审计，**不再构成任何权限边界**。
-* ``host_command`` 的识别只是命令字符串包含判断：路径被拼接/编码，或由子进程
-  自己算出（``"aud" + "it_store.db"``、``python -c`` 里再构造），我们看不到。
-* 真正的文件系统级保护需要 OS 过滤驱动（minifilter），或让 AI 跑在另一个受限
-  账户下 —— 两者当前架构都没有。不要对外声称"文件系统层已拦死"。
+* 本模块只负责「认出这是敏感路径」并交给审计 + 返回拦截决定。
+* ``host_command`` 的识别只是命令字符串包含判断：路径被拼接/编码，或由
+  子进程自己算出（``"aud" + "it_store.db"``、``python -c`` 里再构造），
+  我们看不到。
+* 真正的文件系统级保护需要 OS 过滤驱动（minifilter），或让 AI 跑在另一
+  个受限账户下 —— 两者当前架构都没有。不要对外声称"文件系统层已拦死"。
 """
 
 from __future__ import annotations
@@ -131,6 +135,46 @@ def protected_reason(path: str | os.PathLike[str] | None) -> str | None:
     return None
 
 
+def check_write_blocked(
+    path: str | os.PathLike[str] | None,
+    *,
+    actor: str = "ai",
+    correlation_id: str | None = None,
+    operation: str = "write",
+) -> str | None:
+    """AI 写/删前的拦截判定（0.4.6 起）。
+
+    命中敏感路径时：先写一条审计，再返回原因码 —— 调用方**必须**凭这个
+    返回值拒绝操作，不得继续落盘。未命中返回 ``None``（放行）。
+    用户本人（``actor="human"``）不拦截，返回 ``None``。
+    审计写失败也不改变拦截决定（fail-closed：拦得住比记得住更重要）。
+    """
+    if str(actor or "").strip().lower() == "human":
+        return None
+    reason = protected_reason(path)
+    if reason is None:
+        return None
+    from .authority_audit import record_protected_touched
+
+    try:
+        record_protected_touched(
+            path=str(path),
+            reason=reason,
+            actor=actor,
+            correlation_id=correlation_id,
+            channel="filesystem",
+            operation=operation,
+        )
+    except Exception as exc:  # noqa: BLE001 - 审计故障不改变拦截决定
+        logger.warning(
+            "sensitive-path audit write failed path=%s reason=%s: %s",
+            path,
+            reason,
+            exc,
+        )
+    return reason
+
+
 def note_write(
     path: str | os.PathLike[str] | None,
     *,
@@ -138,11 +182,11 @@ def note_write(
     correlation_id: str | None = None,
     operation: str = "write",
 ) -> str | None:
-    """AI 写/删前调用：命中敏感路径就写一条审计，然后**照常放行**。
+    """AI 写/删前调用：命中敏感路径就写一条审计，并返回原因码。
 
-    返回命中的原因码（未命中返回 ``None``），供调用方记录/测试断言；
-    **绝不抛异常，也不改变调用方的执行决定**。审计写失败只记日志。
-    用户本人的手动操作不经过这里（路由层已区分主体）。
+    历史兼容入口：只记录、不替调用方做决定。**新调用方不要用它来判断放行**，
+    改用 :func:`check_write_blocked`（命中即拦截）；老调用方（测试与
+    审计回看）仍可凭返回值断言「识别到了」。
     """
     reason = protected_reason(path)
     if reason is None:
@@ -169,10 +213,10 @@ def note_write(
 
 
 def scan_command(command: str) -> str | None:
-    """命令字符串里是否点名了敏感路径（**识别层，命中也只记录**）。
+    """命令字符串里是否点名了敏感路径（**识别层**）。
 
     这是包含判断，不是文件系统钩子：路径被拼接/编码或由子进程自己算出时
-    识别不到。命中后由调用方写审计，命令继续执行。
+    识别不到。命中后调用方必须**拦截**（0.4.6 起），并写审计。
     """
     if not command:
         return None
@@ -206,9 +250,11 @@ def describe() -> dict:
         "protected_dirs": sorted(_PROTECTED_DIR_NAMES | _PROTECTED_INSTALL_DIRS),
         "protected_extensions": sorted(_PROTECTED_INSTALL_EXTS),
         "enforcement": {
-            "file_api": "record-only (FilesystemAdapter.write)",
-            "host_command": "command-string scan, record-only; computed paths are invisible",
+            # 0.4.6 起：文件写路径与 host_command 命中即拦截（调用方凭
+            # check_write_blocked / scan_command 的返回值拒绝执行）。
+            "file_api": "block (FilesystemAdapter.write, AI actor)",
+            "host_command": "block (broker denies before policy; command-string scan, computed paths are invisible)",
             "os_level": "none (no minifilter, no restricted account)",
-            "blocks_anything": False,
+            "blocks_anything": True,
         },
     }

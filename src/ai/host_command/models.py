@@ -56,6 +56,12 @@ class HostCommandRequest:
     capabilities_required: List[str] = field(default_factory=list)
     correlation_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Instruction provenance (anti-induction §4.1): where the command text
+    # came from. "owner_direct" = Joseph said it himself (never treated as
+    # induction); anything else is external content and is screened by the
+    # induction detector before anything else. Chat wiring (group C) sets
+    # this from the message origin; direct callers keep the default.
+    source: str = "owner_direct"
 
 
 @dataclass

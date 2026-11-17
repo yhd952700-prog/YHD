@@ -15,7 +15,10 @@ Windows 的 ``TerminateProcess``（``Popen.terminate()``）没有可捕获的退
      再执行 lifespan shutdown —— 网关在这里 flush、关库；
   4. 进程自行退出，父进程拿到真实退出码，不会产生孤儿进程。
 
-本模块只被 ``src.desktop.service`` 以 ``python -m src.desktop._runner`` 拉起。
+本模块只被 ``src.desktop.service`` 以 ``-c`` 引导
+（``service._GATEWAY_BOOTSTRAP``，先把程序根插进 sys.path 再跑本模块）
+拉起——安装包内嵌 Python 的 ``._pth`` 启用隔离模式，``python -m`` 在
+真机上找不到 src（v9 真机 code=1 的根因，2026-11-16）。
 """
 
 from __future__ import annotations
@@ -87,6 +90,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-config", default=None, help="uvicorn 日志配置路径（通常为 config/logging.yaml）")
     parser.add_argument("--app", default=DEFAULT_APP, help="ASGI 应用路径（测试时可替换）")
     args = parser.parse_args(argv)
+
+    # 7-2 远程访问：显式“远程模式”开关（默认 off）。模式 tailscale 时，
+    # 默认的回环绑定才改成 0.0.0.0；off 时一个字节都不改。显式指定的
+    # --host 优先（见 gateway.remote_access.effective_bind_host）。
+    # 桌面壳是安装版的默认启动路径，这一行不加，设置页的开关在桌面壳下
+    # 就永远不生效。
+    from ..gateway.remote_access import effective_bind_host, resolve_remote_mode
+
+    remote_mode, _, remote_note = resolve_remote_mode()
+    if remote_note:
+        print(f"[remote] {remote_note}", flush=True)
+    if remote_mode == "tailscale" and args.host != effective_bind_host(args.host, remote_mode):
+        args.host = effective_bind_host(args.host, remote_mode)
+        print(
+            "[remote] 远程模式已开（Tailscale）：网关改绑 0.0.0.0，"
+            "手机在外面经 Tailscale 虚拟局域网可达；未暴露公网端口、未做端口转发。",
+            flush=True,
+        )
+    os.environ["LIUHAO_REMOTE_MODE_ACTIVE"] = remote_mode
 
     # 让网关应用层（Host 白名单）知道真实绑定地址：显式对外时该地址必须
     # 被允许，否则启动成功但每个请求都会因 Host 校验被 400。

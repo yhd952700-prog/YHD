@@ -10,8 +10,8 @@ and a :class:`~src.ai.host_command.capability.CapabilityCatalog` into a
   matches; escalates (DEFER) when the only matches require human approval.
 * :class:`FullAuthorityPolicy` -- 完全授权模式下的放行策略（老板 2026-11-11 决定：
   全权模式主机命令一并放开）。它只回答「策略层是否放行」；提权拒绝与危险命令
-  一次确认都在 broker 管线里更早/更晚执行，不因本策略而失效。敏感路径只记录、
-  不拦截。
+  一次确认都在 broker 管线里更早/更晚执行，不因本策略而失效。敏感路径拦截
+  同样在 broker 管线里（0.4.6 起拦截，不只是记录）。
 """
 
 from __future__ import annotations

@@ -1,7 +1,8 @@
 """贾维斯自动化模块（地基阶段）。
 
 同进程模块，不做独立服务。默认三重关闭（装配闸 / 后端闸 / 主体闸），任一
-未满足即不注册任何工具。本轮只提供 fake 后端与会话控制面，不接真实键鼠。
+未满足即不注册任何工具。0.4.6 起提供 fake 后端与 native 后端（Windows 真
+后端，只做「看」和「开」）及会话控制面。
 """
 
 from .audit import AutomationAudit, AutomationAuditError

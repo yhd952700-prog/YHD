@@ -16,8 +16,8 @@ ASSEMBLY_ENV = "LIUHAO_AUTOMATION_ENABLED"
 BACKEND_ENV = "LIUHAO_AUTOMATION_BACKEND"
 BACKEND_KIND_ENV = "LIUHAO_AUTOMATION_BACKEND_KIND"
 
-#: 本轮只允许 fake；真实后端（native / browser / android）下一轮再接入。
-SUPPORTED_BACKENDS: Tuple[str, ...] = (BackendKind.FAKE.value,)
+#: 本轮允许 fake 与 native（Windows 真后端，0.4.6 接入；browser / android 下一轮）。
+SUPPORTED_BACKENDS: Tuple[str, ...] = (BackendKind.FAKE.value, BackendKind.NATIVE.value,)
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 

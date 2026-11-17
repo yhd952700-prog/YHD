@@ -91,21 +91,27 @@ def update_profile(
         pcm.set_display_name(pid, req.display_name)
         written.append("display_name")
 
+    # 写穿 Memory Kernel 的结果：任一失败时回执标 kernel_synced=false
+    #（画像本身已落盘，只记 warning；见 personal_context._sync_to_memory）。
+    kernel_synced = True
+
     if req.preference:
         key = str(req.preference.get("key", "")).strip()
         if key:
-            pcm.set_preference(
+            pref = pcm.set_preference(
                 pid,
                 key,
                 req.preference.get("value"),
                 confidence=float(req.preference.get("confidence", 0.8)),
             )
+            kernel_synced = kernel_synced and bool(pref.kernel_synced)
             written.append(f"preference:{key}")
 
     if req.fact:
         key = str(req.fact.get("key", "")).strip()
         if key:
-            pcm.record_fact(pid, key, req.fact.get("value"))
+            synced = pcm.record_fact(pid, key, req.fact.get("value"))
+            kernel_synced = kernel_synced and bool(synced)
             written.append(f"fact:{key}")
 
     if req.interest:
@@ -130,6 +136,7 @@ def update_profile(
     return {
         "principal": pid,
         "written": written,
+        "kernel_synced": kernel_synced,
         "profile": profile.to_dict(),
         "summary": pcm.summarize(pid) if pcm.has_profile(pid) else "",
     }

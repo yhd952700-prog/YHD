@@ -41,6 +41,12 @@ DEFAULT_ALLOWED_TEST_COMMANDS: Tuple[Tuple[str, ...], ...] = (
     (sys.executable, "scripts/verify_doc_count_claims.py"),
     (sys.executable, "scripts/lint_audit_claims.py"),
     (sys.executable, "scripts/lint_control_claims.py"),
+    # 前端三条命令（7-6 Step 2）：与门禁 G6 跑的是同一组命令，且是网关
+    # DEFAULT_TEST_COMMAND（控制台构建）唯一合法的拼法。提案作者仍不能
+    # 自选别的命令：npm 的其余子命令（dev / install / …）一律不在此表。
+    ("npm", "--prefix", "apps/console/console", "run", "build"),
+    ("npm", "--prefix", "apps/console/console", "run", "test"),
+    ("npm", "--prefix", "apps/console/console", "run", "lint"),
 )
 
 #: 门禁编排（``docs/spec/SELF-EVOLUTION.md`` §3）实际执行的固定命令。
@@ -62,9 +68,11 @@ DEFAULT_GATE_COMMANDS: Tuple[Tuple[str, ...], ...] = (
     (sys.executable, "scripts/verify_doc_count_claims.py"),
     (sys.executable, "scripts/lint_audit_claims.py", "--all"),
     (sys.executable, "scripts/lint_control_claims.py", "--all"),
-    # G6 最小口子：只放行「控制台构建」这一条命令。产物同源校验由 gates.G6 负责，
-    # 不放行 npm 的任意子命令（test/lint/dev 仍需另行登记）。
+    # G6：spec §3 要求 build + test + lint 三条命令均退出 0。
+    # 产物同源校验由 gates.G6 负责；不放行 npm 的任意子命令（dev 仍不登记）。
     ("npm", "--prefix", "apps/console/console", "run", "build"),
+    ("npm", "--prefix", "apps/console/console", "run", "test"),
+    ("npm", "--prefix", "apps/console/console", "run", "lint"),
 )
 
 

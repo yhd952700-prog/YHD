@@ -37,9 +37,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from ..ai.roster_payload import build_roster_payload
+from .account_context import AccountContext, require_account_principal
 
 router = APIRouter(prefix="/v1", tags=["roster"])
 
@@ -47,12 +48,28 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/dashboard/roster")
-def dashboard_roster() -> Dict[str, Any]:
+def dashboard_roster(
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
     """AI 员工名册（真实注册表 + 真实持久化员工）+ provider 服务面。
 
     返回的每一条都能在仓库里定位到：
     - kernel/能力层 → ``capability-registry.yaml``；
     - ``real_employees`` → ``EmployeeStore``（``LIUHAO_WORKSPACE_ROOT`` 重定向）；
     - provider → ``src/ai/providers.py`` 的 ``ProviderFactory._providers``。
+
+    账号过滤（2026-11-12）：``real_employees`` 只返回调用方子树内的员工；
+    归属为空的旧员工只根可见。kernel/能力层/provider 是全局注册表信息，
+    不按账号切分。
     """
-    return build_roster_payload()
+    payload = build_roster_payload()
+    visible = set(context.subtree)
+    employees = payload.get("real_employees") or []
+    kept = [
+        e for e in employees
+        if (str(e.get("owner_account_id") or "") in visible)
+        or (context.is_root and not str(e.get("owner_account_id") or ""))
+    ]
+    payload["real_employees"] = kept
+    payload["totals"]["employees"] = len(kept)
+    return payload

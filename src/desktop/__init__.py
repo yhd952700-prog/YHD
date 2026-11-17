@@ -10,6 +10,8 @@
   * ``app``         — 状态窗口 + 托盘 + 主服务装配；关闭窗口 = 最小化到托盘。
   * ``autostart``   — ``HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run``
                       自启登记（默认关闭，绝不写 HKLM）。
+  * ``desktop_shortcut`` — 首次启动成功后在桌面建「贾维斯」快捷方式
+                      （小铁图标，只建一次，启动失败不建）。
   * ``firewall``    — 只读检测 + 用户自助指引；**绝不**修改防火墙或安全软件。
   * ``diagnostics`` — 一键诊断 zip；白名单生成 + 强制脱敏。
   * ``about``       — 版本 / 构建时间 / 数据目录读取入口（供关于页使用）。

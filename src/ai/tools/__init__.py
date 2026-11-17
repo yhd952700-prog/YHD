@@ -12,8 +12,8 @@ Provides a complete tool execution system with:
 - **ToolExecutor** — Tool execution manager with selection, parameter
   validation, timeout handling, batch execution, and statistics.
 
-- **Built-in Tools** — Calculator, Search, CodeRunner, Memory,
-  DateTime, and File tools.
+- **Built-in Tools** — Calculator, WebResearch, KnowledgeSearch,
+  CodeRunner, Memory, DateTime, and File tools.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from .base import (
 )
 from .builtin import (
     CalculatorTool,
-    SearchTool,
+    WebResearchTool,
     KnowledgeSearchTool,
     CodeRunnerTool,
     MemoryTool,
@@ -64,7 +64,7 @@ __all__ = [
     "ResultStatus",
     # Built-in tools
     "CalculatorTool",
-    "SearchTool",
+    "WebResearchTool",
     "KnowledgeSearchTool",
     "CodeRunnerTool",
     "MemoryTool",
