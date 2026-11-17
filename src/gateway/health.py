@@ -19,7 +19,7 @@ import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
+from ..security import get_api_key_manager, get_jwt_handler, get_encryption_manager
 from ..common.redaction import redact_log_text
 from ..observability.boot_report import display_path
 from ..gateway.rate_limiter import get_rate_limiter
@@ -717,7 +717,7 @@ def _readiness_payload_sync(
     检查所有核心依赖组件是否就绪：
     - API Key Manager
     - JWT Handler
-    - RBAC Manager
+    - 账号树（授权主线；同时以旧名 rbac_manager 上报，见下）
     - Encryption Manager
     - Rate Limiter
 
@@ -750,13 +750,30 @@ def _readiness_payload_sync(
         errors.append(f"JWT Handler: {str(e)}")
         checks["jwt_handler"] = {"status": "unhealthy", "error": str(e)}
 
-    # Check RBAC Manager
+    # Check account tree (the only authorization mainline since 2026-11-12;
+    # legacy RBACManager was deleted as un-wired dead code).
+    # 同一份真实检查报两个 key：`account_tree` 是现在的名，`rbac_manager`
+    # 是就绪契约沿用的旧名（tests/test_gateway_health_wiring.py 的
+    # REQUIRED_CHECKS 要求它在探针里）。两者是同一授权主线、同一结果，
+    # 不是两份检查，更不是编一个假的 RBACManager 出来凑数：账号树坏了，
+    # 两个 key 同时变 unhealthy，探针照样 503。
     try:
-        rbac_mgr = get_rbac_manager()
-        checks["rbac_manager"] = {"status": "healthy", "total_roles": len(rbac_mgr._roles)}
+        from ..kernels.identity import get_identity_manager
+
+        _id_mgr = get_identity_manager()
+        _root = _id_mgr.account_root()
+        _auth_check = {
+            "status": "healthy",
+            "has_root": bool(_root),
+            "total_accounts": len(_id_mgr.list_accounts()),
+        }
+        checks["account_tree"] = dict(_auth_check)
+        checks["rbac_manager"] = dict(_auth_check)
     except Exception as e:
-        errors.append(f"RBAC Manager: {str(e)}")
-        checks["rbac_manager"] = {"status": "unhealthy", "error": str(e)}
+        errors.append(f"Account tree: {str(e)}")
+        _auth_check = {"status": "unhealthy", "error": str(e)}
+        checks["account_tree"] = dict(_auth_check)
+        checks["rbac_manager"] = dict(_auth_check)
 
     # Check Encryption Manager
     try:
@@ -1450,6 +1467,20 @@ async def readiness_probe(request: Request) -> JSONResponse:
     return JSONResponse(content=response_data, status_code=status_code)
 
 
+def _account_tree_metrics() -> Dict[str, Any]:
+    """Account-tree snapshot for /v1/metrics (never raises)."""
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        _mgr = get_identity_manager()
+        return {
+            "has_root": bool(_mgr.account_root()),
+            "total_accounts": len(_mgr.list_accounts()),
+        }
+    except Exception as exc:  # pragma: no cover - metrics must not fail
+        return {"error": str(exc)}
+
+
 def _metrics_payload_sync(trace_id: str) -> Dict[str, Any]:
     """
     Metrics endpoint - 返回详细的系统指标。
@@ -1477,8 +1508,6 @@ def _metrics_payload_sync(trace_id: str) -> Dict[str, Any]:
     key_mgr = get_api_key_manager()
     key_stats = key_mgr.get_key_stats()
 
-    rbac_mgr = get_rbac_manager()
-
     limiter = get_rate_limiter()
 
     by_status = key_stats.get("by_status") or {}
@@ -1496,9 +1525,7 @@ def _metrics_payload_sync(trace_id: str) -> Dict[str, Any]:
                 # 从真实的状态分布里数出来，而不是假设存在一个预先算好的字段。
                 "expired_count": int(by_status.get("expired", 0)),
             },
-            "rbac_manager": {
-                "total_roles": len(rbac_mgr._roles),
-            },
+            "account_tree": _account_tree_metrics(),
             "rate_limiter": {
                 "active_buckets": len(limiter._buckets) if hasattr(limiter, "_buckets") else 0,
             },

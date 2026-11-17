@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import logging
 import math
 import re
 import shutil
@@ -47,6 +48,8 @@ from .text import (
     split_chunks,
     suffix_of,
 )
+
+logger = logging.getLogger(__name__)
 
 VISIBILITY_RANK = {"private": 0, "team": 1, "enterprise": 2}
 VISIBILITIES = tuple(VISIBILITY_RANK)
@@ -422,7 +425,10 @@ def delete_category(viewer: Viewer, category_id: str) -> Dict[str, Any]:
         if children:
             raise conflict("先删除或移动子分类")
         documents = connection.execute(
-            "SELECT COUNT(*) AS n FROM kb_documents WHERE category_id = ?", (category_id,)
+            # V8-F8：文档是软删除（行还在，status='deleted'），只数在用的；
+            # 否则分类一旦放过文档就永远删不掉（列表计数早已只数 active）。
+            "SELECT COUNT(*) AS n FROM kb_documents WHERE category_id = ? AND status = 'active'",
+            (category_id,),
         ).fetchone()["n"]
         if documents:
             raise conflict("分类下还有文档，先移走或删除文档")
@@ -660,6 +666,51 @@ def _index_chunks(
     return inserted
 
 
+def _mirror_to_vector_index(
+    viewer: Viewer,
+    document_id: str,
+    title: str,
+    text: str,
+) -> Dict[str, Any]:
+    """企业库入库后，把同一份正文再写一份进向量索引（0.4.6，5-5）。
+
+    分工：企业库（本模块）是**文档管理主线**（分类/版本/可见性/FTS 全文
+    检索）；``src/knowledge`` 的向量库是**语义检索主线**。两边各存一份，
+    以企业库为准：向量侧只按 ``enterprise:<document_id>`` 挂一份可搜的
+    副本，不反写企业库。向量侧不可用（没配 embedding、模型/维度对不上、
+    索引损坏）时**只记日志、不否决本次入库**，调用方在回执里看到
+    ``vector_indexed=false`` + 原因；绝不为“看起来入库成功”而编一个
+    假的成功标记。重复内容走向量侧自己的内容哈希去重，多次镜像无害。
+    """
+    try:
+        from src.knowledge.documents import get_knowledge_service
+
+        service = get_knowledge_service()
+        result = service.ingest(
+            text=text,
+            doc_id=f"enterprise:{document_id}",
+            metadata={
+                "document_id": document_id,
+                "enterprise_document_id": document_id,
+                "title": title,
+                "source": "enterprise_kb",
+            },
+            owner_account_id=viewer.principal,
+        )
+        return {
+            "indexed": True,
+            "chunks": result.get("chunks"),
+            "deduplicated": bool(result.get("deduplicated")),
+        }
+    except Exception as exc:  # noqa: BLE001 - 镜像失败不能否决企业库入库
+        logger.warning(
+            "enterprise kb: vector mirror failed document=%s: %s",
+            document_id,
+            exc,
+        )
+        return {"indexed": False, "reason": str(exc)}
+
+
 def ingest_file(
     viewer: Viewer,
     *,
@@ -826,6 +877,10 @@ def _ingest_extracted(
                         _current_version(connection, document),
                     )
                     summary["deduplicated"] = True
+                    # 内容没变也补一次镜像：首版入库可能发生在桥接之前。
+                    summary["vector_mirror"] = _mirror_to_vector_index(
+                        viewer, document["id"], clean_title, text
+                    )
                     return summary
             document_id = document["id"]
             version = int(
@@ -945,6 +1000,9 @@ def _ingest_extracted(
         summary["created"] = existing is None
         summary["file_type"] = file_type
         summary["text_source"] = text_source
+        summary["vector_mirror"] = _mirror_to_vector_index(
+            viewer, document_id, clean_title, text
+        )
         return summary
 
 
@@ -1452,7 +1510,33 @@ def delete_document(viewer: Viewer, document_id: str) -> Dict[str, Any]:
         )
         connection.execute("DELETE FROM kb_chunks WHERE document_id = ?", (document_id,))
         connection.commit()
-        return {"deleted": True, "id": document_id, "deleted_at": now}
+        # 同步清掉入库时建的向量镜像（enterprise:<document_id>），否则
+        # knowledge_vectors 里留孤儿 chunk，语义检索还能搜到已删文档
+        #（2026-11-12 审计核实第 15 条）。镜像失败只记日志、不否决删除，
+        # 与入库侧 _mirror_to_vector_index 的策略一致。
+        vector_mirror_removed = _remove_vector_mirror(document_id)
+        return {
+            "deleted": True,
+            "id": document_id,
+            "deleted_at": now,
+            "vector_mirror_removed": vector_mirror_removed,
+        }
+
+
+def _remove_vector_mirror(document_id: str) -> bool:
+    """删向量侧 ``enterprise:<document_id>`` 镜像；失败返回 False（只记日志）。"""
+    try:
+        from src.knowledge.documents import get_knowledge_service
+
+        outcome = get_knowledge_service().delete_document(f"enterprise:{document_id}")
+        return bool(outcome.get("deleted"))
+    except Exception as exc:  # noqa: BLE001 - 镜像清理失败不能否决企业库删除
+        logger.warning(
+            "enterprise kb: vector mirror removal failed document=%s: %s",
+            document_id,
+            exc,
+        )
+        return False
 
 
 def expiring_documents(viewer: Viewer, *, days: int = 30, limit: int = 100) -> Dict[str, Any]:

@@ -105,7 +105,7 @@ def default_generate(prompt: str, *, requester: Optional[str] = None) -> str:
     provider = resolve_execution_provider(requester)
     if isinstance(provider, MockProvider):
         raise ModelUnavailable(
-            "默认模型未配置：当前解析到 MockProvider。请到「设置 → 模型管理」"
+            "默认模型未配置：当前解析到 MockProvider。请到「设置 → 模型与 Key」"
             "添加并启用一个默认模型后重试。"
         )
     # 技能注入的唯一入口：只有调用方用 ``skill_prompt_scope(employee)`` 标明
@@ -861,7 +861,7 @@ _MODEL_FAILURE_CLASSES = (
     (
         "密钥无效",
         ("401", "unauthorized", "invalid api key", "authentication", "鉴权", "密钥无效", "api key"),
-        "请到「设置 → 模型管理」更新密钥后重试。",
+        "请到「设置 → 模型与 Key」更新密钥后重试。",
     ),
     (
         "调用超时",
@@ -876,7 +876,7 @@ _MODEL_FAILURE_CLASSES = (
     (
         "模型未配置",
         ("mockprovider", "未配置", "not configured", "no model"),
-        "请先到「设置 → 模型管理」配置并启用一个真实模型。",
+        "请先到「设置 → 模型与 Key」配置并启用一个真实模型。",
     ),
 )
 

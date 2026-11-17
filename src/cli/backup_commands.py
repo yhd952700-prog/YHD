@@ -251,6 +251,9 @@ class _SanitisingBackupManager(_FileBackupManager):
 
     ``encryption_enabled=True`` 时保留全部文件——那时外层已经由口令
     AES-256-GCM 保护，不再有“明文密钥躺在磁盘上”的问题。
+    例外：模型 Key 文件（``model_config.key``、``model_registry.sqlite3``）
+    **不进任何备份包**，加密与否都一样（2026-11-15 起的规矩；底层走查
+    时已跳过，见 ``src/backup/backup_manager.py``）。
     """
 
     _include_protected: bool = False
@@ -282,7 +285,8 @@ class _SanitisingBackupManager(_FileBackupManager):
 
     @classmethod
     def _extract_machine_bound(cls, data: Dict[str, Any]) -> None:
-        """加密迁移包：把三把密钥解包成原始材料（包内不留 DPAPI 密文）。"""
+        """加密迁移包：把本机密钥解包成原始材料（包内不留 DPAPI 密文）。
+        模型 Key 文件不进包，永远到不了这里。"""
         if data.get("type") == "file":
             name = Path(str(data.get("path") or "")).name
             cls._extract_entry_machine_bound(name, data)
@@ -471,9 +475,11 @@ class BackupManager:
         """Create a real backup archive on disk.
 
         明文归档默认**跳过**凭据/密钥文件（``auth_secrets.json``、身份库、
-        ``integrity.key``、``model_config.key``、``app.env``、
-        ``model_registry.sqlite3`` 等）。``encrypted=True`` 时这些文件会一并
-        打包，但整包由口令派生的 AES-256-GCM 密钥加密。
+        ``integrity.key``、``app.env`` 等）。``encrypted=True`` 时这些文件会一并
+        打包，但整包由口令派生的 AES-256-GCM 密钥加密。例外：模型 Key 文件
+        （``model_config.key``、``model_registry.sqlite3``）**不进任何备份包**，
+        加密与否都一样（2026-11-15 起的规矩；换机后 Key 到「设置 → 模型与 Key」
+        重新填一次）。
         """
         if encrypted:
             password = (password or os.environ.get(_PASSWORD_ENV) or "").strip()
@@ -505,6 +511,9 @@ class BackupManager:
             sealed = True
         encrypt_seconds = time.perf_counter() - encrypt_started if encrypted else 0.0
         excluded = getattr(manager, "_excluded_protected_total", 0)
+        # 模型 Key 文件由底层走查跳过（不进任何包），这里一并记入回执，
+        # 让「跳过了几个受保护文件」的数字如实包含它们。
+        excluded += getattr(manager, "_excluded_key_files", 0)
         runtime_excluded = getattr(manager, "_runtime_excluded_total", 0)
         workspace_files = getattr(manager, "_workspace_file_count", 0)
         workspace_bytes = getattr(manager, "_workspace_bytes", 0)
@@ -1177,7 +1186,7 @@ def register_backup_commands(
         "--encrypt",
         action="store_true",
         help=(
-            "加密归档（必须给口令；加密包才包含身份库/主密钥等受保护文件）。"
+            "加密归档（必须给口令；加密包才包含身份库等受保护文件。模型 Key 不进任何备份包，换机后重新填）。"
             "口令丢失后内容无法恢复，只能回源机重新导出。"
         ),
     )

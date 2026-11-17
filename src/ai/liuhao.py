@@ -40,6 +40,7 @@ from .agent_factory import (
 )
 from .providers import (
     BaseProvider,
+    MockProvider,
     ProviderStreamIncompleteError,
     ProviderTruncatedError,
     TRUNCATED_RESPONSE_MESSAGE,
@@ -127,6 +128,14 @@ CONTEXT_SOURCE_MESSAGES = 240
 
 # 单轮对话中最多允许的工具调用轮数（防 LLM 死循环请求工具）。
 MAX_TOOL_ROUNDS = 3
+
+#: 没配模型时本地能接的提醒触发词（走查 F13）。只接“明确要提醒”的话；
+#: 普通陈述（“明天下午三点开会”）不猜、不抢，仍走原来的“没配模型”提示。
+_LOCAL_REMINDER_TRIGGERS = ("记下来", "提醒我", "到点提醒", "记得提醒")
+
+#: 开头的“记下来”不进提醒标题：解析器的 filler 词表不含它，先剥掉。
+#: （“提醒我”在 filler 词表里，解析时本来就会去掉。）
+_LOCAL_REMINDER_PREFIX_RE = re.compile(r"^\s*(?:请|帮我|麻烦)?记下来\s*[:：，,]?\s*")
 
 _log = logging.getLogger(__name__)
 
@@ -222,6 +231,17 @@ def _shared_tools(profile_principal: str) -> "tuple[List[Any], str, ToolRegistry
             with _TOOL_CACHE_LOCK:
                 if _TOOL_BUILD_LOCKS.get(profile_principal) is build_lock:
                     _TOOL_BUILD_LOCKS.pop(profile_principal, None)
+
+
+def invalidate_tool_cache() -> None:
+    """清掉按画像主体缓存的工具集（技能页开关变化后由网关调用）。
+
+    已持有旧工具表的会话继续用旧引用跑完当前轮次；下一句话起
+    ``_shared_tools`` 重建工具集，注册闸按新开关过滤；执行闸
+    （``ToolRegistry.execute``）则立即生效，不用等缓存失效。
+    """
+    with _TOOL_CACHE_LOCK:
+        _TOOL_CACHE.clear()
 
 
 def _provider_endpoint(provider: Any) -> tuple[str, Optional[int]]:
@@ -990,6 +1010,58 @@ class LiuHaoAssistant:
         return self._authorize_chat(message, phase="pre_stream")
 
     @observe("LiuHaoAssistant.chat")
+    def _local_no_model_reply(self, message: str) -> Optional[str]:
+        """没配模型时的本地兜底：只接“记下来/提醒我 + 具体时间”的提醒请求。
+
+        没配模型时聊天本应只回“没配模型”提示，但开场示例自己就是
+        “记下来：明天早上提醒我开会”——那句话按提示走是死路（走查 F13）。
+        这里用确定性解析（``src/tasks/reminder_time.py``，与提醒接口同一
+        套）把这类请求排成**真提醒**（经排程器到点触发，F15 已修好），
+        不经过模型、不编时间。
+
+        * 时间能唯一确定 → 建提醒，返回一句确认；
+        * 触发词明确、时间含糊（“明天提醒我开会”）→ 返回解析器的反问，
+          让用户补具体时间，而不是回“没配模型”的死路；
+        * 其余消息、或兜底本身出错 → 返回 None，走原来的“没配模型”提示。
+          兜底绝不能把聊天搞坏：任何意外都静默让位。
+        """
+        provider = self.provider
+        if provider is None:
+            return None
+        if not isinstance(provider, MockProvider) and not any(
+            isinstance(inner, MockProvider)
+            for inner in getattr(provider, "_providers", ()) or ()
+        ):
+            return None
+        text = (message or "").strip()
+        if not text or not any(
+            trigger in text for trigger in _LOCAL_REMINDER_TRIGGERS
+        ):
+            return None
+        try:
+            from ..tasks.reminder_time import NeedsClarification
+            from ..tasks.reminders import get_reminder_service, read_account_timezone
+        except Exception:  # noqa: BLE001 - 兜底不可用时静默让位
+            return None
+        cleaned = _LOCAL_REMINDER_PREFIX_RE.sub("", text, count=1)
+        user_id = self.audit_principal or self.principal
+        try:
+            created = get_reminder_service().create(
+                user_id, cleaned, tz=read_account_timezone(user_id)
+            )
+        except NeedsClarification as exc:
+            return str(exc)
+        except Exception as exc:  # noqa: BLE001 - 兜底失败不挡聊天
+            self._log.warning("本地提醒兜底失败，走原来没配模型提示：%s", exc)
+            return None
+        title = str(created.get("title") or "提醒")
+        repeat = str(created.get("repeat") or "once")
+        if repeat in ("daily", "weekly"):
+            when = str(created.get("human_time") or "")
+        else:
+            when = str(created.get("time_text") or created.get("human_time") or "")
+        return f"记下了：{when}提醒你{title}。到点会弹出来，点「知道了」就行。"
+
     def chat(self, message: str) -> Dict[str, Any]:
         """处理一条用户消息，返回结构化结果（回复 + 状态 + 审计）。
 
@@ -1010,10 +1082,16 @@ class LiuHaoAssistant:
         reason: Optional[str] = None
         technical_detail: Optional[str] = None
         try:
-            messages = self._build_messages(message)
-            reply = self._generate_with_tools(messages)
-            status = "completed"
-            error_text: Optional[str] = None
+            local_reply = self._local_no_model_reply(message)
+            if local_reply is not None:
+                reply = local_reply
+                status = "completed"
+                error_text: Optional[str] = None
+            else:
+                messages = self._build_messages(message)
+                reply = self._generate_with_tools(messages)
+                status = "completed"
+                error_text = None
         except ProviderTruncatedError as exc:
             # 非流式：内容真实但没说完。保留已产出的正文，状态必须是
             # truncated（不是 completed），并附上中文提示。
@@ -1106,6 +1184,19 @@ class LiuHaoAssistant:
 
         # 本轮 turn / correlation 可能由 preflight_chat 提前开好。
         correlation_id = self.last_turn_correlation_id
+
+        # 没配模型时的本地兜底（与 chat() 同一条）：能确定性解析的提醒请
+        # 求直接排成真提醒，不经过模型；其余消息返回 None，走原来的流式生成。
+        local_reply = self._local_no_model_reply(message)
+        if local_reply is not None:
+            yield local_reply
+            self.last_turn_status = "completed"
+            self.last_turn_error = None
+            self.last_turn_reason = None
+            self.last_turn_technical_detail = None
+            self._commit_turn(message, local_reply, correlation_id, "completed")
+            self._log.info("EXIT chat_stream status=completed")
+            return
 
         # 2. 构建 messages（system + 历史 + 当前）。
         messages = self._build_messages(message)

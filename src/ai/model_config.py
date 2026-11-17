@@ -80,7 +80,7 @@ _MODEL_KEY_MISSING_TEXT = (
     "  2. 在新电脑导入前，先把旧的 data\\model_config.key（如有）改名保存，"
     "不要直接删除；\n"
     "  3. 导入备份包后，模型 Key 会用新电脑的主密钥重新加密；\n"
-    "  4. 若原电脑已不可用，请在「模型管理」逐个重新填写 API Key；\n"
+    "  4. 若原电脑已不可用，请在「模型与 Key」逐个重新填写 API Key；\n"
     "  5. 确认放弃旧 Key 后，删除 data\\model_config.key 再重启，"
     "系统会生成新的本机密钥（旧密文将永久无法解密）。"
 )
@@ -123,6 +123,13 @@ _VENDOR_BY_PROVIDER = {
 }
 
 #: base_url 主机名 -> 厂商。只收确定性映射，未知主机原样返回主机名。
+#: 与 net_guard.TRUSTED_VENDOR_HOSTS 保持同步（见
+#: tests/ai/test_net_guard_smart.py::test_vendor_host_lists_in_sync）：
+#: 可信厂商域名必须在这里有厂商映射，否则日志/审计会把厂商显示成裸主机名。
+#: 下半段 6 家（7-4 候选厂商）只有展示映射：它们还没经过真 Key 实测，
+#: 未进预设、未进 TRUSTED_VENDOR_HOSTS、未进 egress 登记表——这三处
+#: 只能在某家实测通过、正式进预设时由后续步骤一起补（缺一处同步测试
+#: 就会变红）；本映射只让“用户已手填该厂商端点时”日志/界面不显示裸主机名。
 _VENDOR_BY_HOST = {
     "api.deepseek.com": "deepseek",
     "deepseek.com": "deepseek",
@@ -132,6 +139,27 @@ _VENDOR_BY_HOST = {
     "api.moonshot.cn": "moonshot",
     "api.moonshot.ai": "moonshot",
     "generativelanguage.googleapis.com": "google",
+    "dashscope.aliyuncs.com": "qwen",
+    "open.bigmodel.cn": "glm",
+    "ark.cn-beijing.volces.com": "doubao",
+    # 7-4 候选厂商（仅展示映射，未实测、未进预设、未进可信列表）：
+    "api.minimax.io": "minimax",
+    "api.minimaxi.com": "minimax",
+    "api.siliconflow.cn": "siliconflow",
+    "api.siliconflow.com": "siliconflow",
+    "api.groq.com": "groq",
+    "api.together.xyz": "together",
+    "openrouter.ai": "openrouter",
+    "api.x.ai": "xai",
+    # Muse Wonder（A2a 第 2 项，仅展示映射，未拿真 Key 实测）：已进预设，
+    # 但与 Grok 同例，未进 TRUSTED_VENDOR_HOSTS、未进 egress 登记表；
+    # 正式“已验证”仍需 Joseph 的真 Key 实测后由后续步骤一起补。
+    "api.meta.ai": "meta",
+    # 杰夫AI（A3，仅展示映射，未验证可用）：已进预设，与 Grok / Muse Wonder
+    # 同例，未进 TRUSTED_VENDOR_HOSTS、未进 egress 登记表；沙箱实测
+    # jiefuai.cc 回 401、jiefuai.vip 连不上，但沙箱解析到内网段、结论不一定准，
+    # 正式“已验证”仍需 Joseph 在真 Windows 电脑上实测。
+    "jiefuai.cc": "jiefuai",
 }
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
@@ -316,11 +344,13 @@ def _usable(
     allow_unowned: bool,
     allow_owners: Optional[Sequence[str]],
 ) -> bool:
-    """Key **可用性**：在可见的基础上，再要求知情授权（``allow_superior_key_use``）。
+    """Key **可用性**：在可见的基础上，再要求归属一致（Key 不共用）。
 
     ``allow_owners`` 是 ``KeyScope.allow_owners`` 的原样传入：根账号包含自己、
-    空归属与"已开启共享"的子树成员；成员只有自己。``None`` 表示不追加收窄
-    （进程内部 / 旧调用方）。
+    空归属历史模型；成员只有自己。``None`` 表示不追加收窄
+    （进程内部 / 旧调用方）。旧的“共享授权”口径已彻底移除
+    （Joseph 2026-11-14 亲口定，2026-11-15 清掉开关）：没有任何授权能
+    让一个账号用上别人的 Key。
     """
     if not _visible(owner, visible_to, allow_unowned):
         return False
@@ -826,9 +856,9 @@ class ModelConfigStore:
         * ``model_id`` 可传配置 id 或名称；找不到返回 ``None``。
         * 给定 ``visible_to`` 且命中**他人 Key** 时一律 403 ``KEY_OWNER_DENIED``。
           绝不静默改用它 Key —— 静默替换就是 Key 冒用。
-        * 给定 ``allow_owners`` 时，命中可见但**未开启共享授权**的 Key 返回
-          403 ``ACCOUNT_KEY_CONSENT_REQUIRED``：显式 ``model_id`` 与自动路由
-          必须用同一套授权口径（此前显式选择绕过了 ``allow_superior_key_use``）。
+        * 给定 ``allow_owners`` 时，命中可见但**不属于调用者**的 Key 返回
+          403 ``ACCOUNT_KEY_NOT_OWNED``：显式 ``model_id`` 与自动路由
+          必须用同一套归属口径（Key 不共用，没有任何授权能打开别人的 Key）。
         禁用（``enabled=0``）的模型不参与解析。
         """
         with self._lock:
@@ -865,8 +895,8 @@ class ModelConfigStore:
         if not _usable(owner, visible_to, allow_unowned, allow_owners):
             raise ModelConfigError(
                 403,
-                "该模型配置未开启共享授权，无法使用",
-                code="ACCOUNT_KEY_CONSENT_REQUIRED",
+                "该模型配置属于其他账号，不能使用",
+                code="ACCOUNT_KEY_NOT_OWNED",
             )
         return {
             "id": row["id"],

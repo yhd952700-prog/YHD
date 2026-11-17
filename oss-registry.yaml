@@ -23,7 +23,7 @@
 #   action        下一步处置建议
 
 version: 1
-generated: 2026-09-12
+generated: 2026-11-13
 
 # ---------------------------------------------------------------- 允许的许可证
 # MPL-2.0 是文件级 copyleft：仅使用、不修改其源文件时无传染风险，故列入允许，
@@ -144,14 +144,19 @@ components:
     import_name: phoenix
     license: Elastic-2.0
     category: observability
-    used: "partial"
+    # 2026-11-12（0.4.6）已从分发依赖中移除：Elastic-2.0 禁止随包分发。
+    # 本条目保留为合规记录（不是现役依赖）：两锁里已零命中，payload 里也没有。
+    # src/ 里只剩 src/adapters/observability/observability_adapter.py 的
+    # try/except 保护性 import，缺失时 PHOENIX_AVAILABLE=False 优雅降级。
+    used: "guarded"
     risk: high
     acknowledged: >-
       Elastic License 2.0 属 source-available，非 OSI 开源：禁止将 Phoenix
-      作为托管服务提供给第三方，禁止规避其付费功能。当前仅内部自托管、且未作为
-      对外服务转售，故接受。若未来要对外提供托管观测服务，必须替换。
-    action: 高优先：src/ 中几乎未接线却承担许可证约束，建议改用 MIT 的 Langfuse
-      或 Apache-2.0 的 Opik
+      作为托管服务提供给第三方，禁止规避其付费功能。0.4.6 起本项目不再分发
+      Phoenix（不在任何依赖声明与锁文件里），仅保留保护性 import 的降级路径；
+      若未来要恢复可观测后端，须先解决许可证问题（例如改走已在依赖里的
+      MIT Langfuse），不得直接把本条目改回现役依赖。
+    action: 已移除（0.4.6）：不随包分发、不进锁；恢复须先解决许可证问题
 
   # ---------------- 工具接入 ----------------
   - name: mcp
@@ -191,8 +196,10 @@ components:
       MCP 适配层客户端与服务端实现（src/adapters/mcp/mcp_adapter.py 顶层 import）。
       fastmcp 4.x 由 slim 发行包提供，client/server extras 才带 mcp 客户端与服务端代码
       （裸包只 import，缺 extras 时 import 直接报 "client/server support is not installed"）。
-      版本钉死 ==4.0.3，与 requirements.txt 一致；上界受 arize-phoenix 的
-      fastmcp-slim<5,>=4 约束，不能降到 3.x。Apache-2.0，无 copyleft 传染。
+      版本钉死 ==4.0.3，与 requirements.txt 一致；这是随 0.4.6 实测通过的版本，
+      且与 mcp>=2.0,<3.0 的约束相容。旧注释称“上界受 arize-phoenix 的
+      fastmcp-slim<5,>=4 约束”是过期理由——phoenix 已于 0.4.6 移除。
+      Apache-2.0，无 copyleft 传染。
 
   - name: taskiq
     import_name: taskiq
@@ -346,11 +353,11 @@ components:
     action: 保持
   - name: anthropic
     import_name: anthropic
-    license: MIT
+    license: Apache-2.0
     category: model
     used: "yes"
     risk: low
-    action: 保持
+    action: "保持。2026-11-13：2.8.0 起元数据许可证由 MIT 改为 Apache-2.0（License 字段与 Classifier 均为 Apache Software License），登记跟进；两者皆宽松许可，风险不变。"
 
   # ---------------- 测试 ----------------
   - name: pytest
@@ -445,6 +452,52 @@ components:
     action: >
       保持；不得替换为 LGPL 的 pystray。新增桌面能力时复用本包，不另起
       Win32 绑定依赖。
+  - name: pywinauto
+    import_name: pywinauto
+    license: BSD-3-Clause
+    category: desktop
+    used: guarded
+    risk: low
+    acknowledged: >
+      pywinauto 是 Windows GUI 自动化库，BSD-3-Clause（OSI 批准、非 copyleft）。
+      0.4.6 电脑操控真后端只用它做聚焦 / 关闭窗口（不做键鼠注入、不读控件
+      文本）；依赖在 pyproject.toml 中以 `sys_platform == 'win32'` 标记，
+      Linux CI / Docker 不安装；代码侧函数内懒加载，非 Windows 不 import。
+    action: >
+      保持；只用于窗口聚焦/关闭，不扩展成自由键鼠注入。
+  - name: uiautomation
+    import_name: uiautomation
+    license: Apache-2.0
+    category: desktop
+    used: guarded
+    risk: low
+    acknowledged: >
+      uiautomation 是 Windows UI Automation 的 Python 封装，Apache-2.0
+      （OSI 批准、非 copyleft）。0.4.6 电脑操控真后端只用它只读前台窗口的
+      控件结构（不读控件文本）；依赖在 pyproject.toml 中以
+      `sys_platform == 'win32'` 标记，Linux CI / Docker 不安装；代码侧
+      函数内懒加载，非 Windows 不 import。
+      维护情况（2026-11-13 按 GitHub 提交记录核实）：单人维护、节奏缓慢但未停更——
+      最后提交 2026-06-02（“fix typos”“fix typing”），距今约 5 个月；
+      最后 PyPI 发版 2.0.29（2025-08-05），约 15 个月无新版。结论：可用，
+      但须写明后路——停更则冻结 2.0.29；pywinauto 的 UIA 后端可部分替代，
+      切换前须重测控件结构读取。
+    action: >
+      保持；只读窗口控件结构，不读控件文本、不注入输入。
+  - name: comtypes
+    import_name: comtypes
+    license: MIT
+    category: desktop
+    used: "no"
+    risk: low
+    action: "随包传递依赖（pywinauto 的依赖，Windows 专属）；src/ 无直接 import。2026-11-13 按新包实测补登（0.4.6-big，1.5.0）。"
+  - name: pywin32-ctypes
+    import_name: win32ctypes
+    license: BSD-3-Clause
+    category: desktop
+    used: "no"
+    risk: low
+    action: "随包传递依赖（keyring 的依赖，Windows 专属）；src/ 无直接 import。2026-11-13 按新包实测补登（0.4.6-big，0.2.3）。"
 
   # ---------------- 随包传递依赖（2026-11-08 按 payload 实测补齐）----------------
   # 来源：dist/payload/app/runtime/Lib/site-packages 的 93 个 dist-info，
@@ -688,6 +741,13 @@ components:
     used: "no"
     risk: low
     action: "随包传递依赖（实测 6.9.1）；src/ 无直接 import。"
+  - name: opentelemetry-exporter-http-transport
+    import_name: opentelemetry_exporter_http_transport
+    license: "Apache-2.0"
+    category: observability
+    used: "no"
+    risk: low
+    action: "随包传递依赖（opentelemetry-exporter-otlp-proto-http 的依赖）；src/ 无直接 import。2026-11-13 按新包实测补登（0.4.6-big，0.66b2）。"
   - name: opentelemetry-exporter-otlp
     import_name: opentelemetry_exporter_otlp
     license: "Apache-2.0"
@@ -695,6 +755,13 @@ components:
     used: "partial"
     risk: low
     action: "src/ 间接使用（opentelemetry_exporter_otlp）；随包实测 1.44.0。"
+  - name: opentelemetry-exporter-otlp-common
+    import_name: opentelemetry_exporter_otlp_common
+    license: "Apache-2.0"
+    category: observability
+    used: "no"
+    risk: low
+    action: "随包传递依赖（opentelemetry-exporter-otlp-proto-grpc / proto-http 的依赖）；src/ 无直接 import。2026-11-13 按新包实测补登（0.4.6-big，0.66b2）。"
   - name: opentelemetry-exporter-otlp-proto-common
     import_name: opentelemetry_exporter_otlp_proto_common
     license: "Apache-2.0"
@@ -909,9 +976,9 @@ components:
     import_name: websockets
     license: "BSD-3-Clause"
     category: network
-    used: "no"
+    used: "guarded"
     risk: low
-    action: "随包传递依赖（实测 16.1.1）；src/ 无直接 import。"
+    action: "桌宠 WS 推送连接（src/desktop/pet.py 惰性导入，没装就回落轮询）；D 组 2026-11-14 由 no 改 guarded。"
   - name: yarl
     import_name: yarl
     license: "Apache-2.0"
@@ -968,3 +1035,1229 @@ components:
     used: "yes"
     risk: low
     action: "桌面壳默认后端（另一条打包线已随包补齐，DEP-03 的修复物）；BSD-3-Clause。"
+
+  # ---------------- 随包传递依赖（2026-11-13 按 0.4.6 交付包实测补齐）----------------
+  - name: aiofile
+    import_name: aiofile
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.12.3，传递依赖。
+
+  - name: aioitertools
+    import_name: aioitertools
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.13.0，传递依赖。
+
+  - name: arize-phoenix-client
+    import_name: arize_phoenix_client
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.4.0，传递依赖。
+
+  - name: arize-phoenix-otel
+    import_name: arize_phoenix_otel
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.17.1，传递依赖。
+
+  - name: arize-phoenix-sqlean
+    import_name: sqlean
+    license: Zlib AND MIT AND BSD-2-Clause AND BSD-3-Clause AND PSF-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.1.1，传递依赖。
+
+  - name: asgiref
+    import_name: asgiref
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.12.1，传递依赖。
+
+  - name: authlib
+    import_name: authlib
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.9.1，传递依赖。
+
+  - name: backoff
+    import_name: backoff
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.2.1，传递依赖。
+
+  - name: bashkit
+    import_name: bashkit
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.17.1，传递依赖。
+
+  - name: beartype
+    import_name: beartype
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.22.9，传递依赖。
+
+  - name: boto3
+    import_name: boto3
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.43.89，传递依赖。
+
+  - name: botocore
+    import_name: botocore
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.43.89，传递依赖。
+
+  - name: cachetools
+    import_name: cachetools
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 7.1.8，传递依赖。
+
+  - name: caio
+    import_name: caio
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.12.2，传递依赖。
+
+  - name: cloudpickle
+    import_name: cloudpickle
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.1.2，传递依赖。
+
+  - name: colorama
+    import_name: colorama
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.6，传递依赖。
+
+  - name: cross-web
+    import_name: cross_web
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.7.0，传递依赖。
+
+  - name: cyclopts
+    import_name: cyclopts
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.24.0，传递依赖。
+
+  - name: distro
+    import_name: distro
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.9.0，传递依赖。
+
+  - name: dnspython
+    import_name: dnspython
+    license: ISC
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.9.0，传递依赖。
+
+  - name: exceptiongroup
+    import_name: exceptiongroup
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.3.1，传递依赖。
+
+  - name: genai-prices
+    import_name: genai_prices
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.1.6，传递依赖。
+
+  - name: graphql-core
+    import_name: graphql
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.2.12，传递依赖。
+
+  - name: griffelib
+    import_name: griffelib
+    license: ISC
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.3.0，传递依赖。
+
+  - name: grpc-interceptor
+    import_name: grpc_interceptor
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.15.4，传递依赖。
+
+  - name: grpcio
+    import_name: grpc
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.83.1，传递依赖。
+
+  - name: httpx-sse
+    import_name: httpx_sse
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.3，传递依赖。
+
+  - name: iniconfig
+    import_name: iniconfig
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.3.0，传递依赖。
+
+  - name: jaraco-classes
+    import_name: jaraco
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.4.0，传递依赖。
+
+  - name: jaraco-context
+    import_name: jaraco
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 6.1.2，传递依赖。
+
+  - name: jaraco-functools
+    import_name: jaraco
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.6.0，传递依赖。
+
+  - name: jinja2
+    import_name: jinja2
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.1.6，传递依赖。
+
+  - name: jmespath
+    import_name: jmespath
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.1.0，传递依赖。
+
+  - name: joblib
+    import_name: joblib
+    license: BSD-3-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.6.0，传递依赖。
+
+  - name: joserfc
+    import_name: joserfc
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.7.6，传递依赖。
+
+  - name: jsonpatch
+    import_name: jsonpatch
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.33，传递依赖。
+
+  - name: jsonpath-ng
+    import_name: jsonpath_ng
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.8.0，传递依赖。
+
+  - name: jsonpointer
+    import_name: jsonpointer
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.1.1，传递依赖。
+
+  - name: jsonref
+    import_name: jsonref
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.1.0，传递依赖。
+
+  - name: jsonschema
+    import_name: jsonschema
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.26.0，传递依赖。
+
+  - name: jsonschema-path
+    import_name: jsonschema_path
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.5.0，传递依赖。
+
+  - name: jsonschema-specifications
+    import_name: jsonschema_specifications
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2025.9.1，传递依赖。
+
+  - name: keyring
+    import_name: keyring
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 25.7.0，传递依赖。
+
+  - name: langchain-classic
+    import_name: langchain_classic
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.0.8，传递依赖。
+
+  - name: langchain-community
+    import_name: langchain_community
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.2，传递依赖。
+
+  - name: langchain-core
+    import_name: langchain_core
+    license: MIT License
+    category: runtime-transitive
+    used: "yes"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.6.2，传递依赖。
+
+  - name: langchain-openai
+    import_name: langchain_openai
+    license: MIT License
+    category: runtime-transitive
+    used: "yes"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.6.0，传递依赖。
+
+  - name: langchain-protocol
+    import_name: langchain_protocol
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.0.19，传递依赖。
+
+  - name: langchain-text-splitters
+    import_name: langchain_text_splitters
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.1.2，传递依赖。
+
+  - name: langgraph-checkpoint
+    import_name: langgraph_checkpoint
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.2.0，传递依赖。
+
+  - name: langgraph-prebuilt
+    import_name: langgraph_prebuilt
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.1.0，传递依赖。
+
+  - name: langgraph-sdk
+    import_name: langgraph_sdk
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.6，传递依赖。
+
+  - name: langsmith
+    import_name: langsmith
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.12.1，传递依赖。
+
+  - name: logfire-api
+    import_name: logfire_api
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 5.0.0，传递依赖。
+
+  - name: mako
+    import_name: mako
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.4.1，传递依赖。
+
+  - name: markdown-it-py
+    import_name: markdown_it_py
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.2.0，传递依赖。
+
+  - name: markupsafe
+    import_name: markupsafe
+    license: BSD-3-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.0.3，传递依赖。
+
+  - name: mdurl
+    import_name: mdurl
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.1.2，传递依赖。
+
+  - name: more-itertools
+    import_name: more_itertools
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 11.1.0，传递依赖。
+
+  - name: narwhals
+    import_name: narwhals
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.25.0，传递依赖。
+
+  - name: numpy
+    import_name: numpy
+    license: BSD License
+    category: runtime-transitive
+    used: "yes"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.26.4，传递依赖。
+
+  - name: openapi-pydantic
+    import_name: openapi_pydantic
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.5.1，传递依赖。
+
+  - name: openinference-instrumentation
+    import_name: openinference_instrumentation
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.1.61，传递依赖。
+
+  - name: openinference-instrumentation-openai
+    import_name: openinference_instrumentation_openai
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.1.58，传递依赖。
+
+  - name: openinference-semantic-conventions
+    import_name: openinference_semantic_conventions
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.1.35，传递依赖。
+
+  - name: ormsgpack
+    import_name: ormsgpack
+    license: Apache-2.0 OR MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.12.2，传递依赖。
+
+  - name: pandas
+    import_name: pandas
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.0.5，传递依赖。
+
+  - name: pathable
+    import_name: pathable
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.6.0，传递依赖。
+
+  - name: pluggy
+    import_name: pluggy
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.6.0，传递依赖。
+
+  - name: portalocker
+    import_name: portalocker
+    license: BSD-3-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.2.0，传递依赖。
+
+  - name: posthog
+    import_name: posthog
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 7.47.0，传递依赖。
+
+  - name: py-key-value-aio
+    import_name: py_key_value_aio
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.5，传递依赖。
+
+  - name: pyarrow
+    import_name: pyarrow
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 25.0.1，传递依赖。
+
+  - name: pyasn1
+    import_name: pyasn1
+    license: BSD-2-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.6.5，传递依赖。
+
+  - name: pyasn1-modules
+    import_name: pyasn1_modules
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.2，传递依赖。
+
+  - name: pycron
+    import_name: pycron
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.3.0，传递依赖。
+
+  - name: pydantic-ai-slim
+    import_name: pydantic_ai_slim
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.40.0，传递依赖。
+
+  - name: pydantic-graph
+    import_name: pydantic_graph
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.40.0，传递依赖。
+
+  - name: pydantic-monty
+    import_name: pydantic_monty
+    license: MIT
+    category: runtime-transitive
+    used: "guarded"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.0.21，传递依赖。
+
+  - name: pydantic-monty-client
+    import_name: pydantic_monty_client
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.0.21，传递依赖。
+
+  - name: pydantic-monty-runtime
+    import_name: pydantic_monty_runtime
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.0.21，传递依赖。
+
+  - name: pyperclip
+    import_name: pyperclip
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.11.0，传递依赖。
+
+  - name: pystache
+    import_name: pystache
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.6.8，传递依赖。
+
+  - name: python-dateutil
+    import_name: dateutil
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.9.0.post0，传递依赖。
+
+  - name: python-json-logger
+    import_name: pythonjsonlogger
+    license: BSD-2-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.2.0，传递依赖。
+
+  - name: pytz
+    import_name: pytz
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2026.3.post1，传递依赖。
+
+  - name: referencing
+    import_name: referencing
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.37.0，传递依赖。
+
+  - name: regex
+    import_name: regex
+    license: Apache-2.0 AND CNRI-Python
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2026.9.3，传递依赖。
+
+  - name: requests-toolbelt
+    import_name: requests_toolbelt
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.0.0，传递依赖。
+
+  - name: rich-rst
+    import_name: rich_rst
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.1.0，传递依赖。
+
+  - name: rpds-py
+    import_name: rpds_py
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2026.6.3，传递依赖。
+
+  - name: s3transfer
+    import_name: s3transfer
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.19.2，传递依赖。
+
+  - name: scikit-learn
+    import_name: scikit_learn
+    license: BSD-3-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.9.0，传递依赖。
+
+  - name: scipy
+    import_name: scipy
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.13.1，传递依赖。
+
+  - name: six
+    import_name: six
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 1.17.0，传递依赖。
+
+  - name: sortedcontainers
+    import_name: sortedcontainers
+    license: Apache Software License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.4.0，传递依赖。
+
+  - name: sqlglot
+    import_name: sqlglot
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 30.17.0，传递依赖。
+
+  - name: strawberry-graphql
+    import_name: strawberry_graphql
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.327.0，传递依赖。
+
+  - name: threadpoolctl
+    import_name: threadpoolctl
+    license: BSD License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 3.6.0，传递依赖。
+
+  - name: tiktoken
+    import_name: tiktoken
+    license: MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.14.0，传递依赖。
+
+  - name: tqdm
+    import_name: tqdm
+    license: MPL-2.0 AND MIT
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.70.0，传递依赖。
+
+  - name: tzdata
+    import_name: tzdata
+    license: Apache-2.0
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2026.3，传递依赖。
+
+  - name: uncalled-for
+    import_name: uncalled_for
+    license: MIT License
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.4.0，传递依赖。
+
+  - name: uuid-utils
+    import_name: uuid_utils
+    license: BSD-3-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 0.17.0，传递依赖。
+
+  - name: wrapt
+    import_name: wrapt
+    license: BSD-2-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 2.4.0，传递依赖。
+
+  - name: xxhash
+    import_name: _xxhash
+    license: BSD-2-Clause
+    category: runtime-transitive
+    used: "no"
+    risk: low
+    action: 保持；0.4.6 随包版本 4.0.1，传递依赖。
+
+  # ---------------- extras（语音 / OCR / 日历，2026-11-13 核实补登）----------------
+  # 许可证来源：PyPI 元数据 / GitHub 仓库 LICENSE 原文（见 docs/compliance/models-licenses.md
+  # 与 docs/compliance/caldav-apache-2.0.md）。extras 不随 0.4.6 默认包分发，
+  # 随包义务在首次随包时触发；misaki[zh] 的 espeak-ng 是 GPL-3.0 系统组件，
+  # 永远不随包分发，只由用户自装。
+  - name: faster-whisper
+    import_name: faster_whisper
+    license: MIT
+    category: model
+    used: "guarded"
+    risk: low
+    action: 保持；语音 extra，STT 首选；权重见 Systran/faster-whisper-large-v3（MIT）。
+  - name: kokoro-onnx
+    import_name: kokoro_onnx
+    license: MIT
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      注意：kokoro-onnx 库本身是 MIT（GitHub 仓库 LICENSE 原文，2025 thewh1teagle），
+      不是设计稿初版写的 Apache-2.0；Apache-2.0 的是 Kokoro-82M 权重。
+      两者分开登记，勿混淆。
+    action: 保持；语音 extra，TTS；权重 Kokoro-82M（Apache-2.0）用户首次使用时下载。
+  - name: rapidocr-onnxruntime
+    import_name: rapidocr_onnxruntime
+    license: Apache-2.0
+    category: model
+    used: "guarded"
+    risk: low
+    action: 保持；OCR extra，首选引擎；代码与模型同为 Apache-2.0（见 src/ocr/__init__.py）。
+  - name: sherpa-onnx
+    import_name: sherpa_onnx
+    license: Apache-2.0
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      2026-11-15 核实：pip 元数据 License 为 Apache-2.0（k2-fsa/sherpa-onnx，
+      2.0.1）；它带的 onnxruntime 是 MIT（pip 元数据）。声纹认人用它提
+      说话人特征，不用 torch。
+    action: 保持；语音 extra，声纹认人；模型权重见下条（不随包带走）。
+  - name: 3dspeaker-eres2net-base
+    import_name: 3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k
+    license: Apache-2.0
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      2026-11-15 核实：sherpa-onnx speaker-recongition-models 发布页注明
+      “每个模型各有自己的许可，请看对应仓库”；对应仓库是
+      modelscope/3D-Speaker，GitHub license 字段与 README 原文均为
+      Apache-2.0。模型文件 39,593,761 字节，SHA-256 与发布页 checksum.txt
+      一致（1a331345…a5e4b），打开声纹时按需下载一次，不随包带走。
+      ModelScope 模型页当时打不开（fetch 超时），未逐字复核页面上的
+      许可行——以 3D-Speaker 仓库的 Apache-2.0 为准。
+    action: 保持；语音 extra，声纹说话人嵌入模型；用户首次打开声纹时下载。
+  - name: sherpa-onnx-kws-zipformer-wenetspeech-3.3m
+    import_name: sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
+    license: Apache-2.0
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      2026-11-15 核实：sherpa-onnx kws-models 发布页自带 README 的
+      license 字段为 Apache-2.0（apache-2.0）；模型包 32,654,866 字节，
+      SHA-256 与发布页 checksum.txt 一致（b2f7c896…f35f）。唤醒词
+      “贾维斯”专用关键词模型（Zipformer，WenetSpeech 训练），打开唤醒词
+      时按需下载一次，不随包带走；实测 16kHz 合成正样本检出 23/24、
+      负样本 0/31，真人声还没验证（见 src/voice/wake.py）。
+    action: 保持；语音 extra，唤醒词 KWS 模型；用户首次打开唤醒词时下载。
+  - name: icalendar
+    import_name: icalendar
+    license: BSD-2-Clause
+    category: network
+    used: "guarded"
+    risk: low
+    action: 保持；日历 extra，.ics 解析；caldav 的依赖之一。
+  - name: caldav
+    import_name: caldav
+    license: GPL-3.0-or-later OR Apache-2.0
+    category: network
+    used: "guarded"
+    risk: review
+    acknowledged: >
+      双许可：GPL-3.0-or-later 或 Apache-2.0（PyPI license_expression 与
+      README“dual-licensed”原文，2026-11-13 核实）。本项目选择按 Apache-2.0
+      使用（书面记录见 docs/compliance/caldav-apache-2.0.md）：随包附 Apache-2.0
+      全文与归属声明，不触发 GPL 分支义务；一旦有人改按 GPL 分支分发，
+      须重新评估并补 GPL 合规动作。
+    action: 保持；日历 extra，CalDAV 客户端；按 Apache-2.0 分支使用。
+  - name: misaki
+    import_name: misaki
+    license: Apache-2.0
+    category: model
+    used: "guarded"
+    risk: low
+    action: 保持；kokoro-onnx 的 G2P 依赖（misaki[zh] extra）；espeak-ng 只作可选回退。
+  - name: espeak-ng
+    import_name: espeak_ng
+    license: GPL-3.0
+    category: model
+    used: "no"
+    risk: high
+    acknowledged: >
+      espeak-ng 是 GPL-3.0 的系统级语音合成组件（misaki[zh] 的可选回退），
+      永远不随包分发、不进安装器、不进 SBOM 随包清单；只由用户在自己电脑上
+      自装自用。本条仅作“已知存在、明确禁发”的登记，防止后人误打包。
+    action: 禁发；用户自装，绝不随包分发。
+
+  # ---------------- 模型权重（2026-11-13 按 HF 官方元数据核实补登）----------------
+  # 权重不随代码包分发，首次使用时由用户设备从 Hugging Face 下载到数据目录；
+  # 登记的目的是“用之前先知道许可”，不是随包义务。核实记录见
+  # docs/compliance/models-licenses.md。BGE-M3 与 Qwen3-Embedding-0.6B 目前
+  # 未接入，只登记、不触发任何义务。
+  - name: nomic-embed-text
+    import_name: nomic_embed_text
+    license: Apache-2.0
+    category: model
+    used: "yes"
+    risk: low
+    acknowledged: >
+      代码默认向量模型（src/knowledge/embedding.py DEFAULT_OLLAMA_EMBEDDING_MODEL），
+      经 Ollama 拉取；Ollama 的 nomic-embed-text 对应 v1.5。v1 与 v1.5 在 HF 的
+      license 标签均为 apache-2.0（2026-11-13 核实）；仓库根目录无 LICENSE 文件，
+      许可声明以 HF 元数据为准。
+    action: 保持；默认向量模型，Apache-2.0。
+  - name: bge-m3
+    import_name: bge_m3
+    license: MIT
+    category: model
+    used: "no"
+    risk: low
+    acknowledged: >
+      HF 元数据 license:mit（cardData 同样声明 mit，2026-11-13 核实）；
+      仓库内无 LICENSE 文件，许可声明以 HF 元数据为准。
+      若接入须另查 FlagEmbedding 库（MIT，GitHub LICENSE 原文已核实）。
+    action: 只登记；目前未接入，不触发随包义务。
+  - name: qwen3-embedding-0.6b
+    import_name: qwen3_embedding_0_6b
+    license: Apache-2.0
+    category: model
+    used: "no"
+    risk: low
+    acknowledged: >
+      HF 元数据 license:apache-2.0（cardData 同样声明，2026-11-13 核实）。
+    action: 只登记；目前未接入，不触发随包义务。
+  - name: faster-whisper-large-v3
+    import_name: faster_whisper_large_v3
+    license: MIT
+    category: model
+    used: "yes"
+    risk: low
+    acknowledged: >
+      faster-whisper 实际下载的 SYSTRAN 转换版权重（Systran/faster-whisper-large-v3），
+      HF 元数据 license:mit（2026-11-13 核实）。注意与上游 OpenAI 原权重区分：
+      openai/whisper-large-v3 在 HF 声明为 Apache-2.0；代码用的是 SYSTRAN 版，
+      以 MIT 为准。
+    action: 保持；STT 默认权重，首次转写时下载到数据目录，不随包分发。
+  - name: kokoro-82m
+    import_name: kokoro_82m
+    license: Apache-2.0
+    category: model
+    used: "yes"
+    risk: low
+    acknowledged: >
+      HF 元数据 license:apache-2.0（2026-11-13 核实）；与 kokoro-onnx 库（MIT）
+      分开登记。
+    action: 保持；TTS 权重，首次使用时下载到数据目录，不随包分发。
+  - name: rapidocr-models
+    import_name: rapidocr_models
+    license: Apache-2.0
+    category: model
+    used: "yes"
+    risk: low
+    acknowledged: >
+      代码与模型同为 Apache-2.0（src/ocr/__init__.py 注明）；首次识别时自动下载
+      到缓存目录，不随包分发。
+    action: 保持；OCR 模型，首次识别时下载。
+
+# ---------------------------------------------------------------- 非 Python 随包组件
+# 2026-11-13 D-打包补：SBOM / THIRD-PARTY-NOTICES 里的 25 个非 Python 组件
+# （CPython、OpenSSL、SQLite、Tcl/Tk、react 等，含 LGPL-2.1 的 iconv）。
+# 护栏脚本 scripts/verify_oss_licenses.py 只枚举 *.dist-info，查不到它们，
+# 故另立一节登记，不混入 `components:`（后者仍只含 Python 分发，漂移口径不变）。
+# 本节不参与护栏脚本的机器校验，但发包前须人工核对：名字/版本/许可证须与
+# 本次安装包的 sbom-cyclonedx.json 与 THIRD-PARTY-NOTICES.txt 第 3、4 节一致。
+# 版本口径：凡标注“嵌入版 3.12.10 实测”的，均按本次构建的嵌入版 Python 3.12.10
+# 二进制核对过（python312.dll / libcrypto-3.dll / sqlite3.dll / vcruntime140.dll
+# 的版本资源与字符串，见 D-打包核对）；libxml2 / libxslt 两项在 Linux 交叉构建机上
+# 探针取不到，沿用生成器回退值，待真 Windows 探针复核。
+# adodbapi 与 Tix 两项的二进制已被打包剪裁移出安装包（A7 / A5），`shipped: false`；
+# 其许可证全文仍随包（adodbapi 的 LGPL 文本已随其移除而删；Tix 全文仍随包备查），
+# 登记在此仅为留档说明，不得理解为随包分发。
+non_python_components:
+  - name: CPython
+    version: 3.12.10
+    license: PSF-2.0
+    category: runtime
+    shipped: true
+    source: https://docs.python.org/3/license.html
+    evidence: 嵌入版 Python 3.12.10；python312.dll 实测 "3.12.10" / "tags/v3.12.10"；runtime/LICENSE.txt 为 PSF License v2。
+  - name: OpenSSL libcrypto/libssl
+    version: 3.0.16
+    license: Apache-2.0
+    category: runtime
+    shipped: true
+    source: https://www.openssl.org/source/license.html
+    evidence: 嵌入版 3.12.10 随附；libcrypto-3.dll 实测 "OpenSSL 3.0.16 11 Feb 2025"；全文 licenses/Apache-2.0.txt。
+  - name: libffi
+    version: 8（ABI，无 PE 版本资源）
+    license: MIT
+    category: runtime
+    shipped: true
+    source: https://github.com/libffi/libffi/blob/master/LICENSE
+    evidence: runtime/DLLs/libffi-8.dll 存在；无 FileVersion；全文 licenses/libffi-MIT.txt。
+  - name: SQLite
+    version: 3.49.1
+    license: Public-Domain
+    category: runtime
+    shipped: true
+    source: https://www.sqlite.org/copyright.html
+    evidence: 嵌入版 3.12.10 随附；sqlite3.dll FileVersion 3.49.1.0；公版声明 licenses/SQLite-Public-Domain.txt。
+  - name: Tcl
+    version: 8.6.12
+    license: Tcl/Tk-License
+    category: runtime
+    shipped: true
+    source: https://www.tcl.tk/software/tcltk/license.html
+    evidence: tcl86t.dll 实测 FileVersion 8.6.12；license.terms 随包。
+  - name: Tk
+    version: 8.6.12
+    license: Tcl/Tk-License
+    category: runtime
+    shipped: true
+    source: https://www.tcl.tk/software/tcltk/license.html
+    evidence: tk86t.dll 实测 FileVersion 8.6.12；license.terms 随包。
+  - name: Tix
+    version: 8.4.3
+    license: Tix-License
+    category: runtime
+    shipped: false
+    source: https://sourceforge.net/projects/tix/files/Tix/8.4.3/
+    evidence: tix84.dll 已被打包剪裁规则 A5 移出安装包（runtime/tcl/tix8.4.3/ 不随包）；仅许可证全文随包 licenses/Tix-License.txt 备查；产品运行时不加载 Tix。
+  - name: MSVC 运行库 vcruntime140/vcruntime140_1
+    version: 14.42.34438.0
+    license: MS-VS-2022-Redistributable
+    category: runtime
+    shipped: true
+    source: https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+    evidence: 嵌入版 3.12.10 随附；vcruntime140.dll / vcruntime140_1.dll 实测 FileVersion 14.42.34438.0；声明 licenses/Microsoft-VC-Runtime.txt。
+  - name: Tcl 扩展 tcldde14/tclreg13
+    version: 未标注
+    license: Tcl/Tk-License
+    category: runtime
+    shipped: true
+    source: https://www.tcl.tk/software/tcltk/license.html
+    evidence: 随 Tcl 发行版；license.terms 覆盖。
+  - name: libexpat（pyexpat.pyd 静态链接）
+    version: 2.7.1
+    license: MIT
+    category: runtime
+    shipped: true
+    source: https://libexpat.github.io/
+    evidence: 嵌入版 3.12.10 随附；pyexpat.pyd 实测 expat_2.7.1；全文 licenses/expat-MIT.txt。
+  - name: zlib（CPython 静态链接）
+    version: 1.3.1
+    license: Zlib
+    category: runtime
+    shipped: true
+    source: https://www.zlib.net/zlib_license.html
+    evidence: 嵌入版 3.12.10 随附；python312.dll 实测 1.3.1；全文 licenses/zlib-License.txt。
+  - name: libmpdec（_decimal.pyd）
+    version: 2.5.1
+    license: BSD-2-Clause
+    category: runtime
+    shipped: true
+    source: https://www.bytereef.org/mpdecimal/
+    evidence: 嵌入版 3.12.10 随附；_decimal.pyd 实测 2.5.1；全文 licenses/libmpdec-BSD-2-Clause.txt。
+  - name: Unicode 数据（unicodedata.pyd）
+    version: 15.0.0
+    license: Unicode-License
+    category: runtime
+    shipped: true
+    source: https://www.unicode.org/license.txt
+    evidence: 嵌入版 3.12.10 随附；unicodedata.pyd 实测 15.0.0；全文 licenses/Unicode-License.txt。
+  - name: liblzma / XZ Utils（_lzma.pyd）
+    version: 未标注（随 CPython 3.12.10）
+    license: Public-Domain
+    category: runtime
+    shipped: true
+    source: https://tukaani.org/xz/
+    evidence: liblzma 主体为公版；无许可证文本随包，公版不强制署名。
+  - name: bzip2 / libbzip2
+    version: 1.0.8
+    license: bzip2-1.0.8
+    category: runtime
+    shipped: true
+    source: https://sourceware.org/bzip2/
+    evidence: 嵌入版 3.12.10 随附；_bz2.pyd 实测 "1.0.8, 13-Jul-2019"；全文 runtime/LICENSE.txt 第 326 行起。
+  - name: adodbapi（pywin32 内置）
+    version: 2.6.2.0
+    license: LGPL-2.1
+    category: runtime
+    shipped: false
+    source: https://github.com/mhammond/pywin32/tree/main/adodbapi
+    evidence: pywin32 自带的子包，已被打包剪裁规则 A7（packaging/stage_payload.py PruneRule A7，备注“数据库是 SQLite”）移出安装包，不随包分发；其 LGPL 义务对本包不产生。登记在此仅为留档说明，SBOM 与 THIRD-PARTY-NOTICES 不再称其随包。
+  - name: iconv（lxml 二进制 wheel 内置，静态链接）
+    version: 未标注（参考上游 libiconv 1.17）
+    license: LGPL-2.1
+    category: runtime
+    shipped: true
+    source: https://www.gnu.org/software/libiconv/
+    evidence: lxml 6.1.3 官方 Windows wheel 内置 GNU libiconv，静态链接进 runtime/Lib/site-packages/lxml/etree.cp312-win_amd64.pyd（内含 libiconv 字符串，随包无 libiconv DLL）；包里唯一的 LGPL-2.1 嵌入物。全文 licenses/LGPL-2.1.txt、licenses/libiconv-NOTICE.txt；源码要约 licenses/LGPL-SOURCE-OFFER.txt；法务书面确认仍缺，不得宣称 LGPL 闭环。
+  - name: libxml2（lxml 内置）
+    version: 2.11.9
+    license: MIT
+    category: runtime
+    shipped: true
+    source: https://gitlab.gnome.org/GNOME/libxml2
+    evidence: lxml 6.1.3 内置；版本为生成器回退值（Linux 交叉构建机上探针取不到 etree.LIBXML_COMPILED_VERSION），待真 Windows 探针复核；全文见 lxml 的 LICENSES.txt。
+  - name: libxslt/libexslt（lxml 内置）
+    version: 1.1.45
+    license: MIT
+    category: runtime
+    shipped: true
+    source: https://gitlab.gnome.org/GNOME/libxslt
+    evidence: lxml 6.1.3 内置；版本为生成器回退值（Linux 交叉构建机上探针取不到 etree.LIBXSLT_COMPILED_VERSION），待真 Windows 探针复核；全文见 lxml 的 LICENSES.txt。
+  - name: zlib（lxml 内置）
+    version: 未标注
+    license: Zlib
+    category: runtime
+    shipped: true
+    source: https://www.zlib.net/zlib_license.html
+    evidence: "lxml 6.1.3 内置；LICENSES.txt 声明 **zlib**: zlib-license；全文 licenses/zlib-License.txt。"
+  - name: httpx-aiohttp（openai 内置）
+    version: 0.2.0
+    license: BSD-3-Clause
+    category: runtime
+    shipped: true
+    source: https://github.com/karpetrosyan/httpx-aiohttp
+    evidence: openai 内置；NOTICE.md 声明 0.2.0 / BSD-3-Clause，LICENSE 随包。
+  - name: httpx-aiohttp（anthropic 内置）
+    version: 0.2.0
+    license: BSD-3-Clause
+    category: runtime
+    shipped: true
+    source: https://github.com/karpetrosyan/httpx-aiohttp
+    evidence: anthropic 内置；NOTICE.md 声明 0.2.0 / BSD-3-Clause，LICENSE 随包。
+  - name: llhttp（aiohttp 内置）
+    version: 未标注
+    license: MIT
+    category: runtime
+    shipped: true
+    source: https://github.com/nodejs/llhttp
+    evidence: aiohttp 3.14.5 内置；vendor/llhttp/LICENSE 为 MIT 全文；版本未标注。
+  - name: react
+    version: 19.2.8
+    license: MIT
+    category: frontend
+    shipped: true
+    source: https://github.com/facebook/react
+    evidence: 前端 bundle 依赖；console/node_modules/react/package.json 实测 19.2.8；全文 licenses/React-MIT.txt。
+  - name: react-dom
+    version: 19.2.8
+    license: MIT
+    category: frontend
+    shipped: true
+    source: https://github.com/facebook/react
+    evidence: 前端 bundle 依赖；console/node_modules/react-dom/package.json 实测 19.2.8；全文 licenses/React-MIT.txt。
+  - name: scheduler
+    version: 0.27.0
+    license: MIT
+    category: frontend
+    shipped: true
+    source: https://github.com/facebook/react/tree/main/packages/scheduler
+    evidence: 前端 bundle 依赖（React 传递依赖）；console/node_modules/scheduler/package.json 实测 0.27.0；全文 licenses/React-MIT.txt。

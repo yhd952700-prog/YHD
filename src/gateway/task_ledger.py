@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILENAME = "liuhao_tasks.db"
 LEDGER_ENV_VAR = "LIUHAO_TASK_LEDGER_DB"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class LedgerStatus(str, Enum):
@@ -298,6 +298,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempt_count     INTEGER NOT NULL DEFAULT 0,
     archived          INTEGER NOT NULL DEFAULT 0,
     human_hold        INTEGER NOT NULL DEFAULT 0,
+    deferred          INTEGER NOT NULL DEFAULT 0,
     source            TEXT NOT NULL DEFAULT 'goal',
     migration_id      TEXT,
     last_seen_at      REAL NOT NULL
@@ -411,6 +412,15 @@ class TaskLedger:
         with self._lock:
             conn = self._connection()
             conn.executescript(_SCHEMA)
+            # v2：已有库补一列 `deferred`（“以后再说”分桶，0=进行中，1=以后再说）。
+            # CREATE TABLE 里已有该列时 ALTER 会报 duplicate column，拦下即可。
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if "deferred" not in columns:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0"
+                )
             conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -924,7 +934,47 @@ class TaskLedger:
 
     # ── 查询 ────────────────────────────────────────────────
 
+    def _subtask_progress_map(
+        self, conn: sqlite3.Connection, task_ids: Sequence[str]
+    ) -> Dict[str, Dict[str, int]]:
+        """一批任务的子任务进度：{task_id: {total, completed}}，一次查询。
+
+        列表页每行都要显示“2/3 完成”，不能每行再查一次。
+        """
+        ids = list(dict.fromkeys(str(item) for item in task_ids))
+        if not ids:
+            return {}
+        rows = conn.execute(
+            "SELECT task_id, COUNT(*) AS total, "
+            "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS done "
+            "FROM task_steps WHERE task_id IN (%s) GROUP BY task_id"
+            % ",".join("?" for _ in ids),
+            ids,
+        ).fetchall()
+        return {
+            str(row["task_id"]): {
+                "total": int(row["total"] or 0),
+                "completed": int(row["done"] or 0),
+            }
+            for row in rows
+        }
+
+    def _attach_subtask_progress(
+        self,
+        conn: sqlite3.Connection,
+        tasks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        progress = self._subtask_progress_map(
+            conn, [str(item["task_id"]) for item in tasks]
+        )
+        for task in tasks:
+            counts = progress.get(str(task["task_id"]), {"total": 0, "completed": 0})
+            task["subtask_total"] = counts["total"]
+            task["subtask_completed"] = counts["completed"]
+        return tasks
+
     def _task_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        keys = set(row.keys())
         return {
             "task_id": row["task_id"],
             "goal_id": row["goal_id"],
@@ -951,6 +1001,7 @@ class TaskLedger:
             "attempt_count": int(row["attempt_count"] or 0),
             "archived": bool(row["archived"]),
             "human_hold": bool(row["human_hold"]),
+            "deferred": bool(row["deferred"]) if "deferred" in keys else False,
             "source": row["source"],
         }
 
@@ -1001,10 +1052,16 @@ class TaskLedger:
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
-            row = self._connection().execute(
+            conn = self._connection()
+            row = conn.execute(
                 "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
             ).fetchone()
-        return self._task_row_to_dict(row) if row is not None else None
+            if row is None:
+                return None
+            tasks = self._attach_subtask_progress(
+                conn, [self._task_row_to_dict(row)]
+            )
+        return tasks[0]
 
     def list_tasks(
         self,
@@ -1015,6 +1072,7 @@ class TaskLedger:
         assignee_name: Optional[str] = None,
         goal_id: Optional[str] = None,
         owners: Optional[Sequence[str]] = None,
+        deferred: Optional[bool] = None,
         limit: int = 20,
         offset: int = 0,
         sort_by: str = "created_at",
@@ -1037,6 +1095,9 @@ class TaskLedger:
         if goal_id:
             where.append("goal_id = ?")
             params.append(goal_id)
+        if deferred is not None:
+            where.append("deferred = ?")
+            params.append(1 if deferred else 0)
         if owners is not None:
             owners = list(dict.fromkeys(owners))
             if not owners:
@@ -1064,11 +1125,14 @@ class TaskLedger:
                 f"task_id {direction} LIMIT ? OFFSET ?",
                 params + [int(limit), int(offset)],
             ).fetchall()
+            items = self._attach_subtask_progress(
+                conn, [self._task_row_to_dict(row) for row in rows]
+            )
         return {
             "total": total,
             "limit": int(limit),
             "offset": int(offset),
-            "items": [self._task_row_to_dict(row) for row in rows],
+            "items": items,
         }
 
     def list_steps(self, task_id: str) -> List[Dict[str, Any]]:
@@ -1563,6 +1627,357 @@ class TaskLedger:
                 (time.time(), migration_id),
             )
         return {"migration_id": migration_id, "tasks_deleted": len(task_ids)}
+
+    # ── 手动子任务与批量操作（A1）────────────────────────────
+    #
+    # 台账此前只有 goal 投影的子步骤（``sync_goal`` 写穿透）：任务中心
+    # 想"手动拆一个子任务、批量改一批任务"没有入口。这里补手动子任务
+    # （``step_key = manual-…``，与投影步骤同一张表、同一七态）与任务级
+    # 手动改状态/删任务。手动改状态会打 ``human_hold`` —— 与人工接管
+    # 同一语义：之后 goal 投影不再把它改回去，否则批量改完下次同步
+    # 又悄悄变回去。
+
+    def _sync_parent_from_subtasks(
+        self, conn: sqlite3.Connection, task_id: str, *, actor: str = ""
+    ) -> Optional[str]:
+        """子任务变了之后，把父任务状态对齐（同一事务内调用）。
+
+        * 子任务全完成、父任务还在干活态（待分配 / 待执行 / 执行中）→
+          父任务完成，并记一条 ``subtasks_all_completed`` 执行记录，标明
+          这是子任务推导的；
+        * 父任务是“等你确认”（reviewing）时不自动完成 —— 还要人看一眼，
+          不能悄悄替人拍板；失败 / 已取消的父任务也不动；
+        * 父任务曾因“子任务全完成”自动完成过，后来又有子任务被改回未完成
+          或新加了子任务 → 父任务回到待执行（只认 ``subtasks_all_completed``
+          这条推导记录；人亲手点的完成、目标投影的完成都不回退）。
+
+        返回父任务的新状态，未变返回 None。
+        """
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        parent_status = str(row["status"])
+        steps = conn.execute(
+            "SELECT status FROM task_steps WHERE task_id = ?", (task_id,)
+        ).fetchall()
+        if not steps:
+            return None
+        total = len(steps)
+        done = sum(
+            1
+            for item in steps
+            if str(item["status"]) == LedgerStatus.COMPLETED.value
+        )
+        now = time.time()
+        if done == total and parent_status in (
+            LedgerStatus.PENDING_ASSIGNMENT.value,
+            LedgerStatus.PENDING.value,
+            LedgerStatus.RUNNING.value,
+        ):
+            conn.execute(
+                "UPDATE tasks SET status=?, human_hold=1, updated_at=?, "
+                "completed_at=?, last_seen_at=? WHERE task_id=?",
+                (LedgerStatus.COMPLETED.value, now, now, now, task_id),
+            )
+            self._transition_runs(
+                conn, task_id=task_id, step_id=None, step_key=None,
+                status_from=parent_status,
+                status_to=LedgerStatus.COMPLETED.value,
+                error=None, attempt=0,
+            )
+            self._append_run(
+                conn, task_id=task_id, step_id=None, step_key=None,
+                event="subtasks_all_completed", status_from=parent_status,
+                status_to=LedgerStatus.COMPLETED.value, actor_type="human",
+                actor_id=actor,
+                detail={"done": done, "total": total, "derived_from": "subtasks"},
+            )
+            return LedgerStatus.COMPLETED.value
+        if done < total and parent_status == LedgerStatus.COMPLETED.value:
+            latest = conn.execute(
+                "SELECT event FROM task_runs WHERE task_id=? "
+                "AND status_to='completed' ORDER BY at DESC, rowid DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if latest is not None and str(latest["event"]) == "subtasks_all_completed":
+                conn.execute(
+                    "UPDATE tasks SET status=?, updated_at=?, completed_at=NULL, "
+                    "last_seen_at=? WHERE task_id=?",
+                    (LedgerStatus.PENDING.value, now, now, task_id),
+                )
+                self._append_run(
+                    conn, task_id=task_id, step_id=None, step_key=None,
+                    event="subtask_reopened",
+                    status_from=LedgerStatus.COMPLETED.value,
+                    status_to=LedgerStatus.PENDING.value, actor_type="human",
+                    actor_id=actor,
+                    detail={"done": done, "total": total, "derived_from": "subtasks"},
+                )
+                return LedgerStatus.PENDING.value
+        return None
+
+    def create_subtask(
+        self,
+        task_id: str,
+        *,
+        name: str,
+        description: str = "",
+        status: str = "pending",
+        assignee_type: str = "none",
+        assignee_id: str = "",
+        assignee_name: str = "",
+        actor: str = "",
+    ) -> Dict[str, Any]:
+        name = str(name or "").strip()
+        if not name:
+            raise LedgerError(400, "subtask_name_required", "子任务名字不能为空")
+        status_value = str(status or "pending").strip().lower()
+        if status_value not in ALL_STATUSES:
+            raise LedgerError(
+                400, "invalid_status", f"未知状态：{status_value}；可选 {', '.join(ALL_STATUSES)}"
+            )
+        now = time.time()
+        with self._tx() as conn:
+            task = conn.execute(
+                "SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise LedgerError(404, "task_not_found", f"任务不存在：{task_id}")
+            max_seq = conn.execute(
+                "SELECT MAX(seq) FROM task_steps WHERE task_id = ?", (task_id,)
+            ).fetchone()[0]
+            seq = int(max_seq or 0) + 1
+            step_id = uuid.uuid4().hex
+            step_key = f"manual-{uuid.uuid4().hex[:12]}"
+            conn.execute(
+                "INSERT INTO task_steps(step_id, task_id, step_key, seq, name, "
+                "description, status, status_source, capability_id, assignee_type, "
+                "assignee_id, assignee_name, dependencies_json, inputs_json, "
+                "artifacts_json, error, technical_detail, started_at, completed_at, "
+                "attempt_count, human_hold, last_seen_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    step_id, task_id, step_key, seq, name, description,
+                    status_value, "manual", None, assignee_type, assignee_id,
+                    assignee_name, "[]", "{}", "[]", None, None, None,
+                    now if status_value in TERMINAL_STATUSES else None,
+                    0, 0, now,
+                ),
+            )
+            self._append_run(
+                conn, task_id=task_id, step_id=step_id, step_key=step_key,
+                event="created", status_from=None, status_to=status_value,
+                actor_type="human", actor_id=actor,
+                detail={"source": "manual"},
+            )
+            # 新子任务默认未完成：父任务若曾因“子任务全完成”自动完成过，
+            # 现在要回到待执行，对得上。
+            self._sync_parent_from_subtasks(conn, task_id, actor=actor)
+        steps = self.list_steps(task_id)
+        return next(item for item in steps if item["step_key"] == step_key)
+
+    def update_subtask(
+        self,
+        task_id: str,
+        step_key: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        assignee_type: Optional[str] = None,
+        assignee_id: Optional[str] = None,
+        assignee_name: Optional[str] = None,
+        actor: str = "",
+    ) -> Dict[str, Any]:
+        updates: Dict[str, Any] = {}
+        if name is not None:
+            name = str(name).strip()
+            if not name:
+                raise LedgerError(400, "subtask_name_required", "子任务名字不能为空")
+            updates["name"] = name
+        if description is not None:
+            updates["description"] = str(description)
+        status_value: Optional[str] = None
+        if status is not None:
+            status_value = str(status).strip().lower()
+            if status_value not in ALL_STATUSES:
+                raise LedgerError(
+                    400, "invalid_status", f"未知状态：{status_value}；可选 {', '.join(ALL_STATUSES)}"
+                )
+            updates["status"] = status_value
+            updates["status_source"] = "manual"
+        if assignee_type is not None:
+            updates["assignee_type"] = str(assignee_type)
+        if assignee_id is not None:
+            updates["assignee_id"] = str(assignee_id)
+        if assignee_name is not None:
+            updates["assignee_name"] = str(assignee_name)
+        if not updates:
+            step = next(
+                (item for item in self.list_steps(task_id) if item["step_key"] == step_key),
+                None,
+            )
+            if step is None:
+                raise LedgerError(404, "step_not_found", f"任务 {task_id} 下不存在子任务 {step_key}")
+            return step
+        now = time.time()
+        with self._tx() as conn:
+            previous = conn.execute(
+                "SELECT * FROM task_steps WHERE task_id = ? AND step_key = ?",
+                (task_id, step_key),
+            ).fetchone()
+            if previous is None:
+                raise LedgerError(404, "step_not_found", f"任务 {task_id} 下不存在子任务 {step_key}")
+            if status_value is not None and status_value in TERMINAL_STATUSES:
+                updates["completed_at"] = now
+            elif status_value is not None:
+                updates["completed_at"] = None
+            updates["last_seen_at"] = now
+            assignments = ", ".join(f"{key}=?" for key in updates)
+            conn.execute(
+                f"UPDATE task_steps SET {assignments} WHERE step_id=?",
+                (*updates.values(), str(previous["step_id"])),
+            )
+            if status_value is not None and str(previous["status"]) != status_value:
+                self._transition_runs(
+                    conn, task_id=task_id, step_id=str(previous["step_id"]),
+                    step_key=step_key, status_from=str(previous["status"]),
+                    status_to=status_value, error=previous["error"], attempt=int(previous["attempt_count"] or 0),
+                )
+            if status_value is not None:
+                self._sync_parent_from_subtasks(conn, task_id, actor=actor)
+        step = next(
+            (item for item in self.list_steps(task_id) if item["step_key"] == step_key),
+            None,
+        )
+        assert step is not None  # noqa: S101 - 刚更新的行不可能消失
+        return step
+
+    def delete_subtask(self, task_id: str, step_key: str, *, actor: str = "") -> bool:
+        with self._tx() as conn:
+            previous = conn.execute(
+                "SELECT * FROM task_steps WHERE task_id = ? AND step_key = ?",
+                (task_id, step_key),
+            ).fetchone()
+            if previous is None:
+                return False
+            self._append_run(
+                conn, task_id=task_id, step_id=str(previous["step_id"]),
+                step_key=step_key, event="subtask_deleted",
+                status_from=str(previous["status"]), status_to=None,
+                actor_type="human", actor_id=actor,
+                detail={"name": str(previous["name"])},
+            )
+            conn.execute(
+                "DELETE FROM task_steps WHERE step_id=?", (str(previous["step_id"]),)
+            )
+            # 删掉最后一个没完成的子任务、或删掉已完成的子任务后，
+            # 父任务状态都要重新对齐（全完成→完成 / 曾自动完成过→回待执行）。
+            self._sync_parent_from_subtasks(conn, task_id, actor=actor)
+            return True
+
+    def set_task_status(
+        self, task_id: str, *, status: str, actor: str = ""
+    ) -> Dict[str, Any]:
+        """手动改任务状态（批量改状态的单条实现）。
+
+        状态非法 400；不存在 404。改完打 ``human_hold``：人工定的状态
+        不再被 goal 投影覆盖（与人工接管同理），否则批量改完下次同步
+        又悄悄变回去。
+        """
+        status_value = str(status or "").strip().lower()
+        if status_value not in ALL_STATUSES:
+            raise LedgerError(
+                400, "invalid_status", f"未知状态：{status_value}；可选 {', '.join(ALL_STATUSES)}"
+            )
+        now = time.time()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise LedgerError(404, "task_not_found", f"任务不存在：{task_id}")
+            previous_status = str(row["status"])
+            conn.execute(
+                "UPDATE tasks SET status=?, human_hold=1, updated_at=?, "
+                "completed_at=?, last_seen_at=? WHERE task_id=?",
+                (
+                    status_value,
+                    now,
+                    now if status_value in TERMINAL_STATUSES else None,
+                    now,
+                    task_id,
+                ),
+            )
+            if previous_status != status_value:
+                self._transition_runs(
+                    conn, task_id=task_id, step_id=None, step_key=None,
+                    status_from=previous_status, status_to=status_value,
+                    error=row["error"], attempt=int(row["attempt_count"] or 0),
+                )
+        task = self.get_task(task_id)
+        assert task is not None  # noqa: S101 - 刚更新的行不可能消失
+        return task
+
+    def set_deferred(
+        self, task_id: str, *, deferred: bool, actor: str = ""
+    ) -> Dict[str, Any]:
+        """把任务移进 / 移出“以后再说”桶（批量移桶的单条实现）。
+
+        只改分桶标志，不改七态；同样打 ``human_hold``，人工定的分桶
+        不再被 goal 投影覆盖（与人工改状态同理）。
+        """
+        now = time.time()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise LedgerError(404, "task_not_found", f"任务不存在：{task_id}")
+            previous = bool(row["deferred"]) if "deferred" in row.keys() else False
+            conn.execute(
+                "UPDATE tasks SET deferred=?, human_hold=1, updated_at=?, "
+                "last_seen_at=? WHERE task_id=?",
+                (1 if deferred else 0, now, now, task_id),
+            )
+            if previous != bool(deferred):
+                self._append_run(
+                    conn, task_id=task_id, step_id=None, step_key=None,
+                    event="deferred_changed", status_from=str(row["status"]),
+                    status_to=str(row["status"]), actor_type="human",
+                    actor_id=actor,
+                    detail={"from": previous, "to": bool(deferred)},
+                )
+        task = self.get_task(task_id)
+        assert task is not None  # noqa: S101 - 刚更新的行不可能消失
+        return task
+
+    def delete_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """删一条台账任务（连同子步骤与执行记录）。
+
+        返回被删任务的摘要（含 ``source``），不存在返回 None。注意：
+        ``source='goal'`` 的任务来自目标同步，删掉后下次目标同步/
+        迁移可能重新出现 —— 调用方（批量删除）必须把这一点如实告诉用户。
+        """
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT task_id, goal_id, title, source FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            summary = {
+                "task_id": str(row["task_id"]),
+                "goal_id": str(row["goal_id"]),
+                "title": str(row["title"]),
+                "source": str(row["source"]),
+            }
+            conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM task_steps WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+            return summary
 
     # ── 一致性核对 / 概览 ───────────────────────────────────
 

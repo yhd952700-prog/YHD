@@ -790,6 +790,12 @@ def prepare_environment() -> tuple[Path, Path]:
         os.environ["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = integrity_key
     os.environ.setdefault("APP_ENV", "production")
     os.environ.setdefault("LOG_LEVEL", "info")
+    # 安装版只有一个网关进程、没有独立的 liuhao-scheduler 进程：生产环境默认
+    # 不托管排程器，会让提醒 / 例程 / 每天 03:00 自动备份在安装版里永远不触
+    # 发（走查 F15：网关日志三次“按配置不在网关内托管”，到点提醒 3 分钟后
+    # 仍未触发）。显式让网关在进程内托管排程器；外部已显式设置时 setdefault
+    # 不覆盖，保留回退开关。supervisor 多 worker 部署不用这个启动器，不受影响。
+    os.environ.setdefault("LIUHAO_GATEWAY_SCHEDULER", "1")
     # 安装形态就是生产形态：D24 要求生产至少武装 CRITICAL 级内核动作。
     # 旧版 app.env 没有这一行，因此不能只改模板，必须在启动器兜底；
     # 外部显式设置为空/其他级别时 setdefault 不覆盖，保留回退开关。

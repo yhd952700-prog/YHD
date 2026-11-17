@@ -43,6 +43,7 @@ from .account_usage import record_usage
 from ..ai.conversation_store import ConversationStoreError
 from ..ai.context_budget import estimate_tokens
 from ..ai.model_config import ModelConfigError
+from ..ai.reasoned_reply import structure_reply
 from ..ai.usage_meter import UsageMeter, meter_scope, snapshot, use_meter
 from ..common.atomic_write import (
     StorageWriteError,
@@ -411,7 +412,20 @@ def get_assistant(
     # 先解析 provider，再创建会话：provider 解析失败（如成员没有可用模型，
     # 返回 409）时绝不留下一个空 assistant。此前是先插入 _sessions 再解析，
     # 实测 member 连续 10 次 409 会留下 10 个空会话。
-    provider = provider_for_task("chat", model_id=model_id, key_scope=key_scope)
+    # 模型失败自动换下一个（A2a 第 10 项）：指定模型解析失败时，按
+    # “指定 → 默认 → 其余已配模型”的顺序换下一个，每次失败都记日志；
+    # 全部失败才把原始错误抛回，绝不编造一个能用的 provider。
+    try:
+        provider = provider_for_task("chat", model_id=model_id, key_scope=key_scope)
+    except Exception:
+        from .a2a import resolve_provider_with_fallback
+
+        # 必须传本模块的 provider_for_task 作 resolver：它带 Key 归属视角，
+        # 也是测试接缝；直连 model_router 会绕过这两点（已踩过一次，见
+        # test_p1_9：解析失败必须原样 409、不留空会话）。
+        provider = resolve_provider_with_fallback(
+            model_id=model_id, key_scope=key_scope, resolver=provider_for_task
+        )
 
     # 快路径：命中缓存只更新 LRU，不进入构造锁。
     with _sessions_lock:
@@ -560,6 +574,46 @@ def delete_session(session_id: str, principal: Optional[str] = None) -> bool:
     return cleared
 
 
+def session_title(session_id: str, principal: Optional[str] = None) -> str:
+    """一个会话的展示标题：人工改过的名优先，否则取首条消息前 16 字。
+
+    没改过名、也没有消息时返回空串（前端如实显示会话 ID，不编标题）。
+    """
+    store = get_conversation_store()
+    history_principal = _resolve_history_principal(principal, session_id)
+    manual = store.get_session_title(history_principal)
+    if manual:
+        return manual
+    first = store.load(history_principal, limit=1)
+    if not first:
+        return ""
+    return str(first[0].get("content") or "").strip()[:16]
+
+
+def rename_session(
+    session_id: str, title: str, principal: Optional[str] = None
+) -> bool:
+    """给会话改名：标题只存展示名，不动历史。
+
+    会话不存在（既无活跃实例、持久库也无行）返回 False；改名不创建
+    空会话 —— 对着不存在的会话改名不是"新建"，调用方按 404 处理。
+    """
+    title = normalize_required_text(title, "会话标题", max_chars=64)
+    key = _session_key(principal, session_id)
+    with _sessions_lock:
+        live = key in _sessions
+    if not live:
+        store = get_conversation_store()
+        if not any(
+            store.has_rows(candidate)
+            for candidate in _history_principal_candidates(principal, session_id)
+        ):
+            return False
+    history_principal = _resolve_history_principal(principal, session_id)
+    get_conversation_store().set_session_title(history_principal, title)
+    return True
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=8000, description="用户消息")
     session_id: Optional[str] = Field("default", description="会话 ID（多轮独立）")
@@ -601,6 +655,9 @@ class ChatResponse(BaseModel):
     agent: str
     #: 始终存在：说明本次是否使用知识库、命中来源；未使用必有原因。
     knowledge: Dict[str, object]
+    #: 结构化回答（A3r §2，B 组前端按它渲染）：结论/理由/依据列表；
+    #: 没依据时 evidence=["没找到依据"]，不许编来源。
+    structured: Optional[Dict[str, object]] = None
     #: 失败时的机器可读原因（quota_exhausted / key_revoked / ...），与 SSE
     #: done 帧的 ``reason`` 同源；成功时为 null。
     reason: Optional[str] = None
@@ -659,7 +716,9 @@ def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
         ) from exc
     owner = str(getattr(assistant.provider, "owner_principal", "") or "")
     if owner and owner != principal and scope.can_use(owner):
-        # 主账号使用成员 Key：actor 仍是主账号，另记 key_owner 与授权来源。
+        # Key 不共用（2026-11-14 新规矩）之后，这条分支正常情况下已不可达
+        # （scope 里不再有别人的 Key）；留作纵深防御：万一将来某条解析路径
+        # 又放进了别人的 Key，这里至少留一条审计痕迹，而不是静默用掉。
         audit_key_use(scope, owner, outcome="allowed", source="authorized_share")
     return assistant
 
@@ -953,6 +1012,7 @@ def _cached_chat_response(cached: Dict[str, object]) -> ChatResponse:
         correlation_id=str(cached.get("correlation_id") or ""),
         agent=str(cached.get("agent") or ""),
         knowledge=dict(cached.get("knowledge") or {}),
+        structured=dict(cached.get("structured") or {}),
     )
 
 
@@ -971,6 +1031,7 @@ def _replay_cached_stream(req: "ChatRequest", cached: Dict[str, object]):
             "correlation_id": str(cached.get("correlation_id") or ""),
             "usage_recorded": bool(cached.get("usage_recorded")),
             "knowledge": dict(cached.get("knowledge") or {}),
+            "structured": dict(cached.get("structured") or {}),
             "deduplicated": True,
         }
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
@@ -999,6 +1060,70 @@ def _denial_http_error(result: Dict[str, object]) -> HTTPException:
     )
 
 
+def _workbench_bot_id(session_id: Optional[str]) -> Optional[str]:
+    """工作台会话 ``workbench-<bot_id>`` 里的 Bot id；普通会话返回 None。"""
+    raw = str(session_id or "")
+    if not raw.startswith("workbench-"):
+        return None
+    bot_id = raw[len("workbench-"):].strip()
+    return bot_id or None
+
+
+def _enforce_usage_caps(req: "ChatRequest", principal: str) -> None:
+    """用量上限门禁（聊天热路径）：到上限就 429 拦截，不调用模型、不记用量。
+
+    调在去重之后、生成之前（``chat`` / ``chat_stream`` 共用）。顺序：
+    先 per-Bot 上限（工作台会话的 Bot），再主账号总上限（只对根主体；
+    子账号不设任何上限，Joseph 2026-11-14 ~09:26 拍板）。
+
+    判断一律用无副作用的状态函数（``a2a.bot_cap_status`` /
+    ``a3s.owner_cap_allows_call``）：会发通知的那两版（``check_monthly_cap`` /
+    ``check_owner_monthly_cap``）每通被拦的聊天都会往收件箱再塞一条，
+    刷爆；通知只由设置 / 用量页的显式检查发一次。热路径里 429 本身就是
+    告诉用户的那句话。80% 预警只记日志，不拦。
+    """
+    bot_id = _workbench_bot_id(req.session_id)
+    if bot_id:
+        from .a2a import bot_cap_status
+
+        status = bot_cap_status(bot_id)
+        if status.get("capped"):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "usage_cap_reached",
+                    "message": (
+                        f"这个 Bot（{bot_id}）本月花费已经到了你设的上限 "
+                        f"${status.get('cap_usd')}（本月已花 ${status.get('cost')}），"
+                        "先帮它停了。要继续用，去设置 → 我的 Bot 里调高上限。"
+                    ),
+                },
+            )
+        if status.get("warning"):
+            logger.info(
+                "bot %s usage warning: cost=%s cap=%s ratio=%s",
+                bot_id, status.get("cost"), status.get("cap_usd"), status.get("usage_ratio"),
+            )
+    root = _root_principal()
+    if root is not None and principal == root:
+        from .a3s import owner_cap_allows_call
+
+        gate = owner_cap_allows_call(root)
+        if not gate.get("allowed"):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "usage_cap_reached",
+                    "message": (
+                        f"{gate.get('reason') or '主账号本月总花费已到上限，先停了。'}"
+                        "要继续用，去设置 → 关于 → 用量里调高上限。"
+                    ),
+                },
+            )
+        if gate.get("warning"):
+            logger.info("owner monthly cap warning: %s", gate.get("warning"))
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -1015,6 +1140,8 @@ def chat(
         )
         return _cached_chat_response(cached)
     try:
+        # 用量上限门禁（本轮 item 6）：到上限就 429 拦截，不调用模型、不记用量。
+        _enforce_usage_caps(req, principal)
         # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
         try:
             assistant = _assistant_for(req, principal)
@@ -1088,6 +1215,9 @@ def chat(
             correlation_id=result["correlation_id"],
             agent=str(result.get("agent") or assistant.name),
             knowledge=public_metadata(knowledge),
+            structured=structure_reply(
+                result["reply"], sources=knowledge.get("sources") or []
+            ).to_dict(),
             reason=(
                 getattr(assistant, "last_turn_reason", None)
                 if result["status"] != "completed"
@@ -1152,6 +1282,8 @@ def chat_stream(
         )
     turn_prepared = False
     try:
+        # 用量上限门禁（本轮 item 6）：到上限就 429 拦截，不建流、不调用模型。
+        _enforce_usage_caps(req, principal)
         assistant = _assistant_for(req, principal)
         # 授权闸门必须在 build_knowledge_context / StreamingResponse 之前：
         # 被拒绝的请求不该先做检索，更不该先拿到 200 + SSE 再被告知拒绝。
@@ -1350,6 +1482,9 @@ def chat_stream(
             "correlation_id": correlation_id,
             "usage_recorded": usage_recorded,
             "knowledge": public_metadata(knowledge),
+            "structured": structure_reply(
+                reply_text, sources=knowledge.get("sources") or []
+            ).to_dict(),
         }
         if turn_status == "truncated":
             # 不能只靠 status：老客户端可能只认 done 就收尾，必须显式标出来。
@@ -1546,8 +1681,13 @@ def chat_sessions(
     """
     page, users = _list_sessions_in_scope(context, limit, offset)
     sessions = page["sessions"]
+    titles = {
+        session_id: session_title(session_id, users.get(session_id))
+        for session_id in sessions
+    }
     return {
         "sessions": sessions,
+        "titles": titles,
         "count": len(sessions),
         "total": page["total"],
         "has_more": page["has_more"],
@@ -1581,6 +1721,7 @@ def read_history(
     )
     return {
         "session_id": session_id,
+        "title": session_title(session_id, principal),
         "history": page["history"],
         "count": len(page["history"]),
         "total": page["total"],
@@ -1708,3 +1849,30 @@ def chat_delete_session(
     if not delete_session(session_id, context.principal):
         raise _neutral_not_found()
     return {"session_id": session_id, "deleted": True}
+
+
+class RenameSessionRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=64, description="新的会话标题")
+
+
+@router.patch("/chat/sessions/{session_id}")
+def chat_rename_session(
+    session_id: str,
+    body: RenameSessionRequest,
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, object]:
+    """给**自己的**会话改名（只改展示标题，不动历史）。
+
+    别人的会话与不存在的会话一律按不存在处理（404），不创建空会话。
+    """
+    try:
+        renamed = rename_session(session_id, body.title, context.principal)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not renamed:
+        raise _neutral_not_found()
+    return {
+        "session_id": session_id,
+        "title": session_title(session_id, context.principal),
+        "renamed": True,
+    }

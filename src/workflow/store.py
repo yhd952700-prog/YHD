@@ -203,10 +203,39 @@ CREATE TABLE IF NOT EXISTS workflow_approvals (
     created_at       REAL NOT NULL,
     expires_at       REAL,
     decided_at       REAL,
-    updated_at       REAL NOT NULL
+    updated_at       REAL NOT NULL,
+    kind             TEXT NOT NULL DEFAULT 'workflow',
+    proposer         TEXT NOT NULL DEFAULT '',
+    impact           TEXT NOT NULL DEFAULT '',
+    consequence      TEXT NOT NULL DEFAULT '',
+    targets_json     TEXT NOT NULL DEFAULT '[]',
+    action_text      TEXT NOT NULL DEFAULT '',
+    source           TEXT NOT NULL DEFAULT 'user_said',
+    ref_id           TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_wf_approvals_status ON workflow_approvals(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_wf_approvals_run ON workflow_approvals(run_id);
+CREATE INDEX IF NOT EXISTS idx_wf_approvals_kind ON workflow_approvals(kind, ref_id);
+
+-- 分步计划（任务 3）：计划本身一张表，计划的“审批”复用 workflow_approvals
+--（kind='plan'、ref_id=plan_id），不另起第二套审批。
+CREATE TABLE IF NOT EXISTS workflow_plans (
+    plan_id          TEXT PRIMARY KEY,
+    title            TEXT NOT NULL DEFAULT '',
+    goal             TEXT NOT NULL DEFAULT '',
+    created_by       TEXT NOT NULL DEFAULT '',
+    owner_account_id TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'draft',
+    version          INTEGER NOT NULL DEFAULT 1,
+    steps_json       TEXT NOT NULL DEFAULT '[]',
+    approval_id      TEXT NOT NULL DEFAULT '',
+    created_at       REAL NOT NULL,
+    updated_at       REAL NOT NULL,
+    started_at       REAL,
+    finished_at      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_wf_plans_status ON workflow_plans(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_wf_plans_owner ON workflow_plans(owner_account_id);
 
 CREATE TABLE IF NOT EXISTS workflow_triggers (
     trigger_key   TEXT PRIMARY KEY,
@@ -257,7 +286,28 @@ class WorkflowStore:
                 os.makedirs(directory, exist_ok=True)
             conn = sqlite3.connect(self._db_path, timeout=10.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            # 切 WAL 需要独占锁，而 journal_mode 切换不走 busy_timeout：两个进程
+            # 同时建库时一方会立刻吃到 "database is locked"（已复现）。先读当前
+            # 模式——已是 WAL 就不用再切；否则有限重试，等对端让出锁。
+            try:
+                current_mode = str(
+                    conn.execute("PRAGMA journal_mode").fetchone()[0]
+                ).lower()
+            except sqlite3.Error:
+                current_mode = ""
+            if current_mode != "wal":
+                last_exc: Exception | None = None
+                for _attempt in range(20):
+                    try:
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        last_exc = None
+                        break
+                    except sqlite3.OperationalError as exc:
+                        last_exc = exc
+                        time.sleep(0.1)
+                if last_exc is not None:
+                    conn.close()
+                    raise last_exc
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=10000")
             self._conn = conn
@@ -266,6 +316,32 @@ class WorkflowStore:
     def _ensure_schema(self) -> None:
         with self._lock:
             conn = self._connection()
+            # 旧库迁移必须在建表脚本之前：_SCHEMA 里有引用新列的索引
+            #（idx_wf_approvals_kind），先 ALTER 补列，脚本才能跑通。
+            # 新库上表还不存在，跳过迁移（建表时新列已有）。
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table'"
+                " AND name='workflow_approvals'"
+            ).fetchone()
+            if table_exists:
+                existing = {
+                    str(row[1])
+                    for row in conn.execute("PRAGMA table_info(workflow_approvals)")
+                }
+                for column, ddl in (
+                    ("kind", "TEXT NOT NULL DEFAULT 'workflow'"),
+                    ("proposer", "TEXT NOT NULL DEFAULT ''"),
+                    ("impact", "TEXT NOT NULL DEFAULT ''"),
+                    ("consequence", "TEXT NOT NULL DEFAULT ''"),
+                    ("targets_json", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("action_text", "TEXT NOT NULL DEFAULT ''"),
+                    ("source", "TEXT NOT NULL DEFAULT 'user_said'"),
+                    ("ref_id", "TEXT NOT NULL DEFAULT ''"),
+                ):
+                    if column not in existing:
+                        conn.execute(
+                            f"ALTER TABLE workflow_approvals ADD COLUMN {column} {ddl}"
+                        )
             conn.executescript(_SCHEMA)
             conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
@@ -737,6 +813,14 @@ class WorkflowStore:
         submitted_by: str,
         owner_account_id: str,
         timeout_seconds: int,
+        kind: str = "workflow",
+        proposer: str = "",
+        impact: str = "",
+        consequence: str = "",
+        targets: Sequence[str] = (),
+        action_text: str = "",
+        source: str = "user_said",
+        ref_id: str = "",
     ) -> Dict[str, Any]:
         approval_id = _new_id("ap", 12)
         now = time.time()
@@ -745,8 +829,10 @@ class WorkflowStore:
             conn.execute(
                 "INSERT INTO workflow_approvals(approval_id, run_id, step_id, node_id, def_id,"
                 " title, operation, reason, approvers_json, status, submitted_by,"
-                " owner_account_id, created_at, expires_at, updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?)",
+                " owner_account_id, created_at, expires_at, updated_at,"
+                " kind, proposer, impact, consequence, targets_json, action_text,"
+                " source, ref_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     approval_id,
                     run_id,
@@ -762,9 +848,58 @@ class WorkflowStore:
                     now,
                     expires_at,
                     now,
+                    kind,
+                    proposer,
+                    impact,
+                    consequence,
+                    _dumps(list(targets)),
+                    action_text,
+                    source,
+                    ref_id,
                 ),
             )
         return self.get_approval(approval_id) or {}
+
+    def create_action_card(
+        self,
+        *,
+        title: str,
+        action_text: str,
+        targets: Sequence[str],
+        risk_note: str,
+        impact: str,
+        consequence: str,
+        proposer: str,
+        source: str,
+        submitted_by: str,
+        owner_account_id: str,
+        timeout_seconds: int = 1800,
+    ) -> Dict[str, Any]:
+        """建一张危险动作确认卡：不挂任何工作流运行，30 分钟过期。
+
+        卡片与工作流审批共用 workflow_approvals 一张表（kind='action_card'），
+        决定走同一条 decide_approval，审批中心与聊天卡片看到的是同一条记录。
+        """
+        return self.create_approval(
+            run_id="",
+            step_id="",
+            node_id="",
+            def_id="adhoc",
+            title=title,
+            operation=action_text,
+            reason=risk_note,
+            approvers=[owner_account_id],
+            submitted_by=submitted_by,
+            owner_account_id=owner_account_id,
+            timeout_seconds=timeout_seconds,
+            kind="action_card",
+            proposer=proposer,
+            impact=impact,
+            consequence=consequence,
+            targets=targets,
+            action_text=action_text,
+            source=source,
+        )
 
     def get_approval(self, approval_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -775,6 +910,7 @@ class WorkflowStore:
             return None
         item = dict(row)
         item["approvers"] = _loads(item.pop("approvers_json"), [])
+        item["targets"] = _loads(item.pop("targets_json"), [])
         return item
 
     def list_approvals(
@@ -813,6 +949,7 @@ class WorkflowStore:
         for row in rows:
             item = dict(row)
             item["approvers"] = _loads(item.pop("approvers_json"), [])
+            item["targets"] = _loads(item.pop("targets_json"), [])
             if approver and item["approvers"] and approver not in item["approvers"]:
                 continue
             items.append(item)
@@ -857,6 +994,18 @@ class WorkflowStore:
                 " decided_at=?, updated_at=? WHERE approval_id=?",
                 (decision, decided_by, comment, now, now, approval_id),
             )
+            # 计划审批与计划状态同一事务同步：审批中心点通过/拒绝，计划页同步变；
+            # 计划页点通过/拒绝同样走本方法（经引擎），审批中心同步变。
+            # 只同步尚在待批的计划，防止已叫停/已完成的计划被旧审批翻回去。
+            kind = str(row["kind"] or "workflow")
+            ref_id = str(row["ref_id"] or "")
+            if kind == "plan" and ref_id:
+                plan_status = "approved" if decision == "approved" else "rejected"
+                conn.execute(
+                    "UPDATE workflow_plans SET status=?, updated_at=?"
+                    " WHERE plan_id=? AND status='pending_approval'",
+                    (plan_status, now, ref_id),
+                )
         return self.get_approval(approval_id) or {}
 
     def cancel_pending_approvals(self, run_id: str, *, comment: str = "") -> int:
@@ -892,6 +1041,144 @@ class WorkflowStore:
                     (moment, approval_id),
                 )
         return [self.get_approval(approval_id) for approval_id in ids if approval_id]
+
+    # ── 分步计划 ─────────────────────────────────────────────
+
+    def create_plan(
+        self,
+        *,
+        title: str,
+        goal: str,
+        created_by: str,
+        owner_account_id: str,
+        steps: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """建草稿计划。步骤只做结构归一化（编号/初始状态/失败计数），
+        内容校验（四角色、必填字段）在网关层做。"""
+        plan_id = _new_id("pl", 12)
+        now = time.time()
+        normalized = []
+        for index, step in enumerate(steps):
+            item = dict(step)
+            item["n"] = index + 1
+            item["status"] = "pending"
+            item["fail_count"] = 0
+            item["note"] = ""
+            normalized.append(item)
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO workflow_plans(plan_id, title, goal, created_by,"
+                " owner_account_id, status, version, steps_json, approval_id,"
+                " created_at, updated_at)"
+                " VALUES(?,?,?,?,?,'draft',1,?,'',?,?)",
+                (
+                    plan_id,
+                    title,
+                    goal,
+                    created_by,
+                    owner_account_id,
+                    _dumps(normalized),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_plan(plan_id) or {}
+
+    def get_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._connection().execute(
+                "SELECT * FROM workflow_plans WHERE plan_id=?", (plan_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["steps"] = _loads(item.pop("steps_json"), [])
+        return item
+
+    def list_plans(
+        self,
+        *,
+        status: Optional[str] = None,
+        owners: Optional[Sequence[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if owners is not None:
+            if not owners:
+                return []
+            placeholders = ", ".join("?" for _ in owners)
+            clauses.append(f"owner_account_id IN ({placeholders})")
+            params.extend(owners)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([limit, offset])
+        with self._lock:
+            rows = self._connection().execute(
+                "SELECT * FROM workflow_plans" + where
+                + " ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["steps"] = _loads(item.pop("steps_json"), [])
+            items.append(item)
+        return items
+
+    def update_plan(
+        self,
+        plan_id: str,
+        *,
+        status: Optional[str] = None,
+        steps: Optional[Sequence[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+        goal: Optional[str] = None,
+        approval_id: Optional[str] = None,
+        version: Optional[int] = None,
+        started_at: Optional[float] = None,
+        finished_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """只写字段，不校验状态机——状态机在网关层。"""
+        now = time.time()
+        sets: List[str] = ["updated_at=?"]
+        params: List[Any] = [now]
+        if status is not None:
+            sets.append("status=?")
+            params.append(status)
+        if steps is not None:
+            sets.append("steps_json=?")
+            params.append(_dumps(list(steps)))
+        if title is not None:
+            sets.append("title=?")
+            params.append(title)
+        if goal is not None:
+            sets.append("goal=?")
+            params.append(goal)
+        if approval_id is not None:
+            sets.append("approval_id=?")
+            params.append(approval_id)
+        if version is not None:
+            sets.append("version=?")
+            params.append(version)
+        if started_at is not None:
+            sets.append("started_at=?")
+            params.append(started_at)
+        if finished_at is not None:
+            sets.append("finished_at=?")
+            params.append(finished_at)
+        params.append(plan_id)
+        with self._tx() as conn:
+            cursor = conn.execute(
+                f"UPDATE workflow_plans SET {', '.join(sets)} WHERE plan_id=?",
+                params,
+            )
+            if cursor.rowcount == 0:
+                raise StoreError(404, "plan_not_found", f"计划不存在：{plan_id}")
+        return self.get_plan(plan_id) or {}
 
     # ── 触发器 ──────────────────────────────────────────────
 

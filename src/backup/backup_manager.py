@@ -30,6 +30,7 @@ import base64
 import gzip
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import time
@@ -41,6 +42,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.kernels.audit.durability import vacuum_into
+
+logger = logging.getLogger(__name__)
 
 
 # =====================================================================
@@ -134,6 +137,13 @@ def _is_sqlite_sidecar(path: Path) -> bool:
     return False
 
 
+#: 模型 Key 材料：**永不进入任何备份包**（2026-11-15 起的规矩「备份不带 Key，
+#: 换电脑重新填」）。走查时按文件名直接跳过——不管它在哪个目录、加密与否。
+#: ``model_config.key`` 是模型主密钥（能解开全部 ``api_key_enc``）；
+#: ``model_registry.sqlite3`` 里存着各模型的 ``api_key_enc`` 密文。
+_NEVER_ARCHIVE_BASENAMES = frozenset({"model_config.key", "model_registry.sqlite3"})
+
+
 def _read_sqlite_snapshot(path: Path) -> bytes:
     """Return a transaction-consistent copy of a SQLite DB as bytes."""
     with tempfile.TemporaryDirectory(prefix="liuhao_backup_snapshot_") as tmp:
@@ -148,9 +158,11 @@ def _read_sqlite_snapshot(path: Path) -> bytes:
 #
 # 换机迁移包必须能跨机器恢复，而 DPAPI 密文只有原机/原用户能解。因此：
 #
-# * **导出**：把 ``model_config.key``、``integrity.key`` 与 ``app.env`` 里的
-#   JWT 密钥解包成原始材料再封进口令加密包——包里不再出现 ``LIUHAO-DPAPI-1:``
-#   密文；
+# * **导出**：把 ``integrity.key`` 与 ``app.env`` 里的 JWT 密钥解包成原始材料
+#   再封进口令加密包——包里不再出现 ``LIUHAO-DPAPI-1:`` 密文；模型 Key 文件
+#   （``model_config.key``、``model_registry.sqlite3``）**不进任何备份包**
+#   （2026-11-15 起的规矩；换机后 Key 到「设置 → 模型与 Key」重新填），
+#   走查时直接跳过，不进 ``extract_machine_bound_material``；
 # * **恢复**：用目标机 DPAPI 重新包裹，落盘形态与首次启动生成的一致；
 # * 只有确实解包过的条目才打 ``machine_bound`` 标记，历史明文/旧归档不受影响。
 
@@ -483,6 +495,29 @@ class BackupMetadata:
             "metadata": self.metadata,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BackupMetadata":
+        """从 sidecar 元数据（``<backup_id>.meta.json``）重建。
+
+        缺字段时按默认值补；``backup_id`` 缺失时直接报错 —— 没有 ID 的
+        sidecar 没法认领，不猜。
+        """
+        return cls(
+            backup_id=str(data["backup_id"]),
+            backup_type=BackupType(data.get("backup_type", BackupType.FULL.value)),
+            sources=[BackupSource(s) for s in data.get("sources", [])],
+            timestamp=float(data.get("timestamp", 0.0)),
+            size_bytes=int(data.get("size_bytes", 0)),
+            checksum=str(data.get("checksum", "")),
+            compressed=bool(data.get("compressed", False)),
+            encrypted=bool(data.get("encrypted", False)),
+            status=BackupStatus(data.get("status", BackupStatus.COMPLETED.value)),
+            file_path=data.get("file_path"),
+            parent_backup_id=data.get("parent_backup_id"),
+            description=str(data.get("description", "")),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
 
 @dataclass
 class RestoreResult:
@@ -575,6 +610,9 @@ class BackupManager:
             否则 ``create_backup`` 拒绝写入；只有 ``encryption_key`` 而未开启
             亦拒绝，避免"带了密钥却写了明文"的误解。密钥由调用方保管，
             可用 ``derive_backup_key(passphrase, salt)`` 从口令派生。
+        exclude_names: 备份源目录顶层要跳过的文件/目录名（例如自动备份
+            时跳过 ``backups`` 与 ``backup.key``，避免备份套备份、把密钥
+            随包带走）。只看顶层名，不递归匹配。
     """
 
     backup_dir: Path
@@ -584,6 +622,7 @@ class BackupManager:
     compression_level: int = 6
     encryption_enabled: bool = False
     encryption_key: Optional[bytes] = None
+    exclude_names: frozenset = frozenset()
 
     def _require_encryption_key(self) -> bytes:
         """加密备份的密钥门禁：缺密钥 / 错长度一律拒绝，绝不写明文。"""
@@ -611,6 +650,46 @@ class BackupManager:
         self.source_paths = {
             k: Path(v) for k, v in self.source_paths.items()
         }
+        self.exclude_names = frozenset(self.exclude_names)
+        # 本次备份跳过的模型 Key 文件数（``_NEVER_ARCHIVE_BASENAMES``）；
+        # 每次 ``create_backup`` 开始时清零，供 CLI 回执如实上报。
+        self._excluded_key_files = 0
+        # 注册表原来是纯内存：进程重启后旧备份认不出来。构建时读回
+        # sidecar（<backup_id>.meta.json）重建，空目录时什么都不做。
+        self.scan_backup_dir()
+
+    def scan_backup_dir(self) -> int:
+        """读回 sidecar 元数据，重建重启后丢失的备份注册表。
+
+        只认磁盘上归档文件还在的备份；sidecar 损坏、归档已删时跳过并记
+        一条日志，不让一个坏文件拖垮整次扫描。返回新认回的备份数。
+        """
+        found = 0
+        for sidecar in sorted(self.backup_dir.glob("*.meta.json")):
+            try:
+                data = json.loads(sidecar.read_text(encoding="utf-8"))
+                meta = BackupMetadata.from_dict(data)
+            except Exception:  # noqa: BLE001 - 坏 sidecar 只跳过
+                logger.warning("跳过损坏的备份元数据：%s", sidecar.name)
+                continue
+            if meta.backup_id in self.backups:
+                continue
+            if not meta.file_path or not Path(meta.file_path).exists():
+                continue
+            self.backups[meta.backup_id] = meta
+            found += 1
+        return found
+
+    def _write_sidecar(self, meta: "BackupMetadata") -> None:
+        """把备份元数据写成 ``<backup_id>.meta.json``（与归档同目录）。
+
+        注册表是内存态，重启就丢；sidecar 是重启后认回旧备份的唯一依据。
+        """
+        sidecar = self.backup_dir / f"{meta.backup_id}.meta.json"
+        sidecar.write_text(
+            json.dumps(meta.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     # ------------------------------------------------------------------
     # Backup creation
@@ -636,6 +715,8 @@ class BackupManager:
         Returns:
             ``BackupMetadata`` for the created backup.
         """
+        # 本次跳过的模型 Key 文件数从 0 开始计。
+        self._excluded_key_files = 0
         if sources is None:
             sources = list(self.source_paths.keys())
 
@@ -718,6 +799,9 @@ class BackupManager:
             # Compute checksum from the written file
             meta.checksum = self._compute_checksum(backup_path)
             meta.status = BackupStatus.COMPLETED
+            # 注册表是内存态：先写 sidecar，再跑留存（留存删旧备份时连
+            # sidecar 一起删，重启扫描才不会认回已删的备份）。
+            self._write_sidecar(meta)
 
             # Apply retention policy
             self._apply_retention_policy()
@@ -762,6 +846,16 @@ class BackupManager:
                 if _is_sqlite_sidecar(fpath):
                     continue
                 rel = fpath.relative_to(source_path).as_posix()
+                # 顶层排除（例如自动备份时的 backups/ 与 backup.key）：
+                # 备份套备份会越备越大，密钥文件随包带走等于把钥匙放进保险箱。
+                if rel.split("/")[0] in self.exclude_names:
+                    continue
+                # 模型 Key 材料永不入包（2026-11-15 起的规矩「备份不带 Key，
+                # 换电脑重新填」）：直接跳过并计数，不进
+                # ``extract_machine_bound_material``。
+                if fpath.name in _NEVER_ARCHIVE_BASENAMES:
+                    self._excluded_key_files += 1
+                    continue
                 file_info = self._read_source_file(fpath)
                 files[rel] = file_info
                 total_size += file_info["size_bytes"]
@@ -782,16 +876,29 @@ class BackupManager:
             }
 
     def _read_source_file(self, path: Path) -> Dict[str, Any]:
-        """Read one file byte-accurately (SQLite via VACUUM INTO)."""
+        """Read one file byte-accurately (SQLite via VACUUM INTO).
+
+        含机器绑定密钥的文件（``integrity.key``、``app.env`` 里的密钥变量）先经
+        ``extract_machine_bound_material`` 还原成原始材料再入包，并打
+        ``machine_bound`` 标记；恢复时按标记用目标机的 DPAPI 重包。没有标记的
+        文件原样入包。模型 Key 文件（``model_config.key``、
+        ``model_registry.sqlite3``）走查时已跳过，永远到不了这里。
+        本机解不开密钥时 ``extract_*`` 抛中文 ``ValueError``，整个备份
+        失败、不写归档 —— 写一个恢复不了的包比不备份更糟。
+        """
         is_sqlite = _is_sqlite_file(path)
         raw = _read_sqlite_snapshot(path) if is_sqlite else path.read_bytes()
-        return {
+        content, marker = extract_machine_bound_material(path.name, raw)
+        entry: Dict[str, Any] = {
             "encoding": "base64",
-            "content_b64": base64.b64encode(raw).decode("ascii"),
-            "size_bytes": len(raw),
+            "content_b64": base64.b64encode(content).decode("ascii"),
+            "size_bytes": len(content),
             "modified": path.stat().st_mtime,
             "sqlite": is_sqlite,
         }
+        if marker is not None:
+            entry["machine_bound"] = marker
+        return entry
 
     def _compute_checksum(self, filepath: Path) -> str:
         """Compute SHA-256 checksum of a file."""
@@ -1033,14 +1140,23 @@ class BackupManager:
 
     @classmethod
     def _rewrap_source_entries(cls, source_data: Dict[str, Any]) -> None:
-        """把归档里带 ``machine_bound`` 标记的条目重新包成本机形态。"""
+        """把归档里带 ``machine_bound`` 标记的条目重新包成本机形态。
+
+        注意：``_restore_entry_machine_bound`` 返回新条目、不改原地；
+        这里必须把返回值写回（文件源写回 ``source_data`` 本身，目录源
+        写回 ``files`` 映射），否则重包结果会被丢弃、恢复写出的仍是
+        原始材料（明文密钥）。
+        """
         if source_data.get("type") == "file":
             name = Path(str(source_data.get("path") or "")).name
-            cls._restore_entry_machine_bound(name, source_data)
+            source_data.update(cls._restore_entry_machine_bound(name, source_data))
             return
-        for rel, entry in (source_data.get("files") or {}).items():
+        files = source_data.get("files") or {}
+        for rel, entry in files.items():
             if isinstance(entry, dict):
-                cls._restore_entry_machine_bound(Path(str(rel)).name, entry)
+                files[rel] = cls._restore_entry_machine_bound(
+                    Path(str(rel)).name, entry
+                )
 
     @staticmethod
     def _restore_entry_machine_bound(
@@ -1170,6 +1286,10 @@ class BackupManager:
             filepath = Path(meta.file_path)
             if filepath.exists():
                 filepath.unlink()
+        # sidecar 与归档同生共死，否则重启扫描会认回一个已删的备份。
+        sidecar = self.backup_dir / f"{backup_id}.meta.json"
+        if sidecar.exists():
+            sidecar.unlink()
 
         del self.backups[backup_id]
         return True

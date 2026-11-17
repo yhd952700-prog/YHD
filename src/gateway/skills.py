@@ -65,6 +65,7 @@ from .skill_runtime import (
     SkillRunRefused,
     SkillRuntime,
     SkillRuntimeError,
+    append_audit,
     read_audit,
     read_run,
     resolve_interpreter,
@@ -436,6 +437,193 @@ def list_skills(
         "capability_catalog_error": capability_error,
         "assignments_error": assignment_error,
         "bindings_error": bindings_error,
+    }
+
+
+@router.get("/chat-tools")
+def list_chat_tools(
+    principal: str = Depends(require_human_principal),
+) -> Dict[str, Any]:
+    """聊天可调用的工具清单（0.4.6，5-4 一期；技能页透明化后带开关）。
+
+    与上面“已安装技能包”清单是**同一页面的两栏**，不是两套“技能”概念：
+
+    * 本接口：LLM 在对话里能直接调的内置工具（``make_tools`` 注册的全部
+      工具 + 插件安全子集目录）。每一项都有开关（``enabled``），在
+      ``POST /v1/skills/chat-tools/{tool_id}/enable|disable`` 操作，一次
+      一个，没有批量启用；开关变化后下一句话起生效（注册闸 + 执行闸，
+      见 ``src/ai/tools/kernel_tools.py`` 与 ``src/ai/tool_registry.py``）。
+    * ``GET /v1/skills``：人手动安装/启用/运行的技能包（``/{id}/run``
+      是人触发的执行面，需 Boss 授权；LLM 不能直接调包）。
+
+    两栏共用同一张能力名（``capability``）：MCP 适配层按 capability 把
+    聊天工具反向暴露出去，见 ``src/adapters/mcp/mcp_adapter.py``。
+    """
+    from src.ai.tools.kernel_tools import make_tools
+    from src.ai.tools.plugin_tools import PLUGIN_TOOL_CATALOG
+    from src.gateway.chat_tool_settings import grade_for, is_chat_tool_enabled
+
+    tools = make_tools(principal, include_disabled=True)
+    catalog = {entry["name"]: entry for entry in PLUGIN_TOOL_CATALOG}
+    items = []
+    for tool in tools:
+        entry = catalog.get(tool.name) or {}
+        grade = grade_for(tool.tool_id)
+        items.append(
+            {
+                "tool_id": tool.tool_id,
+                "name": tool.name,
+                "description": tool.description,
+                "capability": tool.capability,
+                "risk": (tool.risk or "LOW").lower(),
+                "source": entry.get("source", "src/ai/tools/kernel_tools.py:make_tools"),
+                "source_kind": entry.get("source_kind") or grade["source_kind"],
+                "permission": entry.get("permission", "内置聊天工具"),
+                "permissions": entry.get("permissions") or grade["permissions"],
+                "grade": grade["grade"],
+                "confirm": entry.get("confirm") or grade["confirm"],
+                "enabled": is_chat_tool_enabled(tool.tool_id),
+                "available": entry.get("available", True),
+                "unavailable_reason": entry.get("unavailable_reason"),
+                "kind": "chat_tool",
+            }
+        )
+    # 审过、刻意没接的也列出来（available=false + 原因），前端才能如实
+    # 说“为什么没有二维码”，而不是让用户以为是漏了。
+    wired = {tool.name for tool in tools}
+    for entry in PLUGIN_TOOL_CATALOG:
+        if entry["name"] in wired or entry.get("available", True):
+            continue
+        items.append(
+            {
+                "tool_id": str(entry["id"]),
+                "name": str(entry["name"]),
+                "description": str(entry["description"]),
+                "capability": f"plugin.{entry['name']}",
+                "risk": "low",
+                "source": str(entry["source"]),
+                "source_kind": str(entry.get("source_kind") or "plugin"),
+                "permission": str(entry["permission"]),
+                "permissions": list(entry.get("permissions") or []),
+                "grade": str(entry.get("grade") or "B"),
+                "confirm": str(entry.get("confirm") or "none"),
+                # 未接线的工具没有可开关的登记，恒为关（前端放“暂未开放”区）。
+                "enabled": False,
+                "available": False,
+                "unavailable_reason": entry.get("unavailable_reason"),
+                "kind": "chat_tool",
+            }
+        )
+    return {
+        "total": len(items),
+        "tools": items,
+        "note": (
+            "聊天工具每个都有开关（POST /v1/skills/chat-tools/{tool_id}/enable|disable，"
+            "一次一个，没有批量启用）；开关变化后下一句话起生效；"
+            "已安装技能包的启用/停用/运行见 GET /v1/skills 与 /{id}/run。"
+        ),
+    }
+
+
+def _invalidate_chat_tool_cache() -> None:
+    """开关变化后清掉按画像主体缓存的工具集（失败只记日志，不拦开关）。"""
+    try:
+        from src.ai.liuhao import invalidate_tool_cache
+
+        invalidate_tool_cache()
+    except Exception as exc:  # noqa: BLE001 - 缓存失效失败不能反噬开关本身
+        logger.warning("chat tool cache invalidate failed: %s", exc)
+
+
+@router.post("/chat-tools/{tool_id}/enable")
+def enable_chat_tool(
+    tool_id: str,
+    payload: Optional[SkillEnableRequest] = None,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """启用一个聊天工具（一次一个，没有批量启用）。
+
+    C 档（操控电脑 / 看屏幕）必须正式确认：``confirm=true`` 且
+    ``acknowledge_risk`` 复述档位（``"C"``），否则 409。停用永远不需要确认。
+    联网检索（``liuhao.web.search``）的开关本体在设置页的隐私设置里，
+    这里只是同一个开关的另一处入口，不会做出第二套。
+    """
+    from src.gateway import chat_tool_settings as cts
+
+    if tool_id not in cts.CHAT_TOOL_GRADES:
+        raise HTTPException(status_code=404, detail=f"没有这个聊天工具「{tool_id}」。")
+    grade = cts.grade_for(tool_id)
+    if grade["confirm"] == "formal":
+        request = payload or SkillEnableRequest()
+        acknowledged = str(request.acknowledge_risk or "").strip().upper()
+        if not request.confirm or acknowledged != str(grade["grade"]).upper():
+            required_body = json.dumps(
+                {"confirm": True, "acknowledge_risk": grade["grade"]},
+                ensure_ascii=False,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"聊天工具「{tool_id}」是 C 档（操控电脑 / 看屏幕），"
+                    f"启用前必须明确确认：请提交 {required_body}。本版不提供一键全开。"
+                ),
+            )
+    previous = cts.set_chat_tool_enabled(tool_id, True)
+    _invalidate_chat_tool_cache()
+    append_audit(
+        {
+            "event": "chat_tool_enable",
+            "skill_id": tool_id,
+            "actor": principal,
+            "grade": grade["grade"],
+            "previous_enabled": previous,
+            "enabled": True,
+        }
+    )
+    logger.info("skills: chat tool enabled %s (grade=%s) by %s", tool_id, grade["grade"], principal)
+    return {
+        "tool_id": tool_id,
+        "enabled": True,
+        "previous_enabled": previous,
+        "grade": grade["grade"],
+        "confirm": grade["confirm"],
+        "permissions": grade["permissions"],
+        "source_kind": grade["source_kind"],
+    }
+
+
+@router.post("/chat-tools/{tool_id}/disable")
+def disable_chat_tool(
+    tool_id: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """停用一个聊天工具。停用永远不需要确认：收紧权限不该有摩擦。"""
+    from src.gateway import chat_tool_settings as cts
+
+    if tool_id not in cts.CHAT_TOOL_GRADES:
+        raise HTTPException(status_code=404, detail=f"没有这个聊天工具「{tool_id}」。")
+    grade = cts.grade_for(tool_id)
+    previous = cts.set_chat_tool_enabled(tool_id, False)
+    _invalidate_chat_tool_cache()
+    append_audit(
+        {
+            "event": "chat_tool_disable",
+            "skill_id": tool_id,
+            "actor": principal,
+            "grade": grade["grade"],
+            "previous_enabled": previous,
+            "enabled": False,
+        }
+    )
+    logger.info("skills: chat tool disabled %s by %s", tool_id, principal)
+    return {
+        "tool_id": tool_id,
+        "enabled": False,
+        "previous_enabled": previous,
+        "grade": grade["grade"],
+        "confirm": grade["confirm"],
+        "permissions": grade["permissions"],
+        "source_kind": grade["source_kind"],
     }
 
 
@@ -969,6 +1157,7 @@ def enable_skill(
                     f"启用前必须明确确认：请提交 {required_body}。本版不提供一键全开。"
                 ),
             )
+    was_enabled = bool(record.get("enabled"))
     store = _store()
     try:
         with bind_request_principal(principal, kind="human", source="http-request"):
@@ -977,7 +1166,19 @@ def enable_skill(
         raise HTTPException(status_code=404, detail=f"没有找到技能「{skill_id}」。")
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    append_audit(
+        {
+            "event": "skill_enable",
+            "skill_id": skill_id,
+            "actor": principal,
+            "risk": risk,
+            "previous_enabled": was_enabled,
+            "enabled": True,
+        }
+    )
     logger.info("skills: enabled %s (risk=%s) by %s", skill_id, risk, principal)
+    # 启用集变了：聊天工具描述里列出的可用技能要刷新（下一句话起生效）。
+    _invalidate_chat_tool_cache()
     return _evaluate_current(updated)
 
 
@@ -987,7 +1188,8 @@ def disable_skill(
     principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
     """停用技能。停用永远不需要确认：收紧权限不该有摩擦。"""
-    _get_or_404(skill_id)
+    record = _get_or_404(skill_id)
+    was_enabled = bool(record.get("enabled"))
     store = _store()
     try:
         with bind_request_principal(principal, kind="human", source="http-request"):
@@ -996,7 +1198,150 @@ def disable_skill(
         raise HTTPException(status_code=404, detail=f"没有找到技能「{skill_id}」。")
     except SkillStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    append_audit(
+        {
+            "event": "skill_disable",
+            "skill_id": skill_id,
+            "actor": principal,
+            "previous_enabled": was_enabled,
+            "enabled": False,
+        }
+    )
     logger.info("skills: disabled %s by %s", skill_id, principal)
+    # 启用集变了：聊天工具描述里列出的可用技能要刷新（下一句话起生效）。
+    _invalidate_chat_tool_cache()
+    return _evaluate_current(updated)
+
+
+# ---------------------------------------------------------------------- #
+# 自我学习写技能（七家合并 P2，Hermes 式学习循环的安全边界版）
+# ---------------------------------------------------------------------- #
+class SkillLearnDraftRequest(BaseModel):
+    task_title: str = ""
+    result_text: str = ""
+    role: str = ""
+    plan_id: str = ""
+    task_id: str = ""
+
+
+@router.post("/learn/drafts", status_code=201)
+def create_learn_draft(
+    payload: SkillLearnDraftRequest,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """从一次完成的任务提炼 SKILL.md 草稿，进审核队列（默认关、调不到）。
+
+    草稿只提炼做法，不抄对话原文、不抄 Key；含危险做法的自动分级为 D，
+    永不上线。启用要 Joseph 在技能页点一次（POST /learn/{id}/approve）。
+    """
+    from src.ai.skill_learn import draft_from_task
+
+    if not (payload.task_title or "").strip():
+        raise HTTPException(
+            status_code=422, detail="任务标题不能为空（草稿要写清从哪次任务来）"
+        )
+    if not (payload.result_text or "").strip():
+        raise HTTPException(
+            status_code=422, detail="任务结果为空，提炼不出做法（不编一个假做法）"
+        )
+    store = _store()
+    try:
+        with bind_request_principal(principal, kind="human", source="http-request"):
+            record = draft_from_task(
+                store,
+                task_title=payload.task_title.strip(),
+                result_text=payload.result_text,
+                role=(payload.role or "").strip(),
+                plan_id=(payload.plan_id or "").strip(),
+                task_id=(payload.task_id or "").strip(),
+            )
+    except SkillConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ValueError, SkillStoreError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_audit(
+        {
+            "event": "skill_learn_draft",
+            "skill_id": record.get("id"),
+            "actor": principal,
+            "grade": (record.get("metadata") or {}).get("grade"),
+            "task_id": (payload.task_id or "").strip(),
+        }
+    )
+    logger.info(
+        "skills: learned draft %s (grade=%s) by %s",
+        record.get("id"),
+        (record.get("metadata") or {}).get("grade"),
+        principal,
+    )
+    return _evaluate_current(record)
+
+
+@router.get("/learn/drafts")
+def list_learn_drafts(
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """审核队列：全部自写草稿（待审核 + 已批 + 已拒）。"""
+    from src.ai.skill_learn import list_drafts
+
+    drafts = list_drafts(_store())
+    return {"drafts": [_evaluate_current(record) for record in drafts]}
+
+
+@router.post("/learn/{skill_id}/approve")
+def approve_learn_draft(
+    skill_id: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """Joseph 点启用：D 级永不上线；只有草稿能批；批了才生效。"""
+    from src.ai.skill_learn import approve_draft
+    from src.gateway.skill_store import SkillNotFound
+
+    store = _store()
+    try:
+        with bind_request_principal(principal, kind="human", source="http-request"):
+            updated = approve_draft(store, skill_id, principal)
+    except SkillNotFound:
+        raise HTTPException(status_code=404, detail=f"没有找到技能「{skill_id}」。")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    append_audit(
+        {
+            "event": "skill_learn_approve",
+            "skill_id": skill_id,
+            "actor": principal,
+            "grade": (updated.get("metadata") or {}).get("grade"),
+        }
+    )
+    logger.info("skills: learned draft %s approved by %s", skill_id, principal)
+    return _evaluate_current(updated)
+
+
+@router.post("/learn/{skill_id}/reject")
+def reject_learn_draft(
+    skill_id: str,
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """Joseph 点拒绝：草稿留痕（不删除，不断审计链），永不启用。"""
+    from src.ai.skill_learn import reject_draft
+    from src.gateway.skill_store import SkillNotFound
+
+    store = _store()
+    try:
+        with bind_request_principal(principal, kind="human", source="http-request"):
+            updated = reject_draft(store, skill_id, principal)
+    except SkillNotFound:
+        raise HTTPException(status_code=404, detail=f"没有找到技能「{skill_id}」。")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    append_audit(
+        {
+            "event": "skill_learn_reject",
+            "skill_id": skill_id,
+            "actor": principal,
+        }
+    )
+    logger.info("skills: learned draft %s rejected by %s", skill_id, principal)
     return _evaluate_current(updated)
 
 

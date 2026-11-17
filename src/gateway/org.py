@@ -860,11 +860,37 @@ def _impact(
         }
         for item in removed
     ]
+    # 本次删除/调整范围（诚实细节第 2 条）：全部取自本次 impact 响应，
+    # 前端不得用可能过期的树另算。_subtree_ids 含节点自身。
+    by_kind: Dict[str, int] = {}
+    for node_id in affected_nodes:
+        kind = str((node_by_id.get(node_id) or {}).get("kind") or "unknown")
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    affected_breakdown = {
+        "node_total": len(affected_nodes),
+        "by_kind": by_kind,
+        "assignment_count": len(removed),
+        "employee_count": len(
+            {
+                item["subject_id"]
+                for item in removed
+                if item["subject_type"] == "employee" and item["subject_id"]
+            }
+        ),
+        "human_count": len(
+            {
+                item["subject_id"]
+                for item in removed
+                if item["subject_type"] == "human" and item["subject_id"]
+            }
+        ),
+    }
     return {
         "action": action,
         "account_id": account_id,
         "allowed": not blockers,
         "blockers": blockers,
+        "affected_breakdown": affected_breakdown,
         "warnings": {
             "orphaned_lead": {
                 "count": len(orphaned),

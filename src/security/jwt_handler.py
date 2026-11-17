@@ -15,7 +15,7 @@ import threading
 import secrets
 import logging
 import uuid
-from typing import Optional, Dict, Any, List, Set, Union
+from typing import Collection, Optional, Dict, Any, List, Set, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -939,6 +939,31 @@ class JWTHandler:
                 jti, kind="refresh", expires_at=expiry, subject=subject
             )
         return len(jtis)
+
+    def revoke_all_user_tokens_except(
+        self, subject: str, keep_jtis: Collection[str]
+    ) -> int:
+        """吊销 ``subject`` 名下除 ``keep_jtis`` 外的全部令牌。
+
+        与 :meth:`revoke_all_user_tokens` 同一机制（进程内 subject→JTI
+        索引 + 持久吊销表），只多一个"当前这次登录除外"：保留的 JTI
+        不进吊销表、仍留在追踪索引里，下次再踢还能踢掉它。
+        返回实际吊销的 JTI 数；``0`` = 该账号没有别的、可追踪的令牌，
+        是老实的"没什么可踢"，不是假装踢掉了。
+        """
+        keep = {str(item) for item in keep_jtis if item}
+        tracked = self._subject_tokens.get(subject, set())
+        doomed = {jti for jti in tracked if jti not in keep}
+        expiry = self._revocation_ttl()
+        for jti in doomed:
+            self._revocations.add(
+                jti, kind="access", expires_at=expiry, subject=subject
+            )
+            self._revocations.add(
+                jti, kind="refresh", expires_at=expiry, subject=subject
+            )
+        self._subject_tokens[subject] = set(tracked) - doomed
+        return len(doomed)
 
     def introspect_token(self, token: str) -> Dict[str, Any]:
         """Introspect token (RFC 7662)"""

@@ -179,72 +179,13 @@ def _store():
     return get_model_config_store()
 
 
-#: Built-in provider presets. Only defaults for base_url/model -- never keys.
-#: The console fills the form from these; a preset is not a credential source.
-_PROVIDER_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
-    "openai": {
-        "label": "OpenAI",
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-    },
-    "deepseek": {
-        "label": "DeepSeek",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-    },
-    "moonshot": {
-        "label": "Moonshot",
-        "base_url": "https://api.moonshot.cn/v1",
-        "model": "moonshot-v1-8k",
-    },
-    "anthropic": {
-        "label": "Anthropic",
-        "base_url": "https://api.anthropic.com/v1",
-        "model": "claude-3-5-sonnet-latest",
-    },
-    "google": {
-        "label": "Google",
-        "base_url": None,
-        # 1.5 系列已于 2025-09 下线；沿用旧默认会让 Gemini 选项填完 Key 也只会拿到 404。
-        "model": "gemini-2.5-flash",
-    },
-    "ollama": {
-        "label": "Ollama（本地）",
-        "base_url": "http://127.0.0.1:11434",
-        "model": "llama3.1:8b",
-    },
-}
-
-#: 走 OpenAI 兼容协议的国内厂商：没有独立适配器，但都有 ``/chat/completions``
-#: 兼容端点。与通用入口 ``openai_compatible`` 的唯一差别是"端点预先填好"，
-#: 用户仍然可以改。方舟的 model 是推理接入点 ID，这里留空并在 hint 里说明，
-#: 避免用户把它当成模型显示名去填。
-#:
-#: MiniMax 暂不加入：其 OpenAI 兼容入口的路径形态尚未实测，宁可没有预设，
-#: 也不给一个会 404 的默认端点。
-_OPENAI_COMPATIBLE_PRESETS: List[Dict[str, Optional[str]]] = [
-    {
-        "id": "dashscope",
-        "label": "通义千问（DashScope 兼容模式）",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen-plus",
-        "hint": "填阿里云百炼/DashScope 的 API Key；模型名可改成 qwen-max 等。",
-    },
-    {
-        "id": "zhipu",
-        "label": "智谱 GLM",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "model": "glm-4-flash",
-        "hint": "填智谱开放平台的 API Key；模型名可改成 glm-4-plus 等。",
-    },
-    {
-        "id": "volcengine_ark",
-        "label": "豆包 / 火山方舟（模型填接入点 ID）",
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "model": "",
-        "hint": "模型名要填方舟的推理接入点 ID（ep-…），不是模型显示名；请先在方舟控制台创建接入点。",
-    },
-]
+# 厂商预设表：单一规范源在 ``src/ai/vendor_presets.py``（A3r F1）。
+# 这里只 re-export：HTTP 层与旧测试的导入路径（``_PROVIDER_PRESETS``、
+# ``_OPENAI_COMPATIBLE_PRESETS``）保持不变；改预设只改那一个文件。
+from ..ai.vendor_presets import (  # noqa: F401 - re-export 供 HTTP 层与测试用
+    _OPENAI_COMPATIBLE_PRESETS,
+    _PROVIDER_PRESETS,
+)
 
 
 def _normalize_url(value: Optional[str]) -> str:
@@ -914,11 +855,16 @@ def _classify_error(exc: BaseException) -> str:
     if isinstance(kind, str) and kind in _PROBE_HINTS:
         return kind
     # net_guard 的运行时拒绝不是"服务端错误"：DNS 解析不了、地址指向内网，
-    # 处理方式完全不同（改主机名 / 改用 Ollama 或显式放行）。
+    # 处理方式完全不同（改主机名 / 改用 Ollama 或显式放行）。kind 优先：
+    # B 类拒绝文案里也有"解析"二字，子串判断会把它错归成 dns_failed。
     from ..ai.providers import is_address_rejected_error
 
     if is_address_rejected_error(exc):
-        return "dns_failed" if "解析" in str(exc) else "address_rejected"
+        if getattr(exc, "kind", None) == "dns_failed" or (
+            getattr(exc, "kind", None) is None and "解析" in str(exc)
+        ):
+            return "dns_failed"
+        return "address_rejected"
     # 证书失败在 SDK 里通常也是 ``APIConnectionError``（类名含 connection），
     # 不先拦就会被归成 ``unreachable``，界面让用户去查端口——方向完全相反。
     # 再细分到不受信任 / 域名不匹配 / 过期，用户才知道下一步做什么。

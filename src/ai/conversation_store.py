@@ -234,6 +234,11 @@ class ConversationStore:
                     last_seq INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
                 );
+                CREATE TABLE IF NOT EXISTS conversation_session_titles (
+                    principal_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
                 """
             )
             # MEM-007：租户边界必须是精确归属列，而不是 principal_id 的前缀包含
@@ -757,6 +762,10 @@ class ConversationStore:
                 self._conn.execute(
                     "DELETE FROM conversation_turns WHERE principal_id = ?", (principal_id,)
                 )
+                self._conn.execute(
+                    "DELETE FROM conversation_session_titles WHERE principal_id = ?",
+                    (principal_id,),
+                )
                 self._conn.commit()
             except (sqlite3.Error, OSError) as exc:
                 raise ConversationStoreError(
@@ -847,6 +856,51 @@ class ConversationStore:
             "offset": start,
         }
 
+    def set_session_title(self, principal_id: str, title: str) -> None:
+        """给一个会话记一个人工标题（重命名）。
+
+        标题只覆盖展示名，不动任何历史行；没改过名的会话读到空串，
+        调用方按首条消息派生默认标题（旧行为，不编标题）。
+        """
+        title = str(title or "").strip()
+        if not title:
+            raise ConversationStoreError("会话标题不能为空")
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO conversation_session_titles "
+                    "(principal_id, title, updated_at) VALUES (?, ?, strftime('%s', 'now')) "
+                    "ON CONFLICT(principal_id) DO UPDATE SET "
+                    "title = excluded.title, updated_at = excluded.updated_at",
+                    (principal_id, title),
+                )
+                self._conn.commit()
+            except (sqlite3.Error, OSError) as exc:
+                raise ConversationStoreError(
+                    self._write_failure_message(exc)
+                ) from exc
+
+    def get_session_title(self, principal_id: str) -> str:
+        """读人工标题；没改过名返回空串（调用方再派生默认标题）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT title FROM conversation_session_titles WHERE principal_id = ?",
+                (principal_id,),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else ""
+
+    def clear_session_title(self, principal_id: str) -> None:
+        """删掉人工标题（会话删除时调用，标题不残留）。"""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "DELETE FROM conversation_session_titles WHERE principal_id = ?",
+                    (principal_id,),
+                )
+                self._conn.commit()
+            except (sqlite3.Error, OSError):
+                pass
+
     def load_page(
         self, principal_id: str, limit: Optional[int] = None, offset: int = 0
     ) -> Dict[str, Any]:
@@ -854,6 +908,10 @@ class ConversationStore:
 
         这样默认看到的是最新一轮（聊天界面刷新后落在底部），"加载更早"
         传 ``offset=已加载条数`` 即可，不会因为新消息追加而重复/跳过。
+
+        每条消息带 ``created_at``（epoch 秒，库里真实落盘时间，不编造）
+        与 ``turn``，前端据此显示发送时间；只读 ``load`` 的调用方
+        （直接喂模型）不受影响。
         """
         with self._lock:
             total = int(
@@ -864,17 +922,34 @@ class ConversationStore:
             )
             start = max(0, int(offset or 0))
             if limit is None:
-                history = self.load(principal_id)
-                page = history[start:]
+                rows = self._conn.execute(
+                    "SELECT turn, role, content, created_at FROM conversation_turns "
+                    "WHERE principal_id = ? ORDER BY seq ASC",
+                    (principal_id,),
+                ).fetchall()
+                page = [
+                    {
+                        "turn": int(turn),
+                        "role": str(role),
+                        "content": str(content),
+                        "created_at": float(created_at or 0),
+                    }
+                    for turn, role, content, created_at in rows
+                ][start:]
             else:
                 rows = self._conn.execute(
-                    "SELECT role, content FROM conversation_turns "
+                    "SELECT turn, role, content, created_at FROM conversation_turns "
                     "WHERE principal_id = ? ORDER BY seq DESC LIMIT ? OFFSET ?",
                     (principal_id, max(1, int(limit)), start),
                 ).fetchall()
                 page = [
-                    {"role": role, "content": content}
-                    for role, content in reversed(rows)
+                    {
+                        "turn": int(turn),
+                        "role": str(role),
+                        "content": str(content),
+                        "created_at": float(created_at or 0),
+                    }
+                    for turn, role, content, created_at in reversed(rows)
                 ]
         return {
             "history": page,

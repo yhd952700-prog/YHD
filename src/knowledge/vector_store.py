@@ -405,12 +405,11 @@ class VectorStore:
 
     def get_chunk_records(self, document_id: str) -> List[Tuple[str, List[float], Dict[str, Any]]]:
         """完整 chunk 记录（含向量与全部元数据），供重建索引复用。"""
-        prefix = f"{document_id}#"
         with self._lock:
             rows = [
                 (chunk_id, list(embedding), dict(metadata))
                 for chunk_id, (embedding, metadata) in self._store.items()
-                if chunk_id.startswith(prefix)
+                if _chunk_key_belongs_to_document(chunk_id, document_id)
             ]
         rows.sort(key=lambda item: _chunk_index_of(item[0], item[2]))
         return rows
@@ -548,12 +547,11 @@ class VectorStore:
 
     def get_document_chunks(self, document_id: str) -> List[Dict[str, Any]]:
         """Every chunk of one document, ordered by ``chunk_index``."""
-        prefix = f"{document_id}#"
         with self._lock:
             entries = [
                 (chunk_id, metadata or {})
                 for chunk_id, (_, metadata) in self._store.items()
-                if chunk_id.startswith(prefix)
+                if _chunk_key_belongs_to_document(chunk_id, document_id)
             ]
         entries.sort(key=lambda item: _chunk_index_of(item[0], item[1]))
         return [
@@ -584,14 +582,17 @@ class VectorStore:
 
     def delete_document(self, document_id: str) -> Dict[str, Any]:
         """Delete one document and every index entry that points at it."""
-        prefix = f"{document_id}#"
         with self._lock:
-            keys = [key for key in self._store if key.startswith(prefix)]
+            keys = [
+                key
+                for key in self._store
+                if _chunk_key_belongs_to_document(key, document_id)
+            ]
             for key in keys:
                 del self._store[key]
             had_hash = False
             for value, owner in list(self._content_hashes.items()):
-                if owner == document_id:
+                if _hash_owner_matches_document(owner, document_id):
                     del self._content_hashes[value]
                     had_hash = True
             return {
@@ -626,6 +627,32 @@ def _like_prefix_pattern(prefix: str) -> str:
     """
     escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"{escaped}%"
+
+
+def _chunk_key_belongs_to_document(chunk_key: str, document_id: str) -> bool:
+    """chunk key 是否属于该文档。
+
+    chunk key 有两种形态：无归属的裸 ``<document_id>#<index>``，与带归属的
+    ``<owner>--<document_id>#<index>``（见 ``documents.scoped_document_id``）。
+    此前三处文档级操作（``delete_document`` × 2、``get_document_chunks``、
+    ``get_chunk_records``）只按裸前缀匹配，带归属的文档删了也删不掉、查也
+    查不到——企业库镜像（``enterprise:<id>``，入库时必带归属）就是这样在
+    向量库里留下孤儿 chunk 的（2026-11-12 审计核实第 15 条）。
+    """
+    if not chunk_key or not document_id:
+        return False
+    if chunk_key.startswith(f"{document_id}#"):
+        return True
+    if "--" in chunk_key:
+        return chunk_key.split("--", 1)[1].startswith(f"{document_id}#")
+    return False
+
+
+def _hash_owner_matches_document(owner: str, document_id: str) -> bool:
+    """内容哈希的归属（裸 id 或 ``<owner>--<id>``）是否指向该文档。"""
+    if not owner or not document_id:
+        return False
+    return owner == document_id or owner.endswith(f"--{document_id}")
 
 
 class PersistentVectorStore(VectorStore):
@@ -1078,44 +1105,60 @@ class PersistentVectorStore(VectorStore):
 
         The in-memory dict is only mutated after the commit succeeds, so a
         failure midway leaves both the database and the read path unchanged.
+
+        匹配按精确 chunk key（先查库、Python 里用
+        :func:`_chunk_key_belongs_to_document` 过滤、再按 key 精确删），
+        而不用 LIKE 前缀：归属键 ``<owner>--<doc>#<n>`` 不以裸 ``<doc>#``
+        开头，LIKE 前缀永远够不着它们。
         """
-        prefix = f"{document_id}#"
         with self._lock:
-            existed = bool(
-                self._conn.execute(
-                    "SELECT 1 FROM knowledge_vectors "
-                    "WHERE substr(doc_id, 1, ?) = ? LIMIT 1",
-                    (len(prefix), prefix),
-                ).fetchone()
-            ) or bool(
-                self._conn.execute(
-                    "SELECT 1 FROM knowledge_document_hashes "
-                    "WHERE document_id = ? LIMIT 1",
-                    (document_id,),
-                ).fetchone()
-            )
-            if not existed:
+            stored_keys = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT doc_id FROM knowledge_vectors"
+                ).fetchall()
+            ]
+            keys = [
+                key
+                for key in stored_keys
+                if _chunk_key_belongs_to_document(key, document_id)
+            ]
+            hash_owners = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT document_id FROM knowledge_document_hashes"
+                ).fetchall()
+            ]
+            matched_hashes = [
+                owner
+                for owner in hash_owners
+                if _hash_owner_matches_document(owner, document_id)
+            ]
+            if not keys and not matched_hashes:
                 return {"deleted": False, "chunks_removed": 0}
             try:
-                cursor = self._conn.execute(
-                    "DELETE FROM knowledge_vectors "
-                    "WHERE substr(doc_id, 1, ?) = ?",
-                    (len(prefix), prefix),
-                )
-                removed = int(cursor.rowcount or 0)
-                self._fts_delete_prefix(prefix)
-                self._conn.execute(
-                    "DELETE FROM knowledge_document_hashes WHERE document_id = ?",
-                    (document_id,),
-                )
+                removed = 0
+                for key in keys:
+                    cursor = self._conn.execute(
+                        "DELETE FROM knowledge_vectors WHERE doc_id = ?", (key,)
+                    )
+                    removed += int(cursor.rowcount or 0)
+                    self._conn.execute(
+                        "DELETE FROM knowledge_fts WHERE chunk_id = ?", (key,)
+                    )
+                for owner in matched_hashes:
+                    self._conn.execute(
+                        "DELETE FROM knowledge_document_hashes WHERE document_id = ?",
+                        (owner,),
+                    )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
-            for key in [key for key in self._store if key.startswith(prefix)]:
-                del self._store[key]
+            for key in keys:
+                self._store.pop(key, None)
             for value, owner in list(self._content_hashes.items()):
-                if owner == document_id:
+                if _hash_owner_matches_document(owner, document_id):
                     del self._content_hashes[value]
             return {"deleted": True, "chunks_removed": removed}
 

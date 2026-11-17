@@ -4,6 +4,15 @@ Authorization / RBAC module for LiuHao AI OS.
 Provides role-based access control (RBAC), permission definitions,
 role hierarchy (inheritance), resource-level permissions, ABAC interface,
 policy evaluation, and role CRUD management.
+
+.. note:: 冻结状态（2026-11-13）——本模块是自洽的内存态 RBAC 库，
+   有自己的测试（``tests/test_security_compliance.py`` 的 TestRbacManager），
+   但**没有任何生产代码调用它**。生效的权限主线是网关的身份/范围裁决
+   （``src/gateway/owner.py`` 的 ``require_owner``、
+   ``require_admin_principal``、``GoalViewer`` 树裁剪）与
+   ``src/security/authority_mode.py``（授权模式），不是这里。
+   不要往本模块接新端点、不要把它当成“第三套权限”再扩；要改权限，
+   改网关主线。本模块只保留、不再扩展；删它要先删/改掉引用它的测试。
 """
 
 from __future__ import annotations

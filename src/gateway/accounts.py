@@ -1,4 +1,4 @@
-"""账号树 HTTP 面：注册 / 成员 / 权限 / Key 共享 / 状态 / 恢复 / 备份。
+"""账号树 HTTP 面：注册 / 成员 / 权限 / Key 不共用 / 状态 / 恢复 / 备份。
 
 设计要点（与 ``docs/account-hierarchy.md`` 对齐）：
 
@@ -84,7 +84,8 @@ class CreateMemberRequest(BaseModel):
     display_name: Optional[str] = Field(None, max_length=80)
     role: Optional[str] = Field(None, description="角色预设：viewer / operator / manager")
     permissions: Optional[List[str]] = None
-    allow_key_sharing: bool = Field(False, description="允许团队共享我的 Key（默认关闭）")
+    # Key 不共用（Joseph 2026-11-14 亲口定，2026-11-15 彻底移除开关）：
+    # 创建成员不再接受任何共享授权字段；请求体里即使带上也被忽略。
 
 
 class ActivateRequest(BaseModel):
@@ -96,10 +97,6 @@ class ActivateRequest(BaseModel):
 class PermissionsRequest(BaseModel):
     grant: List[str] = Field(default_factory=list)
     revoke: List[str] = Field(default_factory=list)
-
-
-class KeySharingRequest(BaseModel):
-    allow: bool
 
 
 class StatusRequest(BaseModel):
@@ -174,7 +171,7 @@ def _kernel_call(fn, *args, **kwargs):
 
 def _public_member(node: _accounts.AccountNode) -> Dict[str, Any]:
     """**不含** parent_id/depth/root_id —— 成员与根看到同一形状。"""
-    return _accounts.public_member(node, show_key_authorization=True)
+    return _accounts.public_member(node)
 
 
 def _require_scope(context: AccountContext, scope: str, *, code: str) -> None:
@@ -557,8 +554,11 @@ def _require_recovery_source(request: Request) -> str:
 # --------------------------------------------------------------------------- #
 
 @router.get("/roles")
-def list_roles() -> Dict[str, Any]:
-    """角色预设：前端直接渲染，不暴露任何层级信息。"""
+def list_roles(
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """角色预设：登录后可读（2026-11-12 前为公开端点，未登录也能读到
+    全部角色预设与 scope 清单，现已收口）。不暴露任何层级信息。"""
     return {
         "roles": [
             {"id": name, "permissions": sorted(_accounts.resolve_role(name, None))}
@@ -795,16 +795,26 @@ def recovery_reset(payload: RecoveryResetRequest, request: Request) -> Dict[str,
 
 @router.post("/self-register")
 def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
-    """自助注册：用户名 + 密码即可，无需邀请码、无需主账号批准。
+    """自助注册：用户名 + 密码即可，无需邀请码；但**要等批准才开通**。
+
+    新规矩（Joseph 2026-11-14 亲口定，取代旧的“注册即开通”口径）：
 
     * 上级恒为本机根账号的第 1 层（不接受请求体里的父子/深度字段）；
     * 作用域恒为最小集合（不能建下级、不能授权、不能借 Key）；
+    * 注册完是 ``pending_approval``（等批准）状态：**不发登录令牌**，
+      登录即被拒（``auth.py`` 的 ``authenticate`` 在人类身份分支也查
+      状态，非 active 一律 403 ``ACCOUNT_UNAVAILABLE``），任何业务接口
+      也过不了 ``require_account_principal`` 的 active 检查；主账号在
+      成员管理里点一下批准（``POST /v1/a3m/owner/registrations/{principal}/approve``）
+      才变 active；
     * 主账号关闭开关后返回结构化拒绝 ``ACCOUNT_SELF_REGISTER_DISABLED``。
 
     恢复码：自助注册的账号没有管理员可代发激活码，因此与根账号一样**当场**
     签发一枚恢复码（库中只存 sha256，明文只出现在本次响应里）。签发失败
     不回滚已经建好的账号（用户会误以为没建成功并重试同名 → 409），而是
     如实返回空码并指路「我的 → 恢复码」补发。
+
+    文案中性：响应里不出现任何关于“谁能看到什么”的字样。
     """
     if not account_settings.allow_self_registration():
         raise deny(
@@ -816,6 +826,7 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
         manager.register_self_service_account,
         payload.principal,
         display_name=payload.display_name,
+        initial_status=_accounts.ACCOUNT_STATUS_PENDING,
     )
     if not rotate_credential(payload.principal, payload.password):
         raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号初始化失败")
@@ -827,17 +838,26 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
         logger.warning(
             "自助注册后未能签发恢复码 principal=%s，可在设置页补发", payload.principal
         )
-    token = issue_token_for(payload.principal, client="web")
+    try:
+        from .a3m import record_pending_registration
+
+        record_pending_registration(
+            payload.principal, display_name=payload.display_name
+        )
+    except Exception:  # noqa: BLE001 - 待批准名单写失败不改变“已注册待批准”的事实
+        logger.warning(
+            "自助注册后待批准名单写入失败 principal=%s", payload.principal
+        )
     response = {
         "account": _public_member(node),
+        "status": _accounts.ACCOUNT_STATUS_PENDING,
         "recovery_code": recovery_code,
-        "token": token["access_token"],
-        "access_token": token["access_token"],
         "notice": (
-            "账号已创建并自动登录。恢复码只显示这一次，请离线保存；"
-            "换机或忘记密码时用它重置。"
+            "注册已提交，请等待批准，批准后即可登录。恢复码只显示这一次，"
+            "请离线保存；换机或忘记密码时用它重置。"
             if recovery_code
-            else "账号已创建并自动登录；恢复码暂未生成，可稍后到「我的 → 恢复码」补发。"
+            else "注册已提交，请等待批准，批准后即可登录；恢复码暂未生成，"
+            "可在开通后到「我的 → 恢复码」补发。"
         ),
     }
     response.update(audit_notice_after(snapshot, "自助注册"))
@@ -1160,7 +1180,6 @@ def create_member(
         permissions=payload.permissions,
         role=payload.role,
         display_name=payload.display_name,
-        allow_key_sharing=payload.allow_key_sharing,
     )
     response = {
         "account": _public_member(node),
@@ -1213,29 +1232,6 @@ def update_permissions(
     )
     response = {"account": _public_member(node)}
     response.update(audit_notice_after(snapshot, "权限变更"))
-    return response
-
-
-@router.patch("/{principal}/key-sharing")
-def update_key_sharing(
-    principal: str,
-    payload: KeySharingRequest,
-    context: AccountContext = Depends(require_account_principal),
-) -> Dict[str, Any]:
-    """自己可以随时开启/撤回共享；管理者可代为调整（均写审计）。"""
-    if principal != context.principal:
-        require_manage(context, principal)
-    snapshot = audit_failure_snapshot()
-    node = _kernel_call(
-        get_identity_manager().set_key_sharing, context.principal, principal, payload.allow
-    )
-    response: Dict[str, Any] = {"account": _public_member(node)}
-    if principal != context.principal:
-        # 共享授权变化会 +1 security_epoch：对方已签发的令牌在下一个请求失效。
-        # 这是有意保留的安全行为（权限变更即时生效），但必须显式告知操作者。
-        response["requires_reauth"] = True
-        response["notice"] = "共享设置已更新；该成员当前的登录凭据已失效，需要重新登录。"
-    response.update(audit_notice_after(snapshot, "Key 共享设置变更"))
     return response
 
 

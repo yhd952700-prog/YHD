@@ -870,6 +870,17 @@ def main() -> int:
             "本版本不提供 8090 配对中继"
         ),
     )
+    parser.add_argument(
+        "--remote-mode",
+        default=None,
+        choices=["off", "tailscale"],
+        help=(
+            "远程访问模式（7-2，默认不指定：按环境变量/设置里的开关走）。"
+            "tailscale：手机在外面经 Tailscale 虚拟局域网连家里电脑，"
+            "不暴露公网端口、不做端口转发；off：只本机可达。"
+            "开远程前请先在电脑与手机上装好 Tailscale 并登录同一个账号。"
+        ),
+    )
     parser.add_argument("--api-port", type=int, default=_env_api_port())
     parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT)
     parser.add_argument("--backend-only", action="store_true", help="只起网关，不起控制台")
@@ -898,6 +909,12 @@ def main() -> int:
 
     if args.backend_only and args.vite:
         parser.error("--backend-only 与 --vite 互斥（前者不含控制台）")
+
+    # 7-2 远程模式：显式 --remote-mode tailscale 时，默认的回环绑定改成
+    # 0.0.0.0（与网关入口的 effective_bind_host 一致）；off 时什么都不改。
+    # 未指定时不碰 args.host，网关按环境变量/持久化设置自己决定。
+    if (args.remote_mode or "").strip().lower() == "tailscale" and _is_loopback(args.host):
+        args.host = "0.0.0.0"
 
     from src.logging_config import ensure_utf8_streams
 
@@ -982,6 +999,10 @@ def main() -> int:
     gateway_env = dict(os.environ)
     gateway_env["HOST"] = args.host
     gateway_env["PORT"] = str(args.api_port)
+    # 7-2：显式指定的远程模式透传给网关子进程（未指定时不写，网关按
+    # 环境变量/持久化设置自己决定）。
+    if args.remote_mode is not None:
+        gateway_env["LIUHAO_REMOTE_MODE"] = (args.remote_mode or "").strip().lower()
     # 直接关掉启动器窗口（不按 Ctrl+C）时，网关不能变成占着端口的孤儿进程。
     gateway_env["LIUHAO_PARENT_PID"] = str(os.getpid())
     # 启动器打开控制台时会带上桌面端一次性证明；把网关标记为可信本机入口，
@@ -1019,12 +1040,23 @@ def main() -> int:
         _shutdown_all()
         return 1
 
+    # 首次启动成功：在桌面建一个「贾维斯」快捷方式（小铁图标）。只建一次，
+    # 桌面上已有同名快捷方式就跳过；建失败只记日志，绝不拦启动。
+    # （LiuHao.bat 排障入口也走这条路；桌面壳另在 app.py 里接一次，两边
+    # 都是同一个幂等函数，不会重复建。）
+    try:
+        from src.desktop.desktop_shortcut import ensure_on_first_success
+
+        ensure_on_first_success()
+    except Exception:  # noqa: BLE001 - 快捷方式是锦上添花，失败不能拦启动
+        pass
+
     if args.backend_only:
         print()
         print(f"网关已就绪：  {api_base}")
         print(f"API 文档：    {api_base}/docs")
         print("（--backend-only：控制台未启动）")
-        _print_lan_urls(args.api_port, args.host)
+        _print_lan_urls(args.api_port, args.host, remote_mode=args.remote_mode or "")
         return _serve_forever()
 
     if single_port:
@@ -1089,7 +1121,12 @@ def main() -> int:
     print(f"  日志      {_gate_log_hint()}")
     if url_file is not None:
         print(f"  当前地址  {url_file}")
-    _print_lan_urls(args.api_port, args.host, args.https_port if args.https else None)
+    _print_lan_urls(
+        args.api_port,
+        args.host,
+        args.https_port if args.https else None,
+        remote_mode=args.remote_mode or "",
+    )
     print()
     print("  本窗口只显示状态，不需要输入任何内容。")
     print("  关闭此窗口会停止本地服务（控制台将无法访问）；使用期间请保持打开，可最小化。")
@@ -1121,10 +1158,39 @@ def _console_url_with_proof(base: str) -> str:
         return base
 
 
-def _print_lan_urls(api_port: int, host: str, https_port: int | None = None) -> None:
-    """在控制台打印局域网访问地址，方便手机手输（本产品没有二维码配对）。
+def _tailscale_ipv4() -> str | None:
+    """本机 Tailscale 虚拟 IPv4 地址（只读 ``tailscale ip``）；没有就返回 None。"""
+    exe = shutil.which("tailscale")
+    if not exe:
+        return None
+    try:
+        proc = subprocess.run([exe, "ip"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in (proc.stdout or "").splitlines():
+        candidate = line.strip()
+        try:
+            parsed = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, ipaddress.IPv4Address):
+            return str(parsed)
+    return None
+
+
+def _print_lan_urls(
+    api_port: int,
+    host: str,
+    https_port: int | None = None,
+    remote_mode: str = "off",
+) -> None:
+    """在控制台打印局域网访问地址，方便手机手输；另附配对二维码见设置页。
 
     默认只绑回环时这些地址根本连不上，打印出来只会误导用户，所以直接跳过。
+    远程模式（tailscale）下多打一行 Tailscale 虚拟地址：手机在外面用流量
+    打开它就能连家里电脑；电脑关机后照样连不上。
     """
     if _is_loopback(host):
         return
@@ -1137,6 +1203,16 @@ def _print_lan_urls(api_port: int, host: str, https_port: int | None = None) -> 
         print(f"    http://{ip}:{api_port}/")
         if https_port is not None:
             print(f"    https://{ip}:{https_port}/   (PWA，需信任自签证书)")
+    if (remote_mode or "").strip().lower() == "tailscale":
+        tailscale_ip = _tailscale_ipv4()
+        print()
+        if tailscale_ip:
+            print("  远程访问（Tailscale，手机在外面用流量也能连）：")
+            print(f"    http://{tailscale_ip}:{api_port}/")
+            print("    （电脑关机、断网后这个地址也连不上，不是故障。）")
+        else:
+            print("  远程访问（Tailscale）：本机未检测到 Tailscale 地址。")
+            print("    请先在电脑与手机上装好 Tailscale、登录同一个账号，再打开远程模式。")
 
 
 def _serve_forever() -> int:

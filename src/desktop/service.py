@@ -11,7 +11,18 @@
   * 端口：默认 8080；被占用时**默认不换端口**（换端口地址就变，书签 /
     PWA / 旧标签会失联），而是把「哪个端口、被谁占、怎么解决」写进
     ``last_error`` 交给 UI。只有显式 ``allow_port_fallback=True`` 的自动恢复
-    场景才向上顺延，并写一条 warning 日志说明地址已变化。
+    场景才向上顺延，并写一条 warning 日志说明地址已变化。桌面双击启动
+    （``src.desktop.app``）就是这样的自动恢复场景，因此它传 True。
+    另外还有一种竞态：壳查完端口空闲、网关真正绑定时又被别的程序抢走，
+    子进程直接以 code=3 退出。``start()`` 在 ``allow_port_fallback=True``
+    时对这类「端口绑定」失败自动换端口重试（最多 3 次），同样记日志。
+  * 启动失败归因：子进程提前退出时不再只给一句「详见日志」，而是读已抓取的
+    ``desktop-gateway.log`` 尾部（``src.desktop.gateway_failure``），把原因
+    说清（缺模块 / 配置损坏 / 数据目录不可写 / 杀毒拦截 / 端口被抢 …），
+    拼进 ``last_error`` 与 ``last_failure`` 交给报错页。
+  * 预检（启动前先拦住注定失败的启动）：数据目录真实写入探测、日志目录
+    建不出来时改用数据目录下的 logs、损坏的 logging.yaml 丢弃改用默认
+    配置、解释器路径不存在/不可执行时回退到默认解释器。
   * 停止：**先优雅、超时才强杀**。Windows 的 ``TerminateProcess`` 没有可捕获
     的退出信号，所以子进程入口改成 ``src.desktop._runner``：桌面壳往它的
     stdin 写一行 ``shutdown``，子进程置 ``server.should_exit = True``，uvicorn
@@ -30,6 +41,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -46,6 +58,7 @@ from ..common.instance_lock import (
 from ..common.redaction import redact_log_text
 from ..logging_config import (
     RotatingTextWriter,
+    load_uvicorn_log_config,
     prune_log_retention,
     resolve_data_dir,
     resolve_log_file,
@@ -53,6 +66,7 @@ from ..logging_config import (
     scrub_legacy_log_leaks,
 )
 from . import LOG_DIR, REPO_ROOT
+from .gateway_failure import summarize_gateway_failure
 from .probe import http_json, lan_addresses, pick_port, port_is_free, port_owner
 
 logger = logging.getLogger(__name__)
@@ -64,6 +78,59 @@ SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 120.0
+
+#: 端口竞态重试上限：壳查完空闲、网关绑定时被抢走，最多换端口重试这么多次。
+PORT_RACE_MAX_ATTEMPTS = 3
+
+
+def _is_executable(path: Path) -> bool:
+    """解释器候选是否可执行：Windows 上文件存在即够，POSIX 还要 X 权限。"""
+    if os.name == "nt":
+        return True
+    return os.access(path, os.X_OK)
+
+
+def _probe_directory_writable(path: Path) -> dict[str, Any]:
+    """真实写入探测：建临时文件、写一个字节、再删掉。
+
+    ``os.access`` 在 Windows 上只看只读属性，判定不了 ACL，所以这里真写一次。
+    目录不存在时先创建（首次启动时目录本来就还没建，报"不可写"会误导用户
+    去改权限）。返回 ``{"writable", "path_kind", "error"}``。
+    """
+    result: dict[str, Any] = {
+        "path": str(path),
+        "path_kind": "missing",
+        "writable": False,
+        "error": None,
+    }
+    try:
+        if path.is_dir():
+            result["path_kind"] = "directory"
+        elif path.is_file():
+            result["path_kind"] = "file"
+        elif path.exists():
+            result["path_kind"] = "other"
+    except OSError as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    if result["path_kind"] == "file":
+        result["error"] = "路径是一个文件，不是目录"
+        return result
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    probe = path / f".liuhao-start-{os.getpid()}.tmp"
+    try:
+        probe.write_bytes(b"liuhao startup writable probe")
+        result["writable"] = True
+    except OSError as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        with contextlib.suppress(OSError):
+            probe.unlink(missing_ok=True)
+    return result
 
 
 def _env_port() -> int | None:
@@ -148,6 +215,29 @@ GRACEFUL_TIMEOUT = 10.0
 #: 子进程内 uvicorn 等待在途请求的上限（秒）。比 ``GRACEFUL_TIMEOUT`` 少 2s，
 #: 留出 lifespan shutdown（flush / 关库）与进程退出的时间。
 GRACEFUL_INSIDE = 8.0
+
+#: 网关子进程的启动入口链：缺了其中任何一个，子进程都会以
+#: ``ModuleNotFoundError: No module named 'src'``、code=1 退出。
+#: 顺序即检查顺序：先包、再入口，报出来的就是第一个缺的。
+RUNNER_FILE_CHAIN: tuple[str, ...] = (
+    "src/__init__.py",
+    "src/desktop/__init__.py",
+    "src/desktop/_runner.py",
+)
+
+#: 网关子进程的 ``-c`` 引导：安装包内嵌 Python 的 ``python312._pth``
+#: 启用隔离模式，隔离模式下 ``python -m`` 不把工作目录放进 sys.path、
+#: PYTHONPATH 也被忽略——所以 ``-m src.desktop._runner`` 在真机上永远报
+#: ``No module named 'src'``（v9 真机 code=1 的根因；沙箱用 ``-I`` 逐字
+#: 复现过，见 tests/desktop/test_gateway_code1.py）。
+#: 这里先把程序根（由 ``LIUHAO_APP_ROOT`` 传入）插进 sys.path 再跑模块，
+#: 不依赖 cwd、不依赖 PYTHONPATH。``sys.argv[0]`` 会是 ``-c``，_runner
+#: 只用 ``argv[1:]`` 解析 ``--host``/``--port``，不受影响。
+_GATEWAY_BOOTSTRAP = (
+    "import os, sys, runpy; "
+    "sys.path.insert(0, os.environ['LIUHAO_APP_ROOT']); "
+    "runpy.run_module('src.desktop._runner', run_name='__main__')"
+)
 
 #: 与 ``src.desktop._runner`` 约定的停止指令（写到子进程 stdin）。
 SHUTDOWN_COMMAND = b"shutdown\n"
@@ -475,6 +565,22 @@ def _point_at_console_stores(root: Path) -> None:
             os.environ[env_name] = str(path)
 
 
+def _check_runner_files(root: Path) -> tuple[str | None, str | None]:
+    """核对网关启动入口链（见 ``RUNNER_FILE_CHAIN``）。
+
+    返回 ``(kind, missing)``：``kind`` 为 None 表示全在；``"root"`` 表示
+    程序根本身不存在（``missing`` 是根的路径）；``"file"`` 表示缺了某个
+    文件（``missing`` 是该文件的完整路径）。只报第一个缺的。
+    """
+    if not root.is_dir():
+        return "root", str(root)
+    for rel in RUNNER_FILE_CHAIN:
+        target = root / rel
+        if not target.is_file():
+            return "file", str(target)
+    return None, None
+
+
 class GatewayService:
     """网关子进程控制器（桌面壳独占）。"""
 
@@ -495,6 +601,19 @@ class GatewayService:
         self._retention_thread: threading.Thread | None = None
         self._retention_stop = threading.Event()
         self.last_error: str | None = None
+        #: 最近一次启动失败的结构化归因（``gateway_failure`` 的摘要）：
+        #: ``{"category", "title", "reason", "action", "evidence",
+        #: "exit_code", "detail"}``；成功或未启动过时为 None。
+        self.last_failure: dict[str, Any] | None = None
+        #: 启动前核对入口链的结果：True=全在，False=缺过，None=还没核对过。
+        #: ``_wait_health`` 归因时用它区分“文件缺了”还是“启动上下文问题”。
+        self._runner_files_ok: bool | None = None
+        #: 启动时实际用的程序根（字符串）：报错页与日志都印它，真机排障
+        #: 一眼就能看出壳是不是从别处启动的。
+        self._launch_root: str | None = None
+        #: 端口被占用/竞态而自动换端口时，记录用户原来要的端口；没换过为 None。
+        #: 状态窗口据此告诉用户地址变了（见 diagnostics.service_guidance）。
+        self.port_switched_from: int | None = None
         #: 端口被占用时的结构化信息（端口 + 占用者 PID/程序名/路径），
         #: 供桌面壳弹「二选一」窗口；空闲或其它失败原因为 None。
         self.port_conflict: dict[str, Any] | None = None
@@ -605,13 +724,22 @@ class GatewayService:
 
         端口被占用时**默认不换端口**：换了端口地址就变，书签 / PWA / 旧标签
         会指向连不上的地方。只有显式 ``allow_port_fallback=True``（明确的
-        自动恢复场景）才向上顺延，并写日志记录实际端口。
+        自动恢复场景，桌面双击启动就是）才向上顺延，并写日志记录实际端口。
+        顺延后若网关在绑定瞬间又被抢走（竞态），同样自动换端口重试，最多
+        :data:`PORT_RACE_MAX_ATTEMPTS` 次。
+
+        启动前先做三项预检，拦住注定失败的启动并说清原因：数据目录写入探测、
+        日志配置解析、解释器可用性。子进程提前退出时，``last_error`` 不再是
+        一句「详见日志」，而是带原因、动作与关键日志行的归因（见
+        ``src.desktop.gateway_failure``）。
         """
         with self._lock:
             if self._proc is not None and self._proc.poll() is None:
                 return True
         self.last_error = None
+        self.last_failure = None
         self.port_conflict = None
+        self.port_switched_from = None
         _load_dotenv(self._root)
         _point_at_console_stores(self._root)
 
@@ -624,7 +752,43 @@ class GatewayService:
             return False
         # 上次被强杀留下的锁文件/元信息：确认无人持有后清掉（自愈）。
         # 清理失败不影响启动 —— 真正的互斥仍由子进程持有的 OS 锁保证。
+        # 覆盖面：run/ 下的 instance（网关自己的单实例锁）与 local_scheduler
+        # 两把锁；网关侧没有第三把锁，见 cleanup_instance_files。
         cleanup_instance_files(self._root)
+
+        # 预检 1：数据目录写不进去时，别拉起一个注定在抢锁 / 建日志目录时
+        # 死掉的子进程 —— 提前退出并说清是哪个目录、为什么。
+        data_probe = _probe_directory_writable(resolve_data_dir())
+        if not data_probe["writable"]:
+            shown = redact_log_text(str(resolve_data_dir()))
+            if data_probe["path_kind"] == "file":
+                reason = (
+                    f"数据目录路径被一个同名文件挡住了：{shown}。"
+                    "请把那个文件改名或移走，再重新打开贾维斯。"
+                )
+            else:
+                detail = redact_log_text(str(data_probe.get("error") or "没有写权限"))
+                reason = (
+                    f"数据目录不可写：{shown}（{detail}）。"
+                    "请给当前用户写权限，或把数据目录换到可写的位置"
+                    "（例如 %LOCALAPPDATA%\\LiuHao\\data），再重新打开贾维斯。"
+                )
+            action = (
+                "给当前用户数据目录的写权限，或把数据目录换到可写的位置；"
+                "路径被同名文件挡住时先把那个文件改名或移走。"
+            )
+            self.last_error = reason
+            self.last_failure = {
+                "category": "data_dir",
+                "title": "数据目录写不进去",
+                "reason": reason,
+                "action": action,
+                "evidence": [],
+                "exit_code": None,
+                "detail": reason,
+            }
+            logger.error("网关启动失败：%s", reason)
+            return False
         if not is_loopback_host(self.host):
             logger.warning(
                 "网关绑定到 %s —— 已对外暴露，局域网可访问；"
@@ -673,11 +837,36 @@ class GatewayService:
                 requested,
                 fallback,
             )
+            self.port_switched_from = requested
             requested = fallback
+        requested_original = requested if self.port_switched_from is None else self.port_switched_from
         self.port = requested
 
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = LOG_DIR / "desktop-gateway.log"
+        # 抓取日志落点：程序目录（LOG_DIR）建不出来时（安装目录只读），改写到
+        # 数据目录下的 logs，绝不能因为"日志目录建不出来"就起不来；落点变化
+        # 记一条 warning，不静默。
+        log_dir: Path | None = LOG_DIR
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            try:
+                alt = resolve_data_dir() / "logs"
+                alt.mkdir(parents=True, exist_ok=True)
+                log_dir = alt
+                logger.warning(
+                    "桌面日志目录 %s 无法创建（%s）：网关抓取日志改写到 %s",
+                    LOG_DIR,
+                    exc,
+                    alt,
+                )
+            except OSError:
+                log_dir = None
+                logger.warning(
+                    "桌面日志目录 %s 与数据目录日志都无法创建："
+                    "网关输出将被丢弃，启动崩溃时将只剩退出码",
+                    LOG_DIR,
+                )
+        log_path = (log_dir / "desktop-gateway.log") if log_dir is not None else None
         # 旧版本曾把子进程 stdout 原样写进这个文件（完整 API Key 明文）。
         # 新版本从源头堵住了，但用户目录里的旧文件不会自己变干净：启动时
         # 一次性就地脱敏（含 .1 备份），别让用户以为现在的版本还在泄漏。
@@ -691,8 +880,109 @@ class GatewayService:
         # 按天 + 按量双上限：启动先清一轮，之后每小时由后台巡检兜底。
         self.sweep_log_retention()
         self._start_retention_janitor()
-        _rotate_capture_if_large(log_path)
+
+        # 预检 2：日志配置损坏时，别把 --log-config 传给 _runner —— 它在
+        # build_config 里直接抛错，子进程以 code=1 退出。改用 uvicorn 默认
+        # 日志配置启动，并记一条 warning（配置文件本身不动，等用户修复）。
+        log_config = self._root / "config" / "logging.yaml"
+        log_config_arg: str | None = None
+        if log_config.is_file():
+            try:
+                load_uvicorn_log_config(str(log_config))
+                log_config_arg = str(log_config)
+            except Exception as exc:  # noqa: BLE001 - 配置损坏是自愈场景，不是启动失败
+                logger.warning(
+                    "日志配置 %s 损坏（%s）：本次启动改用默认日志配置",
+                    log_config,
+                    exc,
+                )
+                log_config_arg = None
+
+        # 预检 3：解释器。LIUHAO_DESKTOP_PYTHON 指到不存在 / 不可执行的路径，
+        # 或 venv 里的 python 损坏时，Popen 会直接抛错；这两种都回退到默认
+        # 解释器并记日志，而不是报"拉起网关失败"。
+        python = self._resolve_python()
+
+        # 预检 4：网关启动入口链。入口文件本身缺失时，子进程报的也是同一句
+        # ``No module named 'src'``，和隔离模式的报错在日志里长得一模一样。
+        # 启动前先核对：缺了就不要拉起，直接说清缺哪个文件、程序根在哪。
+        kind, missing = _check_runner_files(self._root)
+        self._runner_files_ok = kind is None
+        self._launch_root = str(self._root)
+        if kind is not None:
+            if kind == "root":
+                title = "程序根目录不对"
+                reason = (
+                    f"程序根目录不存在：{self._root}。"
+                    "桌面壳是从别处启动的（快捷方式指向旧位置、或安装路径与"
+                    "运行路径不一致），网关子进程到这个目录下找不到启动文件。"
+                )
+                action = "用桌面上的「贾维斯」快捷方式重新打开；仍失败就用同一个安装包重新安装。"
+                category = "bad_root"
+            else:
+                title = "启动文件缺失"
+                reason = (
+                    f"启动文件缺失：{missing}。"
+                    "安装不完整，或该文件被删、被杀毒软件隔离了，网关还没跑起来就退出了。"
+                )
+                action = (
+                    "用同一个安装包重新安装（或重新解压）补齐文件；若杀毒软件隔离过文件，"
+                    "先从隔离区恢复再重启。"
+                )
+                category = "missing_runner_file"
+            detail = f"{title}。{reason}\n程序根：{self._root}\n下一步：{action}"
+            self.last_failure = {
+                "category": category,
+                "title": title,
+                "reason": reason,
+                "action": action,
+                "evidence": [],
+                "exit_code": None,
+                "detail": detail,
+                "root": str(self._root),
+                "missing_file": missing if kind == "file" else None,
+            }
+            self.last_error = detail
+            logger.error("网关启动失败：%s", detail)
+            return False
+
+        attempts = 0
+        while True:
+            attempts += 1
+            self._open_capture(log_path)
+            if self._launch_once(timeout, python, log_config_arg):
+                self._start_retention_janitor()
+                return True
+            failure = self.last_failure or {}
+            if (
+                failure.get("category") == "port_bind"
+                and allow_port_fallback
+                and attempts < PORT_RACE_MAX_ATTEMPTS
+            ):
+                try:
+                    new_port = pick_port(self.port)
+                except RuntimeError as exc:
+                    self.last_error = str(exc)
+                    return False
+                if self.port_switched_from is None:
+                    self.port_switched_from = requested_original
+                logger.warning(
+                    "端口 %s 在启动瞬间被占用，已自动改用 %s（地址会变，请以实际地址为准）",
+                    self.port,
+                    new_port,
+                )
+                self.port = new_port
+                continue
+            return False
+
+    def _open_capture(self, log_path: Path | None) -> None:
+        """为一次拉起准备抓取文件（重试时重新打开；落点为空则不抓取）。"""
         self._log_path = log_path
+        if log_path is None:
+            self._capture = None
+            self._log_offset = 0
+            return
+        _rotate_capture_if_large(log_path)
         try:
             self._capture = _GatewayLogCapture(log_path)
         except OSError as exc:
@@ -706,31 +996,60 @@ class GatewayService:
             self._capture = None
         self._log_offset = self._capture.size if self._capture is not None else 0
 
-        # 应用日志由网关自己按 config/logging.yaml 轮转（10 MiB × 5）。
-        # 这个抓取文件只承接控制台 WARNING 及以上与启动崩溃栈，增长很小。
-        # 入口是 src.desktop._runner：它负责把 stdin 的 shutdown 转成
-        # uvicorn 的 should_exit，从而让停止可以优雅收尾（见模块文档）。
-        log_config = self._root / "config" / "logging.yaml"
+    def _gateway_cmd(self, python: str, log_config_arg: str | None) -> list[str]:
+        """网关子进程的启动命令：``-c`` 引导，不依赖 cwd 在 sys.path 里。
+
+        见模块常量 ``_GATEWAY_BOOTSTRAP``：内嵌 Python 的隔离模式下
+        ``python -m`` 找不到 src，-c 引导先把程序根插进 sys.path 再跑模块。
+        """
         cmd = [
-            os.environ.get("LIUHAO_DESKTOP_PYTHON") or self._venv_python(),
-            "-u",
-            "-m",
-            "src.desktop._runner",
+            python,
+            "-c",
+            _GATEWAY_BOOTSTRAP,
             "--host",
             self.host,
             "--port",
             str(self.port),
         ]
-        if log_config.is_file():
-            cmd += ["--log-config", str(log_config)]
+        if log_config_arg:
+            cmd += ["--log-config", log_config_arg]
+        return cmd
+
+    def _gateway_env(self) -> dict[str, str]:
+        """网关子进程的环境：程序根显式传入，干扰项去掉。"""
+        child_env = dict(os.environ)
+        # 托盘被强杀时，别把网关留成孤儿继续占端口/持锁。
+        child_env["LIUHAO_PARENT_PID"] = str(os.getpid())
+        # 桌面壳是可信本机入口：首次注册/取码/重置都要求桌面端证明，
+        # 且 HTTP 对端必须与网关同属一个 Windows 用户。
+        child_env["LIUHAO_TRUSTED_LAUNCH"] = "1"
+        # 程序根：-c 引导从这里读（隔离模式下 -m 与 PYTHONPATH 都不认，
+        # 但环境变量照常传）；非隔离解释器（开发 venv）也靠 PYTHONPATH 兜底。
+        root_str = str(self._root)
+        child_env["LIUHAO_APP_ROOT"] = root_str
+        existing = (child_env.get("PYTHONPATH") or "").strip()
+        child_env["PYTHONPATH"] = (
+            root_str if not existing else os.pathsep.join([root_str, existing])
+        )
+        # PYTHONSAFEPATH 会让 -m 不把工作目录放进 sys.path；网关子进程
+        # 的启动环境由我们全权控制，直接去掉它，免得它在别处再咬一口。
+        child_env.pop("PYTHONSAFEPATH", None)
+        return child_env
+
+    def _launch_once(
+        self, timeout: float, python: str, log_config_arg: str | None
+    ) -> bool:
+        """拉起一次网关子进程并等健康检查；失败时停掉残留、留好归因，返回 False。
+
+        应用日志由网关自己按 config/logging.yaml 轮转（10 MiB × 5）。
+        这个抓取文件只承接控制台 WARNING 及以上与启动崩溃栈，增长很小。
+        入口是 src.desktop._runner（经 -c 引导拉起）：它负责把 stdin 的
+        shutdown 转成 uvicorn 的 should_exit，从而让停止可以优雅收尾
+        （见模块文档）。
+        """
+        cmd = self._gateway_cmd(python, log_config_arg)
         try:
             with self._lock:
-                child_env = dict(os.environ)
-                # 托盘被强杀时，别把网关留成孤儿继续占端口/持锁。
-                child_env["LIUHAO_PARENT_PID"] = str(os.getpid())
-                # 桌面壳是可信本机入口：首次注册/取码/重置都要求桌面端证明，
-                # 且 HTTP 对端必须与网关同属一个 Windows 用户。
-                child_env["LIUHAO_TRUSTED_LAUNCH"] = "1"
                 self._proc = subprocess.Popen(
                     cmd,
                     cwd=str(self._root),
@@ -739,10 +1058,24 @@ class GatewayService:
                     stdout=subprocess.PIPE if self._capture is not None else subprocess.DEVNULL,
                     stderr=subprocess.STDOUT,
                     creationflags=_no_window_flags(),
-                    env=child_env,
+                    env=self._gateway_env(),
                 )
         except (OSError, subprocess.SubprocessError) as exc:
-            self.last_error = f"拉起网关失败：{type(exc).__name__}: {exc}"
+            reason = (
+                f"拉起网关失败：{type(exc).__name__}: {exc}。"
+                "可能是安装的 Python 损坏或被安全软件拦截。"
+            )
+            action = "先重启电脑再试；仍失败就用同一个安装包重新安装；若杀毒软件报过毒，先从隔离区恢复。"
+            self.last_failure = {
+                "category": "interpreter",
+                "title": "启动器/解释器失败",
+                "reason": reason,
+                "action": action,
+                "evidence": [],
+                "exit_code": None,
+                "detail": f"{reason}\n下一步：{action}",
+            }
+            self.last_error = self.last_failure["detail"]
             self._close_log()
             return False
         if self._capture is not None and self._proc.stdout is not None:
@@ -779,6 +1112,34 @@ class GatewayService:
                 return str(candidate)
         return sys.executable
 
+    def _resolve_python(self) -> str:
+        """网关子进程的解释器：显式指定 / venv 损坏时回退，不直接抛错。
+
+        ``LIUHAO_DESKTOP_PYTHON`` 指到不存在 / 不可执行的路径时，旧代码把原值
+        原样传给 ``Popen``，直接以 ``FileNotFoundError`` 失败；venv 里的
+        ``python`` 被删或损坏时，``_venv_python`` 同样原样返回坏路径。
+        两种情况都回退到当前解释器并记一条 warning —— 桌面壳自己的解释器
+        就是能跑网关的那个，启动不该卡在这里。
+        """
+        override = (os.environ.get("LIUHAO_DESKTOP_PYTHON") or "").strip()
+        if override:
+            candidate = Path(override)
+            if candidate.is_file() and _is_executable(candidate):
+                return str(candidate)
+            logger.warning(
+                "指定的解释器 %s 不可用（文件不存在或不可执行），改用默认解释器",
+                override,
+            )
+        candidate = self._venv_python()
+        path = Path(candidate)
+        if path.is_file() and _is_executable(path):
+            return candidate
+        if candidate != sys.executable:
+            logger.warning(
+                "虚拟环境解释器 %s 不可用，改用当前解释器 %s", candidate, sys.executable
+            )
+        return sys.executable
+
     def _wait_health(self, timeout: float) -> bool:
         base = self.base_url
         if not base:
@@ -788,7 +1149,22 @@ class GatewayService:
             with self._lock:
                 proc = self._proc
             if proc is not None and proc.poll() is not None:
-                self.last_error = f"网关进程提前退出（code={proc.returncode}），详见 logs/desktop-gateway.log"
+                # 子进程提前退出：先等抓取线程把最后几行落盘，再读尾部归因。
+                # 只给退出码等于让用户自己翻英文 traceback，这里直接说清原因。
+                code = proc.returncode
+                if self._capture is not None:
+                    self._capture.drain()
+                # 把启动时已知的上下文传给分类器：No module named 'src'
+                # 只看日志分不出“文件缺了”还是“启动上下文问题”。
+                summary = summarize_gateway_failure(
+                    code,
+                    self._log_path,
+                    root=self._root,
+                    runner_files_present=self._runner_files_ok,
+                )
+                self.last_failure = summary
+                self.last_error = summary["detail"]
+                logger.error("网关进程提前退出（code=%s）：%s", code, summary["reason"])
                 return False
             # 2s 而不是 1s：机器繁忙时 /v1/health 自身可能超过 1s，误判成"没起来"。
             info = http_json(f"{base}/v1/health", timeout=2.0)
@@ -801,6 +1177,28 @@ class GatewayService:
                 if proc is not None and proc.poll() is None:
                     return True
             time.sleep(0.5)
+        # 超时：进程还在但健康检查一直没过。日志里若有错误行，一并带上，
+        # 别只留一句"未通过"；没有错误行时 last_error 留空，由 start() 补通用文案。
+        with self._lock:
+            proc = self._proc
+        if proc is not None and proc.poll() is None:
+            if self._capture is not None:
+                self._capture.drain()
+            summary = summarize_gateway_failure(
+                None,
+                self._log_path,
+                root=self._root,
+                runner_files_present=self._runner_files_ok,
+            )
+            self.last_failure = summary
+            if summary["evidence"]:
+                lines = "\n".join(f"- {line}" for line in summary["evidence"])
+                self.last_error = (
+                    f"网关在 {timeout:.0f}s 内未通过 /v1/health。"
+                    f"{summary['reason']}\n下一步：{summary['action']}\n日志关键行：\n{lines}"
+                )
+                if summary.get("root"):
+                    self.last_error += f"\n程序根：{summary['root']}"
         return False
 
     def stop(self, timeout: float = GRACEFUL_TIMEOUT) -> dict[str, Any]:

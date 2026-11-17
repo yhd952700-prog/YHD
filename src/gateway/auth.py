@@ -56,12 +56,13 @@ import logging
 import os
 from pathlib import Path
 import secrets as _secrets
+import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.common.atomic_write import (
@@ -70,6 +71,7 @@ from src.common.atomic_write import (
     read_text_with_retry,
 )
 
+from .account_context import AccountContext, require_account_principal
 from .policy import extract_bearer_token, require_bearer_payload
 
 router = APIRouter(prefix="/v1", tags=["auth"])
@@ -85,11 +87,20 @@ AUTH_SECRETS_FILE_ENV = "LIUHAO_AUTH_SECRETS_FILE"
 #: Access-token lifetime in seconds.
 AUTH_TTL_ENV = "LIUHAO_AUTH_TTL_SECONDS"
 
-#: 12h: long enough that a CEO is not re-typing a password all day, short
-#: enough that a leaked token expires before it is worth much.
-DEFAULT_TTL_SECONDS = 12 * 3600
+#: Refresh-token lifetime in seconds.
+AUTH_REFRESH_TTL_ENV = "LIUHAO_AUTH_REFRESH_TTL_SECONDS"
+
+#: 0.4.6 统一口径（见 docs/jwt-token-policy.md）：access 15 分钟 +
+#: refresh 7 天轮换，与 ``src/security/jwt_handler.py`` 的默认值一致。
+#: 旧的网关 12 小时单令牌退役：12 小时无刷新、无轮换，令牌泄露后有效
+#: 期太长；15 分钟 access + 可吊销、可轮换的 refresh 是更短的暴露窗口。
+#: 已签发的旧 12 小时令牌按其自身 exp 继续有效到过期，不会被提前作废。
+DEFAULT_TTL_SECONDS = 15 * 60
+DEFAULT_REFRESH_TTL_SECONDS = 7 * 24 * 3600
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 7 * 24 * 3600
+MIN_REFRESH_TTL_SECONDS = 3600
+MAX_REFRESH_TTL_SECONDS = 30 * 24 * 3600
 
 PBKDF2_ALGO = "pbkdf2_hmac_sha256"
 
@@ -135,14 +146,73 @@ def login_timeout_seconds() -> float:
             )
     return DEFAULT_LOGIN_TIMEOUT_SECONDS
 
-# Brute-force throttle. In-process, so it is per-replica: the same scope as
-# ``IdentityManager``'s in-memory table. Documented rather than silently
-# assumed -- a multi-replica deployment needs a shared counter.
+# Brute-force throttle. Counters live in SQLite (``login_throttle.sqlite3``,
+# next to the audit DB but a separate file), so a restart does **not** reset
+# the 5-in-300s window -- an attacker can no longer clear a lockout by
+# crashing/restarting the server.
+#
+# 检测面（2026-11-13 核实）：旧 ``audit_trail.py`` 删掉后，暴力登录的“看见”
+# 并没有丢——每次失败登录都写主线审计（``_audit("login_denied", ...)`` →
+# ``src/kernels/audit``，action=login、结果 denied），在「操作记录」页按
+# 操作类型 login + 结果 denied 就能筛出谁在撞密码；防锁（5 次/300 秒）与
+# Owner 解锁（``POST /auth/throttle/unlock``）都在。所以不重做检测器，
+# 只在这里写清去向，免得后人以为能力丢了又造一套。
+#
+# Timestamps are wall-clock epoch seconds: ``time.monotonic()`` is meaningless
+# across restarts. A system-clock rollback can only shorten the window, and
+# only for someone able to move the machine clock.
+#
+# If the throttle DB is ever unusable (permissions, disk full), the counter
+# falls back to the in-process dict so login itself never breaks -- the
+# fallback is logged, and the window then behaves like the old in-memory one
+# until the DB is writable again.
 MAX_FAILURES = 5
 FAILURE_WINDOW_SECONDS = 300
 
+#: Explicit override for the throttle DB (tests / operators).
+THROTTLE_DB_ENV = "LIUHAO_LOGIN_THROTTLE_DB"
+
 _failures: Dict[str, List[float]] = {}
 _failures_lock = threading.Lock()
+
+
+def _throttle_db_path() -> Path:
+    """Resolve ``login_throttle.sqlite3`` next to the audit DB.
+
+    Priority: ``LIUHAO_LOGIN_THROTTLE_DB`` env, then the data dir
+    (``LIUHAO_DATA_DIR``), then the shared store-path fallback.
+    """
+    explicit = (os.environ.get(THROTTLE_DB_ENV) or "").strip()
+    if explicit:
+        return Path(explicit)
+    from src.common.data_paths import data_root, resolve_store_path
+
+    root = data_root()
+    if root is not None:
+        return root / "login_throttle.sqlite3"
+    return Path(
+        resolve_store_path(
+            "login_throttle.sqlite3",
+            Path.home() / ".liuhao" / "login_throttle.sqlite3",
+            env_var=THROTTLE_DB_ENV,
+        )
+    )
+
+
+def _throttle_connect() -> sqlite3.Connection:
+    path = _throttle_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=5.0, check_same_thread=False)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS login_failures ("
+        " principal TEXT NOT NULL, failed_at REAL NOT NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_login_failures_principal"
+        " ON login_failures (principal, failed_at)"
+    )
+    conn.commit()
+    return conn
 
 
 class AuthError(Exception):
@@ -437,9 +507,48 @@ class SecretStore:
 
 
 def resolve_secret_store() -> SecretStore:
-    """Locate the credential file: explicit env var > 数据根 > 配置目录默认值。"""
-    from src.common.data_paths import resolve_store_path
+    """Locate the credential file.
 
+    0.4.6 起默认路径迁到数据目录（``%LOCALAPPDATA%\\LiuHao\\data\\config\\
+    auth_secrets.json``，Linux 下为 ``$LIUHAO_DATA_DIR/config/auth_secrets.json``），
+    不再默认落在仓库 ``config/`` 里。优先级：
+
+    1. 显式环境变量 ``LIUHAO_AUTH_SECRETS_FILE``；
+    2. 数据目录新位置 ``config/auth_secrets.json``（存在即用）；
+    3. 数据目录旧位置 ``auth_secrets.json``（0.4.6 之前已迁过去的部署，
+       继续用，不静默换地方）；
+    4. 数据目录新位置（不存在时作为新默认，并把仓库旧文件**复制**过去，
+       原文件保留不删，复制失败也不阻断登录）；
+    5. 未设数据目录时保持仓库 ``config/auth_secrets.json``（开发模式原样）。
+    """
+    from src.common.data_paths import data_root, resolve_store_path
+
+    explicit = (os.environ.get(AUTH_SECRETS_FILE_ENV) or "").strip()
+    if explicit:
+        return SecretStore(explicit)
+    root = data_root()
+    if root is not None:
+        new_path = root / "config" / "auth_secrets.json"
+        old_data_path = root / "auth_secrets.json"
+        if new_path.is_file():
+            return SecretStore(str(new_path))
+        if old_data_path.is_file():
+            return SecretStore(str(old_data_path))
+        if DEFAULT_SECRETS_PATH.is_file():
+            # 一次性迁移：仓库旧文件复制到数据目录新位置，原文件保留。
+            try:
+                import shutil
+
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(DEFAULT_SECRETS_PATH, new_path)
+                logger.info(
+                    "凭据文件已从仓库 config/ 迁移到数据目录：%s（原文件保留）",
+                    new_path,
+                )
+            except OSError as exc:  # noqa: BLE001 - 迁移失败用旧位置继续登录
+                logger.warning("凭据文件迁移到数据目录失败：%s；继续使用仓库旧文件", exc)
+                return SecretStore(str(DEFAULT_SECRETS_PATH))
+        return SecretStore(str(new_path))
     return SecretStore(
         resolve_store_path(
             "auth_secrets.json",
@@ -455,8 +564,30 @@ def resolve_secret_store() -> SecretStore:
 
 
 def _recent_failures(key: str) -> List[float]:
-    cutoff = time.monotonic() - FAILURE_WINDOW_SECONDS
-    return [stamp for stamp in _failures.get(key, []) if stamp >= cutoff]
+    """Failure timestamps inside the sliding window (wall-clock seconds).
+
+    SQLite is the source of truth; the in-memory dict is only the fallback
+    when the DB is unusable, so a restart keeps the count.
+    """
+    cutoff = time.time() - FAILURE_WINDOW_SECONDS
+    try:
+        conn = _throttle_connect()
+        try:
+            conn.execute(
+                "DELETE FROM login_failures WHERE failed_at < ?", (cutoff,)
+            )
+            conn.commit()
+            rows = conn.execute(
+                "SELECT failed_at FROM login_failures"
+                " WHERE principal = ? ORDER BY failed_at",
+                (key,),
+            ).fetchall()
+            return [float(r[0]) for r in rows]
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - throttle DB must never break login
+        logger.warning("登录节流库不可用，退回内存计数：%s", exc)
+        return [stamp for stamp in _failures.get(key, []) if stamp >= cutoff]
 
 
 def _assert_not_throttled(key: str) -> None:
@@ -464,8 +595,14 @@ def _assert_not_throttled(key: str) -> None:
         recent = _recent_failures(key)
         _failures[key] = recent
         if len(recent) >= MAX_FAILURES:
-            wait = FAILURE_WINDOW_SECONDS - (time.monotonic() - recent[0])
+            wait = FAILURE_WINDOW_SECONDS - (time.time() - recent[0])
             retry_after = max(1, int(wait))
+            _audit(
+                "login_throttled",
+                key,
+                {"reason": "too_many_failures", "failures": len(recent)},
+                event_type="LOGIN_THROTTLED",
+            )
             raise AuthError(
                 429,
                 f"登录失败次数过多，请在 {retry_after} 秒后重试",
@@ -480,18 +617,62 @@ def _assert_not_throttled(key: str) -> None:
 
 def _register_failure(key: str) -> None:
     with _failures_lock:
-        _failures[key] = _recent_failures(key) + [time.monotonic()]
+        now = time.time()
+        try:
+            conn = _throttle_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO login_failures (principal, failed_at) VALUES (?, ?)",
+                    (key, now),
+                )
+                conn.execute(
+                    "DELETE FROM login_failures WHERE failed_at < ?",
+                    (now - FAILURE_WINDOW_SECONDS,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 - throttle DB must never break login
+            logger.warning("登录节流库不可用，退回内存计数：%s", exc)
+            _failures[key] = _recent_failures(key) + [now]
+        else:
+            _failures[key] = _recent_failures(key)
 
 
 def _clear_failures(key: str) -> None:
     with _failures_lock:
+        try:
+            conn = _throttle_connect()
+            try:
+                conn.execute(
+                    "DELETE FROM login_failures WHERE principal = ?", (key,)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 - throttle DB must never break login
+            logger.warning("登录节流库不可用，退回内存计数：%s", exc)
         _failures.pop(key, None)
 
 
 def reset_throttle() -> None:
     """Drop all failure counters (tests / operator unblock)."""
     with _failures_lock:
+        try:
+            conn = _throttle_connect()
+            try:
+                conn.execute("DELETE FROM login_failures")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - best effort; memory fallback still clears
+            pass
         _failures.clear()
+
+
+def throttle_failure_count(principal: str) -> int:
+    """Failures inside the window for one principal (0 when the DB is down)."""
+    return len(_recent_failures(str(principal or "").strip().lower()))
 
 
 # ---------------------------------------------------------------------------
@@ -541,11 +722,21 @@ def audit_notice_after(snapshot: int, operation: str) -> Dict[str, Any]:
     }
 
 
-def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> bool:
+def _audit(
+    outcome: str,
+    principal: str,
+    details: Dict[str, Any],
+    *,
+    event_type: Optional[str] = None,
+) -> bool:
     """Record a login outcome. Audit failure must never break authentication.
 
     ``details`` must never carry secret material -- callers only ever pass a
     reason code and the client class.
+
+    ``event_type`` overrides the default ACCESS_ALLOWED/ACCESS_DENIED mapping
+    (e.g. ``LOGIN_THROTTLED`` / ``LOGIN_THROTTLE_UNLOCKED``); unknown names
+    fall back to the default mapping instead of dropping the record.
 
     返回是否真正写入审计：登录成功但审计写失败时，调用方据此在响应里
     显式告知“审计未写入”，同时照常发放令牌（不阻断登录）。
@@ -561,10 +752,17 @@ def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> bool:
         # 登录的“对象”就是本人：补上 target，四个字段（谁/何时/对什么/结果）
         # 字面齐全，不必让读者从 principal_id 反推。
         audit_details.setdefault("target", principal or "anonymous")
-        log_event(
-            event_type=(
+        resolved_type = None
+        if event_type:
+            resolved_type = getattr(AuditEventType, event_type, None)
+            if resolved_type is None:
+                logger.warning("未知审计事件类型 %s，退回默认映射", event_type)
+        if resolved_type is None:
+            resolved_type = (
                 AuditEventType.ACCESS_ALLOWED if allowed else AuditEventType.ACCESS_DENIED
-            ),
+            )
+        log_event(
+            event_type=resolved_type,
             principal_id=principal or "anonymous",
             scope=AuditScope.L0,
             outcome=outcome,
@@ -591,6 +789,21 @@ def _ttl_seconds() -> int:
         logger.warning("%s=%r is not a number -- using %d", AUTH_TTL_ENV, raw, DEFAULT_TTL_SECONDS)
         return DEFAULT_TTL_SECONDS
     return max(MIN_TTL_SECONDS, min(MAX_TTL_SECONDS, value))
+
+
+def _refresh_ttl_seconds() -> int:
+    raw = os.environ.get(AUTH_REFRESH_TTL_ENV)
+    if not raw:
+        return DEFAULT_REFRESH_TTL_SECONDS
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s=%r is not a number -- using %d",
+            AUTH_REFRESH_TTL_ENV, raw, DEFAULT_REFRESH_TTL_SECONDS,
+        )
+        return DEFAULT_REFRESH_TTL_SECONDS
+    return max(MIN_REFRESH_TTL_SECONDS, min(MAX_REFRESH_TTL_SECONDS, value))
 
 
 _HUMAN_ID_PREFIX = "human:"
@@ -636,11 +849,21 @@ def _human_identity(principal: str):
     return identity
 
 
-def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[str, Any]:
+def authenticate(
+    principal: str,
+    secret: str,
+    *,
+    client: str = "web",
+    totp_code: Optional[str] = None,
+) -> Dict[str, Any]:
     """Verify a credential and mint an access token.
 
     Raises :class:`AuthError` (``status_code`` 400 / 401 / 403 / 429) on any
     failure. Kept free of HTTP so it is unit-testable directly.
+
+    ``totp_code`` 是双重验证的第二步（验证器 6 位验证码或一张备用码）：
+    账号开启了 TOTP 时，没有它回 401 ``TOTP_REQUIRED``（前端据此弹出
+    第二步输入框），错码回 401 ``TOTP_INVALID``；备用码通过即消费一张。
     """
     pid = str(principal or "").strip()
     if not pid or not secret:
@@ -682,21 +905,93 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
             {"code": "AUTH_NOT_HUMAN", "message": "该账号不是可登录的账号"},
         )
 
+    node = _account_node(pid)
+    if node is not None and node.status != "active":
+        # 待批准 / 停用 / 删除的账号：登录阶段就拒绝（与上面非人类身份分支
+        # 同口径、同业务码、同中性文案）。之前这里只查了“没有人类身份”的
+        # 分支，自助注册账号有人类身份就直接绕过去了——2026-11-14 新规矩
+        # （注册先等批准）要求这里也拦住。
+        _audit(
+            "login_denied",
+            pid,
+            {"reason": "account_not_active", "client": client_value},
+        )
+        raise AuthError(
+            403, {"code": "ACCOUNT_UNAVAILABLE", "message": "该账号当前不可用"}
+        )
+
     permissions = sorted(identity.permissions)
-    ttl = _ttl_seconds()
     scope = _effective_scope(identity)
-    token, payload = _issue_token(pid, identity, client_value, permissions, ttl, scope)
+
+    # 双重验证第二步（见 src/gateway/totp.py）：密码通过后才查 TOTP，
+    # 避免用"要不要验证码"反推账号是否存在。
+    second_factor: Optional[str] = None
+    backup_remaining: Optional[int] = None
+    try:
+        from .totp import (
+            TotpError,
+            TotpStoreError,
+            is_totp_enabled,
+            verify_login_second_factor,
+        )
+    except Exception as exc:  # noqa: BLE001 - TOTP 模块坏了不能当作"没开验证"
+        logger.error("TOTP 模块加载失败，登录拒绝：%s", exc)
+        raise AuthError(503, "服务暂时不可用，请稍后重试") from exc
+    try:
+        totp_enabled = is_totp_enabled(pid)
+    except TotpStoreError as exc:
+        raise AuthError(503, "服务暂时不可用，请稍后重试") from exc
+    if totp_enabled:
+        code = (totp_code or "").strip()
+        if not code:
+            _register_failure(throttle_key)
+            _audit(
+                "login_denied",
+                pid,
+                {"reason": "totp_required", "client": client_value},
+            )
+            raise AuthError(
+                401,
+                {
+                    "code": "TOTP_REQUIRED",
+                    "message": "该账号开启了双重验证，请输入验证器上的 6 位验证码，也可以用备用码代替。",
+                    "totp_required": True,
+                },
+            )
+        try:
+            second_factor, backup_remaining = verify_login_second_factor(pid, code)
+        except TotpStoreError as exc:
+            raise AuthError(503, "服务暂时不可用，请稍后重试") from exc
+        except TotpError:
+            _register_failure(throttle_key)
+            _audit(
+                "login_denied",
+                pid,
+                {"reason": "totp_invalid", "client": client_value},
+            )
+            raise AuthError(
+                401,
+                {"code": "TOTP_INVALID", "message": "验证码不正确或已使用过，请重新输入"},
+            ) from None
+
+    pair = _issue_token_pair(pid, identity, client_value, permissions, scope)
     _clear_failures(throttle_key)
+    login_details: Dict[str, Any] = {
+        "client": client_value,
+        "scope": scope,
+        "jti": pair["access_jti"],
+    }
+    if second_factor:
+        login_details["second_factor"] = second_factor
+        if backup_remaining is not None:
+            login_details["backup_codes_remaining"] = backup_remaining
     written = _audit(
         "login_success",
         pid,
-        {"client": client_value, "scope": scope, "jti": payload.jti},
+        login_details,
     )
     response = {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": ttl,
-        "expires_at": payload.exp,
+        **pair,
         "principal": pid,
         "display_name": (identity.metadata or {}).get("display_name"),
         "scope": scope,
@@ -707,6 +1002,10 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
         "recovery_rotate_recommended": _recovery_rotate_recommended(),
         **_account_is_root(pid),
     }
+    if second_factor:
+        response["second_factor"] = second_factor
+        if backup_remaining is not None:
+            response["backup_codes_remaining"] = backup_remaining
     if not written:
         # 登录照常成功（令牌已签发）；审计写失败只追加可读提示，不改契约。
         logger.warning("审计未写入：登录已完成但未留下审计记录 principal=%s", pid)
@@ -778,6 +1077,58 @@ def _issue_token(principal, identity, client, permissions, ttl, scope):
         },
         device_id=client,
     )
+
+
+def _issue_token_pair(principal, identity, client, permissions, scope) -> Dict[str, Any]:
+    """签发 access + refresh 令牌对（0.4.6 统一口径）。
+
+    access 15 分钟（``_ttl_seconds()``），refresh 7 天（``_refresh_ttl_seconds()``）。
+    refresh 令牌上同样带 roles/permissions/scope/account_epoch，刷新时可
+    凭 epoch 发现权限变更并拒绝续期，而不是拿着旧权限一直续下去。
+    """
+    from ..security.jwt_handler import TokenType, get_jwt_handler
+
+    handler = get_jwt_handler()
+    metadata = {
+        "kind": "human",
+        "client": client,
+        "scope": scope,
+        # 账号树 epoch：权限/停用/Key 归属变化会 +1，刷新时比对，旧 refresh
+        # 因此"下一次刷新即失效"，不需要等重新登录。
+        "account_epoch": _account_epoch(principal),
+    }
+    access_token, access_payload = handler.create_token(
+        subject=principal,
+        token_type=TokenType.ACCESS,
+        scopes=["console"],
+        roles=sorted(identity.permissions),
+        permissions=permissions,
+        ttl=_ttl_seconds(),
+        metadata=dict(metadata),
+        device_id=client,
+    )
+    refresh_token, refresh_payload = handler.create_token(
+        subject=principal,
+        token_type=TokenType.REFRESH,
+        scopes=["console"],
+        roles=sorted(identity.permissions),
+        permissions=permissions,
+        ttl=_refresh_ttl_seconds(),
+        metadata=dict(metadata),
+        device_id=client,
+    )
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": access_payload.exp - access_payload.iat,
+        "expires_at": access_payload.exp,
+        "refresh_expires_in": refresh_payload.exp - refresh_payload.iat,
+        "refresh_expires_at": refresh_payload.exp,
+        "access_jti": access_payload.jti,
+        "refresh_jti": refresh_payload.jti,
+        "token_policy": "access_15m_refresh_7d",
+    }
 
 
 def _account_node(principal: str):
@@ -860,14 +1211,10 @@ def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
     if identity is None:
         raise AuthError(403, "该账号不是可登录的账号")
     permissions = sorted(identity.permissions)
-    ttl = _ttl_seconds()
     scope = _effective_scope(identity)
-    token, payload = _issue_token(principal, identity, client, permissions, ttl, scope)
+    pair = _issue_token_pair(principal, identity, client, permissions, scope)
     return {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": ttl,
-        "expires_at": payload.exp,
+        **pair,
         "principal": principal,
         "display_name": (identity.metadata or {}).get("display_name"),
         "scope": scope,
@@ -891,6 +1238,11 @@ class LoginRequest(BaseModel):
     principal: str = Field(..., min_length=1, max_length=128, description="登录主体")
     secret: str = Field(..., min_length=1, max_length=512, description="凭据")
     client: str = Field("web", max_length=16, description="desktop | web | mobile")
+    totp_code: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="双重验证第二步：验证器 6 位验证码或一张备用码；未开启双重验证的账号忽略",
+    )
 
 
 @router.post("/auth/login", response_model=Dict[str, Any])
@@ -907,7 +1259,11 @@ async def auth_login(req: LoginRequest) -> Dict[str, Any]:
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(
-                authenticate, req.principal, req.secret, client=req.client
+                authenticate,
+                req.principal,
+                req.secret,
+                client=req.client,
+                totp_code=req.totp_code,
             ),
             timeout=timeout,
         )
@@ -925,6 +1281,57 @@ async def auth_login(req: LoginRequest) -> Dict[str, Any]:
         raise HTTPException(
             status_code=exc.status_code, detail=exc.detail, headers=exc.headers
         ) from exc
+
+
+class ThrottleUnlockRequest(BaseModel):
+    principal: str = Field(..., min_length=1, max_length=128, description="要解除登录限制的账号")
+
+
+def _require_owner(
+    context: AccountContext = Depends(require_account_principal),
+) -> AccountContext:
+    """Owner 门禁（延迟导入 ``owner``，避免 auth -> owner -> accounts -> auth
+    的顶层循环导入；判定逻辑与 ``owner.require_owner`` 完全同一份）。"""
+    from .owner import require_owner
+
+    return require_owner(context)
+
+
+@router.post("/auth/throttle/unlock", response_model=Dict[str, Any])
+def auth_throttle_unlock(
+    req: ThrottleUnlockRequest,
+    context: AccountContext = Depends(_require_owner),
+) -> Dict[str, Any]:
+    """Owner 专属：解除某账号的登录节流（只清该账号）。
+
+    不走密码校验，所以不受节流本身影响；只清请求里那一个账号的计数，
+    不清全站。解锁写审计 ``throttle.unlocked``；审计写失败时操作照常
+    完成，响应里带 ``audit_written=false`` + ``audit_warning``。
+    """
+    pid = str(req.principal or "").strip()
+    had = throttle_failure_count(pid)
+    _clear_failures(pid.lower())
+    written = _audit(
+        "throttle_unlocked",
+        pid,
+        {
+            "action": "throttle.unlocked",
+            "target": pid,
+            "unlocked_by": getattr(context, "principal", ""),
+            "cleared_failures": had,
+        },
+        event_type="LOGIN_THROTTLE_UNLOCKED",
+    )
+    response: Dict[str, Any] = {
+        "principal": pid,
+        "unlocked": True,
+        "cleared_failures": had,
+    }
+    if not written:
+        logger.warning("审计未写入：节流解锁已完成但未留下审计记录 principal=%s", pid)
+        response["audit_written"] = False
+        response["audit_warning"] = AUDIT_NOT_WRITTEN_MESSAGE
+    return response
 
 
 @router.get("/auth/me", response_model=Dict[str, Any])
@@ -957,8 +1364,48 @@ def auth_me(payload=Depends(require_bearer_payload)) -> Dict[str, Any]:
     }
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=10, description="7 天有效的刷新令牌")
+
+
+@router.post("/auth/refresh", response_model=Dict[str, Any])
+def auth_refresh(req: RefreshRequest) -> Dict[str, Any]:
+    """用 refresh 令牌换一对新令牌（旧 refresh 轮换作废）。
+
+    0.4.6 统一口径的一部分：access 只有 15 分钟，前端凭 refresh 在后台
+    续期，用户一天不用反复输密码。刷新时重查账号树 epoch 与 human 身份：
+    权限变了、账号停用了，旧 refresh 续不出来，必须重新登录。
+    """
+    from ..security import get_jwt_handler
+
+    handler = get_jwt_handler()
+    try:
+        payload = handler.validate_refresh_token(req.refresh_token)
+    except Exception as exc:  # noqa: BLE001 - 刷新令牌无效/过期/已吊销都一样回 401
+        logger.warning("refresh rejected: %s", type(exc).__name__)
+        raise HTTPException(status_code=401, detail="登录信息已失效，请重新登录") from exc
+    principal = str(getattr(payload, "sub", "") or "")
+    identity = _human_identity(principal)
+    if identity is None:
+        raise HTTPException(status_code=403, detail="该账号不是可登录的账号")
+    metadata = getattr(payload, "metadata", None) or {}
+    if int(metadata.get("account_epoch", 0) or 0) != _account_epoch(principal):
+        handler.revoke_token(req.refresh_token)
+        raise HTTPException(
+            status_code=401, detail="账号权限已变更，请重新登录"
+        )
+    pair = handler.refresh_access_token(req.refresh_token, rotate=True)
+    _audit("token_refreshed", principal, {"client": metadata.get("client", "web")})
+    return {
+        **pair,
+        "principal": principal,
+        "token_policy": "access_15m_refresh_7d",
+    }
+
+
 @router.post("/auth/logout", response_model=Dict[str, Any])
 def auth_logout(
+    body: Optional[Dict[str, Any]] = Body(default=None),
     x_liuhao_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
@@ -967,8 +1414,15 @@ def auth_logout(
     Reads the token through the same two headers as the gate (see
     ``policy.TOKEN_HEADER``): revoking the *gateway's* token instead of the
     caller's would report a logout while leaving the real session live.
+
+    请求体里若带了 ``refresh_token``，一并吊销（否则登出后 refresh 还能
+    再换出新 access，等于没登出）。没带时只吊销 access（兼容老客户端）。
     """
     token = extract_bearer_token(x_liuhao_token, authorization)
+    refresh_token: Optional[str] = None
+    if isinstance(body, dict):
+        raw = body.get("refresh_token")
+        refresh_token = str(raw).strip() if raw else None
     if not token:
         return {"logged_out": True, "revoked": False}
     try:
@@ -986,14 +1440,80 @@ def auth_logout(
             raise HTTPException(status_code=401, detail="登录信息已失效，请重新登录")
         principal = str(getattr(payload, "sub", "") or "")
         revoked = bool(handler.revoke_token(token))
+        refresh_revoked = False
+        if refresh_token:
+            try:
+                refresh_revoked = bool(handler.revoke_token(refresh_token))
+            except Exception:  # noqa: BLE001 - refresh 吊销失败不掩盖主结果
+                refresh_revoked = False
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.error("logout revoke failed: %s", exc)
         revoked = False
+        refresh_revoked = False
         principal = ""
-    _audit("logout", principal, {"revoked": revoked})
-    return {"logged_out": True, "revoked": revoked}
+    _audit("logout", principal, {"revoked": revoked, "refresh_revoked": refresh_revoked})
+    return {"logged_out": True, "revoked": revoked, "refresh_revoked": refresh_revoked}
+
+
+@router.post("/auth/logout-all", response_model=Dict[str, Any])
+def auth_logout_all(
+    body: Optional[Dict[str, Any]] = Body(default=None),
+    x_liuhao_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """一键踢掉其他所有登录：吊销本账号除当前这次登录外的全部令牌。
+
+    当前 access 令牌（与请求体里带的 refresh 令牌，如果有的话）不受影响，
+    继续能用；别的电脑/手机上的登录会被吊销，下次请求即 401。
+    只覆盖本服务启动后签发的令牌（追踪索引只记这些），响应里如实说明
+    这个范围，不假装覆盖了全部历史令牌。
+    """
+    token = extract_bearer_token(x_liuhao_token, authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="登录信息已失效，请重新登录")
+    refresh_token: Optional[str] = None
+    if isinstance(body, dict):
+        raw = body.get("refresh_token")
+        refresh_token = str(raw).strip() if raw else None
+    try:
+        from ..security import get_jwt_handler
+
+        handler = get_jwt_handler()
+        try:
+            payload = handler.decode_signature_only(token, verify_exp=False)
+        except Exception as exc:  # noqa: BLE001 - 验不过的令牌不能当"当前登录"
+            logger.warning("logout-all rejected unverifiable token: %s", exc)
+            raise HTTPException(status_code=401, detail="登录信息已失效，请重新登录")
+        principal = str(getattr(payload, "sub", "") or "")
+        keep = {str(getattr(payload, "jti", "") or "")}
+        if refresh_token:
+            try:
+                refresh_payload = handler.decode_signature_only(
+                    refresh_token, verify_exp=False
+                )
+                if str(getattr(refresh_payload, "sub", "") or "") == principal:
+                    keep.add(str(getattr(refresh_payload, "jti", "") or ""))
+            except Exception:  # noqa: BLE001 - 坏的 refresh 不阻断主操作
+                pass
+        keep.discard("")
+        revoked = handler.revoke_all_user_tokens_except(principal, keep)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("logout-all revoke failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="踢掉其他登录失败：吊销服务暂时不可用，其他登录还在，请稍后重试",
+        ) from exc
+    _audit("logout_all", principal, {"revoked": revoked})
+    return {
+        "logged_out_others": True,
+        "revoked": revoked,
+        "kept_current": True,
+        "scope_note": "仅覆盖本服务启动后签发的令牌；更早签发的令牌不在追踪范围内。",
+    }
 
 
 def _recovery_rotate_recommended() -> bool:

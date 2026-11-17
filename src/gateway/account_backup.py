@@ -3,7 +3,7 @@
 职责边界
 --------
 * 身份内核的 :meth:`IdentityManager.build_backup_payload` 负责"身份 + 账号树"；
-* 本模块把**凭据记录、模型配置密文、工作区产物**追加进同一份明文清单，再用
+* 本模块把**凭据记录、模型配置（不含 Key）、工作区产物**追加进同一份明文清单，再用
   :mod:`src.kernels.identity._backup` 的口令加密封装成可离线保存的 JSON；
 * 导入负责口令校验、防重放（bundle_id 回执）、限次与审计，然后调用内核
   :meth:`IdentityManager.apply_backup_payload` 写回。
@@ -12,7 +12,9 @@
 ------------------------------------------
 * 口令只来自请求体：**不落盘、不进日志、不进审计 details**；
 * ``scope=all`` 仅根账号可用，成员越权一律 403 + 中性文案（真实原因只进审计）；
-* 成员 ``scope=self`` 只导出本人：身份、本人凭据、本人 Key 密文、本人产物；
+* 成员 ``scope=self`` 只导出本人：身份、本人凭据、本人产物（模型 Key 一律不随包）；
+* **模型 Key 一律不随包**：模型配置只导出提供方/模型名等元数据，``api_key_enc``、
+  模型主密钥与口令保险箱永不进入备份；换机后 Key 到「设置 → 模型与 Key」重新填；
 * 导出审计必须写 actor 与成员清单（文件数/字节数同理），不写口令；
 * 导入先校验再落盘；失败次数按 ``bundle_id`` 计数，超过上限即锁定，避免把
   导入接口变成口令 oracle。
@@ -31,7 +33,22 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+
 from ..kernels.identity import _accounts, _backup, get_identity_manager
+from .account_context import (
+    AccountContext,
+)
+from .account_context import (
+    deny as _deny,
+)
+from .account_context import (
+    from_account_error as _from_account_error,
+)
+from .account_context import (
+    require_account_principal as _require_account_principal,
+)
 
 #: 备份与登录令牌的边界：导出只读，不轮换本机签名密钥。
 _TOKEN_POLICY: Dict[str, Any] = {
@@ -223,90 +240,14 @@ def _is_storage_full(exc: BaseException) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# 模型 Key 的跨机保险箱
+# 模型 Key 不随包
 # --------------------------------------------------------------------------- #
 #
-# ``api_key_enc`` 绑定本机主密钥，原样搬到新机只会是 ``needs_reentry``。要让
-# 用户「换机后原来的 Key 还能用」，Key 必须以某种形式随包走；但明文 API Key
-# 绝不入包，所以这里做双层封装：
-#
-#   * 随机 32 字节数据密钥（DEK）用 AES-GCM 加密 Key 清单；
-#   * DEK 再用「备份口令 → PBKDF2」派生的 KEK 包裹。
-#
-# 包内只有两段密文：口令泄露才会解开 DEK，主密钥始终不出机。导入时口令已由
-# ``decrypt_bundle`` 验过，这里只负责解封，再用本机主密钥重新加密落库。
-
-_MODEL_VAULT_FORMAT = "liuhao.model.keyvault.v1"
-_MODEL_VAULT_AAD = _MODEL_VAULT_FORMAT.encode("utf-8")
-
-
-def _seal_model_secrets(
-    model_store: Any, rows: Sequence[Dict[str, Any]], passphrase: str
-) -> Tuple[Dict[str, Any], int]:
-    """把 Key 清单封成保险箱；返回 ``(保险箱, Key 条数)``。失败按未携带处理。"""
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    try:
-        secrets = model_store.export_plaintext_secrets(list(rows))
-    except Exception:  # noqa: BLE001 - 单行不可解密不阻断整包导出
-        logger.warning("could not export model credentials for portability", exc_info=True)
-        return {}, 0
-    if not secrets:
-        return {}, 0
-    raw = json.dumps(secrets, ensure_ascii=False).encode("utf-8")
-    dek = os.urandom(32)
-    nonce = os.urandom(12)
-    ciphertext = AESGCM(dek).encrypt(nonce, raw, _MODEL_VAULT_AAD)
-    salt = os.urandom(16)
-    kek = _backup._derive(passphrase, salt)
-    wrap_nonce = os.urandom(12)
-    wrapped = AESGCM(kek).encrypt(wrap_nonce, dek, _MODEL_VAULT_AAD)
-    vault = {
-        "format": _MODEL_VAULT_FORMAT,
-        "kdf": {
-            "algo": _backup.KDF_ALGO,
-            "iterations": _backup.KDF_ITERATIONS,
-            "salt": _b64(salt),
-        },
-        "wrap_nonce": _b64(wrap_nonce),
-        "wrapped_key": _b64(wrapped),
-        "nonce": _b64(nonce),
-        "ciphertext": _b64(ciphertext),
-    }
-    return vault, len(secrets)
-
-
-def _open_model_secrets(vault: Any, passphrase: str) -> Dict[str, str]:
-    """导入端解封：口令 → KEK → DEK → Key 清单。任何失败都按"未携带"处理。"""
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    if not isinstance(vault, dict) or vault.get("format") != _MODEL_VAULT_FORMAT:
-        return {}
-    try:
-        kdf = vault.get("kdf") or {}
-        salt = base64.b64decode(str(kdf.get("salt") or ""))
-        kek = _backup._derive(str(passphrase or "").strip(), salt)
-        dek = AESGCM(kek).decrypt(
-            base64.b64decode(str(vault.get("wrap_nonce") or "")),
-            base64.b64decode(str(vault.get("wrapped_key") or "")),
-            _MODEL_VAULT_AAD,
-        )
-        raw = AESGCM(dek).decrypt(
-            base64.b64decode(str(vault.get("nonce") or "")),
-            base64.b64decode(str(vault.get("ciphertext") or "")),
-            _MODEL_VAULT_AAD,
-        )
-        secrets = json.loads(raw.decode("utf-8"))
-    except Exception:  # noqa: BLE001 - 旧包没有该字段；损坏按未携带处理
-        logger.warning("could not open model key vault", exc_info=True)
-        return {}
-    if not isinstance(secrets, dict):
-        return {}
-    return {
-        str(key): str(value)
-        for key, value in secrets.items()
-        if key and isinstance(value, str) and value
-    }
+# 2026-11-15 起的规矩：备份里不带任何模型 Key。模型配置只导出提供方/模型名
+# 等元数据（``api_key_enc`` 在导出时去掉），换机后 Key 到「设置 → 模型与 Key」
+# 重新填一次。以前这里有一套「口令保险箱」（随机 DEK + 口令派生 KEK 双层封
+# 装 Key 清单），已随这条规矩删除：旧包里的保险箱导入时直接忽略，只按「Key
+# 待重填」处理。
 
 
 # --------------------------------------------------------------------------- #
@@ -705,7 +646,17 @@ def _collect_files(
             except (OSError, sqlite3.Error):
                 skipped.append(rel)
                 continue
-            entries.append({"path": rel, "size": len(raw), "content": _b64(raw)})
+            entries.append(
+                {
+                    "path": rel,
+                    "size": len(raw),
+                    "content": _b64(raw),
+                    # 归属（工件索引里的 owner）：合并导入时按它过滤——只写导入人
+                    # 自己的文件。旧包没有这个字段，合并导入时按“导出端已过滤”
+                    # 处理（见 _restore_files）。
+                    "owners": sorted(owners),
+                }
+            )
             total += len(raw)
     return entries, total, skipped
 
@@ -721,10 +672,9 @@ def export_bundle(
 ) -> Dict[str, Any]:
     """导出加密凭据包。返回前端契约 ``{bundle, scope, exported_at, members...}``。
 
-    ``scope=all`` 带整棵子树的模型 Key 行，但**只以口令保险箱密文形式**入包：
-    明文 API Key 永不出现，模型主密钥也不出机（导入端用本机主密钥重新加密）。
-    这与"主账号能把整棵树带走"的产品承诺一致，也让换机后成员 Key 开箱即用；
-    ``scope=self`` 仍只带本人 Key。
+    **备份里不带任何模型 Key**（2026-11-15 起的规矩）：模型配置只带提供方/
+    模型名等元数据，``api_key_enc`` 在导出时去掉，模型主密钥与口令保险箱永
+    不入包。换机后 Key 到「设置 → 模型与 Key」重新填一次。
     """
     manager = get_identity_manager()
     wanted = str(scope or "").strip().lower()
@@ -742,6 +692,9 @@ def export_bundle(
         raise _account_error(403, "ACCOUNT_SCOPE_DENIED", "无权执行该操作")
 
     identity_part = manager.build_backup_payload(actor, wanted)
+    # 新包一定能核对：打上导出者是谁（2026-11-15 子账号导入备份的身份核对
+    # 就靠它；旧包没有这个字段时，核对退到 identity.accounts）。
+    identity_part["exported_by"] = actor
     principals = [str(item.get("principal") or "") for item in identity_part["accounts"]]
     principals = [p for p in principals if p]
     include_public = wanted == "all"
@@ -760,25 +713,19 @@ def export_bundle(
     credentials = _secret_store().export_credentials(principals)
 
     model_store = _model_store()
-    # 整树导出带全部成员 Key 行；空归属是 0.1.0 的历史模型，视同根账号所有
-    # （``export_encrypted_rows`` 会保留空归属行）。成员导出仍只带本人。
+    # 整树导出带全部成员的模型配置行；空归属是 0.1.0 的历史模型，视同根账号
+    # 所有（``export_encrypted_rows`` 会保留空归属行）。成员导出仍只带本人。
+    # **Key 不随包**：行里的 ``api_key_enc`` 在这里去掉，只留提供方/模型名
+    # 等元数据；换机后 Key 到「设置 → 模型与 Key」重新填一次。
     rows = model_store.export_encrypted_rows(owners=principals)
     if not include_public:
         rows = [row for row in rows if str(row.get("owner_principal") or "")]
-    # 成员 Key 只以保险箱密文随包：换机后同一口令解封即可用，包里没有明文。
-    member_key_owners = {
-        str(row.get("owner_principal") or "")
+    rows = [
+        {key: value for key, value in row.items() if key != "api_key_enc"}
         for row in rows
-        if str(row.get("owner_principal") or "") not in ("", actor)
-    }
-    member_keys_included = bool(member_key_owners)
-    # 主密钥不再随包离机：它能解开**所有** api_key_enc，一旦随整包泄露，
-    # 上面的行过滤就形同虚设。回执据此如实标注。
-    key_material: Optional[str] = None
-    # 明文 API Key 永不入包。整包已有一层口令 AES-GCM；随包的 Key 清单再套
-    # 一层「随机 DEK + 口令派生 KEK」保险箱，换机后由同一口令解封、用本机
-    # 主密钥重新加密，从而"原来的 Key 还能用"，包内不出现任何明文 Key。
-    model_vault, model_key_count = _seal_model_secrets(model_store, rows, passphrase)
+    ]
+    # 模型 Key 不随包：成员 Key、主密钥、口令保险箱一律不带，回执据此如实标注。
+    member_keys_included = False
 
     files, total_bytes, skipped = _collect_files(
         principals=principals, include_public=include_public
@@ -824,6 +771,9 @@ def export_bundle(
         "format": "liuhao.account.backup.v1",
         "issued_at": _now_iso(),
         "scope": wanted,
+        # 导出者是谁（与 identity.exported_by 同值，放顶层是为让导入端不用
+        # 先钻进 identity 段就能核对；旧包没有这个字段）。
+        "exported_by": actor,
         "manifest": {
             "members": members,
             "member_count": len(members),
@@ -835,12 +785,14 @@ def export_bundle(
             "models": len(rows),
             "credentials": len(credentials),
             "skipped": skipped,
-            # 回执如实说明「带了哪些 Key」：主密钥始终不出机；成员 Key 若存在，
-            # 随口令保险箱密文携带（换机可直接使用），包内没有明文。
+            # 回执如实说明「带了哪些 Key」：备份里不带任何模型 Key；模型配置
+            # 只带提供方/模型名等元数据，换机后 Key 要到「设置 → 模型与 Key」
+            # 重新填一次。
             "key_scope": "subtree" if include_public else "owner-only",
-            "member_keys_included": member_keys_included,
+            "member_keys_included": False,
             "key_material_included": False,
-            "model_keys_exported": model_key_count,
+            "model_keys_exported": 0,
+            "keys_included": False,
             # 带上哪些库、各多少条：导入方据此核对，用户侧也能一眼看懂。
             "stores": {
                 "account_memory": memory_manifest,
@@ -852,7 +804,7 @@ def export_bundle(
         "source": source_paths,
         "identity": identity_part,
         "credentials": credentials,
-        "models": {"rows": rows, "key_material": key_material, "key_vault": model_vault},
+        "models": {"rows": rows, "key_material": None, "key_vault": {}},
         "files": files,
         "employees": employees,
         "goals": goals["payload"],
@@ -906,16 +858,11 @@ def export_bundle(
         "key_material_included": False,
         "notice": (
             (
-                (
-                    "本包携带整棵子树的账号、员工、记忆与会话；模型 Key 随口令加密"
-                    "保险箱密文携带（包内没有明文 API Key），成员 Key 可直接使用。"
-                    if member_keys_included
-                    else "本包携带整棵子树的账号、员工、记忆与会话；模型 Key 只带"
-                    "导出者本人的（口令加密保险箱密文，包内没有明文 API Key），"
-                    "本次没有成员 Key 需要携带。"
-                )
+                "本包携带整棵子树的账号、员工、记忆与会话；备份里没有模型 Key，"
+                "模型配置只带提供方与模型名，换机后请到「设置 → 模型与 Key」重新填一次。"
                 if include_public
-                else "本包只携带你本人的模型 Key（口令加密保险箱密文，无明文）。"
+                else "本包只携带你本人的账号、员工、记忆与会话；备份里没有模型 Key，"
+                "模型配置只带提供方与模型名，换机后请到「设置 → 模型与 Key」重新填一次。"
             )
             + (
                 f"工作区里的用户上传/生成文件随包带走（本次 {len(files)} 个"
@@ -990,8 +937,14 @@ def _restore_goals(payload: Any) -> Dict[str, int]:
     return report
 
 
-def _restore_knowledge(payload: Any) -> Dict[str, int]:
+def _restore_knowledge(
+    payload: Any, *, allowed: Sequence[str] | None = None
+) -> Dict[str, int]:
     """把知识库向量与内容哈希写回本机库；主键已存在则跳过。
+
+    ``allowed`` 给定时只写归属在里面的文档（按向量 metadata 里的
+    ``owner_account_id``）；哈希只跟已留下的文档走。``allowed=None`` 时
+    不过滤（全新安装导入的旧路）。
 
     恢复后丢弃当前进程缓存的 KnowledgeDocumentService，下一次检索会重新
     从 SQLite 载入（含 FTS 重建），不需要重启网关。
@@ -1003,11 +956,13 @@ def _restore_knowledge(payload: Any) -> Dict[str, int]:
     hashes = payload.get("hashes") or []
     if not isinstance(vectors, list) or not isinstance(hashes, list):
         return report
+    allowed_set = None if allowed is None else set(allowed)
     path = _knowledge_db_path()
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
         os.makedirs(parent, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
+    kept_document_ids: set = set()
     try:
         connection.executescript(
             """
@@ -1035,16 +990,35 @@ def _restore_knowledge(payload: Any) -> Dict[str, int]:
                 continue
             if not isinstance(embedding, str):
                 embedding = json.dumps(embedding)
-            metadata = row.get("metadata")
-            if not isinstance(metadata, str):
-                metadata = json.dumps(metadata or {})
+            raw_metadata = row.get("metadata")
+            if isinstance(raw_metadata, str):
+                metadata_text = raw_metadata
+                try:
+                    metadata = json.loads(raw_metadata) if raw_metadata else {}
+                except ValueError:
+                    metadata = {}
+            else:
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                metadata_text = json.dumps(metadata)
+            if allowed_set is not None:
+                owner = str(metadata.get("owner_account_id") or "")
+                if owner not in allowed_set:
+                    report["chunks_skipped"] += 1
+                    continue
+                document_id = str(metadata.get("document_id") or "")
+                if not document_id:
+                    from ..knowledge.vector_store import _document_id_of
+
+                    document_id = _document_id_of(doc_id, metadata)
+                if document_id:
+                    kept_document_ids.add(document_id)
             cursor = connection.execute(
                 "INSERT OR IGNORE INTO knowledge_vectors "
                 "(doc_id, embedding, metadata, updated_at) VALUES (?, ?, ?, ?)",
                 (
                     doc_id,
                     embedding,
-                    metadata,
+                    metadata_text,
                     str(row.get("updated_at") or ""),
                 ),
             )
@@ -1059,6 +1033,9 @@ def _restore_knowledge(payload: Any) -> Dict[str, int]:
             content_hash = str(row.get("content_hash") or "")
             document_id = str(row.get("document_id") or "")
             if not content_hash or not document_id:
+                report["hashes_skipped"] += 1
+                continue
+            if allowed_set is not None and document_id not in kept_document_ids:
                 report["hashes_skipped"] += 1
                 continue
             cursor = connection.execute(
@@ -1084,15 +1061,28 @@ def _restore_knowledge(payload: Any) -> Dict[str, int]:
     return report
 
 
-def _restore_files(entries: List[Dict[str, Any]]) -> Dict[str, int]:
-    """把备份产物写回工作区；已存在的文件跳过（不覆盖现场数据）。"""
+def _restore_files(
+    entries: List[Dict[str, Any]], *, allowed: Sequence[str] | None = None
+) -> Dict[str, int]:
+    """把备份产物写回工作区；已存在的文件跳过（不覆盖现场数据）。
+
+    ``allowed`` 给定时只写归属在里面的文件：带 ``owners`` 字段的新包按
+    它过滤；没有该字段的旧包按“导出端已按归属过滤”处理，直接放行（旧的
+    self 导出本来就只带导出人自己的文件）。
+    """
     from src.ai.workspace import WorkspaceViolation, resolve_in_workspace
 
     restored = 0
     skipped = 0
+    allowed_set = None if allowed is None else set(allowed)
     for entry in entries or []:
         if not isinstance(entry, dict):
             continue
+        if allowed_set is not None:
+            owners = entry.get("owners")
+            if isinstance(owners, list) and not (set(map(str, owners)) & allowed_set):
+                skipped += 1
+                continue
         rel = _normalise_rel(str(entry.get("path") or ""))
         if not rel:
             continue
@@ -1419,6 +1409,16 @@ def _restore_personal_context(personal_context: Any) -> Dict[str, int]:
 def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
     """口令校验 → 防重放 → 限次 → 恢复 → 写回执与审计。"""
     manager = get_identity_manager()
+    # 命令行导出的 .lhbak 包是另一种格式（liuhao.cli-backup.encrypted/1），
+    # 不是这里认的账号备份包：登录页的文件选择器以前也接受 .lhbak，选了只会
+    # 得到一句“凭据包无效或口令错误”。格式不对就是格式不对，别让人去猜口令。
+    if isinstance(bundle, dict) and bundle.get("format") == "liuhao.cli-backup.encrypted/1":
+        raise _account_error(
+            400,
+            "BUNDLE_CLI_FORMAT",
+            "这是命令行导出的 .lhbak 包，不能在这里导入；请在装好贾维斯的电脑上"
+            "用命令行恢复，或回到原来那台电脑，在备份页重新导出一份 JSON 备份包再导入。",
+        )
     try:
         bundle_id = _backup.bundle_id_of(bundle)
     except _backup.BundleError as exc:
@@ -1487,26 +1487,11 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         model_count = _model_store().import_encrypted_rows(model_rows) if isinstance(
             model_rows, list
         ) else 0
-        raw_key = models.get("key_material") if isinstance(models, dict) else None
-        if raw_key:
-            try:
-                _model_store().import_key_material(base64.b64decode(str(raw_key)))
-            except Exception:  # noqa: BLE001 - 主密钥缺失不阻断身份恢复
-                logger.warning("could not restore model key material")
-        # 包内只带口令包裹的 Key 保险箱；旧包（明文字段 ``secrets``）仍兼容。
-        model_secrets: Dict[str, str] = {}
-        if isinstance(models, dict):
-            model_secrets = _open_model_secrets(models.get("key_vault"), passphrase)
-            legacy_secrets = models.get("secrets")
-            if not model_secrets and isinstance(legacy_secrets, dict):
-                model_secrets = {
-                    str(key): str(value)
-                    for key, value in legacy_secrets.items()
-                    if key and isinstance(value, str) and value
-                }
-        secret_count = (
-            _model_store().import_plaintext_secrets(model_secrets) if model_secrets else 0
-        )
+        # **Key 不随包**：旧包里即使带着 ``key_material``、口令保险箱
+        # （``key_vault``）或明文 ``secrets``，导入时一律忽略，不写回任何
+        # Key。模型配置行（提供方/模型名）仍按行恢复，Key 显示为「需要重新
+        # 填写」，由用户到「设置 → 模型与 Key」重填。
+        secret_count = 0
 
         files = payload.get("files") or []
         file_report = _restore_files(files if isinstance(files, list) else [])
@@ -1622,5 +1607,473 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
             "导入完成；本机使用自己的登录签名密钥，其他实例已签发的令牌不能在本机使用。"
             "账号树与成员数据已恢复；员工、目标、知识库、记忆按主键去重，不会产生副本。"
             "本机已有账号时不会再接受另一个备份包（避免覆盖现有数据）。"
+            + (
+                "备份里没有模型 Key：模型配置已恢复，但 Key 需要重新填，请到「设置 → 模型与 Key」"
+                "把每个模型的 Key 填一次，填好就能正常聊天。"
+                if model_count
+                else ""
+            )
         ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# 已有账号合并导入外部备份（2026-11-15 子账号只能导自己的）
+# --------------------------------------------------------------------------- #
+#
+# 与 ``import_bundle``（全新实例认领）不同：这里调用方已经登录、账号树早
+# 已存在。规矩（Joseph 2026-11-15 拍板 + 总原则）：
+# * 身份核对：包里 identity.accounts 的每个账号都必须是导入人本人（或导出
+#   者就是导入人），否则拒绝；主账号什么都能导；没有身份信息的旧包，子账
+#   号拒绝（大白话提示），主账号仍可导；
+# * 全程跳过 ``apply_backup_payload``，绝不碰账号树、不碰系统设置、不碰 Key；
+# * 只写导入人自己的数据：记忆/对话/内核记忆/画像/目标/员工/知识/文件/模型
+#   全部按归属过滤，别人的行一律跳过；凭据（登录密码哈希）不写回——账号已
+#   在本机存在，覆盖哈希等于不打招呼改了登录密码；
+# * 导入是合并不是覆盖：各恢复函数本来就是按主键去重、已存在的不覆盖；模型
+#   行例外——``import_encrypted_rows`` 是 INSERT OR REPLACE，会把本机已配好
+#   的 ``api_key_enc`` 清掉（Key 永不随包），所以已在本机的模型行直接跳过；
+# * 防重放、限次、审计保留；审计 actor 是导入人本人（不再是 anonymous）。
+#
+# 旧包的身份核对退到 identity.accounts：新包一定有 exported_by（导出时打
+# 上），旧包没有它时只看 accounts——self 包的 accounts 只有导出人自己，
+# 全树包的 accounts 是整棵树，两种都能核对。
+
+
+def _merge_filter_employees(payload: Any, allowed: Sequence[str] | None) -> Any:
+    """员工：只留归属在 allowed 里的整实体；归属为空的无法证明是谁的，丢掉。"""
+    if allowed is None or not isinstance(payload, list):
+        return payload
+    allowed_set = set(allowed)
+    return [
+        record
+        for record in payload
+        if isinstance(record, dict)
+        and str(record.get("owner_account_id") or "") in allowed_set
+    ]
+
+
+def _merge_filter_goals(payload: Any, allowed: Sequence[str] | None) -> Any:
+    """目标：只留归属在 allowed 里的记录；归属为空的无法证明是谁的，丢掉。"""
+    if allowed is None or not isinstance(payload, dict):
+        return payload
+    allowed_set = set(allowed)
+    return {
+        goal_id: record
+        for goal_id, record in payload.items()
+        if isinstance(record, dict)
+        and str(record.get("owner_account_id") or "") in allowed_set
+    }
+
+
+def _merge_filter_memory(memory: Any, allowed: Sequence[str] | None) -> Any:
+    """记忆库：只留 owner 在 allowed 里的行（含 custody）。"""
+    if allowed is None or not isinstance(memory, dict):
+        return memory
+    allowed_set = set(allowed)
+    return {
+        "entries": [
+            row
+            for row in (memory.get("entries") or [])
+            if isinstance(row, dict) and str(row.get("owner") or "") in allowed_set
+        ],
+        "custody": [
+            row
+            for row in (memory.get("custody") or [])
+            if isinstance(row, dict) and str(row.get("owner") or "") in allowed_set
+        ],
+    }
+
+
+def _merge_filter_conversations(
+    conversations: Any, allowed: Sequence[str] | None
+) -> Any:
+    """会话库：只留能映射回 allowed 的主体（``liuhao-{账号}-{会话名}``）。"""
+    if allowed is None or not isinstance(conversations, dict):
+        return conversations
+    return {
+        "turns": [
+            row
+            for row in (conversations.get("turns") or [])
+            if isinstance(row, dict)
+            and _conversation_owner(str(row.get("principal_id") or ""), allowed)
+            is not None
+        ]
+    }
+
+
+def _merge_filter_kernel_memory(
+    kernel_memory: Any, allowed: Sequence[str] | None
+) -> Any:
+    """内核记忆：只留键里能认出归属（allowed）的行；无归属标记的行丢掉。"""
+    if allowed is None or not isinstance(kernel_memory, dict):
+        return kernel_memory
+    return {
+        "entries": [
+            row
+            for row in (kernel_memory.get("entries") or [])
+            if isinstance(row, dict) and _kernel_row_owner(row, allowed) is not None
+        ]
+    }
+
+
+def _merge_filter_personal_context(
+    personal_context: Any, allowed: Sequence[str] | None
+) -> Any:
+    """画像库：每张表只留 principal_id 能映射回 allowed 的行。"""
+    if allowed is None or not isinstance(personal_context, dict):
+        return personal_context
+    filtered: dict[str, Any] = {}
+    for table, rows in personal_context.items():
+        if not isinstance(rows, list):
+            filtered[table] = rows
+            continue
+        filtered[table] = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and _profile_row_owner(row, allowed) is not None
+        ]
+    return filtered
+
+
+def _merge_filter_model_rows(
+    rows: Any, allowed: Sequence[str] | None
+) -> list[dict[str, Any]]:
+    """模型配置行：先按归属过滤，再跳过已在本机的行。
+
+    已在本机的行必须跳过——``import_encrypted_rows`` 是 INSERT OR REPLACE，
+    包里的行没有 ``api_key_enc``（Key 永不随包），整行写回去会把本机已配
+    好的 Key 清掉。读不到本机模型清单时宁可一行模型都不导，也绝不冒这个险。
+    """
+    if not isinstance(rows, list):
+        return []
+    allowed_set = None if allowed is None else set(allowed)
+    try:
+        existing_ids = {
+            str(row.get("id") or "") for row in _model_store().list_models()
+        }
+    except Exception:  # noqa: BLE001 - 清单读不到 = 无法证明哪行是新的
+        logger.warning("could not list local models before merge import", exc_info=True)
+        return []
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if allowed_set is not None:
+            owner = str(row.get("owner_principal") or "")
+            if owner not in allowed_set:
+                continue
+        row_id = str(row.get("id") or "")
+        if row_id and row_id in existing_ids:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def import_bundle_for_account(
+    *, bundle: dict[str, Any], passphrase: str, actor: str
+) -> dict[str, Any]:
+    """已有账号合并导入外部备份：只合进导入人自己的数据，绝不碰账号树。
+
+    ``actor`` 必须是本机已存在的账号；``is_root`` 不从调用方拿，从账号树
+    里现查——主账号什么都能导，子账号只能导自己的包。
+    """
+    manager = get_identity_manager()
+    actor = (actor or "").strip()
+    node = manager.get_account(actor) if actor else None
+    if node is None:
+        raise _account_error(
+            403, "ACCOUNT_BACKUP_NOT_OWN", "没有这个账号，无法导入备份"
+        )
+    is_root = bool(node.is_root)
+
+    if isinstance(bundle, dict) and bundle.get("format") == "liuhao.cli-backup.encrypted/1":
+        raise _account_error(
+            400,
+            "BUNDLE_CLI_FORMAT",
+            "这是命令行导出的 .lhbak 包，不能在这里导入；请在装好贾维斯的电脑上"
+            "用命令行恢复，或回到原来那台电脑，在备份页重新导出一份 JSON 备份包再导入。",
+        )
+    try:
+        bundle_id = _backup.bundle_id_of(bundle)
+    except _backup.BundleError as exc:
+        raise _bundle_error(exc) from exc
+
+    if manager.has_import_receipt(bundle_id):
+        raise _account_error(
+            409, "ACCOUNT_BACKUP_REPLAYED", "该备份包已被导入，出于安全原因不能重复使用"
+        )
+    if _attempts_remaining(bundle_id) <= 0:
+        raise _account_error(
+            429, "ACCOUNT_BACKUP_LOCKED", "尝试次数过多，请更换备份包或稍后再试"
+        )
+
+    try:
+        payload = _backup.decrypt_bundle(bundle, passphrase)
+    except _backup.BundleError as exc:
+        remaining = _bump_attempt(bundle_id)
+        manager.record_event(
+            action="account.backup.import",
+            actor=actor,
+            target=bundle_id,
+            outcome="denied",
+            details={"error_code": exc.code, "attempts_remaining": remaining},
+        )
+        raise _bundle_error(exc) from exc
+
+    identity_part = payload.get("identity")
+    if not isinstance(identity_part, dict):
+        _bump_attempt(bundle_id)
+        raise _account_error(400, "BUNDLE_INVALID", "凭据包无效或口令错误")
+
+    # ── 身份核对：包是谁的，只能进谁的账号 ──
+    accounts = identity_part.get("accounts") or []
+    principals = [
+        str(item.get("principal") or "")
+        for item in (accounts if isinstance(accounts, list) else [])
+        if isinstance(item, dict) and str(item.get("principal") or "")
+    ]
+    exported_by = str(
+        identity_part.get("exported_by") or payload.get("exported_by") or ""
+    )
+    if not is_root:
+        if not principals:
+            # 没有可用身份信息的旧包：无法证明是导入人自己的，子账号不能导。
+            manager.record_event(
+                action="account.backup.import",
+                actor=actor,
+                target=bundle_id,
+                outcome="denied",
+                details={"error_code": "ACCOUNT_BACKUP_NO_IDENTITY"},
+            )
+            raise _account_error(
+                400,
+                "ACCOUNT_BACKUP_NO_IDENTITY",
+                "这份备份没有账号信息，没法确认是不是你的，不能导入。"
+                "请回到原来那台电脑，重新导出一份新的备份再试。",
+            )
+        if any(principal != actor for principal in principals) or (
+            exported_by and exported_by != actor
+        ):
+            manager.record_event(
+                action="account.backup.import",
+                actor=actor,
+                target=bundle_id,
+                outcome="denied",
+                details={
+                    "error_code": "ACCOUNT_BACKUP_NOT_OWN",
+                    "members": sorted(set(principals)),
+                    "exported_by": exported_by,
+                },
+            )
+            raise _account_error(
+                403,
+                "ACCOUNT_BACKUP_NOT_OWN",
+                "这份备份不是你的，不能导入到你的账号里。"
+                "请用你自己导出的备份文件。",
+            )
+
+    # 主账号什么都能导（不过滤行）；子账号只写自己的 subtree——自己一人。
+    allowed: Sequence[str] | None = None if is_root else (actor,)
+
+    # ── 只合并数据部分：全程跳过 apply_backup_payload，绝不碰账号树 ──
+    # 凭据不写回（credential_count 恒为 0）：账号已在本机存在，覆盖密码哈希
+    # 等于不打招呼改了登录密码；Key 一律不随包恢复（沿用全新导入的规矩）。
+    credential_count = 0
+    model_count = 0
+    secret_count = 0
+    file_report = {"restored": 0, "skipped": 0}
+    employee_report = {"restored": 0, "skipped": 0}
+    goal_report = {"restored": 0, "skipped": 0}
+    knowledge_report = {
+        "chunks": 0, "chunks_skipped": 0, "hashes": 0, "hashes_skipped": 0,
+    }
+    memory_report = {"imported": 0, "skipped": 0}
+    conversation_report = {"imported": 0, "skipped": 0}
+    kernel_report = {"imported": 0, "skipped": 0}
+    profile_report = {"imported": 0, "skipped": 0}
+    try:
+        models = payload.get("models") or {}
+        model_rows = models.get("rows") if isinstance(models, dict) else []
+        model_count = _model_store().import_encrypted_rows(
+            _merge_filter_model_rows(model_rows, allowed)
+        )
+
+        files = payload.get("files") or []
+        file_report = _restore_files(
+            files if isinstance(files, list) else [], allowed=allowed
+        )
+        file_report["source_path_rewrites"] = _rewrite_restored_source_paths(
+            payload.get("source")
+        )
+        try:
+            from ..artifacts.index import rewrite_workspace_paths
+
+            file_report["path_rewrites"] = rewrite_workspace_paths()
+        except Exception:  # noqa: BLE001 - 索引缺失/损坏不阻断文件恢复
+            logger.warning("could not rewrite artifact paths after import", exc_info=True)
+        employee_report = _restore_employees(
+            _merge_filter_employees(payload.get("employees"), allowed)
+        )
+        goal_report = _restore_goals(
+            _merge_filter_goals(payload.get("goals"), allowed)
+        )
+        knowledge_report = _restore_knowledge(
+            payload.get("knowledge"), allowed=allowed
+        )
+        memory_report = _restore_memory(
+            _merge_filter_memory(payload.get("memory"), allowed)
+        )
+        conversation_report = _restore_conversations(
+            _merge_filter_conversations(payload.get("conversations"), allowed)
+        )
+        kernel_report = _restore_kernel_memory(
+            _merge_filter_kernel_memory(payload.get("kernel_memory"), allowed)
+        )
+        profile_report = _restore_personal_context(
+            _merge_filter_personal_context(payload.get("personal_context"), allowed)
+        )
+    except (OSError, sqlite3.Error) as exc:
+        if _is_storage_full(exc):
+            manager.record_event(
+                action="account.backup.import",
+                actor=actor,
+                target=bundle_id,
+                outcome="denied",
+                details={"error_code": "ACCOUNT_BACKUP_DISK_FULL"},
+            )
+            raise _account_error(
+                507, "ACCOUNT_BACKUP_DISK_FULL",
+                "目标机存储空间不足，导入已中止；清理磁盘后可重试同一备份包",
+            ) from exc
+        raise
+
+    # 把刚恢复的内核记忆立即映射进账号记忆表（与全新导入同一段逻辑）。
+    migration_report: dict[str, Any] = {}
+    try:
+        from . import account_memory
+
+        migration_report = account_memory.ensure_legacy_memory_migrated(force=True)
+    except Exception:  # noqa: BLE001 - 已在场账号数据不受影响，下次访问可重试
+        logger.warning("legacy memory migration after import failed", exc_info=True)
+
+    manager.record_import_receipt(bundle_id)
+    _clear_attempts(bundle_id)
+
+    manager.record_event(
+        action="account.backup.imported",
+        actor=actor,
+        target=actor,
+        outcome="allowed",
+        details={
+            "bundle_id": bundle_id,
+            "mode": "existing_account_merge",
+            "imported_by": actor,
+            "members": sorted(set(principals)),
+            "accounts": 0,
+            "credentials": credential_count,
+            "models": model_count,
+            "model_keys_restored": secret_count,
+            "files": file_report["restored"],
+            "files_skipped": file_report["skipped"],
+            "files_path_rewrites": file_report.get("path_rewrites", 0),
+            "employees": employee_report["restored"],
+            "employees_skipped": employee_report["skipped"],
+            "goals": goal_report["restored"],
+            "goals_skipped": goal_report["skipped"],
+            "knowledge_chunks": knowledge_report["chunks"],
+            "knowledge_chunks_skipped": knowledge_report["chunks_skipped"],
+            "knowledge_hashes": knowledge_report["hashes"],
+            "memory": memory_report["imported"],
+            "memory_skipped": memory_report["skipped"],
+            "conversations": conversation_report["imported"],
+            "conversations_skipped": conversation_report["skipped"],
+            "kernel_memory": kernel_report["imported"],
+            "kernel_memory_skipped": kernel_report["skipped"],
+            "personal_context": profile_report["imported"],
+            "memory_migrated": migration_report.get("entries", 0),
+        },
+    )
+
+    merged_total = (
+        file_report["restored"]
+        + employee_report["restored"]
+        + goal_report["restored"]
+        + knowledge_report["chunks"]
+        + memory_report["imported"]
+        + conversation_report["imported"]
+        + kernel_report["imported"]
+        + profile_report["imported"]
+    )
+    return {
+        "ok": True,
+        "mode": "existing_account_merge",
+        "imported_by": actor,
+        "accounts": 0,
+        "credentials": credential_count,
+        "models": model_count,
+        "model_keys_restored": secret_count,
+        "files": file_report,
+        "employees": employee_report,
+        "goals": goal_report,
+        "knowledge": knowledge_report,
+        "memory": memory_report,
+        "conversations": conversation_report,
+        "kernel_memory": kernel_report,
+        "personal_context": profile_report,
+        "memory_migrated": migration_report.get("entries", 0),
+        "merged": merged_total,
+        "manifest": payload.get("manifest") or {},
+        "token_policy": dict(_TOKEN_POLICY),
+        "notice": (
+            f"已把你自己的备份合进来：共 {merged_total} 条（记忆 "
+            f"{memory_report['imported']} 条、对话 {conversation_report['imported']} 条、"
+            f"文件 {file_report['restored']} 个、员工 {employee_report['restored']} 名、"
+            f"目标 {goal_report['restored']} 个、知识 {knowledge_report['chunks']} 段）。"
+            "现场已有的数据一条没动，登录密码也没动；账号树没有变。"
+            + (
+                "备份里没有模型 Key：新增的模型配置已恢复，但 Key 需要重新填，"
+                "请到「设置 → 模型与 Key」把每个模型的 Key 填一次，填好就能正常聊天。"
+                if model_count
+                else ""
+            )
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 已登录接口：已有账号合并导入（全新实例认领仍在禁区 accounts.py 的
+# /backup/import；这里绝不碰它）
+# --------------------------------------------------------------------------- #
+
+router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
+
+
+class _ExistingImportRequest(BaseModel):
+    bundle: dict[str, Any]
+    passphrase: str = Field(..., min_length=8, max_length=256)
+
+
+@router.post("/backup/import-existing")
+def import_existing_backup(
+    payload: _ExistingImportRequest,
+    context: AccountContext = Depends(_require_account_principal),
+) -> dict[str, Any]:
+    """已有账号合并导入外部备份：只合进本人的数据，绝不碰账号树。
+
+    已登录接口（``AccountContext`` 鉴权）：子账号只能导自己的包，别人的包
+    在 :func:`import_bundle_for_account` 里按身份核对拒绝；主账号什么都能导。
+    ViewAs 只读视角的写操作由 ``ViewAsReadOnlyMiddleware`` 在路由前拦掉。
+    """
+    try:
+        return import_bundle_for_account(
+            bundle=payload.bundle,
+            passphrase=payload.passphrase,
+            actor=context.principal,
+        )
+    except _accounts.AccountError as exc:
+        raise _from_account_error(exc) from exc
+    except Exception:  # noqa: BLE001 - 账号面不得 500 裸奔
+        logger.exception("existing-account backup import failed")
+        raise _deny(500, "ACCOUNT_INTERNAL_ERROR", "服务暂时不可用") from None
