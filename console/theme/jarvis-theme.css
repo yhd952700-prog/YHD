@@ -253,3 +253,175 @@ body { background: #171009; }
 /* sidebar hidden => the app grid must collapse to a single column,
    otherwise .os-main is auto-placed into the 248px sidebar track */
 .os-app { grid-template-columns: 1fr !important; }
+
+/* ================= V1.5 (walkthrough + spec cards) ================= */
+/* L-01 login declutter: no 网页版 button, no debug status rows,
+   download demoted to a quiet text link, mascot sized as a logo */
+.os-login-clients, .os-login-status { display: none !important; }
+a.os-download-link {
+  background: none !important; border: none !important; box-shadow: none !important;
+  text-decoration: underline; text-underline-offset: 3px;
+  font-size: 13px; opacity: .85; padding: 2px 0 !important;
+}
+.os-login-aside-mark .os-reactor, .os-login-mark .os-reactor { display: none !important; }
+.jt-login-mascot { width: 76px; height: 76px; object-fit: contain; display: block; margin: 0 auto; }
+.os-login-mark .jt-login-mascot { width: 44px; height: 44px; }
+
+/* T-01 topbar slimming: the shell clock leaves the topbar (the conn
+   status stays as the single low-key status) */
+.os-clock { display: none !important; }
+
+/* W3: the welcome card's 知道了 dismiss ghost is not rendered before
+   any conversation exists */
+.wb-first-open .wb-quiet-btn { display: none !important; }
+
+/* W2: per-message actions stay out of sight until hover / focus */
+.wb-msg-actions { opacity: 0; transition: opacity .15s ease; }
+.wb-msg:hover .wb-msg-actions, .wb-msg:focus-within .wb-msg-actions,
+.wb-message:hover .wb-msg-actions, .wb-message:focus-within .wb-msg-actions,
+.wb-chat-row:hover .wb-msg-actions, .wb-chat-row:focus-within .wb-msg-actions { opacity: 1; }
+
+/* 藏深 group label (27-verdict 高级 group) reads as a toggle */
+.jt-group-label-toggle { cursor: pointer; }
+.jt-group-label-toggle:hover { color: #e8b07f; }
+
+/* ---- V1.5 batch 2 ---- */
+/* §2-10: classic composer loses its permanent hint line too
+   (the future theme already hides .wb-composer-hint) */
+body:not(.jf-on) .wb-composer-hint { display: none !important; }
+
+/* §2-8: the rail empty-state hint reads as a proper dashed hint card */
+#jt-hint {
+  border: 1px dashed rgba(232, 176, 127, .45); border-radius: 10px;
+  padding: 10px 12px; margin: 10px 8px; font-size: 12.5px;
+  color: rgba(240, 220, 195, .75); text-align: center; line-height: 1.5;
+}
+body.jf-on #jt-hint { border-color: rgba(111, 211, 255, .4); color: rgba(200, 230, 255, .75); }
+
+/* C-02: capsule row scrolls horizontally instead of wrapping tall */
+.wb-resume-row { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: thin; }
+.wb-resume-row > * { flex: 0 0 auto; }
+
+/* W5: the go-fill-Key entry on the no-Key notice row */
+.jt-key-cta {
+  display: inline-block; margin: 8px 0 2px; padding: 7px 16px;
+  border-radius: 999px; border: 1px solid #c97b2f; background: rgba(201, 123, 47, .14);
+  color: #e8b07f; font-size: 13px; cursor: pointer;
+}
+body.jf-on .jt-key-cta { border-color: #38b6e8; background: rgba(56, 182, 232, .13); color: #6fd3ff; }
+.jt-key-cta:hover { filter: brightness(1.2); }
+
+/* §2-3: voice / mic system rows are light inline notes, not bubbles */
+.wb-msg.jt-inline-note { opacity: .72; font-size: 12.5px; }
+.wb-msg.jt-inline-note .wb-msg-actions { display: none !important; }
+
+/* W8: capability 说明 fold toggle + first-skill big entry */
+.jt-fold-toggle { cursor: pointer; }
+.jt-big-cta {
+  display: block; margin: 12px 0 4px; padding: 11px 22px; border-radius: 10px;
+  border: 1px solid #c97b2f; background: rgba(201, 123, 47, .16);
+  color: #f0dcbf; font-size: 14px; cursor: pointer;
+}
+body.jf-on .jt-big-cta { border-color: #38b6e8; background: rgba(56, 182, 232, .14); color: #dff4ff; }
+
+/* §5-8 / §1-7: recovery-code plain-language card + dialog tip */
+.jt-recovery-card {
+  margin: 16px 0; padding: 14px 16px; border-radius: 12px;
+  border: 1px solid rgba(201, 123, 47, .5); background: rgba(201, 123, 47, .08);
+  line-height: 1.65; font-size: 13.5px;
+}
+.jt-recovery-card h3 { margin: 0 0 6px; font-size: 14.5px; }
+.jt-recovery-card p { margin: 0; }
+.jt-recovery-tip { margin-top: 10px; font-size: 13px; line-height: 1.6; opacity: .9; }
+
+/* W4: post-logout notice in a normal notice tone (not error red) */
+.os-alert.jt-alert-neutral {
+  background: rgba(120, 144, 180, .12) !important;
+  border-color: rgba(120, 144, 180, .35) !important;
+  color: #b9c8de !important;
+}
+
+/* ================= V1.5 batch 3: mobile (M-01) ================= */
+.jt-mobile-brand { display: none; }
+@media (max-width: 480px) {
+  /* slim topbar: brand (drawer) + bell only (JS tags the keepers) */
+  body.jt-mobile .os-topbar > *:not(.jt-m-keep) { display: none !important; }
+  .jt-mobile-brand {
+    display: flex !important; align-items: center; gap: 8px;
+    background: none; border: none; padding: 6px 8px; min-height: 44px;
+    cursor: pointer; color: #f0dcbf;
+  }
+  body.jf-on .jt-mobile-brand { color: #dff4ff; }
+  .jt-mobile-brand img { width: 30px; height: 30px; object-fit: contain; }
+  .jt-mobile-brand span { font-size: 15px; font-weight: 600; }
+  .os-topbar .os-icon-btn.jt-keep { min-width: 44px; min-height: 44px; }
+
+  /* Bot rail = drawer */
+  .wb-rail {
+    position: fixed !important; top: 0; bottom: 0; left: 0;
+    width: 276px !important; max-width: 84vw;
+    transform: translateX(-107%); transition: transform .25s ease;
+    z-index: 1200 !important;
+  }
+  body.jt-drawer-open .wb-rail { transform: none; box-shadow: 0 0 64px rgba(0, 0, 0, .55); }
+  #jt-shade {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0, 0, 0, .45); z-index: 1190;
+  }
+  body.jt-drawer-open #jt-shade { display: block; }
+
+  /* single column chat-first */
+  .os-app { grid-template-columns: 1fr !important; }
+  .wb-main { margin-left: 0 !important; width: auto !important; }
+
+  /* bottom nav: 4 items */
+  .os-bottom-nav > .jt-nav-hide { display: none !important; }
+  .os-bottom-nav > * { flex: 1 1 0; min-height: 52px; position: relative; }
+  .jt-nav-badge { position: absolute; top: 3px; right: calc(50% - 22px); }
+
+  /* composer one clean row, touch targets >= 44px */
+  .wb-composer textarea { min-height: 44px; }
+  .wb-composer button { min-width: 44px; min-height: 44px; }
+  .jt-hub-item, .jf-space-item { min-height: 44px; }
+
+  /* classic floating Boss card retires on mobile (nav 空间 opens it) */
+  body:not(.jf-on) #jt-boss-card { display: none !important; }
+}
+@media (min-width: 481px) {
+  #jt-shade { display: none !important; }
+}
+
+/* ---- V1.5 batch 3b: mobile fit fixes ---- */
+@media (max-width: 480px) {
+  /* the topbar actions cluster survives as one keeper child; inside
+     it, only the bell (tagged .jt-keep) stays */
+  body.jt-mobile .os-topbar-actions > *:not(.jt-keep) { display: none !important; }
+  body.jt-mobile .os-topbar-actions { margin-left: auto; }
+
+  /* chat fits the viewport: shell column is height-bound, the list
+     scrolls inside, the composer lands above the bottom nav.
+     Offset = topbar 65 + workbench page head ~72 + bottom nav ~54. */
+  body.jt-mobile .wb-shell { height: calc(100dvh - 200px) !important; min-height: 0 !important; display: flex !important; flex-direction: column; }
+  .wb-main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .wb-chat { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .wb-chat-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+  /* classic composer: one row (row + foot children join one flex line,
+     the prose note in the foot leaves) */
+  body:not(.jf-on) .wb-composer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+  body:not(.jf-on) .wb-composer-row, body:not(.jf-on) .wb-composer-foot { display: contents; }
+  body:not(.jf-on) .wb-composer-foot > span { display: none !important; }
+  body:not(.jf-on) .wb-composer textarea { flex: 1 1 56px; min-width: 0; }
+}
+
+/* ---- V1.5 batch 3c: classic mobile composer = 4 items, one row ---- */
+@media (max-width: 480px) {
+  body:not(.jf-on) .wb-composer-foot label { display: none !important; }
+}
+
+/* §1-2: the first-run aside note is a welcome, not a warning */
+.os-login-aside-note.jt-note-welcome {
+  background: rgba(120, 144, 180, .10) !important;
+  border-color: rgba(120, 144, 180, .30) !important;
+  color: #c8d6ea !important;
+}

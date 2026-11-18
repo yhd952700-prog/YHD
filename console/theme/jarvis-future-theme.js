@@ -22,9 +22,13 @@
      .wb-thinking is present the arc charges towards 90%; when a new bot
      message lands it completes, flashes and resets. Approximation of real
      progress (the backend exposes no percentage), driven by real DOM state.
-   - Approval reminder: watches the console topbar badge (.os-icon-btn-badge)
-     and real approval buttons inside the chat; lights the right panel's
-     amber rim + the space-tab badge.
+   - Approval reminder: the space-tab / item number badges show the
+     REAL pending-approval count (published by jarvis-theme.js as
+     window.JARVIS_TODO from /v1/approvals/summary — the 待办审批 page's
+     own number; walkthrough adjudication 2026-11-18). Real approval
+     buttons inside the chat light the right panel's amber rim. The
+     topbar bell badge is never used as a number source any more: it
+     counts synthesized status notifications, not todos.
    - No slogan: the welcome line "我是贾维斯…" is hidden by CSS in this
      theme only (owner's call); the quick-action capsules stay. */
 (function () {
@@ -106,43 +110,44 @@
     { label: "任务中心", type: "nav", target: "任务中心" },
     { label: "查资料", type: "skill", target: CAP.search },
     { label: "写邮件", type: "skill", target: CAP.mail },
-    { label: "记提醒", type: "skill", target: CAP.remind },
+    { label: "提醒", type: "nav", target: "提醒" },
     { label: "建 Bot", type: "skill", target: CAP.bot },
     { label: "知识中心", type: "nav", target: "知识中心" }
   ];
+  /* 27 项裁决（机主走查 §4，2026-11-18 并入 V1.5）：留 13 / 改名 3 /
+     合并 4 / 藏深 6 / 降级 1 → 全部 22 项。label = 显示名（改名后），
+     target = 壳侧栏原名（导航锚点，不许改）。藏深 6 进「高级」折叠组；
+     自改确认撤下清单（有提案时由聊天卡顶出，壳侧行为）。 */
   var ALL = [
     { group: "干活", items: [
       { label: "操作台", type: "nav", target: "操作台" },
-      { label: "企业总览", type: "nav", target: "企业总览" },
       { label: "任务中心", type: "nav", target: "任务中心" },
       { label: "待办审批", type: "nav", target: "待办审批", badge: true },
       { label: "提醒", type: "nav", target: "提醒" },
-      { label: "工作区文件", type: "nav", target: "工作区文件" },
-      { label: "办公室", type: "nav", target: "办公室" },
-      { label: "我的员工", type: "nav", target: "我的员工" },
-      { label: "全部任务与审计", type: "nav", target: "全部任务与审计" }
+      { label: "我的文件", type: "nav", target: "工作区文件" },
+      { label: "办公室", type: "nav", target: "办公室" }
     ]},
     { group: "本事", items: [
       { label: "能力中心", type: "nav", target: "能力中心" },
       { label: "查资料", type: "skill", target: CAP.search },
       { label: "写邮件", type: "skill", target: CAP.mail },
-      { label: "记提醒", type: "skill", target: CAP.remind },
       { label: "建 Bot", type: "skill", target: CAP.bot }
     ]},
     { group: "管理", items: [
       { label: "知识中心", type: "nav", target: "知识中心" },
-      { label: "我的数据", type: "nav", target: "我的数据" },
-      { label: "成员与权限", type: "nav", target: "成员与权限" },
+      { label: "运行总览", type: "nav", target: "企业总览" },
       { label: "系统设置", type: "nav", target: "系统设置" },
       { label: "我的账号与安全", type: "nav", target: "我的账号与安全" },
-      { label: "审批签发", type: "nav", target: "审批签发" },
-      { label: "备份与迁移", type: "nav", target: "备份与迁移" },
-      { label: "主机命令白名单", type: "nav", target: "主机命令白名单" },
-      { label: "通知中心", type: "nav", target: "通知中心" },
-      { label: "生产预检", type: "nav", target: "生产预检" },
+      { label: "数据与备份", type: "nav", target: "备份与迁移" },
       { label: "关于与隐私", type: "nav", target: "关于与隐私" },
-      { label: "系统状态与诊断", type: "nav", target: "系统状态与诊断" },
-      { label: "自改确认", type: "nav", target: "自改确认" }
+      { label: "系统状态与诊断", type: "nav", target: "系统状态与诊断" }
+    ]},
+    { group: "高级", collapsed: true, items: [
+      { label: "全部任务与审计", type: "nav", target: "全部任务与审计" },
+      { label: "成员与权限", type: "nav", target: "成员与权限" },
+      { label: "审批授权", type: "nav", target: "审批签发" },
+      { label: "主机命令白名单", type: "nav", target: "主机命令白名单" },
+      { label: "安装自检", type: "nav", target: "生产预检" }
     ]}
   ];
   function findNavItem(label) {
@@ -269,18 +274,55 @@
 
   /* ================= voice: forward to the real voice button ================= */
   var recog = null;
+  var voiceHold = false;      /* user is holding the central voice button */
+  var voiceRemote = "";       /* last state mirrored from the backend session */
   function setListening(onState) {
     var st = document.getElementById("jf-stage");
     if (st) st.classList.toggle("is-listening", onState);
     var hint = document.getElementById("jf-voice-hint");
-    if (hint) hint.textContent = onState ? "正 在 聆 听" : "按 住 说 话";
+    if (hint && !voiceRemote) hint.textContent = onState ? "正 在 聆 听" : "按 住 说 话";
   }
+  /* V1 语音状态联动：后端会话状态机（/v1/voice/status 的 session.state）
+     映射到中央语音钮的四态——聆听（listening/awake）/ 转写（transcribing）
+     / 思考（thinking）/ 播报（speaking）。轮询失败静默跳过，按住说话的
+     本地镜像优先（voiceHold 期间不让远端状态抢显示）。 */
+  function applyVoiceState(state) {
+    var st = document.getElementById("jf-stage");
+    if (!st) return;
+    var hint = document.getElementById("jf-voice-hint");
+    st.classList.toggle("is-speaking", state === "speaking");
+    if (voiceHold) return;
+    voiceRemote = state || "";
+    if (state === "listening" || state === "awake") {
+      st.classList.add("is-listening");
+      if (hint) hint.textContent = state === "awake" ? "我 在 呢，请 说" : "正 在 聆 听";
+    } else if (state === "transcribing" || state === "thinking") {
+      st.classList.remove("is-listening");
+      if (hint) hint.textContent = state === "transcribing" ? "正 在 识 别" : "思 考 中";
+    } else if (state === "speaking") {
+      st.classList.remove("is-listening");
+      if (hint) hint.textContent = "正 在 播 报";
+    } else {
+      st.classList.remove("is-listening");
+      voiceRemote = "";
+      if (hint) hint.textContent = "按 住 说 话";
+    }
+  }
+  setInterval(function () {
+    if (!document.body || !document.body.classList.contains("jf-on")) return;
+    fetch("/v1/voice/status", { credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (data && data.session) applyVoiceState(data.session.state || "");
+      })
+      .catch(function () { /* 状态拿不到就保持本地镜像，不报错 */ });
+  }, 3000);
   function wireVoice(st) {
     var btn = st.querySelector("#jf-voice");
     var holding = false;
     function down(ev) {
       ev.preventDefault();
-      if (holding) return; holding = true;
+      if (holding) return; holding = true; voiceHold = true;
       var real = document.querySelector(".wb-voice-btn");
       if (real) {
         setListening(true);
@@ -309,7 +351,7 @@
       }, 2200);
     }
     function up() {
-      if (!holding) return; holding = false;
+      if (!holding) return; holding = false; voiceHold = false;
       var real = document.querySelector(".wb-voice-btn");
       if (real) {
         ["pointerup", "mouseup", "click"].forEach(function (type) {
@@ -324,13 +366,16 @@
     btn.addEventListener("pointerleave", function () { if (holding && recog) up(); });
   }
 
+  /* 待办角标跟随 jarvis-theme.js 的 JARVIS_TODO 轮询（15s）刷新 */
+  setInterval(function () {
+    if (document.body && document.body.classList.contains("jf-on")) syncApproval();
+  }, 5000);
+
   /* ================= right panel: tabs + my space ================= */
   var rightTab = "data", spaceFace = "daily";
-  function badgeCount() {
-    var b = document.querySelector(".os-icon-btn-badge");
-    if (!b) return 0;
-    var v = parseInt(b.textContent.trim(), 10);
-    return isNaN(v) ? 0 : v;
+  function todoCount() {
+    var t = window.JARVIS_TODO;
+    return (t && typeof t.count === "number") ? t.count : null;
   }
   function makeSpaceItem(it) {
     var b = document.createElement("button");
@@ -350,7 +395,7 @@
     var box = document.createElement("div"); box.className = "jf-space"; box.id = "jf-space"; box.style.display = "none";
     var seg = document.createElement("div"); seg.className = "jf-space-seg";
     var dBtn = document.createElement("button"); dBtn.type = "button"; dBtn.textContent = "日常 · 8";
-    var aBtn = document.createElement("button"); aBtn.type = "button"; aBtn.textContent = "全部 · 27";
+    var aBtn = document.createElement("button"); aBtn.type = "button"; aBtn.textContent = "全部 · 22";
     dBtn.addEventListener("click", function () { setSpaceFace("daily"); });
     aBtn.addEventListener("click", function () { setSpaceFace("all"); });
     seg.appendChild(dBtn); seg.appendChild(aBtn); box.appendChild(seg);
@@ -363,6 +408,16 @@
       all.appendChild(lab);
       var list = document.createElement("div"); list.className = "jf-space-list";
       g.items.forEach(function (it) { list.appendChild(makeSpaceItem(it)); });
+      if (g.collapsed) {
+        list.style.display = "none";
+        lab.classList.add("jf-space-label-toggle");
+        lab.textContent = g.group + " · 点开";
+        lab.addEventListener("click", function () {
+          var open = list.style.display !== "none";
+          list.style.display = open ? "none" : "";
+          lab.textContent = g.group + (open ? " · 点开" : " · 收起");
+        });
+      }
       all.appendChild(list);
     });
     box.appendChild(all);
@@ -407,7 +462,7 @@
 
   /* ================= approval reminder + badges ================= */
   function approvalSignal() {
-    var count = badgeCount();
+    var count = todoCount();
     var btns = document.querySelectorAll(
       ".wb-chat button, .wb-inbox-item button, .wb-main button");
     var pending = 0;
@@ -415,22 +470,25 @@
       var t = b.textContent.trim();
       if (t === "批准" || t === "同意" || t === "确认执行" || t === "通过") pending++;
     });
-    return { count: Math.max(count, pending), pendingButtons: pending };
+    return { count: count, pendingButtons: pending };
   }
   function syncApproval() {
     var sig = approvalSignal();
     /* the amber rim means "an approval is waiting on screen" — real
-       approval buttons only. The topbar badge also counts notifications,
-       so it feeds the number badge but never lights the rim by itself. */
+       approval buttons only. The number badges show the real pending
+       count from /v1/approvals/summary (window.JARVIS_TODO); until the
+       first poll lands they stay hidden rather than show a wrong
+       number. */
     document.body.classList.toggle("jf-has-approval", sig.pendingButtons > 0);
+    var show = sig.count !== null && sig.count > 0;
     var bd = document.getElementById("jf-tab-badge");
     if (bd) {
-      bd.textContent = String(sig.count);
-      bd.style.display = sig.count > 0 ? "" : "none";
+      bd.textContent = show ? String(sig.count) : "";
+      bd.style.display = show ? "" : "none";
     }
     document.querySelectorAll(".jf-badge-slot").forEach(function (el) {
-      el.textContent = String(sig.count);
-      el.style.display = sig.count > 0 ? "" : "none";
+      el.textContent = show ? String(sig.count) : "";
+      el.style.display = show ? "" : "none";
     });
   }
 

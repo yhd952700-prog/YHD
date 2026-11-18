@@ -3189,6 +3189,19 @@ def get_app() -> FastAPI:
     app.include_router(f_calendar_router, dependencies=[Depends(_require_human)])
     app.include_router(f_ledger_router, dependencies=[Depends(_require_human)])
 
+    # 大升级第二季 V2(b)：简报语音播报（生成→合成→控制台逐段播放）。
+    from .briefing import router as v2_briefing_router
+
+    app.include_router(v2_briefing_router, dependencies=[Depends(_require_human)])
+
+    # 大升级第二季 V2(c)：PWA Web Push（默认关；VAPID 本地生成；
+    # 推送正文最小化，不带提醒标题/简报正文）。
+    from .push import router as v2_push_router
+    from .push import sw_router as v2_push_sw_router
+
+    app.include_router(v2_push_router, dependencies=[Depends(_require_human)])
+    app.include_router(v2_push_sw_router)
+
     # A3 集成与会议组：视频会议（会前入口 + 会后整理，Bot 不进会）与
     # 连接总览（Gmail / 日历 / GitHub / WhatsApp / 杰夫AI 状态与接线）。
     from .meetings import router as a3_meetings_router

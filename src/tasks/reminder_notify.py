@@ -386,11 +386,41 @@ class MultiNotifier:
         return results
 
 
+class WebPushNotifier:
+    """V2(c)：手机推送通道。只推最小化通用文案（不带提醒标题/正文，
+    锁屏可见口径）；总开关默认关——关着或没订阅时如实报失败，
+    绝不冒充「用户看到了」。"""
+
+    channel = "webpush"
+
+    def notify(
+        self,
+        title: str,
+        body: str,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> List[NotifyResult]:
+        try:
+            from src.tasks import webpush
+
+            result = webpush.send_push(webpush.REMINDER_PUSH)
+        except Exception as exc:  # noqa: BLE001 - 通道失败如实上报
+            return [NotifyResult(self.channel, False, f"{type(exc).__name__}: {exc}")]
+        if result.get("sent", 0) > 0:
+            return [NotifyResult(self.channel, True, "")]
+        return [
+            NotifyResult(
+                self.channel, False, f"push_not_sent:{result.get('reason') or 'failed'}"
+            )
+        ]
+
+
 def build_default_notifier(outbox_path: Optional[str] = None) -> MultiNotifier:
     """默认：先写 outbox（持久记录），再尽力弹托盘气泡（异步合并、不阻塞）。"""
     notifiers: List[Notifier] = [ConsoleOutboxNotifier(outbox_path)]
     if os.name == "nt" and _os_notify_enabled():
         notifiers.append(WindowsBalloonNotifier())
+    notifiers.append(WebPushNotifier())
     return MultiNotifier(notifiers)
 
 

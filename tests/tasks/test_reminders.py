@@ -357,8 +357,12 @@ def test_console_outbox_is_durable_and_visible(tmp_path):
 def test_default_notifier_console_only_when_os_channel_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("LIUHAO_REMINDER_OS_NOTIFY", "0")
     notifier = build_default_notifier(str(tmp_path / "outbox.jsonl"))
+    # V2(c) 契约更新：链尾多一条 WebPushNotifier——它自带总开关（默认关，
+    # 在 webpush 存储里），关着时 notify 如实报失败、不冒充送达，所以
+    # 「OS 通道关 → 只剩 console」更新为「console + 自门控 webpush」。
     assert [type(item).__name__ for item in notifier.notifiers] == [
-        "ConsoleOutboxNotifier"
+        "ConsoleOutboxNotifier",
+        "WebPushNotifier",
     ]
 
 

@@ -1168,6 +1168,16 @@ class RoutineRunner:
                 emit_digest_event("briefing", text)
             except Exception:  # noqa: BLE001 - 推送失败不影响简报已发
                 pass
+            try:
+                # V2(c)：简报推送只发通用文案（不带正文），默认关。
+                from src.tasks import webpush
+
+                webpush.send_push(
+                    webpush.BRIEFING_PUSH,
+                    account=str(routine.get("owner_account_id") or ""),
+                )
+            except Exception:  # noqa: BLE001 - 推送失败不影响简报已发
+                pass
             return f"已发到聊天：{text}", "", []
         if kind == ACTION_DAILY_DIGEST:
             # 每天早上 8 点推今天待办：执行时现算汇总，只报结果，不推过程。

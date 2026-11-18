@@ -58,7 +58,10 @@ def _backend_status() -> Dict[str, Any]:
     available = os.name == "nt"
     detail: Dict[str, Any] = {"platform": os.name, "native_available": available}
     if not available:
-        detail["reason"] = "native_backend_unavailable: only runs on Windows"
+        # reason = 机主可见人话（壳的卡片会包一层「…（reason）」，故写短语）；
+        # reason_code = 机器串（诊断/日志用，不上界面）
+        detail["reason"] = "电脑操控只能在 Windows 上用"
+        detail["reason_code"] = "native_backend_unavailable: only runs on Windows"
         return detail
     try:
         import pywinauto  # type: ignore[import-not-found]  # noqa: F401
@@ -68,7 +71,8 @@ def _backend_status() -> Dict[str, Any]:
         detail["uiautomation"] = True
     except Exception as exc:  # noqa: BLE001 - 缺哪个如实报哪个
         detail["native_available"] = False
-        detail["reason"] = f"native_backend_unavailable:{type(exc).__name__}"
+        detail["reason"] = "电脑操控组件没装齐"
+        detail["reason_code"] = f"native_backend_unavailable:{type(exc).__name__}"
     return detail
 
 

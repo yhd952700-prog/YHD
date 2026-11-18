@@ -67,6 +67,7 @@ def voice_status() -> Dict[str, Any]:
         "tts": pipeline["tts"],
         "wake": pipeline["wake"],
         "providers": pipeline["providers"],
+        "session": pipeline.get("session"),
         "ready": pipeline["ready"],
         "note": (
             "已配置云端语音引擎：录音/文字会发到所配置的云端服务。"

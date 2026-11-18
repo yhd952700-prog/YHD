@@ -170,6 +170,42 @@ class ReminderSpec:
     minute: Optional[int] = None
     time_text: str = ""
     source_text: str = ""
+    # 提前量（分钟）：响铃时刻 = run_at - lead_minutes。事件时刻仍是
+    # run_at（标题/展示按它），只有排程 job 提前。0 = 到点才响。
+    lead_minutes: int = 0
+
+
+# 提前量短语：「提前10分钟」「提前半小时」「提前 2 小时」「提前一天」。
+# 只认紧贴「提前」的量词短语，避免误伤「提前完成了」类普通句子（无量词
+# 单位就不匹配）。上限 7 天，超出按没说处理（不猜）。
+_LEAD_RE = re.compile(
+    r"提前\s*(?:(半)\s*)?(?:(\d+|[零一二三四五六七八九十百]+)\s*)?"
+    r"(分钟|分|小时|个小时|天)"
+)
+_LEAD_MAX_MINUTES = 7 * 24 * 60
+
+
+def _extract_lead(text: str) -> Tuple[int, str]:
+    """提取提前量，返回 (lead_minutes, 命中的短语)；没命中返回 (0, '')。"""
+    match = _LEAD_RE.search(text or "")
+    if not match:
+        return 0, ""
+    half, number, unit = match.group(1), match.group(2), match.group(3)
+    if half and number:
+        return 0, ""  # 「提前半2小时」类病句不猜
+    if half:
+        minutes = {"分钟": 0, "分": 0, "小时": 30, "个小时": 30, "天": 720}[unit]
+    elif number:
+        try:
+            value = _cn_int(number)
+        except Exception:  # noqa: BLE001 - 数字读不出按没说
+            return 0, ""
+        minutes = value * {"分钟": 1, "分": 1, "小时": 60, "个小时": 60, "天": 1440}[unit]
+    else:
+        return 0, ""
+    if minutes <= 0 or minutes > _LEAD_MAX_MINUTES:
+        return 0, ""
+    return minutes, match.group(0)
 
 
 def local_timezone() -> tzinfo:
@@ -469,7 +505,7 @@ def _missing_time_question(original: str) -> str:
     )
 
 
-def parse_reminder(
+def _parse_reminder_impl(
     text: str,
     now: Optional[datetime] = None,
     *,
@@ -634,3 +670,30 @@ __all__ = [
     "local_timezone",
     "parse_reminder",
 ]
+
+
+def parse_reminder(
+    text: str,
+    now: Optional[datetime] = None,
+    *,
+    tz: Optional[tzinfo] = None,
+) -> ReminderSpec:
+    """把一句中文提醒解析成 :class:`ReminderSpec`（含提前量）。
+
+    提前量（「提前10分钟提醒我…」）在主解析之外单独提取：事件时刻
+    仍按句中时间算，``lead_minutes`` 只影响响铃时刻。命中的短语从
+    标题里摘掉，不让「提前10分钟」混进提醒标题。
+
+    Raises:
+        NeedsClarification: 时间无法唯一确定（缺时刻 / 日期含糊 / 口语模糊）。
+    """
+    from dataclasses import replace
+
+    spec = _parse_reminder_impl(text, now, tz=tz)
+    lead, phrase = _extract_lead(text or "")
+    if lead <= 0:
+        return spec
+    title = spec.title
+    if phrase and phrase in title:
+        title = _EDGE_RE.sub("", title.replace(phrase, " ")).strip() or spec.title
+    return replace(spec, lead_minutes=lead, title=title)

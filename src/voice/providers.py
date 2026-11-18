@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional
 from src.common.engines import EngineUnavailableError
 
 from .stt import TranscribeResult, stt_status, transcribe_audio
-from .tts import SynthResult, synthesize_speech, tts_status
+from .tts import DEFAULT_VOICE, SynthResult, synthesize_speech, tts_status
 from .wake import WAKE_WORD, contains_wake_word, wake_status
 
 logger = logging.getLogger("liuhao.voice.providers")
@@ -148,7 +148,9 @@ class LocalTtsProvider:
     name = "local"
 
     def synthesize(self, text: str, voice: str = "", speed: float = 1.0) -> SynthResult:
-        return synthesize_speech(text, voice, speed)
+        # 空音色 = 用默认音色（V1 闭环修正：会话状态机等调用方不带音色时，
+        # 此前会把空串直传引擎、被以「没有这个中文声音」拒绝，播报段断链）。
+        return synthesize_speech(text, voice or DEFAULT_VOICE, speed)
 
 
 #: OpenAI 语音合成的已知音色；本机 Kokoro 的音色名（如 zm_010）传给云端
@@ -238,10 +240,17 @@ def voice_pipeline_status() -> Dict[str, Any]:
             "note": "云端合成：文字会发到所配置的云端服务。",
             "install_hint": "" if config["base_url"] and config["api_key"] else _CLOUD_HINT,
         }
+    try:
+        from .session import session_status
+
+        session = session_status()
+    except Exception:  # noqa: BLE001 - 会话状态读不到不许拖垮语音状态
+        session = {"state": "unknown"}
     return {
         "stt": stt,
         "tts": tts,
         "wake": wake_status(),
         "providers": {"stt": stt_provider, "tts": tts_provider},
+        "session": session,
         "ready": bool(stt["available"] and tts["available"]),
     }

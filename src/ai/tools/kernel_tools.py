@@ -780,6 +780,13 @@ def make_tools(
                     "available": status["wake"].get("available"),
                     "mic_available": status["wake"].get("mic_available"),
                 },
+                "session": {
+                    "state": (status.get("session") or {}).get("state"),
+                    "running": (status.get("session") or {}).get("running"),
+                    "turns_done": (status.get("session") or {}).get("turns_done"),
+                    "last_prompt": (status.get("session") or {}).get("last_prompt"),
+                    "last_turn": (status.get("session") or {}).get("last_turn"),
+                },
                 "note": "引擎没装时把 install_hint 原样告诉用户，不要假装能语音。",
             })
         except Exception as exc:  # noqa: BLE001
@@ -793,6 +800,65 @@ def make_tools(
 
             text = build_morning_briefing(_account())
             return _serialize({"status": "ok", "briefing": text})
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    def briefing_broadcast(action: str = "start", **kwargs: Any) -> str:
+        """简报语音播报：start 念今天的简报；stop 停；status 看进度（V2(b)）。"""
+        try:
+            from src.tasks.briefing_speech import get_briefing_speech_service
+
+            service = get_briefing_speech_service()
+            verb = str(action or "start").strip().lower()
+            if verb == "start":
+                result = service.start(_account())
+                if result.get("status") == "failed":
+                    return _serialize(result)
+                return _serialize({
+                    **result,
+                    "note": (
+                        "播报已开始合成，控制台会自动出声念简报；"
+                        "合成要一点时间。用户说「停 / 别念了」时用 stop。"
+                    ),
+                })
+            if verb == "stop":
+                return _serialize({**service.stop(_account()), "note": "已停播。"})
+            if verb == "status":
+                return _serialize(service.status(_account()))
+            return _serialize({
+                "status": "failed",
+                "error": f"未知动作：{action}（只支持 start / stop / status）",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    def push_notifications(action: str = "status", **kwargs: Any) -> str:
+        """手机推送（V2(c)）：status/enable/disable/test。默认关。"""
+        try:
+            from src.tasks import webpush
+
+            verb = str(action or "status").strip().lower()
+            if verb == "status":
+                return _serialize({"status": "ok", **webpush.push_status(_account())})
+            if verb in ("enable", "disable"):
+                result = webpush.set_push_enabled(verb == "enable")
+                return _serialize({
+                    "status": "ok",
+                    **result,
+                    "note": (
+                        "开关已打开。还差最后一步在设备上完成：打开贾维斯的页面，"
+                        "点「开启本机推送」小条授权并订阅，这台设备才能收到。"
+                        if verb == "enable"
+                        else "推送已关闭，不再往任何设备发。"
+                    ),
+                })
+            if verb == "test":
+                result = webpush.send_push(webpush.TEST_PUSH, account=_account())
+                return _serialize({"status": "ok", **result})
+            return _serialize({
+                "status": "failed",
+                "error": f"未知动作：{action}（只支持 status / enable / disable / test）",
+            })
         except Exception as exc:  # noqa: BLE001
             return _serialize({"status": "failed", "error": str(exc)})
 
@@ -840,6 +906,56 @@ def make_tools(
             schema={"type": "object", "properties": {}},
             fn=morning_briefing,
             risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.briefing.broadcast",
+            name="briefing_broadcast",
+            version="1.0.0",
+            description=(
+                "把晨间简报念出声：action=start 生成简报并合成语音、控制台自动播放；"
+                "action=stop 停播；action=status 看合成/播放进度。"
+                "用户说「播报简报 / 念一下今天的简报 / 停，别念了」时用这个工具。"
+                "语音引擎没装时会如实失败并给出原因，不要假装在播。"
+            ),
+            capability="briefing.broadcast",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "start / stop / status"},
+                },
+                "required": ["action"],
+            },
+            fn=briefing_broadcast,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.push.notifications",
+            name="push_notifications",
+            version="1.0.0",
+            description=(
+                "手机推送开关（PWA Web Push，默认关）：action=status 看开关与本账号订阅数；"
+                "action=enable/disable 开关总闸；action=test 给本账号设备发一条测试推送。"
+                "用户说「把提醒推到我手机上 / 开启手机推送 / 关掉推送 / 测一下推送」时用。"
+                "开启总闸后还要用户在设备页面点一次「开启本机推送」完成授权订阅，如实转达。"
+                "推送只发通用文案，不带提醒标题或简报正文。"
+            ),
+            capability="push.notifications",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "status / enable / disable / test",
+                    },
+                },
+                "required": ["action"],
+            },
+            fn=push_notifications,
+            risk="MEDIUM",
         )
     )
     tools.append(

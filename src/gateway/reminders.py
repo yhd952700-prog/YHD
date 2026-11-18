@@ -71,6 +71,7 @@ class CreateReminderRequest(BaseModel):
     title: Optional[str] = None
     run_at_local: Optional[str] = None
     repeat: str = "once"
+    lead_minutes: Optional[int] = None
 
 
 class UpdateReminderRequest(BaseModel):
@@ -80,6 +81,7 @@ class UpdateReminderRequest(BaseModel):
     title: Optional[str] = None
     run_at_local: Optional[str] = None
     repeat: Optional[str] = None
+    lead_minutes: Optional[int] = None
 
 
 class AckRequest(BaseModel):
@@ -149,6 +151,7 @@ def create_reminder(
                 title=title,
                 run_at_local=body.run_at_local or "",
                 repeat=body.repeat,
+                lead_minutes=body.lead_minutes or 0,
                 tz=_account_tz(principal),
             )
         else:
@@ -195,6 +198,7 @@ def update_reminder(
             body.title is not None
             or body.run_at_local is not None
             or body.repeat is not None
+            or body.lead_minutes is not None
         ):
             result = service.update_explicit(
                 principal,
@@ -202,6 +206,7 @@ def update_reminder(
                 title=body.title,
                 run_at_local=body.run_at_local,
                 repeat=body.repeat,
+                lead_minutes=body.lead_minutes,
                 tz=_account_tz(principal),
             )
         else:

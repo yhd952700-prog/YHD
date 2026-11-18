@@ -147,6 +147,14 @@ body.jf-on .wb-composer textarea {
 body.jf-on .wb-composer textarea:focus { border-color: #38b6e8 !important; box-shadow: 0 0 0 3px rgba(56,182,232,.22); }
 body.jf-on .wb-send-btn { background: linear-gradient(135deg, #2aa7dd, #15719e) !important; }
 body.jf-on .wb-voice-btn { background: rgba(16, 38, 68, .9) !important; border: 1px solid #24507e !important; color: #cfe8ff; }
+/* V1（第二季，Hughes 定版）：未来主题只留中央语音钮一个语音入口。
+   composer 的「按住说话」钮与「朗读音色」下拉整行退场——功能在中央钮
+   （聆听/思考/播报四态）与设置 → 语音对话；经典主题无中央钮，不在此列。 */
+body.jf-on .wb-voice-btn { display: none !important; }
+body.jf-on .wb-composer-foot label { display: none !important; }
+/* 串色修复：经典主题 .wb-plus-btn 的铜色渐变是未隔离的全局 !important，
+   漏进未来主题；在这里用未来主题的青蓝同口径压回去（与发送钮同渐变）。 */
+body.jf-on .wb-plus-btn { background: linear-gradient(135deg, #2aa7dd, #15719e) !important; border-color: #38b6e8 !important; color: #f0faff !important; }
 body.jf-on .wb-popover, body.jf-on .wb-context-menu, body.jf-on .wb-dialog, body.jf-on .wb-search-panel {
   background: #0a1830 !important; border: 1px solid #24507e !important; color: #e8f3ff;
 }
@@ -278,6 +286,14 @@ body.jf-dim .jf-ring-a, body.jf-dim .jf-ring-b, body.jf-dim .jf-mascot-wrap { an
 @keyframes jf-ripple { from { transform: scale(.8); opacity: 1; } to { transform: scale(1.35); opacity: 0; } }
 .jf-voice-hint { font-size: 11.5px; letter-spacing: .22em; color: #6f96bd; }
 #jf-stage.is-listening .jf-voice-hint { color: #6fd3ff; }
+/* V1 播报态：语音钮声波换成慢速律动 + 提示变暖色，与聆听态区分 */
+#jf-stage.is-speaking #jf-voice { border-color: #ffc46f; box-shadow: 0 0 30px rgba(255, 178, 84, .45), inset 0 0 16px rgba(255, 178, 84, .25); }
+#jf-stage.is-speaking #jf-voice .jf-bar { background: #ffc46f; animation: jf-wave 1.3s ease-in-out infinite; }
+#jf-stage.is-speaking #jf-voice .jf-bar:nth-child(2) { animation-delay: .18s; }
+#jf-stage.is-speaking #jf-voice .jf-bar:nth-child(3) { animation-delay: .36s; }
+#jf-stage.is-speaking #jf-voice .jf-bar:nth-child(4) { animation-delay: .54s; }
+#jf-stage.is-speaking #jf-voice .jf-bar:nth-child(5) { animation-delay: .72s; }
+#jf-stage.is-speaking .jf-voice-hint { color: #ffc46f; }
 .jf-arc { transition: stroke-dashoffset .3s ease; }
 #jf-stage.is-flash .jf-arc { filter: drop-shadow(0 0 10px rgba(111, 211, 255, .95)); }
 
@@ -287,6 +303,7 @@ body.jf-quiet.jf-has-approval .wb-right { animation: none !important; }
 body.jf-quiet .wb-main, body.jf-quiet .wb-right { opacity: .78; }
 body.jf-quiet .jf-mascot-wrap img { filter: brightness(.72); }
 body.jf-quiet #jf-stage.is-listening #jf-voice .jf-bar,
+body.jf-quiet #jf-stage.is-speaking #jf-voice .jf-bar,
 body.jf-quiet #jf-stage.is-listening #jf-voice::after { animation: none !important; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -308,4 +325,28 @@ body.jf-quiet #jf-stage.is-listening #jf-voice::after { animation: none !importa
     background: #0d2140 !important; border: 1px solid #24507e !important; color: #6fd3ff;
   }
   body.jf-on .wb-jarvis-btn.wb-active { background: rgba(56, 182, 232, .13) !important; }
+}
+
+/* ================= V1.5 (walkthrough + spec cards) ================= */
+/* T-01: ONLINE + UTC clock leave the future topbar; the conn status
+   in the shell topbar is the single low-key status */
+body.jf-on .jf-online, body.jf-on .jf-clock { display: none !important; }
+body.jf-on .jf-space-label-toggle { cursor: pointer; }
+body.jf-on .jf-space-label-toggle:hover { color: #6fd3ff; }
+
+/* ---- V1.5 batch 3: future-theme mobile (M-01) ---- */
+@media (max-width: 480px) {
+  /* right glass screen leaves the flow; 空间 opens it as an overlay */
+  body.jf-on .wb-right { display: none !important; }
+  body.jf-on.jf-space-open .wb-right {
+    display: flex !important; position: fixed; inset: 52px 0 54px 0;
+    z-index: 1150; width: auto !important;
+  }
+  /* mobile voice exception (spec card 手机端 §3): the composer voice
+     button is the single voice entry on phones; the central stage is
+     desktop-only. The timbre row stays in settings. */
+  body.jf-on .wb-voice-btn { display: inline-flex !important; }
+  body.jf-on .wb-composer-row { flex-wrap: nowrap !important; }
+  body.jf-on .wb-composer textarea { min-width: 0; flex: 1 1 auto; }
+  body.jf-on .wb-main { height: auto !important; }
 }

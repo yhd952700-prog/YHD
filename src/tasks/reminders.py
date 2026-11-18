@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     hour        INTEGER,
     minute      INTEGER,
     run_at      TEXT NOT NULL,
+    lead_minutes INTEGER NOT NULL DEFAULT 0,
     version     INTEGER NOT NULL DEFAULT 1,
     status      TEXT NOT NULL DEFAULT 'active',
     last_fired_at TEXT,
@@ -270,6 +271,17 @@ class ReminderStore:
     def _migrate(self) -> None:
         """给老库补列（SQLite 的 CREATE TABLE IF NOT EXISTS 不会加新列）。"""
         with self._lock:
+            reminder_columns = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(reminders)"
+                ).fetchall()
+            }
+            if "lead_minutes" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN"
+                    " lead_minutes INTEGER NOT NULL DEFAULT 0"
+                )
             columns = {
                 row[1]
                 for row in self._conn.execute(
@@ -323,9 +335,9 @@ class ReminderStore:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO reminders (id, user_id, title, source_text, time_text,"
-                " repeat_kind, weekday, hour, minute, run_at, version, status,"
+                " repeat_kind, weekday, hour, minute, run_at, lead_minutes, version, status,"
                 " created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)",
                 (
                     reminder_id,
                     user_id,
@@ -337,6 +349,7 @@ class ReminderStore:
                     spec.hour,
                     spec.minute,
                     _iso(spec.run_at),
+                    int(spec.lead_minutes or 0),
                     now_iso,
                     now_iso,
                 ),
@@ -403,6 +416,7 @@ class ReminderStore:
             cursor = self._conn.execute(
                 "UPDATE reminders SET title = ?, source_text = ?, time_text = ?,"
                 " repeat_kind = ?, weekday = ?, hour = ?, minute = ?, run_at = ?,"
+                " lead_minutes = ?,"
                 " version = ?, status = 'active', last_error = NULL, updated_at = ?"
                 " WHERE id = ? AND user_id = ? AND status = 'active'",
                 (
@@ -414,6 +428,7 @@ class ReminderStore:
                     spec.hour,
                     spec.minute,
                     _iso(spec.run_at),
+                    int(spec.lead_minutes or 0),
                     int(version),
                     now_iso,
                     reminder_id,
@@ -997,6 +1012,7 @@ class ReminderService:
         title: str,
         run_at_local: str,
         repeat: str = "once",
+        lead_minutes: int = 0,
         now: Optional[datetime] = None,
         tz: Optional[tzinfo] = None,
     ) -> Dict[str, Any]:
@@ -1042,6 +1058,7 @@ class ReminderService:
             minute=local_dt.minute,
             time_text=time_text,
             source_text="",
+            lead_minutes=max(0, min(int(lead_minutes or 0), 7 * 24 * 60)),
         )
         reminder_id = uuid.uuid4().hex[:12]
         record = self.store.create(
@@ -1167,6 +1184,7 @@ class ReminderService:
         title: Optional[str] = None,
         run_at_local: Optional[str] = None,
         repeat: Optional[str] = None,
+        lead_minutes: Optional[int] = None,
         now: Optional[datetime] = None,
         tz: Optional[tzinfo] = None,
     ) -> Dict[str, Any]:
@@ -1237,6 +1255,11 @@ class ReminderService:
             minute=local_dt.minute,
             time_text=time_text,
             source_text=str(record.get("source_text") or ""),
+            lead_minutes=(
+                int(record.get("lead_minutes") or 0)
+                if lead_minutes is None
+                else max(0, min(int(lead_minutes), 7 * 24 * 60))
+            ),
         )
         new_version = int(record["version"]) + 1
         rearmed = self.store.rearm(
@@ -1718,7 +1741,14 @@ class ReminderService:
             )
 
         title = "贾维斯提醒"
-        body = f"{record['title']}（{self._human_time(record)}）"
+        lead = int(record.get("lead_minutes") or 0)
+        if lead > 0 and not is_snooze:
+            body = (
+                f"{record['title']}（{self._human_time(record)}，"
+                f"提前 {lead} 分钟提醒你）"
+            )
+        else:
+            body = f"{record['title']}（{self._human_time(record)}）"
 
         # 先落 intent 标记再通知：进程死在通知的任何阶段，重启后看到 intent
         # 就按"最多响一次"封口 —— 宁可少响一次，也不在重启后补响第二次。
@@ -2218,18 +2248,32 @@ class ReminderService:
 
     def _enqueue(self, record: Dict[str, Any], occurrence: str) -> int:
         version = int(record["version"])
+        # 提前量：job 在 occurrence（事件时刻）之前 lead 分钟触发；
+        # occurrence 本身不变（记账/幂等/重复推进全按它），迟到判定从
+        # payload.scheduled_at（= 实际响铃时刻）算，与静默延后同一机制。
+        fire_at = occurrence
+        payload: Dict[str, Any] = {
+            "reminder_id": record["id"],
+            "version": version,
+            "occurrence": occurrence,
+            "user_id": record["user_id"],
+            "title": record["title"],
+        }
+        lead = int(record.get("lead_minutes") or 0)
+        if lead > 0 and not occurrence.startswith(("snooze:", "digest:")):
+            try:
+                fire_dt = datetime.fromisoformat(occurrence) - timedelta(minutes=lead)
+                fire_at = _iso(fire_dt)
+                payload["scheduled_at"] = fire_at
+                payload["lead_minutes"] = lead
+            except ValueError:
+                fire_at = occurrence
         try:
             return self.scheduler.enqueue(
                 REMINDER_FIRE_JOB,
-                run_at=occurrence,
+                run_at=fire_at,
                 job_key=reminder_job_key(record["id"], version, occurrence),
-                payload={
-                    "reminder_id": record["id"],
-                    "version": version,
-                    "occurrence": occurrence,
-                    "user_id": record["user_id"],
-                    "title": record["title"],
-                },
+                payload=payload,
                 # 同一提醒串行、不同提醒互不阻塞（原来按 job_name 全局串行）。
                 concurrency_key=f"reminder:{record['id']}",
                 max_attempts=self.max_attempts,
@@ -2361,6 +2405,8 @@ class ReminderService:
         账号时区进来（走查 F14：响铃时刻对了，显示的时间不能还是错的）。"""
         zone = tz or self.tz
         run_at = datetime.fromisoformat(record["run_at"])
+        lead = int(record.get("lead_minutes") or 0)
+        fire_at = run_at - timedelta(minutes=lead) if lead > 0 else run_at
         return {
             "id": record["id"],
             "title": record["title"],
@@ -2368,6 +2414,8 @@ class ReminderService:
             "repeat": record["repeat_kind"],
             "run_at": record["run_at"],
             "run_at_local": self._to_local(run_at, zone).isoformat(),
+            "lead_minutes": lead,
+            "fire_at_local": self._to_local(fire_at, zone).isoformat(),
             "human_time": self._human_time(record, zone),
             "time_text": record.get("time_text") or "",
             "version": int(record["version"]),
