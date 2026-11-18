@@ -1,0 +1,311 @@
+/* Jarvis · 贾维斯 — FUTURE theme overlay (0.4.6-future-theme)
+   Loaded AFTER jarvis-theme.css (classic espresso) from console/index.html.
+   Pure presentation layer + DOM appends by jarvis-future-theme.js.
+   Every future rule is scoped under body.jf-on, so switching back to the
+   classic theme (which just removes .jf-on via reload) restores the
+   espresso layout byte-for-byte. No bundle JS/CSS is modified. */
+
+/* ---------- theme switch (visible in BOTH modes) ---------- */
+.jf-switch {
+  display: inline-flex; align-items: center; gap: 2px; margin-left: 10px;
+  background: rgba(127, 160, 200, .10); border: 1px solid rgba(127, 180, 230, .28);
+  border-radius: 999px; padding: 2px; vertical-align: middle;
+}
+.jf-switch button {
+  background: none; border: none; cursor: pointer; border-radius: 999px;
+  font-size: 12px; padding: 4px 11px; color: #9db8d2; letter-spacing: .06em;
+}
+.jf-switch button.jf-on-btn { background: linear-gradient(135deg, #1d5f8a, #0f3d5f); color: #dff2ff; }
+body:not(.jf-on) .jf-switch button.jf-classic-btn { background: linear-gradient(135deg, #e09a49, #b06f27); color: #fff8ef; }
+
+/* ---------- palette: deep blue-black + ice blue (future only) ---------- */
+body.jf-on {
+  --os-bg: #04070f;
+  --os-bg-grad: radial-gradient(1200px 700px at 70% -10%, #0a1a33 0%, #04070f 58%);
+  --os-panel: #081226;
+  --os-panel-2: #0b1a33;
+  --os-panel-hover: #102544;
+  --os-border: #1d3a5f;
+  --os-border-soft: #142a47;
+  --os-text: #e8f3ff;
+  --os-text-dim: #b8cfe6;
+  --os-text-faint: #7e97b5;
+  --os-on-accent: #04121f;
+  --os-accent: #38b6e8;
+  --os-accent-soft: rgba(56, 182, 232, .16);
+  --os-accent-text: #6fd3ff;
+  --os-focus: #6fd3ff;
+  --os-accent-2: #2a93c4;
+  --os-grid-line: rgba(56, 182, 232, .07);
+  --sc-bg-deep: #03060d;
+  --sc-hairline: rgba(56, 182, 232, .18);
+  background: #04070f;
+}
+body.jf-on .os-app {
+  background: #04070f;
+  background-image:
+    radial-gradient(900px 480px at 50% 30%, rgba(24, 90, 150, .20) 0%, rgba(4, 7, 15, 0) 60%),
+    radial-gradient(1200px 700px at 70% -10%, #0a1a33 0%, #04070f 58%);
+}
+body.jf-on .os-topbar { background: rgba(5, 11, 24, .88); border-bottom: 1px solid #16304f; }
+body.jf-on .os-page-title, body.jf-on .os-login-title { font-family: inherit; }
+
+/* classic Boss card/panel belong to the classic layout only */
+body.jf-on .jt-boss-card, body.jf-on .jt-boss-panel, body.jf-on .jt-boss-float { display: none !important; }
+
+/* ---------- topbar status cluster (future) ---------- */
+.jf-status {
+  display: inline-flex; align-items: center; gap: 12px; margin-left: 12px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 11px;
+  letter-spacing: .12em; color: #6f96bd; white-space: nowrap;
+}
+.jf-status .jf-online { color: #4ade80; }
+.jf-status .jf-online::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #4ade80; margin-right: 5px; box-shadow: 0 0 8px #4ade80; vertical-align: 1px;
+}
+.jf-clock { color: #9fc3e8; min-width: 74px; }
+.jf-quiet-btn {
+  background: rgba(56, 182, 232, .08); border: 1px solid rgba(56, 182, 232, .35);
+  color: #9fc3e8; border-radius: 999px; font-size: 12px; padding: 4px 12px; cursor: pointer;
+  letter-spacing: .08em;
+}
+.jf-quiet-btn:hover { border-color: #38b6e8; color: #dff2ff; }
+body.jf-quiet .jf-quiet-btn { background: rgba(251, 191, 36, .14); border-color: rgba(251, 191, 36, .55); color: #fcd34d; }
+@media (max-width: 1500px) { .jf-status .jf-secure { display: none; } }
+@media (max-width: 900px) { .jf-status { display: none; } }
+
+/* ---------- workbench: three-column stage layout (desktop) ---------- */
+@media (min-width: 1100px) {
+  body.jf-on .wb-shell {
+    position: relative; display: block;
+    height: calc(100vh - 182px); min-height: 520px;
+    background: transparent !important;
+  }
+  body.jf-on .wb-rail { display: none !important; }
+
+  /* LEFT glass panel = the real chat column */
+  body.jf-on .wb-main {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 352px; z-index: 5;
+    display: flex; flex-direction: column;
+    background: linear-gradient(165deg, rgba(13, 30, 56, .94), rgba(6, 13, 28, .97)) !important;
+    border: 1px solid rgba(96, 180, 240, .28); border-radius: 18px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(160, 220, 255, .10);
+    /* no backdrop-filter: two full-height blurred panels cost more frames
+       than everything else on the page combined (measured 3fps vs 26fps
+       in software rendering). The gradient is near-opaque instead. */
+    overflow: hidden;
+    transition: opacity .45s ease;
+  }
+  body.jf-on .wb-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; background: transparent !important; }
+  body.jf-on .wb-chat-list { flex: 1; min-height: 0; overflow-y: auto; }
+
+  /* RIGHT glass panel = data / my-space */
+  body.jf-on .wb-right {
+    display: flex !important; flex-direction: column;
+    position: absolute; right: 0; top: 0; bottom: 0; width: 324px; z-index: 5;
+    background: linear-gradient(195deg, rgba(13, 30, 56, .94), rgba(6, 13, 28, .97));
+    border: 1px solid rgba(96, 180, 240, .28); border-radius: 18px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(160, 220, 255, .10);
+    overflow: hidden;
+    transition: opacity .45s ease, box-shadow .45s ease;
+  }
+  body.jf-on .wb-right-close { display: none !important; }
+  body.jf-on .wb-right-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 14px 14px; }
+
+  /* idle dimming: panels fade, stage stays */
+  body.jf-on.jf-dim .wb-main, body.jf-on.jf-dim .wb-right { opacity: .5; }
+  body.jf-on .wb-main:hover, body.jf-on .wb-right:hover { opacity: 1 !important; }
+
+  /* pending approvals: amber breathing rim on the right panel */
+  body.jf-on.jf-has-approval .wb-right {
+    border-color: rgba(251, 191, 36, .65);
+    animation: jf-amber 2.2s ease-in-out infinite;
+  }
+  @keyframes jf-amber {
+    0%, 100% { box-shadow: 0 18px 48px rgba(0,0,0,.5), 0 0 0 0 rgba(251,191,36,.00), inset 0 1px 0 rgba(160,220,255,.10); }
+    50% { box-shadow: 0 18px 48px rgba(0,0,0,.5), 0 0 26px 2px rgba(251,191,36,.35), inset 0 1px 0 rgba(160,220,255,.10); }
+  }
+}
+
+/* chat surfaces inside the left glass panel */
+body.jf-on .wb-msg-body { background: rgba(10, 24, 46, .85) !important; border: 1px solid #1d3a5f; color: #e8f3ff; }
+body.jf-on .wb-msg-user .wb-msg-body { background: linear-gradient(135deg, #155e85, #0d4066) !important; border-color: #2a7bab; color: #f0faff; }
+body.jf-on .wb-msg-author { color: #7e97b5 !important; }
+body.jf-on .wb-first-open, body.jf-on .wb-intro, body.jf-on .wb-thinking {
+  background: rgba(10, 24, 46, .85) !important; border: 1px solid #1d3a5f; color: #e8f3ff;
+}
+body.jf-on .wb-first-open > p { display: none !important; } /* slogan line: removed in the future theme by the owner's call */
+body.jf-on .wb-tries button, body.jf-on .wb-thinking button, body.jf-on .wb-routines button {
+  background: rgba(16, 38, 68, .9) !important; border: 1px solid #24507e !important; color: #cfe8ff; border-radius: 999px !important;
+}
+body.jf-on .wb-tries button:hover { border-color: #38b6e8 !important; color: #6fd3ff; }
+body.jf-on .wb-composer { background: rgba(6, 13, 28, .92) !important; border-top: 1px solid #16304f !important; }
+body.jf-on .wb-composer textarea {
+  background: #081426 !important; border: 1px solid #24507e !important; color: #e8f3ff !important; border-radius: 14px !important;
+}
+body.jf-on .wb-composer textarea:focus { border-color: #38b6e8 !important; box-shadow: 0 0 0 3px rgba(56,182,232,.22); }
+body.jf-on .wb-send-btn { background: linear-gradient(135deg, #2aa7dd, #15719e) !important; }
+body.jf-on .wb-voice-btn { background: rgba(16, 38, 68, .9) !important; border: 1px solid #24507e !important; color: #cfe8ff; }
+body.jf-on .wb-popover, body.jf-on .wb-context-menu, body.jf-on .wb-dialog, body.jf-on .wb-search-panel {
+  background: #0a1830 !important; border: 1px solid #24507e !important; color: #e8f3ff;
+}
+body.jf-on .wb-dialog input, body.jf-on .wb-dialog select, body.jf-on .wb-search-panel input[type="search"] {
+  background: #081426 !important; border: 1px solid #24507e !important; color: #e8f3ff !important;
+}
+body.jf-on .wb-primary-btn { background: linear-gradient(135deg, #2aa7dd, #15719e) !important; color: #f0faff !important; }
+/* composer must survive a 352px glass panel: wrap the row, drop the long hint prose */
+body.jf-on .wb-composer-row { flex-wrap: wrap; row-gap: 6px; }
+body.jf-on .wb-composer textarea { flex: 1 1 150px; min-width: 140px; }
+body.jf-on .wb-composer-hint { display: none !important; }
+body.jf-on .wb-composer-foot > span { display: none !important; } /* TTS prose note: settings page keeps it, the glass panel is too narrow */
+body.jf-on .wb-composer-foot { flex-wrap: wrap; row-gap: 4px; font-size: 11px; }
+body.jf-on .os-computer-ops span { display: block; margin-top: 4px; }
+body.jf-on .wb-inbox-item, body.jf-on .wb-spaces-item, body.jf-on .wb-space-detail, body.jf-on .wb-result-card {
+  background: rgba(10, 24, 46, .85) !important; border-color: #1d3a5f !important; color: #e8f3ff;
+}
+
+/* ---------- right panel tabs + my-space (injected by future JS) ---------- */
+.jf-tabs {
+  display: flex; gap: 4px; padding: 12px 12px 8px; flex: none;
+}
+.jf-tabs button {
+  flex: 1; position: relative; background: rgba(16, 38, 68, .55); border: 1px solid #1d3a5f;
+  color: #9fc3e8; font-size: 13px; padding: 7px 0; border-radius: 10px; cursor: pointer; letter-spacing: .08em;
+}
+.jf-tabs button.jf-tab-on { background: linear-gradient(135deg, rgba(42,167,221,.32), rgba(21,113,158,.32)); color: #dff2ff; border-color: #38b6e8; }
+.jf-tab-badge {
+  position: absolute; top: -7px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px; background: #f59e0b; color: #1c1005; font-size: 11px; line-height: 18px;
+  text-align: center; font-weight: 700; box-shadow: 0 0 10px rgba(245, 158, 11, .6);
+}
+.jf-space { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 12px 14px; }
+.jf-space-seg { display: flex; background: rgba(8, 20, 38, .8); border: 1px solid #1d3a5f; border-radius: 999px; padding: 3px; margin-bottom: 10px; }
+.jf-space-seg button { flex: 1; background: none; border: none; cursor: pointer; color: #9fc3e8; font-size: 12.5px; padding: 5px 0; border-radius: 999px; }
+.jf-space-seg button.jf-seg-on { background: linear-gradient(135deg, #2aa7dd, #15719e); color: #f0faff; }
+.jf-space-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.jf-space-label { font-size: 11px; color: rgba(159, 195, 232, .5); letter-spacing: .14em; padding: 10px 2px 6px; }
+.jf-space-list { display: flex; flex-direction: column; gap: 2px; }
+.jf-space-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  background: rgba(16, 38, 68, .55); border: 1px solid #1d3a5f; color: #e8f3ff; cursor: pointer;
+  font-size: 13px; padding: 9px 11px; border-radius: 10px; text-align: left;
+}
+.jf-space-list .jf-space-item { background: none; border: none; padding: 7px 9px; }
+.jf-space-item:hover { background: rgba(56, 182, 232, .14); color: #6fd3ff; }
+.jf-space-item:active { transform: scale(.985); }
+.jf-item-badge { min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: #f59e0b; color: #1c1005; font-size: 10.5px; line-height: 17px; text-align: center; font-weight: 700; }
+
+/* ---------- center stage: holo mascot + HUD rings + voice ---------- */
+#jf-stage {
+  position: absolute; left: 366px; right: 338px; top: 0; bottom: 0; z-index: 4;
+  display: none; flex-direction: column; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+@media (min-width: 1100px) { body.jf-on #jf-stage { display: flex; } }
+.jf-hud { position: relative; width: min(430px, 88%); aspect-ratio: 1 / 1.08; }
+.jf-hud svg.jf-rings { position: absolute; inset: -6% -4%; width: 108%; height: 112%; }
+.jf-ring-a { transform-origin: 50% 50%; animation: jf-spin 46s linear infinite; will-change: transform; }
+.jf-ring-b { transform-origin: 50% 50%; animation: jf-spin-r 64s linear infinite; will-change: transform; }
+/* idle = settled: when the panels dim, the motion pauses too */
+body.jf-dim .jf-ring-a, body.jf-dim .jf-ring-b, body.jf-dim .jf-mascot-wrap { animation-play-state: paused; }
+@keyframes jf-spin { to { transform: rotate(360deg); } }
+@keyframes jf-spin-r { to { transform: rotate(-360deg); } }
+#jf-stage.is-busy .jf-ring-a { animation-duration: 9s; }
+#jf-stage.is-busy .jf-ring-b { animation-duration: 14s; }
+#jf-stage::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 62% 58% at 50% 44%, rgba(1, 3, 6, .92) 52%, rgba(1, 3, 6, 0) 78%);
+  pointer-events: none;
+}
+.jf-mascot-wrap {
+  position: absolute; inset: 6% 10% 2%; display: flex; align-items: flex-end; justify-content: center;
+  animation: jf-breathe 5.2s ease-in-out infinite; transition: transform .5s ease; will-change: transform;
+}
+.jf-mascot-wrap::before {
+  /* the mascot source is a near-black rectangle with a noise floor; giving
+     the wrap its own pure-black elliptical bed makes the screen blend
+     seamless across the whole image box, not just the stage centre */
+  content: ""; position: absolute; inset: -6% -10%; z-index: -1;
+  background: radial-gradient(ellipse 68% 66% at 50% 47%, #000 52%, rgba(0, 0, 0, 0) 76%);
+}
+.jf-mascot-wrap img {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  /* no drop-shadow (it would trace the source's rectangular alpha) and
+     no mix-blend-mode (full-surface blending each frame was the second
+     FPS sink): the wrap's pure-black bed + this mask make the rectangle
+     invisible without either. */
+  -webkit-mask-image: radial-gradient(ellipse 66% 64% at 50% 47%, #000 52%, transparent 92%);
+  mask-image: radial-gradient(ellipse 66% 64% at 50% 47%, #000 52%, transparent 92%);
+}
+@keyframes jf-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.018); } }
+#jf-stage.is-busy .jf-mascot-wrap { transform: translateY(6px) rotateX(4deg); animation: none; }
+#jf-stage.is-done .jf-mascot-wrap { animation: jf-nod .8s ease; }
+@keyframes jf-nod { 0%, 100% { transform: translateY(0); } 30% { transform: translateY(12px); } 60% { transform: translateY(2px); } }
+#jf-stage.is-confused .jf-mascot-wrap { transform: rotate(-5deg); animation: none; }
+.jf-mood {
+  position: absolute; top: 6%; right: 16%; width: 34px; height: 34px; border-radius: 50%;
+  background: rgba(10, 26, 48, .9); border: 1px solid #38b6e8; color: #6fd3ff;
+  display: none; align-items: center; justify-content: center; font-size: 18px;
+  box-shadow: 0 0 16px rgba(56, 182, 232, .45);
+}
+#jf-stage.is-confused .jf-mood { display: flex; }
+.jf-base {
+  width: 56%; height: 16px; margin-top: -8px; border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(56, 182, 232, .5) 0%, rgba(56, 182, 232, .12) 55%, transparent 75%);
+  filter: blur(1px);
+}
+.jf-voice-zone { pointer-events: auto; display: flex; flex-direction: column; align-items: center; gap: 7px; margin-top: 14px; }
+#jf-voice {
+  width: 62px; height: 62px; border-radius: 50%; cursor: pointer; position: relative;
+  background: radial-gradient(circle at 35% 30%, rgba(80, 200, 250, .35), rgba(10, 30, 58, .95) 70%);
+  border: 1px solid rgba(111, 211, 255, .65); color: #dff2ff;
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  box-shadow: 0 0 24px rgba(56, 182, 232, .35), inset 0 0 18px rgba(56, 182, 232, .25);
+}
+#jf-voice:hover { border-color: #6fd3ff; box-shadow: 0 0 34px rgba(56, 182, 232, .55), inset 0 0 18px rgba(56, 182, 232, .3); }
+#jf-voice .jf-bar { width: 4px; height: 14px; border-radius: 2px; background: #6fd3ff; }
+#jf-stage.is-listening #jf-voice .jf-bar { animation: jf-wave 0.8s ease-in-out infinite; }
+#jf-stage.is-listening #jf-voice .jf-bar:nth-child(2) { animation-delay: .12s; }
+#jf-stage.is-listening #jf-voice .jf-bar:nth-child(3) { animation-delay: .24s; }
+#jf-stage.is-listening #jf-voice .jf-bar:nth-child(4) { animation-delay: .36s; }
+#jf-stage.is-listening #jf-voice .jf-bar:nth-child(5) { animation-delay: .48s; }
+@keyframes jf-wave { 0%, 100% { height: 10px; } 50% { height: 26px; } }
+#jf-stage.is-listening #jf-voice::after {
+  content: ""; position: absolute; inset: -12px; border-radius: 50%;
+  border: 1px solid rgba(111, 211, 255, .5); animation: jf-ripple 1.6s ease-out infinite;
+}
+@keyframes jf-ripple { from { transform: scale(.8); opacity: 1; } to { transform: scale(1.35); opacity: 0; } }
+.jf-voice-hint { font-size: 11.5px; letter-spacing: .22em; color: #6f96bd; }
+#jf-stage.is-listening .jf-voice-hint { color: #6fd3ff; }
+.jf-arc { transition: stroke-dashoffset .3s ease; }
+#jf-stage.is-flash .jf-arc { filter: drop-shadow(0 0 10px rgba(111, 211, 255, .95)); }
+
+/* ---------- quiet mode: everything settles ---------- */
+body.jf-quiet .jf-ring-a, body.jf-quiet .jf-ring-b, body.jf-quiet .jf-mascot-wrap,
+body.jf-quiet.jf-has-approval .wb-right { animation: none !important; }
+body.jf-quiet .wb-main, body.jf-quiet .wb-right { opacity: .78; }
+body.jf-quiet .jf-mascot-wrap img { filter: brightness(.72); }
+body.jf-quiet #jf-stage.is-listening #jf-voice .jf-bar,
+body.jf-quiet #jf-stage.is-listening #jf-voice::after { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jf-ring-a, .jf-ring-b, .jf-mascot-wrap { animation: none !important; }
+}
+
+/* ---------- narrow screens: classic structure, future colours ---------- */
+@media (max-width: 1099px) {
+  body.jf-on .wb-shell { background: #04070f !important; }
+  body.jf-on .wb-rail {
+    background: linear-gradient(180deg, #0a1830, #060d1c) !important;
+    border-right: 1px solid #1d3a5f !important;
+  }
+  body.jf-on .wb-main {
+    background: radial-gradient(900px 500px at 60% -10%, #0a1c38 0%, #04070f 60%) !important;
+  }
+  body.jf-on .wb-rail-bottom { border-top: 1px solid #16304f !important; }
+  body.jf-on .wb-grid-btn, body.jf-on .wb-icon-btn {
+    background: #0d2140 !important; border: 1px solid #24507e !important; color: #6fd3ff;
+  }
+  body.jf-on .wb-jarvis-btn.wb-active { background: rgba(56, 182, 232, .13) !important; }
+}

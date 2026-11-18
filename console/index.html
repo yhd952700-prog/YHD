@@ -18,6 +18,17 @@
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- iOS 启动图（多端线）：standalone 启动时的闪屏，按设备尺寸逐一匹配 -->
+    <link rel="apple-touch-startup-image" href="/splash-1290x2796.png" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash-1179x2556.png" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash-1170x2532.png" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash-1284x2778.png" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash-828x1792.png" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash-750x1334.png" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash-2048x2732.png" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash-1668x2388.png" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash-1620x2160.png" media="(device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash-1488x2266.png" media="(device-width: 744px) and (device-height: 1133px) and (-webkit-device-pixel-ratio: 2)" />
     <link rel="manifest" href="/manifest.webmanifest" />
 
     <!-- theme-color 会由 src/lib/mode.ts 依据当前主题动态改写 -->
@@ -42,6 +53,9 @@
     <!-- Jarvis themed overlay (0.4.6-themed): presentation-only, remove these two lines to roll back -->
     <link rel="stylesheet" href="/theme/jarvis-theme.css">
     <script defer src="/theme/jarvis-theme.js"></script>
+    <!-- Jarvis future theme overlay (0.4.6-future-theme): scoped to body.jf-on, classic stays default-off rollback -->
+    <link rel="stylesheet" href="/theme/jarvis-future-theme.css">
+    <script defer src="/theme/jarvis-future-theme.js"></script>
   </head>
   <body>
     <div id="root"></div>
