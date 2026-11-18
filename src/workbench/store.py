@@ -486,6 +486,89 @@ class WorkbenchStore:
             ).fetchone()
         return _group_row(row)
 
+    # -- U5 同步专用：整行 upsert，保留对端的时间戳（LWW 合并的前提） -------
+    def upsert_bot_for_sync(self, owner: str, row: Dict[str, Any]) -> Dict[str, Any]:
+        """按 id 整行写入 Bot（存在则覆盖），created_at/updated_at 用行内值。
+
+        只供多端同步引擎调用：普通编辑路径仍走 create/update（它们负责把
+        updated_at  bump 到当前时间）。头像二进制不走同步（avatar_url 置空，
+        与导出包口径一致）。
+        """
+        bot_id = str(row.get("id") or "")
+        if not bot_id or bot_id == JARVIS_ID:
+            raise ValueError("同步 Bot 缺少合法 id")
+        now = _now_iso()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO bots (id, owner, name, job, personality, idea,"
+                " direction, mood, gender, color, accessory, model_id,"
+                " pinned, hidden, group_id, routines, order_index,"
+                " avatar_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,"
+                " name=excluded.name, job=excluded.job, personality=excluded.personality,"
+                " idea=excluded.idea, direction=excluded.direction, mood=excluded.mood,"
+                " gender=excluded.gender, color=excluded.color,"
+                " accessory=excluded.accessory, model_id=excluded.model_id,"
+                " pinned=excluded.pinned, hidden=excluded.hidden,"
+                " group_id=excluded.group_id, routines=excluded.routines,"
+                " order_index=excluded.order_index, updated_at=excluded.updated_at",
+                (
+                    bot_id,
+                    owner,
+                    str(row.get("name") or ""),
+                    str(row.get("job") or ""),
+                    str(row.get("personality") or ""),
+                    str(row.get("idea") or ""),
+                    str(row.get("direction") or ""),
+                    str(row.get("mood") or ""),
+                    str(row.get("gender") or ""),
+                    str(row.get("color") or ""),
+                    str(row.get("accessory") or ""),
+                    str(row.get("model_id") or ""),
+                    1 if row.get("pinned") else 0,
+                    1 if row.get("hidden") else 0,
+                    str(row.get("group_id") or ""),
+                    json.dumps(list(row.get("routines") or []), ensure_ascii=False),
+                    int(row.get("order_index") or 0),
+                    "",
+                    str(row.get("created_at") or now),
+                    str(row.get("updated_at") or now),
+                ),
+            )
+            conn.commit()
+            saved = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
+        return _bot_row(saved)
+
+    def upsert_group_for_sync(self, owner: str, row: Dict[str, Any]) -> Dict[str, Any]:
+        """按 id 整行写入分组（存在则覆盖），时间戳用行内值。仅供同步引擎。"""
+        group_id = str(row.get("id") or "")
+        if not group_id:
+            raise ValueError("同步分组缺少 id")
+        now = _now_iso()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO bot_groups (id, owner, name, folded, order_index,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,"
+                " name=excluded.name, folded=excluded.folded,"
+                " order_index=excluded.order_index, updated_at=excluded.updated_at",
+                (
+                    group_id,
+                    owner,
+                    str(row.get("name") or ""),
+                    1 if row.get("folded") else 0,
+                    int(row.get("order_index") or 0),
+                    str(row.get("created_at") or now),
+                    str(row.get("updated_at") or now),
+                ),
+            )
+            conn.commit()
+            saved = conn.execute(
+                "SELECT * FROM bot_groups WHERE id = ?", (group_id,)
+            ).fetchone()
+        return _group_row(saved)
+
     def delete_group(self, principals: Sequence[str], group_id: str) -> bool:
         with self._lock, self._connect() as conn:
             cursor = conn.execute(

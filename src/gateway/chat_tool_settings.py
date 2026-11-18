@@ -202,6 +202,64 @@ CHAT_TOOL_GRADES: Dict[str, Dict[str, Any]] = {
         "source_kind": "builtin",
         "default_enabled": False,
     },
+    # 用量查询（大升级 U1）：纯只读、只看本人账本，A 档默认开——
+    # 「这个月用了多少」是用户最自然的一句问话，不该还要先去技能页开开关。
+    "liuhao.usage.report": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
+    # 版本更新（大升级 U2）：检查只读 A 档默认开；应用是高风险写操作，
+    # B 档默认关，且工具内还要用户亲口确认（confirm=true）才执行。
+    "liuhao.upgrade.check": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
+    "liuhao.upgrade.apply": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "formal",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    # 主动管家（大升级 U4）：简报生成是只读汇总，A 档默认开；模板开关
+    # 会落成真例程（写），B 档默认关，与 manage_bots 同一口径。
+    "liuhao.briefing.now": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
+    "liuhao.routine.templates": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    # 多端同步（大升级 U5）：含写与联网（登记对端/发起同步），B 档默认关；
+    # 同步本体另有总开关（默认关）与配对令牌双重把关。
+    "liuhao.sync.manage": {
+        "grade": "B",
+        "permissions": ["read", "write", "network"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    # 语音状态（大升级 U3）：纯只读状态查询，A 档默认开。
+    "liuhao.voice.status": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
     # 联网检索：分档登记在这里，开关本体在 web_research（见模块 docstring）。
     "liuhao.web.search": {
         "grade": "B",

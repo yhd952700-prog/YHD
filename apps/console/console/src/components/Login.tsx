@@ -109,6 +109,51 @@ const CONFIG_UNAUTHORIZED_MESSAGE =
 const BOOTSTRAP_LOCAL_ONLY_MESSAGE =
   '首次初始化需要在这台电脑上的贾维斯桌面端完成。请打开这台电脑上的贾维斯桌面端，在登录页完成初始化后再回到当前设备登录。'
 
+/**
+ * 首启向导的时区确认（打磨第四轮）：后端新账号默认时区是
+ * America/Tijuana（原用户属地，见 src/gateway/a2a.py 的 DEFAULT_TIMEZONE），
+ * 对新用户多半不对。向导里预选这个默认值并明确展示、用户可改，提交后
+ * 随初始化写入账号设置（PUT /v1/a2a/settings）；保存失败只记提示，
+ * 绝不拦已经完成的初始化——与可选模型 Key 同一原则。
+ */
+const DEFAULT_TIMEZONE = 'America/Tijuana'
+
+const FALLBACK_TIMEZONES = [
+  DEFAULT_TIMEZONE,
+  'UTC',
+  'Asia/Shanghai',
+  'Asia/Hong_Kong',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Europe/London',
+  'America/New_York',
+  'America/Los_Angeles',
+]
+
+function timezoneOptions(): string[] {
+  try {
+    const supported = (
+      Intl as unknown as { supportedValuesOf?: (key: string) => string[] }
+    ).supportedValuesOf?.('timeZone')
+    if (Array.isArray(supported) && supported.length > 0) {
+      return supported.includes(DEFAULT_TIMEZONE)
+        ? supported
+        : [DEFAULT_TIMEZONE, ...supported]
+    }
+  } catch {
+    /* 旧浏览器没有 supportedValuesOf，用兜底清单。 */
+  }
+  return FALLBACK_TIMEZONES
+}
+
+function detectedTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    return ''
+  }
+}
+
 /** 首次进入的页面：没有初始账号、或初始化停在半路，都直接进设置表单。 */
 function initialStage(config: AuthConfig): Stage {
   if (config.root_account_exists === false) return 'bootstrap'
@@ -694,6 +739,9 @@ function BootstrapForm({
   const [baseUrl, setBaseUrl] = useState<string>(MODEL_PRESETS.deepseek.baseUrl)
   const [modelName, setModelName] = useState<string>(MODEL_PRESETS.deepseek.model)
   const [conflict, setConflict] = useState(false)
+  const [timezone, setTimezone] = useState(DEFAULT_TIMEZONE)
+  const [tzOptions] = useState<string[]>(timezoneOptions)
+  const [deviceTimezone] = useState<string>(detectedTimezone)
 
   const strength = passwordStrength(password)
 
@@ -761,8 +809,21 @@ function BootstrapForm({
         client: detectClient(),
       })
 
-      // 模型 Key 是可选项：失败只记一条提示，绝不把已经完成的初始化卡住。
+      // 时区确认落点：把向导里选定的时区写入账号设置。失败只记一条
+      // 提示，绝不把已经完成的初始化卡住（与下面的模型 Key 同一原则）。
       let warning: string | null = null
+      try {
+        await apiFetch('/v1/a2a/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ timezone }),
+        })
+      } catch (err) {
+        warning = `时区未能保存（${
+          err instanceof Error ? err.message : '未知错误'
+        }），已先按默认时区 ${DEFAULT_TIMEZONE} 进入系统。`
+      }
+
+      // 模型 Key 是可选项：失败只记一条提示，绝不把已经完成的初始化卡住。
       const key = modelKey.trim()
       if (showModel && key) {
         const chosen = MODEL_PRESETS[preset]
@@ -781,9 +842,10 @@ function BootstrapForm({
             }),
           })
         } catch (err) {
-          warning = `模型 Key 未能保存（${
+          const modelWarning = `模型 Key 未能保存（${
             err instanceof Error ? err.message : '未知错误'
           }）。可以先进入系统，之后在「系统设置 → 模型管理」重新添加。`
+          warning = warning ? `${warning} ${modelWarning}` : modelWarning
         }
       }
 
@@ -885,6 +947,28 @@ function BootstrapForm({
           onChange={(event) => setConfirm(event.target.value)}
           required
         />
+      </div>
+
+      <div className="os-field">
+        <label htmlFor="boot-timezone">时区</label>
+        <select
+          id="boot-timezone"
+          className="os-input-plain"
+          value={timezone}
+          onChange={(event) => setTimezone(event.target.value)}
+        >
+          {tzOptions.map((zone) => (
+            <option key={zone} value={zone}>
+              {zone}
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
+          提醒、日报和时间显示都按这个时区计算，请确认无误。
+          {deviceTimezone && deviceTimezone !== timezone
+            ? `这台设备当前时区是 ${deviceTimezone}。`
+            : ''}
+        </span>
       </div>
 
       <label className="os-check">

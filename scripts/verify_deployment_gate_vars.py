@@ -312,7 +312,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "shipped system"
         ),
         "refs": (
-            "src/ai/providers.py:3681",  # 2026-11-17 重指
+            "src/ai/providers.py:3856",  # 2026-11-18 重指（大升级 U1 熔断器新增代码使行号下移）
             "src/kernels/execution/__init__.py:501",
         ),
     },

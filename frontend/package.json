@@ -1,6 +1,6 @@
 {
   "name": "@liuhao-ai-os/frontend",
-  "version": "0.4.6",
+  "version": "0.5.0",
   "description": "Jarvis · 贾维斯 - React + TypeScript UI component library (not a runnable app: no backend connection, no app entry; hooks return empty lists when no fetcher is passed)",
   "type": "module",
   "license": "MIT",

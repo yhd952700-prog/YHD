@@ -218,8 +218,22 @@ body { background: #171009; }
 }
 .jt-hub-logout:hover { color: #f0937e; }
 @media (max-width: 720px) {
-  .jt-boss-panel { left: 8px; bottom: 76px; }
-  .jt-boss-float { width: 196px; }
+  .jt-boss-panel { left: 8px; bottom: 140px; }
+  .jt-boss-float { bottom: 74px; }
+  /* 手机形态下 Bot 栏只是 72px 图标条：整卡塞在栏内会被压成 55px 竖条，
+     且栏底沉到视口外（实测 412x915：卡底边 932 > 视口 915，下半截被
+     66px 底部导航盖住——即"露头"）；改成全卡固定在底部导航上方又会与
+     聊天输入区同带重叠、压住名字。故窄屏把卡收成与图标条同宽的圆形
+     头像钮（56px，落在栏的 72px 列内，不侵输入区），角标改绝对定位
+     挂在钮右上角，点开仍是同一个 Boss 面板；面板底距同步抬到钮上方。 */
+  .jt-boss-card {
+    position: fixed; left: 8px; bottom: 74px; z-index: 290;
+    width: 56px; height: 56px; margin: 0; padding: 0;
+    justify-content: center; border-radius: 50%;
+    box-shadow: 0 16px 40px rgba(0,0,0,.5);
+  }
+  .jt-boss-text, .jt-boss-chev { display: none; }
+  .jt-boss-card .jt-boss-badge { position: absolute; top: -4px; right: -4px; }
 }
 
 /* ---------- a11y（D-R5 打磨补）：键盘焦点可见 + 减少动效 ---------- */

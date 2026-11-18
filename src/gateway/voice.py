@@ -25,6 +25,11 @@ from src.voice.settings import (
     load_voice_settings,
     save_voice_settings,
 )
+from src.voice.providers import (
+    get_stt_provider,
+    get_tts_provider,
+    voice_pipeline_status,
+)
 from src.voice.stt import stt_status, transcribe_audio
 from src.voice.tts import ZH_VOICES, DEFAULT_VOICE, synthesize_speech, tts_status
 
@@ -53,13 +58,21 @@ class SpeakRequest(BaseModel):
 
 @router.get("/status")
 def voice_status() -> Dict[str, Any]:
-    stt = stt_status()
-    tts = tts_status()
+    # 大升级 U3：状态走 provider 抽象（本机默认 / 云端显式配置），
+    # note 按实际 provider 说实话——配了云端就不许再写"不送上云"。
+    pipeline = voice_pipeline_status()
+    cloud = any(value == "openai" for value in pipeline["providers"].values())
     return {
-        "stt": stt,
-        "tts": tts,
-        "ready": bool(stt["available"] and tts["available"]),
-        "note": "语音全程离线本机跑，录音不送上云。",
+        "stt": pipeline["stt"],
+        "tts": pipeline["tts"],
+        "wake": pipeline["wake"],
+        "providers": pipeline["providers"],
+        "ready": pipeline["ready"],
+        "note": (
+            "已配置云端语音引擎：录音/文字会发到所配置的云端服务。"
+            if cloud
+            else "语音全程离线本机跑，录音不送上云。"
+        ),
     }
 
 
@@ -71,7 +84,8 @@ async def voice_transcribe(
     data = await file.read()
     try:
         result = await asyncio.to_thread(
-            transcribe_audio, data, file.filename or "recording.webm", language
+            get_stt_provider().transcribe,
+            data, file.filename or "recording.webm", language,
         )
     except EngineUnavailableError as exc:
         raise HTTPException(
@@ -94,7 +108,7 @@ async def voice_transcribe(
 async def voice_speak(body: SpeakRequest) -> Response:
     try:
         result = await asyncio.to_thread(
-            synthesize_speech, body.text, body.voice, body.speed
+            get_tts_provider().synthesize, body.text, body.voice, body.speed
         )
     except EngineUnavailableError as exc:
         raise HTTPException(

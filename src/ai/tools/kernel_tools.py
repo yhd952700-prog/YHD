@@ -619,6 +619,409 @@ def make_tools(
         )
     )
 
+    # ============ 用量/花费查询（大升级 U1：多模型容灾的记账面） ============
+    # 用量账本（gateway/account_usage）此前只有设置页与接口能看，聊天里
+    # 问「这个月用了多少」无工具可答。按精而简补这条只读通路：口径与
+    # 用量页完全同一套（usage_events 的聚合+定价），只统计当前账号本人
+    # 发起的调用，未定价模型如实标「暂无价格」绝不按 0 元报。
+    def usage_report(month: str = "", **kwargs: Any) -> str:
+        """按月汇总当前账号的模型用量与估算花费（按模型拆分）。"""
+        try:
+            from datetime import datetime, timezone
+
+            from src.gateway.account_usage import usage_events
+
+            account = _account()
+            raw = str(month or "").strip()
+            if raw in ("", "本月", "这个月", "current"):
+                now = datetime.now(timezone.utc)
+                year, mon = now.year, now.month
+                label = f"{year}-{mon:02d}（本月）"
+            else:
+                parts = raw.replace("/", "-").split("-")
+                year, mon = int(parts[0]), int(parts[1])
+                label = f"{year}-{mon:02d}"
+            since = f"{year}-{mon:02d}-01T00:00:00+00:00"
+            if mon == 12:
+                until = f"{year + 1}-01-01T00:00:00+00:00"
+            else:
+                until = f"{year}-{mon + 1:02d}-01T00:00:00+00:00"
+            result = usage_events(
+                account,
+                owners=[account],
+                since=since,
+                until=until,
+                limit=1,
+            )
+            by_model = []
+            for item in result.get("by_model") or []:
+                by_model.append({
+                    "model": item.get("model") or "unknown",
+                    "tokens_in": item.get("tokens_in"),
+                    "tokens_out": item.get("tokens_out"),
+                    "total_tokens": item.get("total_tokens"),
+                    "cost": item.get("cost"),
+                })
+            return _serialize({
+                "status": "ok",
+                "month": label,
+                "calls": result.get("total", 0),
+                "estimated_cost": result.get("cost"),
+                "cost_complete": result.get("cost_complete", True),
+                "unknown_models": result.get("unknown_models") or [],
+                "by_model": by_model,
+                "note": (
+                    "费用为按价格表估算；unknown_models 里的模型暂无价格、"
+                    "未计入费用（不是 0 元）。"
+                ),
+            })
+        except Exception as exc:  # noqa: BLE001 - 查询失败如实回
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    # ============ 版本更新（大升级 U2：自动检查 + 手动确认应用） ============
+    # 更新引擎（src.upgrade）此前只有 CLI 与 /v1/upgrade 接口，聊天里问
+    # 「有新版本吗」无工具可答。补两条通路：check_update 只读（A 档默认
+    # 开）；apply_update 是写操作（B 档默认关），且必须带 confirm=true——
+    # 模型只有在用户明确说了「确认升级」之后才许传 true，工具内二次校验。
+    # 应用走引擎自带流程：下载→哈希校验→升级前备份→替换程序（不动数据
+    # 目录）→自检，失败引擎自动回滚，本工具只如实转述结果。
+    def check_update(**kwargs: Any) -> str:
+        """检查是否有新版本（只检查，绝不自动安装）。"""
+        manager = None
+        try:
+            from src.upgrade.update_check import build_manager_from_env
+
+            manager = build_manager_from_env()
+            result = manager.check(trigger="chat")
+            return _serialize({
+                "status": "ok",
+                "current_version": result.current_version,
+                "latest_version": result.latest_version,
+                "update_available": bool(result.update_available),
+                "message": result.message,
+                "note": "只检查不安装；用户确认后用 apply_update 应用。",
+            })
+        except Exception as exc:  # noqa: BLE001 - 检查失败如实回，不许假报已是最新
+            return _serialize({
+                "status": "failed",
+                "error": f"无法检查更新：{type(exc).__name__}: {exc}",
+            })
+        finally:
+            if manager is not None:
+                manager.close()
+
+    def apply_update(confirm: bool = False, **kwargs: Any) -> str:
+        """应用已检查到的新版本（须用户明确确认）。"""
+        if confirm is not True:
+            return _serialize({
+                "status": "refused",
+                "error": (
+                    "应用更新必须由用户明确确认：请先向用户说明新版本号与"
+                    "影响，用户亲口说「确认升级」后再带 confirm=true 调用。"
+                ),
+            })
+        manager = None
+        try:
+            from src.upgrade.update_check import build_manager_from_env
+
+            manager = build_manager_from_env()
+            check = manager.check(trigger="chat-apply")
+            if not check.update_available or check.release is None:
+                return _serialize({
+                    "status": "ok",
+                    "update_available": False,
+                    "current_version": check.current_version,
+                    "message": check.message,
+                })
+            download = manager.download(check.release)
+            applied = manager.apply(download.path, check.release)
+            return _serialize({
+                "status": "ok",
+                "from_version": applied.from_version,
+                "to_version": applied.to_version,
+                "backup_id": applied.backup_id,
+                "self_check_passed": applied.self_check_passed,
+                "message": applied.message,
+            })
+        except Exception as exc:  # noqa: BLE001 - 失败如实回（引擎侧已自动回滚）
+            return _serialize({
+                "status": "failed",
+                "error": f"升级失败：{type(exc).__name__}: {exc}",
+                "note": "升级引擎在自检失败时会自动回滚到升级前备份。",
+            })
+        finally:
+            if manager is not None:
+                manager.close()
+
+    # ============ 语音状态（大升级 U3：全链路的自查面） ============
+    def voice_status(**kwargs: Any) -> str:
+        """语音全链路（识别/合成/唤醒）现在能不能用、用的哪个引擎。"""
+        try:
+            from src.voice.providers import voice_pipeline_status
+
+            status = voice_pipeline_status()
+            return _serialize({
+                "status": "ok",
+                "ready": status["ready"],
+                "providers": status["providers"],
+                "stt": {
+                    "available": status["stt"].get("available"),
+                    "engine": status["stt"].get("engine"),
+                    "model": status["stt"].get("model"),
+                    "install_hint": status["stt"].get("install_hint") or "",
+                },
+                "tts": {
+                    "available": status["tts"].get("available"),
+                    "engine": status["tts"].get("engine"),
+                    "voice": status["tts"].get("voice"),
+                    "install_hint": status["tts"].get("install_hint") or "",
+                },
+                "wake": {
+                    "available": status["wake"].get("available"),
+                    "mic_available": status["wake"].get("mic_available"),
+                },
+                "note": "引擎没装时把 install_hint 原样告诉用户，不要假装能语音。",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    # ============ 主动管家（大升级 U4：晨间简报 + 例程模板） ============
+    def morning_briefing(**kwargs: Any) -> str:
+        """现在就生成一份晨间简报（昨日结果 + 今日安排 + 待审批）。"""
+        try:
+            from src.tasks.briefing import build_morning_briefing
+
+            text = build_morning_briefing(_account())
+            return _serialize({"status": "ok", "briefing": text})
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    def routine_templates(action: str = "list", template_id: str = "", **kwargs: Any) -> str:
+        """例程模板库：list 看模板与状态；enable/disable 一句话开关模板。"""
+        try:
+            from src.tasks.briefing import list_template_states, set_template_enabled
+            from src.tasks.routines import get_routine_store
+
+            store = get_routine_store()
+            account = _account()
+            verb = str(action or "list").strip().lower()
+            if verb == "list":
+                return _serialize({
+                    "status": "ok",
+                    "templates": list_template_states(store, account),
+                    "note": "模板默认不启用；用户说「启用晨间简报」时用 enable。",
+                })
+            if verb in ("enable", "disable"):
+                result = set_template_enabled(
+                    store,
+                    account,
+                    created_by=account,
+                    template_id=str(template_id or ""),
+                    enabled=verb == "enable",
+                )
+                return _serialize({"status": "ok", **result})
+            return _serialize({
+                "status": "failed",
+                "error": f"未知动作：{action}（只支持 list / enable / disable）",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.briefing.now",
+            name="morning_briefing",
+            version="1.0.0",
+            description=(
+                "生成一份晨间简报：昨日例程结果、今日例程/提醒/日程、待审批一次汇总。"
+                "用户说「给我一份晨间简报 / 今天有什么安排」时用这个工具。"
+            ),
+            capability="briefing.now",
+            schema={"type": "object", "properties": {}},
+            fn=morning_briefing,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.routine.templates",
+            name="routine_templates",
+            version="1.0.0",
+            description=(
+                "例程模板库（晨间简报/晚间小结/午饭提醒/熬夜提醒/每周开场）："
+                "action=list 查看模板与启用状态；action=enable/disable + template_id 开关某个模板。"
+                "用户说「启用晨间简报 / 关掉熬夜提醒」时用这个工具。"
+            ),
+            capability="routine.templates",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "list / enable / disable"},
+                    "template_id": {
+                        "type": "string",
+                        "description": "模板 id：morning_briefing / evening_digest / lunch_rest / late_night_rest / weekly_kickoff",
+                    },
+                },
+                "required": ["action"],
+            },
+            fn=routine_templates,
+            risk="MEDIUM",
+        )
+    )
+
+    # ============ 多端同步（大升级 U5：默认关，配对后可用） ============
+    def device_sync(action: str = "status", peer: str = "", **kwargs: Any) -> str:
+        """多端同步管理：status 看状态；enable/disable 开关；
+        pair 签发配对令牌（给另一台设备登记）；add_peer 登记对端；
+        run + peer 立刻与对端同步一轮。"""
+        try:
+            from src.sync import service as sync_service
+            from src.sync import state as sync_state
+
+            verb = str(action or "status").strip().lower()
+            if verb == "status":
+                return _serialize({"status": "ok", **sync_service.sync_status(_account())})
+            if verb in ("enable", "disable"):
+                sync_state.set_enabled(verb == "enable")
+                return _serialize({"status": "ok", **sync_service.sync_status(_account())})
+            if verb == "pair":
+                token = sync_state.create_pairing_token(_account())
+                return _serialize({
+                    "status": "ok",
+                    "pairing_token": token,
+                    "note": "只显示这一次：把令牌填到另一台设备的「登记对端」里；本机只存哈希。",
+                })
+            if verb == "add_peer":
+                name = str(kwargs.get("name") or peer or "")
+                base_url = str(kwargs.get("base_url") or "")
+                token = str(kwargs.get("token") or "")
+                if not name or not base_url or not token:
+                    return _serialize({"status": "failed", "error": "登记对端需要 name、base_url、token 三样"})
+                sync_state.add_peer(name, base_url, token)
+                return _serialize({"status": "ok", **sync_service.sync_status(_account())})
+            if verb == "run":
+                name = str(peer or kwargs.get("name") or "")
+                if not name:
+                    return _serialize({"status": "failed", "error": "要说清和哪台设备同步（peer=设备名）"})
+                result = sync_service.sync_with_peer(name, _account())
+                return _serialize({"status": "ok", **result})
+            return _serialize({
+                "status": "failed",
+                "error": f"未知动作：{action}（只支持 status / enable / disable / pair / add_peer / run）",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.sync.manage",
+            name="device_sync",
+            version="1.0.0",
+            description=(
+                "多端同步（两台贾维斯之间同步聊天/Bot/知识/设置，默认关）："
+                "action=status 查看；enable/disable 开关；pair 签发配对令牌；"
+                "add_peer 登记对端（需 name/base_url/token）；run + peer 立刻同步一轮。"
+                "用户说「和我的另一台电脑同步一下 / 开启多端同步」时用这个工具。"
+            ),
+            capability="sync.manage",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "status / enable / disable / pair / add_peer / run"},
+                    "peer": {"type": "string", "description": "对端设备名（run 时必填）"},
+                    "name": {"type": "string", "description": "登记对端时的设备名"},
+                    "base_url": {"type": "string", "description": "登记对端时的地址（对端网关的局域网地址与端口）"},
+                    "token": {"type": "string", "description": "登记对端时的配对令牌"},
+                },
+                "required": ["action"],
+            },
+            fn=device_sync,
+            risk="MEDIUM",
+        )
+    )
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.voice.status",
+            name="voice_status",
+            version="1.0.0",
+            description=(
+                "查看语音功能（语音识别/朗读/唤醒词）现在能不能用、用的哪个引擎、"
+                "缺什么怎么装。用户问「语音能用吗 / 怎么不能语音」时用这个工具。"
+            ),
+            capability="voice.status",
+            schema={"type": "object", "properties": {}},
+            fn=voice_status,
+            risk="LOW",
+        )
+    )
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.upgrade.check",
+            name="check_update",
+            version="1.0.0",
+            description=(
+                "检查贾维斯是否有新版本（只检查、绝不自动安装）。"
+                "用户问「有新版本吗 / 检查一下更新」时用这个工具。"
+            ),
+            capability="upgrade.check",
+            schema={"type": "object", "properties": {}},
+            fn=check_update,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.upgrade.apply",
+            name="apply_update",
+            version="1.0.0",
+            description=(
+                "把贾维斯升级到已检查到的新版本：自动下载、校验哈希、"
+                "升级前备份、替换程序（不动数据），失败自动回滚，完成后需重启生效。"
+                "只有用户明确说「确认升级」后才可调用，且必须传 confirm=true。"
+            ),
+            capability="upgrade.apply",
+            schema={
+                "type": "object",
+                "properties": {
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "用户已明确确认升级时传 true，否则 false",
+                    },
+                },
+                "required": ["confirm"],
+            },
+            fn=apply_update,
+            risk="HIGH",
+        )
+    )
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.usage.report",
+            name="usage_report",
+            version="1.0.0",
+            description=(
+                "查询当前账号的模型用量与估算花费（按月、按模型拆分）。"
+                "用户问「这个月用了多少 / 花了多少钱 / 哪个模型用得最多」时用这个工具；"
+                "month 可传 YYYY-MM，留空为本月。数字与设置里的用量页同一口径。"
+            ),
+            capability="usage.report",
+            schema={
+                "type": "object",
+                "properties": {
+                    "month": {
+                        "type": "string",
+                        "description": "月份 YYYY-MM，留空为本月",
+                    },
+                },
+            },
+            fn=usage_report,
+            risk="LOW",
+        )
+    )
+
     # ============ 插件安全子集 + 知识库/联网检索（0.4.6，5-4/6-4） ============
     # 只接纯计算、无外部依赖、无写文件的插件子集（计算、base64、hash、
     # 单位换算、时区）+ 真知识库检索 + 真联网检索；假 SearchTool 已删，

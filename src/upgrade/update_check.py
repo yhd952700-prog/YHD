@@ -10,11 +10,14 @@ scheduler (the same one that runs heartbeats/reminders). The job:
 * re-enqueues itself for the next week with a deterministic job key so a
   scheduler restart does not duplicate or skip the cycle.
 
-If no update source is configured, no job is seeded (there is nothing to
-check). The installer/operator configures one of:
+Update sources, in priority order:
 
 * ``LIUHAO_UPGRADE_RELEASE_DIR`` — local release directory
 * ``LIUHAO_UPGRADE_MANIFEST_URL`` — HTTP(S) manifest URL
+* neither set → the **default source**: the release manifest published with
+  the project's GitHub releases (``DEFAULT_MANIFEST_URL``). Set
+  ``LIUHAO_UPGRADE_NO_DEFAULT_SOURCE=1`` to opt out entirely (then, with no
+  env source either, no job is seeded — there is nothing to check).
 
 Nothing here auto-installs. The notification only tells the user a newer
 version exists and that they must confirm the upgrade.
@@ -87,17 +90,44 @@ def default_state_dir(app_root: Path | None = None) -> Path:
     return upgrade_state_dir(app_root or default_app_root())
 
 
+#: 默认更新源：项目 GitHub 仓库的最新发布清单。运营者发布新版时把
+#: ``release-manifest.json`` 作为 release 资产上传，这个固定地址即生效；
+#: 清单不存在时检查会如实记 error（不通知、不假报"已是最新"）。
+DEFAULT_MANIFEST_URL = (
+    "https://github.com/yhd952700-prog/YHD/releases/latest/download/"
+    "release-manifest.json"
+)
+
+
+def default_source_disabled() -> bool:
+    return os.environ.get("LIUHAO_UPGRADE_NO_DEFAULT_SOURCE", "").strip() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def effective_manifest_url() -> Optional[str]:
+    """显式配置优先；都没有时用默认 GitHub 发布清单（可显式退出）。"""
+    configured = os.environ.get("LIUHAO_UPGRADE_MANIFEST_URL")
+    if configured:
+        return configured
+    if default_source_disabled():
+        return None
+    return DEFAULT_MANIFEST_URL
+
+
 def source_configured() -> bool:
     return bool(
         os.environ.get("LIUHAO_UPGRADE_RELEASE_DIR")
-        or os.environ.get("LIUHAO_UPGRADE_MANIFEST_URL")
+        or effective_manifest_url()
     )
 
 
 def build_manager_from_env() -> UpgradeManager:
     app_root = default_app_root()
     release_dir = os.environ.get("LIUHAO_UPGRADE_RELEASE_DIR")
-    manifest_url = os.environ.get("LIUHAO_UPGRADE_MANIFEST_URL")
+    # 优先级：本地发布目录 > 清单 URL（build_source 只许配一个源）。
+    # 默认 URL 只在没有本地目录时才轮到，避免"目录 + 默认 URL"双源被拒。
+    manifest_url = None if release_dir else effective_manifest_url()
     source = build_source(
         release_dir=Path(release_dir) if release_dir else None,
         manifest_url=manifest_url or None,

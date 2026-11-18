@@ -128,7 +128,7 @@ export function Backup({
           <strong style={{ fontSize: 13 }}>这次导出会包含</strong>
           <span style={{ fontSize: 12, lineHeight: 1.7 }}>
             · {scope === 'all' ? `整棵树共 ${profile.memberCount + 1} 个账号` : '仅你本人的账号'}
-            <br />· 全部会话、记忆、文件、任务与 Key（口令保险箱密文）
+            <br />· 全部会话、记忆、文件、任务、工作台分组与 Bot、企业知识文档与 Key（口令保险箱密文）
             <br />· 换机后成员 Key 用同一口令解封即可使用；包内没有明文 API Key
             <br />· 文件数与体积：以导出包内真实统计为准（完成后再列出）
           </span>

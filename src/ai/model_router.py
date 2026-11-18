@@ -694,6 +694,48 @@ def provider_for_task(
         allow_owners=allow_owners,
         allow_env_fallback=allow_env_fallback,
     )
+    # 非聊天任务以前只拿到单个路由结果：主模型一挂整个任务就挂。把路由
+    # 自带的 fallback_models 也解析成 FailoverProvider 链（与聊天链同一套
+    # 失败分类/熔断语义）；解析不了的备用项跳过并记日志，绝不因此让主
+    # 路径失败。链构建异常时退回单 provider（原行为）。
+    # 注意只限非聊天任务：聊天有自己的链构建（_chat_provider_chain），
+    # 路由路径是它的兜底，必须保持「解析出单个 provider」的原契约。
+    if result.fallback_models and not _is_chat_task(task_type):
+        try:
+            chain: List[BaseProvider] = [provider]
+            labels: List[str] = [selected.model_name or selected.model_id]
+            for fallback_id in result.fallback_models:
+                if fallback_id == selected.model_id:
+                    continue
+                try:
+                    fallback_provider = resolve_provider(
+                        fallback_id,
+                        visible_to=visible_to,
+                        allow_unowned=allow_unowned,
+                        allow_owners=allow_owners,
+                        allow_env_fallback=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 备用项不可解析只跳过
+                    logger.info(
+                        "model routing: skipping unresolvable fallback %s (%s)",
+                        fallback_id, type(exc).__name__,
+                    )
+                    continue
+                chain.append(fallback_provider)
+                labels.append(
+                    str(getattr(fallback_provider, "model", "") or fallback_id)
+                )
+            if len(chain) > 1:
+                logger.info(
+                    "model routing chain: task=%s %s",
+                    task_type or "default", " -> ".join(labels),
+                )
+                return FailoverProvider(chain, labels=labels)
+        except Exception as exc:  # noqa: BLE001 - 链构建失败退回单 provider
+            logger.warning(
+                "model routing: fallback chain build failed (%s); single provider",
+                type(exc).__name__,
+            )
     # provider 字段是协议适配器名（例如 openai 兼容协议），vendor 才是真实厂商；
     # 两者都记，排障时不再把 DeepSeek 误读成 OpenAI。
     logger.info(

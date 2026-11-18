@@ -1788,6 +1788,15 @@ components:
           title: Role Description
       title: EmployeeUpdateRequest
       type: object
+    EnableIn:
+      properties:
+        enabled:
+          title: Enabled
+          type: boolean
+      required:
+      - enabled
+      title: EnableIn
+      type: object
     EstopRequest:
       properties:
         reason:
@@ -3074,6 +3083,23 @@ components:
       required:
       - paused
       title: PauseAllRequest
+      type: object
+    PeerIn:
+      properties:
+        base_url:
+          title: Base Url
+          type: string
+        name:
+          title: Name
+          type: string
+        token:
+          title: Token
+          type: string
+      required:
+      - name
+      - base_url
+      - token
+      title: PeerIn
       type: object
     PermissionsRequest:
       properties:
@@ -5161,7 +5187,7 @@ info:
     \ most `/v1/*` paths require a human token.\n  A path's presence here does NOT mean it is safe to\
     \ call unauthenticated."
   title: Jarvis · 贾维斯 Gateway API
-  version: 0.4.6
+  version: 0.5.0
 openapi: 3.1.0
 paths:
   /knowledge/documents:
@@ -31004,6 +31030,291 @@ paths:
       summary: 只读启动状态
       tags:
       - startup
+  /v1/sync/enable:
+    post:
+      operationId: enable_v1_sync_enable_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnableIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Enable V1 Sync Enable Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Enable
+      tags:
+      - sync
+  /v1/sync/pairing-token:
+    post:
+      description: 签发配对令牌（明文只显示这一次，请抄到另一台设备上登记）。
+      operationId: pairing_token_v1_sync_pairing_token_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Pairing Token V1 Sync Pairing Token Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Pairing Token
+      tags:
+      - sync
+  /v1/sync/peer/bundle:
+    get:
+      operationId: peer_bundle_v1_sync_peer_bundle_get
+      parameters:
+      - in: query
+        name: since
+        required: false
+        schema:
+          default: ''
+          title: Since
+          type: string
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Peer Bundle V1 Sync Peer Bundle Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Peer Bundle
+      tags:
+      - sync-peer
+    post:
+      operationId: peer_apply_v1_sync_peer_bundle_post
+      parameters:
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Body
+              type: object
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Peer Apply V1 Sync Peer Bundle Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Peer Apply
+      tags:
+      - sync-peer
+  /v1/sync/peers:
+    post:
+      operationId: add_peer_v1_sync_peers_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PeerIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Add Peer V1 Sync Peers Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Add Peer
+      tags:
+      - sync
+  /v1/sync/run:
+    post:
+      operationId: run_v1_sync_run_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Body
+              type: object
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Run V1 Sync Run Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run
+      tags:
+      - sync
+  /v1/sync/status:
+    get:
+      operationId: status_v1_sync_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Status V1 Sync Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Status
+      tags:
+      - sync
   /v1/tasks:
     get:
       operationId: list_tasks_v1_tasks_get

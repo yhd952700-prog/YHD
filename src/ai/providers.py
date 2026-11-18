@@ -17,8 +17,9 @@ import re
 import json
 import logging
 import threading
+import time
 import warnings
-from typing import Optional, Dict, Any, Sequence
+from typing import List, Optional, Dict, Any, Sequence
 
 from .net_guard import (
     RuntimeTargetRejected,
@@ -2230,12 +2231,138 @@ def _attempt_failure_reason(exc: BaseException) -> Dict[str, str]:
     return {"reason": "请求失败（详情已记录到服务端日志）", "kind": "upstream_error"}
 
 
+def provider_health_key(provider: Any) -> str:
+    """熔断记账的稳定身份：优先模型配置 id，其次 名称:模型@地址。
+
+    FailoverProvider 每次请求都会重建，健康状态必须挂在进程级注册表上、
+    用跨实例稳定的 key 记账，否则"主模型已死、每次请求都先撞一次墙"。
+    """
+    config_id = str(getattr(provider, "model_config_id", "") or "").strip()
+    if config_id:
+        return f"cfg:{config_id}"
+    name = str(getattr(provider, "name", "") or "?")
+    model = str(getattr(provider, "model", "") or "?")
+    base_url = str(getattr(provider, "base_url", "") or "")
+    return f"prov:{name}:{model}@{base_url}"
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, "") or default))
+    except (TypeError, ValueError):
+        return default
+
+
+class ProviderHealthRegistry:
+    """进程级熔断注册表（防抖动）：连续可重试失败达阈值 → 冷却跳过。
+
+    语义（与 ``FailoverProvider`` 的失败分类严格对齐）：
+    * 只统计**可重试**失败（超时/限流/5xx/断流等，见 ``_is_retryable_failure``）；
+      401/400 这类"换模型也不会变好"的错误由 FailoverProvider 直接抛出、
+      不进熔断——它们需要人来看，不是让系统装作没事。
+    * 冷却时长指数退避：base × 2^(熔断次数-1)，上限封顶；冷却到期后放行
+      一次试探（half-open），成功即清零复位，失败则以更长冷却重新熔断。
+    * 全部候选都在冷却时 FailoverProvider 仍按原顺序全试——熔断只负责
+      "别每次都先撞死人"，绝不负责"把用户彻底堵死"。
+    """
+
+    def __init__(
+        self,
+        *,
+        failure_threshold: Optional[int] = None,
+        base_cooldown_seconds: Optional[float] = None,
+        max_cooldown_seconds: float = 600.0,
+        clock: Optional[Any] = None,
+    ) -> None:
+        self._threshold = failure_threshold or _env_int(
+            "LIUHAO_FAILOVER_FAILURE_THRESHOLD", 3
+        )
+        self._base_cooldown = base_cooldown_seconds or float(
+            _env_int("LIUHAO_FAILOVER_COOLDOWN_SECONDS", 60, minimum=1)
+        )
+        self._max_cooldown = max_cooldown_seconds
+        self._clock = clock or time.monotonic
+        self._lock = threading.Lock()
+        # key -> {failures, opens, opened_at, cooldown}
+        self._state: Dict[str, Dict[str, float]] = {}
+
+    def allow(self, key: str) -> bool:
+        """该 provider 现在可否尝试（冷却中且未到期 → False）。"""
+        with self._lock:
+            state = self._state.get(key)
+            if not state or state["failures"] < self._threshold:
+                return True
+            return (self._clock() - state["opened_at"]) >= state["cooldown"]
+
+    def in_cooldown(self, key: str) -> bool:
+        return not self.allow(key)
+
+    def record_failure(self, key: str) -> None:
+        with self._lock:
+            state = self._state.setdefault(
+                key, {"failures": 0.0, "opens": 0.0, "opened_at": 0.0, "cooldown": 0.0}
+            )
+            state["failures"] += 1
+            if state["failures"] >= self._threshold:
+                state["opens"] += 1
+                backoff = self._base_cooldown * (2 ** (state["opens"] - 1))
+                state["cooldown"] = min(self._max_cooldown, backoff)
+                state["opened_at"] = self._clock()
+                logger.warning(
+                    "model health: %s circuit OPEN (failures=%d, cooldown=%.0fs)",
+                    key, int(state["failures"]), state["cooldown"],
+                )
+
+    def record_success(self, key: str) -> None:
+        with self._lock:
+            state = self._state.pop(key, None)
+            if state and state["failures"] >= self._threshold:
+                logger.info("model health: %s circuit CLOSED (recovered)", key)
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        """当前熔断状态（供诊断/状态面展示，不含任何凭据）。"""
+        now = self._clock()
+        with self._lock:
+            out: List[Dict[str, Any]] = []
+            for key, state in sorted(self._state.items()):
+                cooling = (
+                    state["failures"] >= self._threshold
+                    and (now - state["opened_at"]) < state["cooldown"]
+                )
+                out.append({
+                    "key": key,
+                    "consecutive_failures": int(state["failures"]),
+                    "circuit_opens": int(state["opens"]),
+                    "cooling_down": cooling,
+                    "cooldown_remaining_seconds": (
+                        max(0.0, state["cooldown"] - (now - state["opened_at"]))
+                        if cooling else 0.0
+                    ),
+                })
+            return out
+
+
+_health_registry: Optional[ProviderHealthRegistry] = None
+_health_registry_lock = threading.Lock()
+
+
+def get_provider_health_registry() -> ProviderHealthRegistry:
+    global _health_registry
+    if _health_registry is None:
+        with _health_registry_lock:
+            if _health_registry is None:
+                _health_registry = ProviderHealthRegistry()
+    return _health_registry
+
+
 class FailoverProvider(BaseProvider):
     """按给定顺序依次尝试多个已配置模型，全部失败时给出完整清单。
 
     * 顺序由调用方决定（聊天链里「设为默认」的模型排第一），本类不做重排；
     * 流式在**已经吐过字**之后失败时不再换模型：重放会让用户看到两段回答；
-    * 单个模型的重试仍由该 provider 自身负责，本类只负责"换下一个"。
+    * 单个模型的重试仍由该 provider 自身负责，本类只负责"换下一个"；
+    * 熔断防抖：连续可重试失败达阈值的模型会被 ``ProviderHealthRegistry``
+      冷却跳过（冷却到期自动试探恢复）；全部在冷却时仍按原顺序全试。
     """
 
     def __init__(
@@ -2244,6 +2371,7 @@ class FailoverProvider(BaseProvider):
         *,
         labels: Optional[Sequence[str]] = None,
         name: str = "model-chain",
+        health_registry: Optional[ProviderHealthRegistry] = None,
     ):
         if not providers:
             raise ValueError("FailoverProvider 至少需要一个 provider")
@@ -2274,6 +2402,9 @@ class FailoverProvider(BaseProvider):
         #: 最近一次切换的前序模型标签（供 done 帧 ``fell_back_from``）。
         self.last_fell_back_from: list[str] = []
         self.last_failover_notice = ""
+        self._health = health_registry or get_provider_health_registry()
+        #: 最近一次因熔断冷却被跳过的模型标签（供诊断/状态面展示）。
+        self.last_skipped_cooling: list[str] = []
 
     @property
     def models(self) -> list[str]:
@@ -2310,12 +2441,42 @@ class FailoverProvider(BaseProvider):
                 model=self.last_served_model
             )
 
+    def _attempt_plan(self) -> list[int]:
+        """本轮尝试顺序（原始下标）：冷却中的先跳过；全在冷却则全试。
+
+        跳过名单记到 ``last_skipped_cooling`` 并打日志——熔断是"替用户省
+        等待时间"，不是"背着用户改顺序"，状态面随时可查。
+        """
+        self.last_skipped_cooling = []
+        cooling = [
+            index
+            for index, provider in enumerate(self._providers)
+            if self._health.in_cooldown(provider_health_key(provider))
+        ]
+        if not cooling:
+            return list(range(len(self._providers)))
+        if len(cooling) == len(self._providers):
+            logger.warning(
+                "model chain: all %d models in cooldown; trying full order anyway",
+                len(self._providers),
+            )
+            return list(range(len(self._providers)))
+        self.last_skipped_cooling = [self._labels[i] for i in cooling]
+        logger.warning(
+            "model chain: skipping cooling-down model(s): %s",
+            ", ".join(self.last_skipped_cooling),
+        )
+        skipped = set(cooling)
+        return [i for i in range(len(self._providers)) if i not in skipped]
+
     def _run(self, call) -> str:
         attempts: list[dict[str, str]] = []
         self._reset_failover_state()
-        for index, provider in enumerate(self._providers):
+        for index in self._attempt_plan():
+            provider = self._providers[index]
             try:
                 result = call(provider)
+                self._health.record_success(provider_health_key(provider))
                 self._mark_served(index)
                 return result
             except Exception as exc:  # noqa: BLE001 - 逐条记录
@@ -2324,6 +2485,7 @@ class FailoverProvider(BaseProvider):
                     # 401/403/404/400/上下文超限换模型也不会变好；而"跨厂商
                     # 静默切走"会让用户以为还是主模型。这类错误直接抛出。
                     raise
+                self._health.record_failure(provider_health_key(provider))
         raise ProviderChainError(attempts)
 
     def generate(self, prompt: str, **kwargs) -> str:
@@ -2337,13 +2499,25 @@ class FailoverProvider(BaseProvider):
         produced = False
         cancel_token = kwargs.get("cancel_token")
         self._reset_failover_state()
-        for index, provider in enumerate(self._providers):
+        plan = self._attempt_plan()
+        if plan and plan[0] != 0:
+            # 主模型在冷却中被跳过：开口前先明示，不许用户以为还是主模型。
+            yield {
+                "type": "notice",
+                "code": "failover",
+                "message": FAILOVER_NOTICE_MESSAGE.format(
+                    model=self._labels[plan[0]]
+                ),
+            }
+        for position, index in enumerate(plan):
+            provider = self._providers[index]
             try:
                 for token in provider.chat_stream(messages, **kwargs):
                     if cancel_token is not None:
                         cancel_token.raise_if_cancelled()
                     produced = True
                     yield token
+                self._health.record_success(provider_health_key(provider))
                 self._mark_served(index)
                 return
             except Exception as exc:  # noqa: BLE001
@@ -2355,13 +2529,14 @@ class FailoverProvider(BaseProvider):
                 attempts.append(self._record(index, exc))
                 if not _is_retryable_failure(exc):
                     raise
+                self._health.record_failure(provider_health_key(provider))
                 # 切换前显式告知：不允许"悄悄换成另一家厂商"。
-                if index + 1 < len(self._providers):
+                if position + 1 < len(plan):
                     yield {
                         "type": "notice",
                         "code": "failover",
                         "message": FAILOVER_NOTICE_MESSAGE.format(
-                            model=self._labels[index + 1]
+                            model=self._labels[plan[position + 1]]
                         ),
                     }
         raise ProviderChainError(attempts)

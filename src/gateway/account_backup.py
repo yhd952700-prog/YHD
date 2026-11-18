@@ -5,6 +5,8 @@
 * 身份内核的 :meth:`IdentityManager.build_backup_payload` 负责"身份 + 账号树"；
 * 本模块把**凭据记录、模型配置（不含 Key）、工作区产物**追加进同一份明文清单，再用
   :mod:`src.kernels.identity._backup` 的口令加密封装成可离线保存的 JSON；
+* 工作台分组/Bot（workbench.db）与企业知识文档（kb_* / lt_* 两库）自打磨
+  第四轮起同样进包：按 owner 过滤收集、按主键去重恢复，已存在的永不覆盖；
 * 导入负责口令校验、防重放（bundle_id 回执）、限次与审计，然后调用内核
   :meth:`IdentityManager.apply_backup_payload` 写回。
 
@@ -284,6 +286,57 @@ _KNOWLEDGE_TABLES: Dict[str, Tuple[str, ...]] = {
     "knowledge_vectors": ("doc_id", "embedding", "metadata", "updated_at"),
     "knowledge_document_hashes": ("content_hash", "document_id", "created_at"),
 }
+#: 工作台库（分组 / Bot / 群聊 / 例程）在数据目录里，不在工作区产物范围内，
+#: 必须单独纳入（打磨第四轮补的缺口：此前跨机迁移会丢分组与 Bot）。
+_WORKBENCH_TABLES: Dict[str, Tuple[str, ...]] = {
+    "bot_groups": (
+        "id", "owner", "name", "folded", "order_index", "created_at", "updated_at",
+    ),
+    "bots": (
+        "id", "owner", "name", "job", "personality", "idea", "direction", "mood",
+        "gender", "color", "accessory", "model_id", "pinned", "hidden", "group_id",
+        "routines", "order_index", "avatar_url", "created_at", "updated_at",
+    ),
+    "group_chats": (
+        "id", "owner", "name", "archived", "left_group", "created_at", "updated_at",
+    ),
+    "group_chat_members": ("chat_id", "bot_id", "joined_at"),
+    "jarvis_routines": ("owner", "routines", "updated_at"),
+}
+#: 企业知识库（分类 / 文档 / 版本 / 分块）在工作区根的知识库里，与向量库是
+#: 两个库；长期记忆库（lt_memories）与它同属知识中心，此前同样不在包内。
+_KB_ENTERPRISE_TABLES: Dict[str, Tuple[str, ...]] = {
+    "kb_categories": (
+        "id", "name", "parent_id", "path", "description", "visibility",
+        "created_by", "system", "sort_order", "created_at", "updated_at",
+    ),
+    "kb_documents": (
+        "id", "owner", "project_id", "category_id", "doc_key", "title",
+        "current_version", "source_type", "source_ref", "origin_filename", "mime",
+        "visibility", "tags", "description", "expires_at", "expiry_notice_days",
+        "status", "created_at", "updated_at", "deleted_at",
+    ),
+    "kb_document_versions": (
+        "id", "document_id", "version", "content_hash", "extracted_text",
+        "chunk_count", "file_path", "origin_filename", "mime", "size_bytes",
+        "text_source", "note", "created_by", "created_at",
+    ),
+    "kb_chunks": (
+        "id", "document_id", "version", "chunk_index", "text", "heading_path",
+        "page",
+    ),
+}
+_KB_MEMORY_TABLES: Dict[str, Tuple[str, ...]] = {
+    "lt_memories": (
+        "id", "owner", "project_id", "employee_id", "scope", "title", "content",
+        "source", "source_ref", "tags", "confidence", "expires_at", "created_at",
+        "updated_at", "deleted_at",
+    ),
+    "lt_memory_revisions": (
+        "id", "memory_id", "revision", "title", "content", "source", "tags",
+        "edited_by", "created_at",
+    ),
+}
 #: 工作区根下的内部状态文件：由结构化恢复负责（或刻意不迁移），
 #: 不能让它们作为"普通产物"被原样拷贝，否则 SQLite 会带着撕裂的 -wal 快照。
 _WORKSPACE_STATE_FILES = frozenset({
@@ -316,6 +369,62 @@ def _personal_context_db_path() -> str:
     from ..ai.personal_context import DEFAULT_DB_PATH
 
     return os.environ.get("PERSONAL_CONTEXT_DB_PATH") or DEFAULT_DB_PATH
+
+
+def _workbench_db_path() -> str:
+    from ..workbench.store import _default_db_path
+
+    return _default_db_path()
+
+
+def _kb_enterprise_db_path() -> str:
+    from ..ai.knowledge.store import knowledge_db_path
+
+    return knowledge_db_path()
+
+
+def _kb_memory_db_path() -> str:
+    from ..ai.knowledge.store import memory_db_path
+
+    return memory_db_path()
+
+
+def _existing_columns(db_path: str, table: str) -> set:
+    """目标库里某张表实际存在的列（只读探查；库/表不存在返回空集）。"""
+    if not db_path or not os.path.exists(db_path):
+        return set()
+    try:
+        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return set()
+    try:
+        return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+    finally:
+        connection.close()
+
+
+def _snapshot_existing_columns(
+    db_path: str, table: str, columns: Tuple[str, ...]
+) -> List[Dict[str, Any]]:
+    """按库里实际存在的列做一致快照；老库缺的新列以空串补齐。
+
+    ``_snapshot_tables`` 遇到缺列会整表返回空——老版本建的工作台库没有
+    ``avatar_url`` 列，若按全列快照会把全部 Bot 静默丢掉。这里先探列再
+    快照，缺列只补空值，不整表丢弃。
+    """
+    existing = _existing_columns(db_path, table)
+    if not existing:
+        return []
+    wanted = tuple(column for column in columns if column in existing)
+    if not wanted:
+        return []
+    rows = _snapshot_tables(db_path, {table: wanted}).get(table, [])
+    for row in rows:
+        for column in columns:
+            row.setdefault(column, "")
+    return rows
 
 
 def _kernel_row_owner(row: Dict[str, Any], allowed: Sequence[str]) -> Optional[str]:
@@ -476,6 +585,225 @@ def _collect_knowledge(
             "documents": len(document_ids),
             "chunks": len(vectors),
             "digest": digest,
+        },
+    }
+
+
+def _collect_workbench(
+    principals: Sequence[str], include_public: bool
+) -> Dict[str, Any]:
+    """工作台分组 / Bot / 群聊 / 例程：按 ``owner`` 列过滤；头像字节随 Bot 带走。
+
+    头像文件在工作台库旁边的 ``avatars/`` 目录里（不在工作区产物范围），
+    ``avatar_url`` 本身是与机器无关的稳定接口路径，只带文件字节即可。
+    """
+    allowed = set(principals)
+    path = _workbench_db_path()
+
+    def _owned(table: str) -> List[Dict[str, Any]]:
+        rows = _snapshot_existing_columns(path, table, _WORKBENCH_TABLES[table])
+        if include_public:
+            return rows
+        return [row for row in rows if str(row.get("owner") or "") in allowed]
+
+    groups = _owned("bot_groups")
+    bots = _owned("bots")
+    chats = _owned("group_chats")
+    chat_ids = {str(row.get("id") or "") for row in chats}
+    members = [
+        row
+        for row in _snapshot_existing_columns(
+            path, "group_chat_members", _WORKBENCH_TABLES["group_chat_members"]
+        )
+        if str(row.get("chat_id") or "") in chat_ids
+    ]
+    routines = _owned("jarvis_routines")
+
+    avatars: List[Dict[str, Any]] = []
+    avatars_skipped = 0
+    bots_with_avatar = [
+        row for row in bots if str(row.get("avatar_url") or "")
+    ]
+    if bots_with_avatar:
+        # 只读定位头像文件：不构造 WorkbenchStore（它建库时会跑 schema
+        # 迁移，导出不该改源机数据），按 store 的命名规则自己找。
+        from ..workbench.store import (
+            AVATAR_FORMATS,
+            MAX_AVATAR_BYTES,
+            _safe_avatar_stem,
+        )
+
+        avatar_dir = Path(path).parent / "avatars"
+        for row in bots_with_avatar:
+            bot_id = str(row.get("id") or "")
+            avatar_file = None
+            if bot_id and avatar_dir.is_dir():
+                stem = _safe_avatar_stem(bot_id)
+                for extension in AVATAR_FORMATS:
+                    candidate = avatar_dir / f"{stem}.{extension}"
+                    if candidate.is_file():
+                        avatar_file = candidate
+                        break
+            if avatar_file is None:
+                avatars_skipped += 1
+                continue
+            try:
+                raw = avatar_file.read_bytes()
+            except OSError:
+                avatars_skipped += 1
+                continue
+            if len(raw) > MAX_AVATAR_BYTES:
+                avatars_skipped += 1
+                continue
+            avatars.append(
+                {
+                    "bot_id": bot_id,
+                    "extension": avatar_file.suffix.lstrip(".").lower(),
+                    "content": _b64(raw),
+                }
+            )
+    return {
+        "payload": {
+            "groups": groups,
+            "bots": bots,
+            "group_chats": chats,
+            "group_chat_members": members,
+            "jarvis_routines": routines,
+            "avatars": avatars,
+        },
+        "manifest": {
+            "groups": len(groups),
+            "bots": len(bots),
+            "group_chats": len(chats),
+            "avatars": len(avatars),
+            "avatars_skipped": avatars_skipped,
+        },
+    }
+
+
+def _collect_knowledge_enterprise(
+    principals: Sequence[str], include_public: bool
+) -> Dict[str, Any]:
+    """企业知识文档（分类/文档/版本/分块）+ 知识中心长期记忆。
+
+    文档按 ``owner`` 过滤，版本/分块只跟留下的文档走；分类带系统预置、
+    本人创建的与被留下文档引用的三类（缺了分类，文档的 category_id 会悬空）。
+    文档原件在 ``knowledge_files/`` 下：按相对路径随包带字节（超单文件上限
+    的只记相对路径，导入端仍会把 file_path 改到本机，原件本体不带）。
+    """
+    allowed = set(principals)
+    kb_path = _kb_enterprise_db_path()
+    documents = _snapshot_existing_columns(
+        kb_path, "kb_documents", _KB_ENTERPRISE_TABLES["kb_documents"]
+    )
+    if not include_public:
+        documents = [
+            row for row in documents if str(row.get("owner") or "") in allowed
+        ]
+    document_ids = {str(row.get("id") or "") for row in documents}
+    versions = [
+        row
+        for row in _snapshot_existing_columns(
+            kb_path, "kb_document_versions",
+            _KB_ENTERPRISE_TABLES["kb_document_versions"],
+        )
+        if str(row.get("document_id") or "") in document_ids
+    ]
+    chunks = [
+        row
+        for row in _snapshot_existing_columns(
+            kb_path, "kb_chunks", _KB_ENTERPRISE_TABLES["kb_chunks"]
+        )
+        if str(row.get("document_id") or "") in document_ids
+    ]
+    referenced_category_ids = {
+        str(row.get("category_id") or "") for row in documents
+    } - {""}
+    categories = []
+    for row in _snapshot_existing_columns(
+        kb_path, "kb_categories", _KB_ENTERPRISE_TABLES["kb_categories"]
+    ):
+        if (
+            include_public
+            or row.get("system")
+            or str(row.get("created_by") or "") in allowed
+            or str(row.get("id") or "") in referenced_category_ids
+        ):
+            categories.append(row)
+
+    memory_path = _kb_memory_db_path()
+    memories = _snapshot_existing_columns(
+        memory_path, "lt_memories", _KB_MEMORY_TABLES["lt_memories"]
+    )
+    if not include_public:
+        memories = [
+            row for row in memories if str(row.get("owner") or "") in allowed
+        ]
+    memory_ids = {str(row.get("id") or "") for row in memories}
+    revisions = [
+        row
+        for row in _snapshot_existing_columns(
+            memory_path, "lt_memory_revisions",
+            _KB_MEMORY_TABLES["lt_memory_revisions"],
+        )
+        if str(row.get("memory_id") or "") in memory_ids
+    ]
+
+    from ..ai.knowledge.store import knowledge_files_dir
+
+    files_root = knowledge_files_dir()
+    files: List[Dict[str, Any]] = []
+    file_rels: Dict[str, str] = {}
+    files_skipped = 0
+    for row in versions:
+        raw_path = str(row.get("file_path") or "")
+        if not raw_path:
+            continue
+        try:
+            rel = Path(raw_path).expanduser().resolve().relative_to(files_root)
+        except (OSError, ValueError):
+            # 原件不在标准目录下（历史/外部路径）：无法可靠映射到新机，不带。
+            files_skipped += 1
+            continue
+        rel_text = rel.as_posix()
+        file_rels[str(row.get("id") or "")] = rel_text
+        source_file = files_root / rel
+        try:
+            size = source_file.stat().st_size
+        except OSError:
+            files_skipped += 1
+            continue
+        if size > MAX_FILE_BYTES:
+            files_skipped += 1
+            continue
+        try:
+            raw = source_file.read_bytes()
+        except OSError:
+            files_skipped += 1
+            continue
+        files.append(
+            {"version_id": str(row.get("id") or ""), "rel": rel_text,
+             "content": _b64(raw)}
+        )
+    return {
+        "payload": {
+            "categories": categories,
+            "documents": documents,
+            "versions": versions,
+            "chunks": chunks,
+            "memories": memories,
+            "memory_revisions": revisions,
+            "files": files,
+            "file_rels": file_rels,
+        },
+        "manifest": {
+            "categories": len(categories),
+            "documents": len(documents),
+            "versions": len(versions),
+            "chunks": len(chunks),
+            "memories": len(memories),
+            "files": len(files),
+            "files_skipped": files_skipped,
         },
     }
 
@@ -738,10 +1066,18 @@ def export_bundle(
         principals, include_public, legacy_owner=legacy_owner
     )
     knowledge = _collect_knowledge(principals, include_public)
+    workbench = _collect_workbench(principals, include_public)
+    knowledge_enterprise = _collect_knowledge_enterprise(
+        principals, include_public
+    )
     store_bytes = (
         len(json.dumps(stores["payload"], ensure_ascii=False).encode("utf-8"))
         + len(json.dumps(goals["payload"], ensure_ascii=False).encode("utf-8"))
         + len(json.dumps(knowledge["payload"], ensure_ascii=False).encode("utf-8"))
+        + len(json.dumps(workbench["payload"], ensure_ascii=False).encode("utf-8"))
+        + len(json.dumps(
+            knowledge_enterprise["payload"], ensure_ascii=False
+        ).encode("utf-8"))
     )
     if total_bytes + store_bytes > MAX_PAYLOAD_BYTES:
         raise _account_error(
@@ -782,6 +1118,8 @@ def export_bundle(
             "employees": len(employees),
             "goals": goals["manifest"]["count"],
             "knowledge": knowledge["manifest"],
+            "workbench": workbench["manifest"],
+            "knowledge_enterprise": knowledge_enterprise["manifest"],
             "models": len(rows),
             "credentials": len(credentials),
             "skipped": skipped,
@@ -809,6 +1147,8 @@ def export_bundle(
         "employees": employees,
         "goals": goals["payload"],
         "knowledge": knowledge["payload"],
+        "workbench": workbench["payload"],
+        "knowledge_enterprise": knowledge_enterprise["payload"],
         "memory": stores["payload"]["memory"],
         "conversations": stores["payload"]["conversations"],
         "kernel_memory": stores["payload"]["kernel_memory"],
@@ -829,6 +1169,10 @@ def export_bundle(
             "employees": len(employees),
             "goals": goals["manifest"]["count"],
             "knowledge_documents": knowledge["manifest"]["documents"],
+            "workbench_groups": workbench["manifest"]["groups"],
+            "workbench_bots": workbench["manifest"]["bots"],
+            "knowledge_enterprise_documents":
+                knowledge_enterprise["manifest"]["documents"],
             "models": len(rows),
             "credentials": len(credentials),
             "key_material_included": False,
@@ -858,10 +1202,12 @@ def export_bundle(
         "key_material_included": False,
         "notice": (
             (
-                "本包携带整棵子树的账号、员工、记忆与会话；备份里没有模型 Key，"
+                "本包携带整棵子树的账号、员工、记忆、会话、工作台分组与 Bot、"
+                "企业知识文档；备份里没有模型 Key，"
                 "模型配置只带提供方与模型名，换机后请到「设置 → 模型与 Key」重新填一次。"
                 if include_public
-                else "本包只携带你本人的账号、员工、记忆与会话；备份里没有模型 Key，"
+                else "本包只携带你本人的账号、员工、记忆、会话、工作台分组与 Bot、"
+                "企业知识文档；备份里没有模型 Key，"
                 "模型配置只带提供方与模型名，换机后请到「设置 → 模型与 Key」重新填一次。"
             )
             + (
@@ -1058,6 +1404,375 @@ def _restore_knowledge(
         from ..knowledge.documents import reset_knowledge_service
 
         reset_knowledge_service()
+    return report
+
+
+def _insert_or_ignore(
+    connection: sqlite3.Connection,
+    table: str,
+    columns: Tuple[str, ...],
+    row: Dict[str, Any],
+) -> bool:
+    """按主键 INSERT OR IGNORE 一行（已存在即跳过，永不覆盖现场数据）。"""
+    cursor = connection.execute(
+        f"INSERT OR IGNORE INTO {table} ({','.join(columns)}) "
+        f"VALUES ({','.join('?' * len(columns))})",
+        [row.get(column) for column in columns],
+    )
+    return bool(cursor.rowcount)
+
+
+def _restore_workbench(payload: Any) -> Dict[str, int]:
+    """把工作台分组 / Bot / 群聊 / 例程写回本机工作台库；主键已存在则跳过。
+
+    合并策略与其它分区一致：按主键去重、已存在的永不覆盖。群聊成员只在
+    群聊与 Bot 都已在本机落地时才写（不留悬空成员行）；头像文件已存在
+    也不覆盖。旧包没有 ``workbench`` 段时全零返回，向后兼容。
+    """
+    report = {
+        "groups": 0, "groups_skipped": 0,
+        "bots": 0, "bots_skipped": 0,
+        "group_chats": 0, "group_chats_skipped": 0,
+        "members": 0, "members_skipped": 0,
+        "routines": 0, "routines_skipped": 0,
+        "avatars": 0, "avatars_skipped": 0,
+    }
+    if not isinstance(payload, dict):
+        return report
+    from ..workbench.store import JARVIS_ID, WorkbenchStore
+
+    # 构造一次 store 是为了让目标库先完成建表/补列迁移，再用裸连接批量写。
+    store = WorkbenchStore(_workbench_db_path())
+    connection = sqlite3.connect(store._db_path, timeout=10)  # noqa: SLF001
+    try:
+        for key, table, count_key in (
+            ("groups", "bot_groups", "groups"),
+            ("bots", "bots", "bots"),
+            ("group_chats", "group_chats", "group_chats"),
+            ("jarvis_routines", "jarvis_routines", "routines"),
+        ):
+            rows = payload.get(key) or []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict) or not str(
+                    row.get("id") or row.get("owner") or ""
+                ):
+                    report[f"{count_key}_skipped"] += 1
+                    continue
+                if table == "bots" and str(row.get("id") or "") == JARVIS_ID:
+                    # jarvis 是贾维斯本人的固定 id，不是 Bot 行，永不落库。
+                    report["bots_skipped"] += 1
+                    continue
+                if _insert_or_ignore(
+                    connection, table, _WORKBENCH_TABLES[table], row
+                ):
+                    report[count_key] += 1
+                else:
+                    report[f"{count_key}_skipped"] += 1
+        local_chats = {
+            str(row[0])
+            for row in connection.execute("SELECT id FROM group_chats")
+        }
+        local_bots = {
+            str(row[0]) for row in connection.execute("SELECT id FROM bots")
+        }
+        members = payload.get("group_chat_members") or []
+        for row in members if isinstance(members, list) else []:
+            if not isinstance(row, dict):
+                report["members_skipped"] += 1
+                continue
+            if (
+                str(row.get("chat_id") or "") not in local_chats
+                or str(row.get("bot_id") or "") not in local_bots
+            ):
+                report["members_skipped"] += 1
+                continue
+            if _insert_or_ignore(
+                connection, "group_chat_members",
+                _WORKBENCH_TABLES["group_chat_members"], row,
+            ):
+                report["members"] += 1
+            else:
+                report["members_skipped"] += 1
+        connection.commit()
+    finally:
+        connection.close()
+
+    avatars = payload.get("avatars") or []
+    for entry in avatars if isinstance(avatars, list) else []:
+        if not isinstance(entry, dict):
+            report["avatars_skipped"] += 1
+            continue
+        bot_id = str(entry.get("bot_id") or "")
+        if not bot_id or bot_id not in local_bots:
+            report["avatars_skipped"] += 1
+            continue
+        if store.find_bot_avatar_file(bot_id) is not None:
+            report["avatars_skipped"] += 1
+            continue
+        try:
+            raw = base64.b64decode(str(entry.get("content") or ""))
+        except Exception:  # noqa: BLE001
+            report["avatars_skipped"] += 1
+            continue
+        from ..workbench.store import _safe_avatar_stem, validate_avatar_bytes
+
+        try:
+            extension = validate_avatar_bytes(raw)
+        except ValueError:
+            report["avatars_skipped"] += 1
+            continue
+        try:
+            directory = store.avatar_dir()
+            directory.mkdir(parents=True, exist_ok=True)
+            from src.common.atomic_write import atomic_write_bytes
+
+            atomic_write_bytes(
+                str(directory / f"{_safe_avatar_stem(bot_id)}.{extension}"), raw
+            )
+            report["avatars"] += 1
+        except OSError as exc:
+            if _is_disk_full(exc):
+                raise
+            report["avatars_skipped"] += 1
+    return report
+
+
+def _restore_knowledge_enterprise(payload: Any) -> Dict[str, int]:
+    """把企业知识文档与知识中心长期记忆写回本机库；主键已存在则跳过。
+
+    文档按 id 去重（同 ``(owner, doc_key)`` 的现场文档优先，包里的同名文档
+    整篇跳过，其版本/分块不落孤儿行）；分类/文档的悬空引用在写完后统一
+    置空，不让坏引用进库。分块恢复后同步补 FTS 索引行，检索立即可用。
+    文档原件按相对路径写回 ``knowledge_files/``（已存在不覆盖），版本行
+    的 ``file_path`` 随之改到本机路径。旧包没有此段时全零返回。
+    """
+    report = {
+        "categories": 0, "categories_skipped": 0,
+        "documents": 0, "documents_skipped": 0,
+        "versions": 0, "versions_skipped": 0,
+        "chunks": 0, "chunks_skipped": 0,
+        "files": 0, "files_skipped": 0, "file_paths_rewritten": 0,
+        "memories": 0, "memories_skipped": 0,
+        "memory_revisions": 0, "memory_revisions_skipped": 0,
+    }
+    if not isinstance(payload, dict):
+        return report
+    from ..ai.knowledge import store as kb_store
+
+    connection = kb_store.open_knowledge()
+    try:
+        # 恢复期关外键：分类父子、文档分类的引用顺序不保证，写完统一修悬空。
+        connection.execute("PRAGMA foreign_keys=OFF")
+        categories = payload.get("categories") or []
+        for row in categories if isinstance(categories, list) else []:
+            if not isinstance(row, dict) or not str(row.get("id") or ""):
+                report["categories_skipped"] += 1
+                continue
+            if _insert_or_ignore(
+                connection, "kb_categories",
+                _KB_ENTERPRISE_TABLES["kb_categories"], row,
+            ):
+                report["categories"] += 1
+            else:
+                report["categories_skipped"] += 1
+        documents = payload.get("documents") or []
+        payload_document_ids: List[str] = []
+        for row in documents if isinstance(documents, list) else []:
+            if not isinstance(row, dict) or not str(row.get("id") or ""):
+                report["documents_skipped"] += 1
+                continue
+            payload_document_ids.append(str(row.get("id") or ""))
+            if _insert_or_ignore(
+                connection, "kb_documents",
+                _KB_ENTERPRISE_TABLES["kb_documents"], row,
+            ):
+                report["documents"] += 1
+            else:
+                report["documents_skipped"] += 1
+        local_document_ids = set()
+        if payload_document_ids:
+            placeholders = ",".join("?" * len(payload_document_ids))
+            local_document_ids = {
+                str(row[0])
+                for row in connection.execute(
+                    f"SELECT id FROM kb_documents WHERE id IN ({placeholders})",
+                    payload_document_ids,
+                )
+            }
+        titles = {
+            str(row[0]): str(row[1] or "")
+            for row in connection.execute(
+                "SELECT id, title FROM kb_documents"
+            )
+        }
+        versions = payload.get("versions") or []
+        for row in versions if isinstance(versions, list) else []:
+            if (
+                not isinstance(row, dict)
+                or not str(row.get("id") or "")
+                or str(row.get("document_id") or "") not in local_document_ids
+            ):
+                report["versions_skipped"] += 1
+                continue
+            if _insert_or_ignore(
+                connection, "kb_document_versions",
+                _KB_ENTERPRISE_TABLES["kb_document_versions"], row,
+            ):
+                report["versions"] += 1
+            else:
+                report["versions_skipped"] += 1
+        chunks = payload.get("chunks") or []
+        inserted_chunks: List[Dict[str, Any]] = []
+        for row in chunks if isinstance(chunks, list) else []:
+            if (
+                not isinstance(row, dict)
+                or not str(row.get("id") or "")
+                or str(row.get("document_id") or "") not in local_document_ids
+            ):
+                report["chunks_skipped"] += 1
+                continue
+            if _insert_or_ignore(
+                connection, "kb_chunks", _KB_ENTERPRISE_TABLES["kb_chunks"], row
+            ):
+                report["chunks"] += 1
+                inserted_chunks.append(row)
+            else:
+                report["chunks_skipped"] += 1
+        if inserted_chunks:
+            # FTS 是 kb_chunks 的派生索引：只给新落地的分块补行，检索立即可用。
+            try:
+                from ..ai.knowledge.text import segment_text
+
+                for row in inserted_chunks:
+                    connection.execute(
+                        "INSERT INTO kb_chunk_fts"
+                        " (seg, title_seg, chunk_id, document_id)"
+                        " VALUES (?, ?, ?, ?)",
+                        (
+                            segment_text(str(row.get("text") or "")),
+                            segment_text(
+                                titles.get(str(row.get("document_id") or ""), "")
+                            ),
+                            str(row.get("id") or ""),
+                            str(row.get("document_id") or ""),
+                        ),
+                    )
+            except sqlite3.Error:
+                logger.warning(
+                    "could not rebuild FTS rows for restored chunks",
+                    exc_info=True,
+                )
+        # 悬空引用置空：分类父级/文档分类指向不存在的行时不断链。
+        connection.execute(
+            "UPDATE kb_categories SET parent_id = NULL WHERE parent_id IS NOT NULL"
+            " AND parent_id NOT IN (SELECT id FROM kb_categories)"
+        )
+        connection.execute(
+            "UPDATE kb_documents SET category_id = NULL"
+            " WHERE category_id IS NOT NULL"
+            " AND category_id NOT IN (SELECT id FROM kb_categories)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    # 文档原件：先落文件，再把版本行的 file_path 改到本机。
+    files_root = kb_store.knowledge_files_dir()
+    files = payload.get("files") or []
+    for entry in files if isinstance(files, list) else []:
+        if not isinstance(entry, dict):
+            report["files_skipped"] += 1
+            continue
+        rel = _normalise_rel(str(entry.get("rel") or ""))
+        if not rel:
+            report["files_skipped"] += 1
+            continue
+        target = (files_root / rel).resolve()
+        if not str(target).startswith(str(files_root.resolve())):
+            report["files_skipped"] += 1
+            continue
+        if target.exists():
+            report["files_skipped"] += 1
+            continue
+        try:
+            raw = base64.b64decode(str(entry.get("content") or ""))
+        except Exception:  # noqa: BLE001
+            report["files_skipped"] += 1
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            from src.common.atomic_write import atomic_write_bytes
+
+            atomic_write_bytes(str(target), raw)
+            report["files"] += 1
+        except OSError as exc:
+            if _is_disk_full(exc):
+                raise
+            report["files_skipped"] += 1
+    file_rels = payload.get("file_rels") or {}
+    if isinstance(file_rels, dict) and file_rels:
+        connection = kb_store.open_knowledge()
+        try:
+            for version_id, rel in file_rels.items():
+                rel_text = _normalise_rel(str(rel or ""))
+                if not rel_text or not str(version_id or ""):
+                    continue
+                target = str(files_root / rel_text)
+                cursor = connection.execute(
+                    "UPDATE kb_document_versions SET file_path = ?"
+                    " WHERE id = ? AND file_path != ?",
+                    (target, str(version_id), target),
+                )
+                report["file_paths_rewritten"] += int(cursor.rowcount or 0)
+            connection.commit()
+        finally:
+            connection.close()
+
+    memory_connection = kb_store.open_memory()
+    try:
+        memories = payload.get("memories") or []
+        payload_memory_ids: List[str] = []
+        for row in memories if isinstance(memories, list) else []:
+            if not isinstance(row, dict) or not str(row.get("id") or ""):
+                report["memories_skipped"] += 1
+                continue
+            payload_memory_ids.append(str(row.get("id") or ""))
+            if _insert_or_ignore(
+                memory_connection, "lt_memories",
+                _KB_MEMORY_TABLES["lt_memories"], row,
+            ):
+                report["memories"] += 1
+            else:
+                report["memories_skipped"] += 1
+        local_memory_ids = set()
+        if payload_memory_ids:
+            placeholders = ",".join("?" * len(payload_memory_ids))
+            local_memory_ids = {
+                str(row[0])
+                for row in memory_connection.execute(
+                    f"SELECT id FROM lt_memories WHERE id IN ({placeholders})",
+                    payload_memory_ids,
+                )
+            }
+        revisions = payload.get("memory_revisions") or []
+        for row in revisions if isinstance(revisions, list) else []:
+            if (
+                not isinstance(row, dict)
+                or not str(row.get("id") or "")
+                or str(row.get("memory_id") or "") not in local_memory_ids
+            ):
+                report["memory_revisions_skipped"] += 1
+                continue
+            if _insert_or_ignore(
+                memory_connection, "lt_memory_revisions",
+                _KB_MEMORY_TABLES["lt_memory_revisions"], row,
+            ):
+                report["memory_revisions"] += 1
+            else:
+                report["memory_revisions_skipped"] += 1
+        memory_connection.commit()
+    finally:
+        memory_connection.close()
     return report
 
 
@@ -1472,6 +2187,10 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
     knowledge_report = {
         "chunks": 0, "chunks_skipped": 0, "hashes": 0, "hashes_skipped": 0,
     }
+    workbench_report = {
+        "groups": 0, "bots": 0, "group_chats": 0, "avatars": 0,
+    }
+    enterprise_report = {"documents": 0, "chunks": 0, "memories": 0}
     memory_report = {"imported": 0, "skipped": 0}
     conversation_report = {"imported": 0, "skipped": 0}
     kernel_report = {"imported": 0, "skipped": 0}
@@ -1511,6 +2230,12 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         employee_report = _restore_employees(payload.get("employees"))
         goal_report = _restore_goals(payload.get("goals"))
         knowledge_report = _restore_knowledge(payload.get("knowledge"))
+        # 工作台与企业知识文档（打磨第四轮补齐）：旧包没有这两段时
+        # restore 函数对 None 全零返回，不影响旧包导入。
+        workbench_report = _restore_workbench(payload.get("workbench"))
+        enterprise_report = _restore_knowledge_enterprise(
+            payload.get("knowledge_enterprise")
+        )
 
         # 记忆库 / 会话库在**工作区之外**，必须落回本机对应路径；合并策略：
         # 记忆按主键去重、对话按（主体/轮次/角色/正文）去重，绝不覆盖现场数据。
@@ -1574,6 +2299,12 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
             "knowledge_chunks": knowledge_report["chunks"],
             "knowledge_chunks_skipped": knowledge_report["chunks_skipped"],
             "knowledge_hashes": knowledge_report["hashes"],
+            "workbench_groups": workbench_report["groups"],
+            "workbench_bots": workbench_report["bots"],
+            "workbench_group_chats": workbench_report["group_chats"],
+            "knowledge_enterprise_documents": enterprise_report["documents"],
+            "knowledge_enterprise_chunks": enterprise_report["chunks"],
+            "knowledge_enterprise_memories": enterprise_report["memories"],
             "memory": memory_report["imported"],
             "memory_skipped": memory_report["skipped"],
             "conversations": conversation_report["imported"],
@@ -1596,6 +2327,8 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         "employees": employee_report,
         "goals": goal_report,
         "knowledge": knowledge_report,
+        "workbench": workbench_report,
+        "knowledge_enterprise": enterprise_report,
         "memory": memory_report,
         "conversations": conversation_report,
         "kernel_memory": kernel_report,
@@ -1606,6 +2339,7 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         "notice": (
             "导入完成；本机使用自己的登录签名密钥，其他实例已签发的令牌不能在本机使用。"
             "账号树与成员数据已恢复；员工、目标、知识库、记忆按主键去重，不会产生副本。"
+            "工作台分组、Bot 与企业知识文档也已随包恢复（旧备份没有这两类时不受影响）。"
             "本机已有账号时不会再接受另一个备份包（避免覆盖现有数据）。"
             + (
                 "备份里没有模型 Key：模型配置已恢复，但 Key 需要重新填，请到「设置 → 模型与 Key」"
@@ -1628,8 +2362,9 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
 #   号拒绝（大白话提示），主账号仍可导；
 # * 全程跳过 ``apply_backup_payload``，绝不碰账号树、不碰系统设置、不碰 Key；
 # * 只写导入人自己的数据：记忆/对话/内核记忆/画像/目标/员工/知识/文件/模型
-#   全部按归属过滤，别人的行一律跳过；凭据（登录密码哈希）不写回——账号已
-#   在本机存在，覆盖哈希等于不打招呼改了登录密码；
+#   全部按归属过滤，别人的行一律跳过；工作台分组/Bot 与企业知识文档同此
+#   口径（各自的 _merge_filter_* 先按 owner 过滤再恢复）；凭据（登录密码
+#   哈希）不写回——账号已在本机存在，覆盖哈希等于不打招呼改了登录密码；
 # * 导入是合并不是覆盖：各恢复函数本来就是按主键去重、已存在的不覆盖；模型
 #   行例外——``import_encrypted_rows`` 是 INSERT OR REPLACE，会把本机已配好
 #   的 ``api_key_enc`` 清掉（Key 永不随包），所以已在本机的模型行直接跳过；
@@ -1735,6 +2470,118 @@ def _merge_filter_personal_context(
             and _profile_row_owner(row, allowed) is not None
         ]
     return filtered
+
+
+def _merge_filter_workbench(payload: Any, allowed: Sequence[str] | None) -> Any:
+    """工作台：只留归属在 allowed 里的分组/Bot/群聊/例程；成员与头像跟随。"""
+    if allowed is None or not isinstance(payload, dict):
+        return payload
+    allowed_set = set(allowed)
+
+    def _owned(rows: Any) -> list:
+        return [
+            row
+            for row in (rows or [])
+            if isinstance(row, dict)
+            and str(row.get("owner") or "") in allowed_set
+        ]
+
+    groups = _owned(payload.get("groups"))
+    bots = _owned(payload.get("bots"))
+    chats = _owned(payload.get("group_chats"))
+    chat_ids = {str(row.get("id") or "") for row in chats}
+    bot_ids = {str(row.get("id") or "") for row in bots}
+    return {
+        "groups": groups,
+        "bots": bots,
+        "group_chats": chats,
+        "group_chat_members": [
+            row
+            for row in (payload.get("group_chat_members") or [])
+            if isinstance(row, dict)
+            and str(row.get("chat_id") or "") in chat_ids
+            and str(row.get("bot_id") or "") in bot_ids
+        ],
+        "jarvis_routines": _owned(payload.get("jarvis_routines")),
+        "avatars": [
+            row
+            for row in (payload.get("avatars") or [])
+            if isinstance(row, dict)
+            and str(row.get("bot_id") or "") in bot_ids
+        ],
+    }
+
+
+def _merge_filter_knowledge_enterprise(
+    payload: Any, allowed: Sequence[str] | None
+) -> Any:
+    """企业知识：只留归属在 allowed 里的文档/记忆；版本/分块/原件跟随文档。
+
+    分类留系统预置、本人创建的与被留下文档引用的（与导出侧同一口径）。
+    """
+    if allowed is None or not isinstance(payload, dict):
+        return payload
+    allowed_set = set(allowed)
+    documents = [
+        row
+        for row in (payload.get("documents") or [])
+        if isinstance(row, dict) and str(row.get("owner") or "") in allowed_set
+    ]
+    document_ids = {str(row.get("id") or "") for row in documents}
+    versions = [
+        row
+        for row in (payload.get("versions") or [])
+        if isinstance(row, dict)
+        and str(row.get("document_id") or "") in document_ids
+    ]
+    version_ids = {str(row.get("id") or "") for row in versions}
+    referenced_category_ids = {
+        str(row.get("category_id") or "") for row in documents
+    } - {""}
+    memories = [
+        row
+        for row in (payload.get("memories") or [])
+        if isinstance(row, dict) and str(row.get("owner") or "") in allowed_set
+    ]
+    memory_ids = {str(row.get("id") or "") for row in memories}
+    return {
+        "categories": [
+            row
+            for row in (payload.get("categories") or [])
+            if isinstance(row, dict)
+            and (
+                row.get("system")
+                or str(row.get("created_by") or "") in allowed_set
+                or str(row.get("id") or "") in referenced_category_ids
+            )
+        ],
+        "documents": documents,
+        "versions": versions,
+        "chunks": [
+            row
+            for row in (payload.get("chunks") or [])
+            if isinstance(row, dict)
+            and str(row.get("document_id") or "") in document_ids
+        ],
+        "memories": memories,
+        "memory_revisions": [
+            row
+            for row in (payload.get("memory_revisions") or [])
+            if isinstance(row, dict)
+            and str(row.get("memory_id") or "") in memory_ids
+        ],
+        "files": [
+            row
+            for row in (payload.get("files") or [])
+            if isinstance(row, dict)
+            and str(row.get("version_id") or "") in version_ids
+        ],
+        "file_rels": {
+            version_id: rel
+            for version_id, rel in (payload.get("file_rels") or {}).items()
+            if str(version_id) in version_ids
+        },
+    }
 
 
 def _merge_filter_model_rows(
@@ -1889,6 +2736,10 @@ def import_bundle_for_account(
     knowledge_report = {
         "chunks": 0, "chunks_skipped": 0, "hashes": 0, "hashes_skipped": 0,
     }
+    workbench_report = {
+        "groups": 0, "bots": 0, "group_chats": 0, "avatars": 0,
+    }
+    enterprise_report = {"documents": 0, "chunks": 0, "memories": 0}
     memory_report = {"imported": 0, "skipped": 0}
     conversation_report = {"imported": 0, "skipped": 0}
     kernel_report = {"imported": 0, "skipped": 0}
@@ -1921,6 +2772,14 @@ def import_bundle_for_account(
         )
         knowledge_report = _restore_knowledge(
             payload.get("knowledge"), allowed=allowed
+        )
+        workbench_report = _restore_workbench(
+            _merge_filter_workbench(payload.get("workbench"), allowed)
+        )
+        enterprise_report = _restore_knowledge_enterprise(
+            _merge_filter_knowledge_enterprise(
+                payload.get("knowledge_enterprise"), allowed
+            )
         )
         memory_report = _restore_memory(
             _merge_filter_memory(payload.get("memory"), allowed)
@@ -1985,6 +2844,12 @@ def import_bundle_for_account(
             "knowledge_chunks": knowledge_report["chunks"],
             "knowledge_chunks_skipped": knowledge_report["chunks_skipped"],
             "knowledge_hashes": knowledge_report["hashes"],
+            "workbench_groups": workbench_report["groups"],
+            "workbench_bots": workbench_report["bots"],
+            "workbench_group_chats": workbench_report["group_chats"],
+            "knowledge_enterprise_documents": enterprise_report["documents"],
+            "knowledge_enterprise_chunks": enterprise_report["chunks"],
+            "knowledge_enterprise_memories": enterprise_report["memories"],
             "memory": memory_report["imported"],
             "memory_skipped": memory_report["skipped"],
             "conversations": conversation_report["imported"],
@@ -2001,6 +2866,10 @@ def import_bundle_for_account(
         + employee_report["restored"]
         + goal_report["restored"]
         + knowledge_report["chunks"]
+        + workbench_report["groups"]
+        + workbench_report["bots"]
+        + enterprise_report["documents"]
+        + enterprise_report["memories"]
         + memory_report["imported"]
         + conversation_report["imported"]
         + kernel_report["imported"]
@@ -2018,6 +2887,8 @@ def import_bundle_for_account(
         "employees": employee_report,
         "goals": goal_report,
         "knowledge": knowledge_report,
+        "workbench": workbench_report,
+        "knowledge_enterprise": enterprise_report,
         "memory": memory_report,
         "conversations": conversation_report,
         "kernel_memory": kernel_report,
@@ -2030,7 +2901,9 @@ def import_bundle_for_account(
             f"已把你自己的备份合进来：共 {merged_total} 条（记忆 "
             f"{memory_report['imported']} 条、对话 {conversation_report['imported']} 条、"
             f"文件 {file_report['restored']} 个、员工 {employee_report['restored']} 名、"
-            f"目标 {goal_report['restored']} 个、知识 {knowledge_report['chunks']} 段）。"
+            f"目标 {goal_report['restored']} 个、知识 {knowledge_report['chunks']} 段、"
+            f"工作台分组 {workbench_report['groups']} 个、Bot {workbench_report['bots']} 个、"
+            f"企业文档 {enterprise_report['documents']} 篇）。"
             "现场已有的数据一条没动，登录密码也没动；账号树没有变。"
             + (
                 "备份里没有模型 Key：新增的模型配置已恢复，但 Key 需要重新填，"

@@ -1,6 +1,6 @@
 [project]
 name = "liuhao-ai-os"
-version = "0.4.6"
+version = "0.5.0"
 description = "Jarvis · 贾维斯 - Y1 Implementation"
 readme = "README.md"
 # 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。

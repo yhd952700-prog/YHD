@@ -317,11 +317,15 @@ def test_weekly_check_failure_is_recorded_and_never_faked_as_up_to_date(
     scheduler.close()
 
 
-def test_seed_is_idempotent_and_needs_a_configured_source(tmp_path: Path) -> None:
+def test_seed_is_idempotent_and_needs_a_configured_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     clock = FakeClock()
     scheduler = _scheduler(tmp_path, clock)
 
-    # Nothing configured: no weekly job is queued (there is nothing to check).
+    # 大升级 U2 起，未配置时有默认 GitHub 发布清单源；显式退出默认源后
+    # 才是真正的"无源"：不排周检（没有可检查的东西）。
+    monkeypatch.setenv("LIUHAO_UPGRADE_NO_DEFAULT_SOURCE", "1")
     assert seed_update_check_job(scheduler) is None
     assert _weekly_pending(scheduler) == []
 

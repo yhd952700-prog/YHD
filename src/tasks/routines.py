@@ -1154,6 +1154,21 @@ class RoutineRunner:
     def _execute(self, routine: Dict[str, Any]) -> tuple:
         """执行动作。返回 (result_text, plan_id, artifacts)。"""
         kind = str(routine.get("action_kind") or "")
+        if kind == "morning_briefing":
+            # 大升级 U4 晨间简报：跨源汇总（昨日结果/今日例程/提醒/日程/
+            # 待审批），生成逻辑在 briefing.py（懒导入避免循环）。
+            from src.tasks.briefing import build_morning_briefing
+
+            text = build_morning_briefing(str(routine.get("owner_account_id") or ""))
+            if not notify_chat(text):
+                raise RoutineError(500, "chat_notify_failed", "消息没能写进聊天（聊天记录不可用）")
+            try:
+                from src.gateway.a2b import emit_digest_event
+
+                emit_digest_event("briefing", text)
+            except Exception:  # noqa: BLE001 - 推送失败不影响简报已发
+                pass
+            return f"已发到聊天：{text}", "", []
         if kind == ACTION_DAILY_DIGEST:
             # 每天早上 8 点推今天待办：执行时现算汇总，只报结果，不推过程。
             text = build_daily_digest_text(self.store, str(routine.get("owner_account_id") or ""))

@@ -3022,6 +3022,14 @@ def get_app() -> FastAPI:
     app.include_router(upgrade_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：upgrade（升级管理）完成")
 
+    # 多端同步面（U5，默认关）：管理面挂人类闸门；对端面只认配对令牌
+    # （令牌在本机只存哈希，总开关关着时一律拒绝），端点内自校验。
+    from .sync import peer_router as sync_peer_router
+    from .sync import router as sync_router
+    app.include_router(sync_router, dependencies=[Depends(_require_human)])
+    app.include_router(sync_peer_router)
+    _startup_mark("路由：sync（多端同步）完成")
+
     # 账号树面（注册 / 成员 / 权限 / Key 不共用 / 状态 / 恢复 / 备份）。
     # 不挂全局人类闸门：``/register``、``/activate``、``/recovery/reset``、
     # ``/backup/import``、``/roles`` 必须在登录前可用（首个注册者就是主账号）；

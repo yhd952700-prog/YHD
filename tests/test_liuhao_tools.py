@@ -56,6 +56,11 @@ def test_make_tools_builtin_set_is_exact():
         "generate_uuid",
         "roman_numeral",
         "make_slug",
+        # 大升级 U1/U2/U3/U4 新增 A 档（只读/汇总，默认开）：
+        "usage_report",
+        "check_update",
+        "voice_status",
+        "morning_briefing",
     }
     assert {t.name for t in tools} == expected
 
@@ -73,15 +78,21 @@ def test_make_tools_full_set_is_exact_with_disabled_included():
         "delegate_to_team", "run_skill",
         # 完善第二轮 D-R1 新增（精而简审计补聊天通路，均为 B 档默认关）：
         "manage_bots", "backup_now",
+        # 大升级 U1–U5 新增：A 档默认开 4 个（见默认集断言）+ B 档默认关 3 个
+        # （apply_update 高风险正式确认 / routine_templates / device_sync）：
+        "usage_report", "check_update", "voice_status", "morning_briefing",
+        "apply_update", "routine_templates", "device_sync",
     }
     assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    # 11 = 0.4.6 A 档默认集（3 内置 + 7 插件安全子集 + system_status），
-    # 见 test_make_tools_builtin_set_is_exact。B 档默认关，不进注册表。
-    assert len(a._tool_list) == 11
+    # 15 = 0.4.6 A 档默认集（3 内置 + 7 插件安全子集 + system_status）
+    # + 大升级新增 A 档 4 个（usage_report / check_update / voice_status /
+    # morning_briefing），见 test_make_tools_builtin_set_is_exact。
+    # B 档默认关，不进注册表。
+    assert len(a._tool_list) == 15
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 

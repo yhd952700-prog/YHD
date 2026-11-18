@@ -192,6 +192,56 @@ describe('登录页状态机', () => {
     expectNoInviteWords()
   })
 
+  test('首启向导时区确认：预选当前默认值，改选后随初始化写入账号设置', async () => {
+    const token = tokenFor('owner')
+    const onSuccess = vi.fn()
+    let settingsBody: Record<string, unknown> = {}
+    mockRoutes(config({ root_account_exists: false, registration_open: true }), {
+      '/v1/accounts/register': () =>
+        json(200, {
+          account: { principal: 'owner' },
+          recovery_code: 'RC-TEST-0001',
+          notice: '',
+        }),
+      '/v1/auth/login': () =>
+        json(200, {
+          access_token: token,
+          principal: 'owner',
+          display_name: null,
+          scope: 'L0',
+          permissions: [],
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          client: 'web',
+        }),
+      '/v1/auth/me': () =>
+        json(200, {
+          principal: 'owner',
+          display_name: null,
+          scope: 'L0',
+          permissions: ['account:read'],
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          is_root: true,
+        }),
+      '/v1/a2a/settings': (init) => {
+        settingsBody = JSON.parse(String(init?.body ?? '{}'))
+        return json(200, { timezone: settingsBody.timezone })
+      },
+    })
+    render(<Login mode="desktop" onSuccess={onSuccess} />)
+    expect(await screen.findByText('首次使用 · 初始化本机')).toBeTruthy()
+    const tzSelect = screen.getByLabelText('时区') as HTMLSelectElement
+    // 预选的是后端当前默认值，不是浏览器所在时区。
+    expect(tzSelect.value).toBe('America/Tijuana')
+    fireEvent.change(tzSelect, { target: { value: 'Asia/Shanghai' } })
+    fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'owner' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'password123' } })
+    fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'password123' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建并进入系统' }))
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled())
+    expect(settingsBody.timezone).toBe('Asia/Shanghai')
+    expectNoBannedText()
+  })
+
   test('宽屏浏览器仍以网页版身份登录：布局 mode 不再冒充客户端', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 })
     const token = tokenFor('person')
