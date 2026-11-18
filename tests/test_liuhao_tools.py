@@ -71,6 +71,8 @@ def test_make_tools_full_set_is_exact_with_disabled_included():
         "personal_set_display_name", "read_file", "list_files",
         "manage_reminders", "knowledge_search", "web_search",
         "delegate_to_team", "run_skill",
+        # 完善第二轮 D-R1 新增（精而简审计补聊天通路，均为 B 档默认关）：
+        "manage_bots", "backup_now",
     }
     assert {t.name for t in tools} == expected
 

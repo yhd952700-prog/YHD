@@ -85,6 +85,8 @@ comtypes==1.5.0 ; sys_platform == 'win32'
     # via
     #   pywinauto
     #   uiautomation
+croniter==7.0.0
+    # via liuhao-ai-os (pyproject.toml)
 cryptography==50.0.2
     # via
     #   liuhao-ai-os (pyproject.toml)
@@ -475,6 +477,10 @@ pytest==9.2.0
     #   pytest-asyncio
 pytest-asyncio==1.5.0
     # via liuhao-ai-os (pyproject.toml)
+python-dateutil==4.0.0
+    # via
+    #   croniter
+    #   liuhao-ai-os (pyproject.toml)
 python-docx==1.2.0
     # via liuhao-ai-os (pyproject.toml)
 python-dotenv==1.2.4

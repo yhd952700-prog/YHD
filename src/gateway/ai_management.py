@@ -4388,14 +4388,32 @@ class AIStateManager:
         # stays empty.
         artifacts = AIStateManager._collect_artifacts(plan_tasks or [])
 
+        state_value = result.state.value if hasattr(result.state, 'value') else str(result.state)
+        error_copy = task_error_copy(result.error)
+        error_message = error_copy["message"] or None
+        error_detail = error_copy["technical_detail"] or None
+        if state_value in ("failed", "cancelled") and not error_message:
+            # 运行时把失败报在任务上时 result.error 是空的：目标层若也留空，
+            # 列表/详情只显示「失败」却不给原因，用户无从下手（完善第二轮
+            # D 轮走查实测：无 Key 建目标即失败，error/technical_detail
+            # 全空，原因只藏在任务里）。与重试路径的 blocker 口径一致：
+            # 回落到第一个未完成任务已映射好的 error/technical_detail。
+            for task in tasks:
+                if task.get("status") in ("completed", "completed_unattributed", "skipped"):
+                    continue
+                if task.get("error"):
+                    error_message = task["error"]
+                    error_detail = task.get("technical_detail") or error_detail
+                    break
+
         return {
             "goal_id": result.goal_id,
-            "state": result.state.value if hasattr(result.state, 'value') else str(result.state),
+            "state": state_value,
             "natural_language": natural_language,
             "scope": scope,
             "correlation_id": result.correlation_id,
-            "error": task_error_copy(result.error)["message"] or None,
-            "technical_detail": task_error_copy(result.error)["technical_detail"] or None,
+            "error": error_message,
+            "technical_detail": error_detail,
             "replan_count": result.replan_count,
             "replan_suggested": result.replan_suggested,
             "memory_keys": result.memory_keys,

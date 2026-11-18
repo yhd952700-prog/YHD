@@ -163,7 +163,7 @@ const DEFAULT_USER_MENU = [
 ];
 
 export const Header = memo(function Header({
-  title = 'LiuHao AI OS',
+  title = 'Jarvis · 贾维斯',
   logo,
   user,
   center,

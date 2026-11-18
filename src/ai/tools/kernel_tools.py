@@ -493,6 +493,132 @@ def make_tools(
 
     tools.append(build_reminder_tool(principal))
 
+    # ============ Bot/分组管理 + 数据备份（完善第二轮 D 精而简审计补通路） ====
+    # 审计发现：Boss 面板里「建 Bot」此前只能点界面——聊天工具集里没有
+    # 任何 Bot/分组工具，模型在聊天里建不了 Bot；「备份」同样没有工具。
+    # 按「一个聊天框办一切」补这两条通路：复用 workbench store 与备份
+    # 服务的既有实现，不另起一套。分档 B（写数据，默认关，Owner 在
+    # 技能页开启后进聊天工具集），与 reminder.manage / team.delegate
+    # 同一口径。归属按当前主体自己的账号，绝不跨账号操作。
+    def _account() -> str:
+        return (
+            principal[len("user-"):]
+            if str(principal).startswith("user-")
+            else str(principal)
+        )
+
+    def manage_bots(
+        action: str = "",
+        name: str = "",
+        job: str = "",
+        group_name: str = "",
+        bot_id: str = "",
+        **kwargs: Any,
+    ) -> str:
+        """Bot 与分组管理：list / create_bot / create_group / move_bot。"""
+        from src.workbench.store import get_workbench_store
+
+        account = _account()
+        store = get_workbench_store()
+        try:
+            if action == "list":
+                return _serialize({
+                    "bots": store.list_bots([account]),
+                    "groups": store.list_groups([account]),
+                })
+            if action == "create_group":
+                if not group_name:
+                    return _serialize({"status": "failed", "error": "create_group 需要 group_name"})
+                return _serialize({"status": "ok", "group": store.create_group(account, group_name)})
+            if action == "create_bot":
+                if not name:
+                    return _serialize({"status": "failed", "error": "create_bot 需要 name"})
+                fields: Dict[str, Any] = {"name": name, "job": job}
+                if group_name:
+                    groups = store.list_groups([account])
+                    match = next((g for g in groups if g.get("name") == group_name), None)
+                    if match is None:
+                        match = store.create_group(account, group_name)
+                    fields["group_id"] = match["id"]
+                return _serialize({"status": "ok", "bot": store.create_bot(account, fields)})
+            if action == "move_bot":
+                if not bot_id or not group_name:
+                    return _serialize({"status": "failed", "error": "move_bot 需要 bot_id 与 group_name"})
+                groups = store.list_groups([account])
+                match = next((g for g in groups if g.get("name") == group_name), None)
+                if match is None:
+                    match = store.create_group(account, group_name)
+                updated = store.update_bot([account], bot_id, {"group_id": match["id"]})
+                return _serialize({"status": "ok" if updated else "failed", "bot": updated})
+            return _serialize({
+                "status": "failed",
+                "error": f"未知 action: {action}（可用 list/create_bot/create_group/move_bot）",
+            })
+        except Exception as exc:  # noqa: BLE001 - 失败如实回给模型，不编造成功
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.workbench.bots",
+            name="manage_bots",
+            version="1.0.0",
+            description=(
+                "管理左侧 Bot 与分组：查看（list）、新建 Bot（create_bot，可同时指定分组，"
+                "没有就自动建）、新建分组（create_group）、把 Bot 挪到分组（move_bot）。"
+                "用户在聊天里说「建一个管账的 Bot」「把 X 挪到学习分组」时用这个工具，"
+                "不要只回复文字说建好了。"
+            ),
+            capability="workbench.bots",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create_bot", "create_group", "move_bot"],
+                    },
+                    "name": {"type": "string", "description": "Bot 名字（create_bot 用）"},
+                    "job": {"type": "string", "description": "Bot 的职责（可选）"},
+                    "group_name": {"type": "string", "description": "分组名"},
+                    "bot_id": {"type": "string", "description": "Bot id（move_bot 用，先 list 查）"},
+                },
+                "required": ["action"],
+            },
+            fn=manage_bots,
+            risk="MEDIUM",
+        )
+    )
+
+    def backup_now(**kwargs: Any) -> str:
+        """立即跑一次产品自带备份（与每日自动备份同一条路径）。"""
+        try:
+            from src.backup.auto_backup import run_daily_auto_backup
+            from src.common.engines import data_dir
+
+            meta = run_daily_auto_backup(data_dir())
+            return _serialize({
+                "status": "ok",
+                "backup_id": meta.backup_id,
+                "note": "备份已完成（加密归档，保留策略与每日自动备份一致）。",
+            })
+        except Exception as exc:  # noqa: BLE001 - 备份失败必须如实回，不许假报完成
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.backup.now",
+            name="backup_now",
+            version="1.0.0",
+            description=(
+                "立即备份当前全部数据（与每天凌晨自动备份同一机制）。"
+                "用户说「备份一下现在的数据」时用这个工具，跑完把 backup_id 报给用户。"
+            ),
+            capability="backup.now",
+            schema={"type": "object", "properties": {}},
+            fn=backup_now,
+            risk="MEDIUM",
+        )
+    )
+
     # ============ 插件安全子集 + 知识库/联网检索（0.4.6，5-4/6-4） ============
     # 只接纯计算、无外部依赖、无写文件的插件子集（计算、base64、hash、
     # 单位换算、时区）+ 真知识库检索 + 真联网检索；假 SearchTool 已删，

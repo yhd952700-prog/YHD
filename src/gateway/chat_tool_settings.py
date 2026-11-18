@@ -186,6 +186,22 @@ CHAT_TOOL_GRADES: Dict[str, Dict[str, Any]] = {
         "source_kind": "builtin",
         "default_enabled": False,
     },
+    # Bot/分组管理 + 立即备份（完善第二轮 D 精而简审计补的聊天通路）：
+    # 写本账号数据，B 档默认关，Owner 在技能页开启后进聊天工具集。
+    "liuhao.workbench.bots": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    "liuhao.backup.now": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
     # 联网检索：分档登记在这里，开关本体在 web_research（见模块 docstring）。
     "liuhao.web.search": {
         "grade": "B",

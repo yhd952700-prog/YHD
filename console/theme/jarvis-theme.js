@@ -442,9 +442,21 @@
     panelOpen = true;
     syncBadges();
     var nm = panel.querySelector(".jt-hub-name"); if (nm) nm.textContent = bossName();
+    /* D-R5：键盘可达——打开面板把焦点送进面板第一个可聚焦元素，
+       不让焦点留在面板外的卡片上（屏幕阅读器/Tab 用户找不到入口）。 */
+    var first = panel.querySelector(".jt-seg button, .jt-hub-item, button");
+    if (first) first.focus();
   }
   function closePanel() {
-    if (panel) panel.style.display = "none";
+    if (panel) {
+      /* 焦点还在面板里时先还给 Boss 卡，再隐藏，避免焦点掉回 body。 */
+      if (panel.contains(document.activeElement)) {
+        var card = document.getElementById("jt-boss-card") ||
+                   document.getElementById("jt-boss-float");
+        if (card) card.focus();
+      }
+      panel.style.display = "none";
+    }
     panelOpen = false;
   }
 

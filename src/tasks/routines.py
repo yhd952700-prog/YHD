@@ -82,7 +82,15 @@ class RoutineError(RuntimeError):
         self.message = message
 
 
-# ── cron（5 段，不引新依赖：croniter 未装，见 src/workers/scheduler.py）──
+# ── cron（5 段）──
+# 2026-11 完善第二轮 D-R4 起引入 croniter（MIT）计算下一次到点：
+# 差分探针实测手搓实现三处真分歧——`5/15` 这类单值带步长语义错
+# （只在 :05 触发，标准语义是 :05/:20/:35/:50）、闰日表达式在下一次
+# 到点超过 366 天扫描上限时被误拒、稀疏表达式 next_after 分钟级扫描
+# 约 0.76s（croniter 约 0.5ms）。表达式合法性校验与报错口径仍走自家
+# 解析器（422 + 中文文案不变），croniter 只做被校验过的表达式的
+# 到点计算；不可能的日期（2 月 30 日）由 CroniterBadDateError 映射回
+# 同一个 bad_cron 报错。
 
 _MONTH_NAMES = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -118,7 +126,11 @@ def _parse_cron_field(raw: str, *, minimum: int, maximum: int, names: Optional[D
             if lo > hi:
                 raise RoutineError(422, "bad_cron", f"cron 范围写反了：{part!r}")
         else:
-            lo = hi = _cron_number(part, minimum, maximum, names)
+            lo = _cron_number(part, minimum, maximum, names)
+            # 单值带步长的标准语义是「从该值到字段上限、按步长取」
+            # （`5/15` = 5,20,35,50），不是只取该值本身——手搓初版
+            # 在这里取错了，D-R4 差分探针实测后修正。
+            hi = maximum if step > 1 else lo
         values.update(range(lo, hi + 1, step))
     return frozenset(values)
 
@@ -174,16 +186,27 @@ class CronSchedule:
         return day_match
 
     def next_after(self, after: datetime, tz: ZoneInfo) -> datetime:
-        """after 之后下一个到点时刻（UTC 返回）。按分钟扫，最多扫 366 天。"""
-        cursor = after.astimezone(timezone.utc) + timedelta(minutes=1)
-        cursor = cursor.replace(second=0, microsecond=0)
-        deadline = after + timedelta(days=366)
-        while cursor <= deadline:
-            local = cursor.astimezone(tz)
-            if self.matches(local):
-                return cursor
-            cursor += timedelta(minutes=1)
-        raise RoutineError(422, "bad_cron", "cron 表达式一年内没有到点时刻（例如 2 月 30 日）")
+        """after 之后下一个到点时刻（UTC 返回）。
+
+        D-R4 起由 croniter 计算（见本节开头注释的差分证据）：没有
+        366 天扫描上限（闰日表达式不再被误拒），稀疏表达式从约
+        0.76s 降到毫秒级。不可能的日期（2 月 30 日）映射回同一个
+        bad_cron 报错，调用方契约不变。
+        """
+        from croniter import CroniterBadDateError, croniter as _croniter
+
+        start_local = after.astimezone(tz)
+        try:
+            nxt = _croniter(self.expr, start_local).get_next(datetime)
+        except CroniterBadDateError:
+            raise RoutineError(
+                422, "bad_cron", "cron 表达式没有下一个到点时刻（例如 2 月 30 日）"
+            ) from None
+        except Exception:
+            raise RoutineError(
+                422, "bad_cron", f"cron 表达式算不出到点时刻：{self.expr!r}"
+            ) from None
+        return nxt.astimezone(timezone.utc)
 
 
 def resolve_timezone(name: str) -> ZoneInfo:

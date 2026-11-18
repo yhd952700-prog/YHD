@@ -221,6 +221,21 @@ body { background: #171009; }
   .jt-boss-panel { left: 8px; bottom: 76px; }
   .jt-boss-float { width: 196px; }
 }
+
+/* ---------- a11y（D-R5 打磨补）：键盘焦点可见 + 减少动效 ---------- */
+/* 主题自有交互元素此前没有任何焦点样式，键盘用户 Tab 过去看不见焦点；
+   只在 :focus-visible（键盘触发）时给铜色描边，不影响鼠标观感。 */
+.jt-group-head:focus-visible, .jt-menu button:focus-visible,
+.jt-boss-card:focus-visible, .jt-seg button:focus-visible,
+.jt-hub-item:focus-visible, .jt-hub-logout:focus-visible,
+.wb-grid-btn:focus-visible, .wb-icon-btn:focus-visible,
+.wb-help-btn:focus-visible, .wb-voice-btn:focus-visible {
+  outline: 2px solid #eda963; outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .jt-boss-panel { animation: none; }
+  .jt-hub-item:active { transform: none; }
+}
 /* sidebar hidden => the app grid must collapse to a single column,
    otherwise .os-main is auto-placed into the 248px sidebar track */
 .os-app { grid-template-columns: 1fr !important; }

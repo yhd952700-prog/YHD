@@ -58,6 +58,14 @@ class AlertStore:
             )
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        # 实例级锁：同一实例被多线程共用（网关守护线程评估规则 + 请求线程
+        # 发告警）。此前只有文件写入被 _SAVE_LOCK 串行化，_save 构建快照时
+        # 在锁外迭代 self._alerts，另一线程同时 emit 就会
+        # RuntimeError: dictionary changed size during iteration，告警落盘
+        # 失败（完善第二轮 A3 压测实测复现，/tmp 网关日志 2026-11-17）。
+        # 所有「改字典 + _save」与读快照都必须持这把锁（RLock：_save 会
+        # 回调 _build_hash_chain，后者又调 _save）。
+        self._lock = threading.RLock()
         self._alerts: Dict[str, Alert] = {}
         self._rules: Dict[str, AlertRule] = {}
         self._hash_chain: Optional[List[str]] = None
@@ -140,24 +148,27 @@ class AlertStore:
 
     def _save(self) -> None:
         """Persist alerts and rules to storage with hash chain."""
-        if self._hash_alg and self._hash_chain is None:
-            self._build_hash_chain()
+        # 快照构建必须在实例锁内：锁外迭代字典时并发 emit/resolve 改字典
+        # 会抛 dictionary changed size during iteration（A3 压测复现）。
+        with self._lock:
+            if self._hash_alg and self._hash_chain is None:
+                self._build_hash_chain()
 
-        data = {
-            "version": 1,
-            "saved_at": time.time(),
-            "hash_alg": self._hash_alg,
-            "hash_chain": self._hash_chain,
-            "alerts": {k: v.to_dict() for k, v in self._alerts.items()},
-            "rules": {k: v.to_dict() for k, v in self._rules.items()},
-        }
-        payload = json.dumps(data, indent=2, ensure_ascii=False)
-        # Serialise + atomic replace. See _SAVE_LOCK: interleaved writers used to
-        # leave a truncated/empty file, which _load then silently reset.
-        # 统一走 atomic_write_text：只读卷上先快速失败（不阻塞），磁盘满/无权限
-        # 也统一翻译成中文可行动提示。
-        with _SAVE_LOCK:
-            atomic_write_text(str(self.storage_path), payload)
+            data = {
+                "version": 1,
+                "saved_at": time.time(),
+                "hash_alg": self._hash_alg,
+                "hash_chain": self._hash_chain,
+                "alerts": {k: v.to_dict() for k, v in self._alerts.items()},
+                "rules": {k: v.to_dict() for k, v in self._rules.items()},
+            }
+            payload = json.dumps(data, indent=2, ensure_ascii=False)
+            # Serialise + atomic replace. See _SAVE_LOCK: interleaved writers used to
+            # leave a truncated/empty file, which _load then silently reset.
+            # 统一走 atomic_write_text：只读卷上先快速失败（不阻塞），磁盘满/无权限
+            # 也统一翻译成中文可行动提示。
+            with _SAVE_LOCK:
+                atomic_write_text(str(self.storage_path), payload)
 
     # ==================== Alert Operations ====================
 
@@ -182,8 +193,9 @@ class AlertStore:
             The alert ID
         """
         eid = alert.id
-        self._alerts[eid] = alert
-        self._save()
+        with self._lock:
+            self._alerts[eid] = alert
+            self._save()
         # Real delivery: dispatch to the configured sink(s). File persistence
         # above is the fail-closed guarantee — even if dispatch fails, the alert
         # record is already on disk.
@@ -209,7 +221,7 @@ class AlertStore:
         - alert_type
         - metric_name
         """
-        alerts = list(self._alerts.values())
+        alerts = self._alerts_snapshot()
 
         if not filters:
             return alerts
@@ -226,29 +238,35 @@ class AlertStore:
                 result.append(alert)
         return result
 
+    def _alerts_snapshot(self) -> List[Alert]:
+        """锁内取快照：读路径不在活字典上迭代（并发 emit 会改字典）。"""
+        with self._lock:
+            return list(self._alerts.values())
+
     def list_by_severity(self, severity: AlertSeverity) -> List[Alert]:
         """List alerts by severity."""
-        return [a for a in self._alerts.values() if a.severity == severity]
+        return [a for a in self._alerts_snapshot() if a.severity == severity]
 
     def list_by_state(self, state: AlertState) -> List[Alert]:
         """List alerts by state."""
-        return [a for a in self._alerts.values() if a.state == state]
+        return [a for a in self._alerts_snapshot() if a.state == state]
 
     def list_firing(self) -> List[Alert]:
         """List currently firing alerts."""
-        return [a for a in self._alerts.values() if a.state == AlertState.FIRING]
+        return [a for a in self._alerts_snapshot() if a.state == AlertState.FIRING]
 
     def list_resolved(self) -> List[Alert]:
         """List resolved alerts."""
-        return [a for a in self._alerts.values() if a.state == AlertState.RESOLVED]
+        return [a for a in self._alerts_snapshot() if a.state == AlertState.RESOLVED]
 
     def resolve_alert(self, alert_id: str) -> bool:
         """Mark an alert as resolved."""
-        if alert_id in self._alerts:
-            self._alerts[alert_id].state = AlertState.RESOLVED
-            self._alerts[alert_id].resolved_at = time.time()
-            self._save()
-            return True
+        with self._lock:
+            if alert_id in self._alerts:
+                self._alerts[alert_id].state = AlertState.RESOLVED
+                self._alerts[alert_id].resolved_at = time.time()
+                self._save()
+                return True
         return False
 
     # ==================== Rule Operations ====================
@@ -256,8 +274,9 @@ class AlertStore:
     def add_rule(self, rule: AlertRule) -> str:
         """Add an alert rule."""
         eid = rule.id
-        self._rules[eid] = rule
-        self._save()
+        with self._lock:
+            self._rules[eid] = rule
+            self._save()
         return eid
 
     def get_rule(self, rule_id: str) -> Optional[AlertRule]:
@@ -270,10 +289,11 @@ class AlertStore:
 
     def remove_rule(self, rule_id: str) -> bool:
         """Remove a rule."""
-        if rule_id in self._rules:
-            del self._rules[rule_id]
-            self._save()
-            return True
+        with self._lock:
+            if rule_id in self._rules:
+                del self._rules[rule_id]
+                self._save()
+                return True
         return False
 
     # ==================== Integrity ====================
@@ -296,11 +316,12 @@ class AlertStore:
         if chain is None:
             return False
 
-        all_items: List[tuple[str, Any]] = []
-        for eid, alert in self._alerts.items():
-            all_items.append((eid, alert))
-        for rid, rule in self._rules.items():
-            all_items.append((rid, rule))
+        with self._lock:
+            all_items: List[tuple[str, Any]] = []
+            for eid, alert in self._alerts.items():
+                all_items.append((eid, alert))
+            for rid, rule in self._rules.items():
+                all_items.append((rid, rule))
 
         if len(chain) != len(all_items):
             return False
@@ -333,7 +354,7 @@ class AlertStore:
         resolved = len(self.list_resolved())
 
         severity_counts: Dict[str, int] = {}
-        for alert in self._alerts.values():
+        for alert in self._alerts_snapshot():
             severity_counts[alert.severity.name] = severity_counts.get(alert.severity.name, 0) + 1
 
         return {

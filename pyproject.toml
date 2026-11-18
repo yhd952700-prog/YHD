@@ -26,6 +26,13 @@ dependencies = [
     # requirements.txt 早已锁进该包，这里补齐声明，避免"能 import 却未声明"。
     "python-dotenv>=1.0.0",
     "prometheus-client>=0.19.0",
+    # cron 计算（例程 CronSchedule.next_after 与 workers 调度器的 cron
+    # 排期）：完善第二轮 D-R4 引入。手搓实现经差分探针实测有三处真
+    # 分歧（单值带步长语义错、闰日表达式被 366 天扫描上限误拒、稀疏
+    # 表达式约 0.76s 的分钟扫描），换成熟实现；croniter 为 MIT，
+    # 其依赖 python-dateutil 为 BSD-3-Clause，均为宽松许可证。
+    "croniter>=7.0.0",
+    "python-dateutil>=4.0.0",
     # SQLAlchemy asyncio（ext.asyncio）运行期硬依赖 greenlet：干净环境只按
     # 本声明安装时缺它会让知识库等 async DB 收集/导入直接失败（0.4.6 体检
     # 实证）。sqlalchemy 本身只把它列为 async extra，故这里显式声明。

@@ -1701,13 +1701,21 @@ components:
     risk: low
     action: 保持；0.4.6 随包版本 0.6.8，传递依赖。
 
+  - name: croniter
+    import_name: croniter
+    license: MIT
+    category: scheduling
+    used: "yes"
+    risk: low
+    action: 保持；2026-11 完善第二轮 D-R4 引入（替代手搓 cron 的三处实测分歧），src/tasks/routines.py 与 src/workers/scheduler.py 函数级硬导入，随包版本 7.0.0。
+
   - name: python-dateutil
     import_name: dateutil
-    license: Apache Software License
+    license: BSD-3-Clause
     category: runtime-transitive
     used: "no"
     risk: low
-    action: 保持；0.4.6 随包版本 2.9.0.post0，传递依赖。
+    action: 保持；2026-11 起为 croniter 7.0.0 的依赖并已在 requirements 直接声明，随包版本 4.0.0，许可证以其实测元数据 BSD-3-Clause 为准——旧登记的 Apache Software License 是 2.9.0.post0 时期的分类器口径，已不适用。
 
   - name: python-json-logger
     import_name: pythonjsonlogger

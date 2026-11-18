@@ -83,18 +83,28 @@ class Check:
 
 
 def run(cmd, env=None, cwd=None, timeout=300) -> subprocess.CompletedProcess:
-    """Run a command, returning the CompletedProcess (never raises on rc!=0)."""
+    """Run a command, returning the CompletedProcess (never raises on rc!=0).
+
+    A missing binary (e.g. no ``docker`` on this host) is a *finding*
+    (NOT_VERIFIED), not a crash: convert FileNotFoundError into rc=127 so
+    the checks report it instead of the whole script dying with a traceback
+    (完善第二轮 C1 实测：无 docker 的 Linux 机上原样跑直接抛异常退出，
+    alembic 回滚等后续检查根本轮不到执行）。
+    """
     full_env = dict(os.environ)
     if env:
         full_env.update(env)
-    return subprocess.run(
-        cmd,
-        env=full_env,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            env=full_env,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", f"binary not found: {exc.filename}")
 
 
 def status_for(rc: int) -> str:

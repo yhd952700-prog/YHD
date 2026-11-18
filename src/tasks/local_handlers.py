@@ -12,6 +12,9 @@
   通知走托盘气泡/控制台，失败由排程器重试并最终进死信。
 * `liuhao.backup.daily` —— 每日自动备份（`src/backup/auto_backup.py`），
   每天本地时间 03:00 跑一次，留最近 7 天；跑完按日期重新入队下一天。
+* `liuhao.email.poll` —— 邮件规则轮询（`src/ai/email_rules.py`），
+  周期拉 Gmail 未读按规则建草稿计划；开关默认关、Google 没接通时
+  如实跳过，只按间隔重新入队自己。
 """
 
 from __future__ import annotations
@@ -44,6 +47,11 @@ MIN_HEARTBEAT_SECONDS = 10.0
 
 DAILY_BACKUP_JOB = "liuhao.backup.daily"
 BACKUP_JOB_KEY_PREFIX = "liuhao.backup.daily"
+
+EMAIL_POLL_JOB = "liuhao.email.poll"
+EMAIL_POLL_KEY_PREFIX = "liuhao.email.poll"
+DEFAULT_EMAIL_POLL_SECONDS = 900.0
+MIN_EMAIL_POLL_SECONDS = 60.0
 
 
 def heartbeat_interval_seconds() -> float:
@@ -137,6 +145,62 @@ async def daily_backup(
     return {"backup_id": meta.backup_id, "next_run_at": next_run_at.isoformat()}
 
 
+def email_poll_interval_seconds() -> float:
+    """``LIUHAO_EMAIL_POLL_INTERVAL`` in seconds (default 900, min 60)."""
+    raw = os.environ.get("LIUHAO_EMAIL_POLL_INTERVAL")
+    if not raw:
+        return DEFAULT_EMAIL_POLL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"LIUHAO_EMAIL_POLL_INTERVAL must be a number, got {raw!r}"
+        ) from exc
+    if value < MIN_EMAIL_POLL_SECONDS:
+        raise ValueError(
+            f"LIUHAO_EMAIL_POLL_INTERVAL must be >= {MIN_EMAIL_POLL_SECONDS:g}s"
+        )
+    return value
+
+
+async def email_poll(
+    scheduler: LocalScheduler,
+    interval_seconds: float | None = None,
+    **_: Any,
+) -> Dict[str, Any]:
+    """跑一次邮件规则轮询，并按心跳的自调度模式排下一轮。
+
+    开关没开 / Google 没接通时 poll_gmail_once 如实回报原因、本轮不拉
+    邮件；无论跑没跑，都按间隔重新入队自己（翻开关不用重启排程器）。
+    """
+    from src.ai.email_rules import poll_gmail_once
+
+    interval = (
+        email_poll_interval_seconds() if interval_seconds is None else float(interval_seconds)
+    )
+    if interval < MIN_EMAIL_POLL_SECONDS:
+        raise ValueError(f"interval_seconds must be >= {MIN_EMAIL_POLL_SECONDS:g}s")
+    result = await asyncio.to_thread(poll_gmail_once)
+    scheduler.audit_event(
+        "local_scheduler.email_poll",
+        "success",
+        {
+            "ran": bool(result.get("ran")),
+            "reason": result.get("reason", ""),
+            "matched": result.get("matched", 0),
+            "scheduler_owner": scheduler.owner,
+        },
+    )
+    next_run_at = scheduler.now() + timedelta(seconds=interval)
+    scheduler.enqueue(
+        EMAIL_POLL_JOB,
+        run_at=next_run_at,
+        job_key=f"{EMAIL_POLL_KEY_PREFIX}:{next_run_at.isoformat()}",
+        payload={"interval_seconds": interval},
+    )
+    return {**result, "next_run_at": next_run_at.isoformat()}
+
+
 def register_local_jobs(
     scheduler: LocalScheduler, *, reminder_service=None
 ) -> List[str]:
@@ -166,6 +230,13 @@ def register_local_jobs(
     scheduler.register(
         DAILY_BACKUP_JOB,
         _make_daily_backup_handler(scheduler),
+        reentrant=True,
+    )
+    # 邮件规则轮询：处理本身有 seen 落盘去重，崩溃后重跑不会重复建计划；
+    # 开关默认关，没开时 handler 只如实跳过并续排下一轮。
+    scheduler.register(
+        EMAIL_POLL_JOB,
+        _make_email_poll_handler(scheduler),
         reentrant=True,
     )
 
@@ -250,7 +321,16 @@ def seed_local_jobs(scheduler: LocalScheduler) -> List[int]:
         job_key=_daily_backup_job_key(backup_run_at),
         payload={},
     )
-    return [job_id, backup_job_id]
+    # 邮件规则轮询：首启排在第一个间隔之后；job_key 按目标时刻派生，
+    # 重启重复入队返回已有 job id。开关没开时它只空转续排，不拉邮件。
+    email_run_at = scheduler.now() + timedelta(seconds=email_poll_interval_seconds())
+    email_job_id = scheduler.enqueue(
+        EMAIL_POLL_JOB,
+        run_at=email_run_at,
+        job_key=f"{EMAIL_POLL_KEY_PREFIX}:{email_run_at.isoformat()}",
+        payload={"interval_seconds": email_poll_interval_seconds()},
+    )
+    return [job_id, backup_job_id, email_job_id]
 
 
 def _make_heartbeat_handler(scheduler: LocalScheduler):
@@ -263,6 +343,13 @@ def _make_heartbeat_handler(scheduler: LocalScheduler):
 def _make_daily_backup_handler(scheduler: LocalScheduler):
     async def handler(**payload: Any) -> Dict[str, Any]:
         return await daily_backup(scheduler, **payload)
+
+    return handler
+
+
+def _make_email_poll_handler(scheduler: LocalScheduler):
+    async def handler(interval_seconds: float | None = None, **_: Any) -> Dict[str, Any]:
+        return await email_poll(scheduler, interval_seconds)
 
     return handler
 

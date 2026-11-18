@@ -119,12 +119,10 @@ acknowledged:
   # leaving it in the acknowledged list would make the guard report it stale.
   # Recovery: `git log -- src/integrations/cloud_models.py`, or the backup above.
 
-  # --- 2026-11-17 补缺口轮登记 -------------------------------------------------
-  - module: src.ai.email_rules
-    classification: legacy-not-wired
-    reason: >-
-      Rule engine for automatic handling of incoming mail, added in 0.4.6
-      but never wired: no importer anywhere, and the module itself states
-      no real mailbox account is connected (Gmail/IMAP not hooked up).
-      Kept as staged feature code pending a wiring decision; deleting it
-      would destroy the only copy of the 0.4.6 work.
+  # --- 2026-11-17 完善第二轮：src.ai.email_rules 已接线，条目移除 -------------
+  # 补缺口轮曾登记为 legacy-not-wired（零引用）。完善第二轮 A4 裁决为
+  # 「接线」：poll_gmail_once 经 src.integrations.google_workspace 的
+  # GmailClient（官方 API）拉未读喂规则引擎，本地排程器任务
+  # liuhao.email.poll（src/tasks/local_handlers.py）周期调用，开关
+  # LIUHAO_EMAIL_RULES_ENABLED 默认关。模块已被 src/tasks 引用，按本
+  # 文件顶部契约从 acknowledged 移除；此处仅留历史说明。

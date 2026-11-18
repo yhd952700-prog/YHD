@@ -1,5 +1,5 @@
 /**
- * LiuHao AI OS - 全局类型定义
+ * Jarvis · 贾维斯 - 全局类型定义
  *
  * 覆盖 Agent / Task / Chat / Memory / Knowledge / Workflow / Plugin /
  * Notification / Metrics 等核心领域模型。
