@@ -51,6 +51,12 @@ from .skill_bindings import (
     SkillBindingStore,
 )
 from .skill_import import McpConfigDetected, SkillImportError, ImportedSkill, parse_upload
+from .skill_packages import (
+    SkillPackageError,
+    dependency_problems,
+    find_dependents,
+    inspect_upload as _inspect_skill_upload,
+)
 from .skill_install import (
     MAX_TOTAL_BYTES,
     SkillInstallError,
@@ -301,6 +307,8 @@ def _evaluate(
         "description": record.get("description") or "",
         "source": record.get("source") or "user",
         "version": record.get("version") or "",
+        "author": record.get("author") or "",
+        "dependencies": list(record.get("dependencies") or ()),
         "risk": risk,
         "risk_note": (
             "所需能力不在本机已注册的执行器目录中，风险无法核对"
@@ -655,6 +663,38 @@ def create_skill(
     return _evaluate_current(record)
 
 
+@router.post("/inspect")
+async def inspect_skill(
+    file: UploadFile = File(...),
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """安装前预览（V7）：解析包并摊开权限声明与依赖核对结果，**不安装**。
+
+    给 Boss 在点"安装"之前看清楚：这个包是谁写的、声明要哪些权限、有没有
+    可执行入口、依赖的技能装没装。预览不落盘、不建记录、不产生任何授权。
+    """
+    filename = (file.filename or "").strip()
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if suffix not in ("zip", "md", "json"):
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                "技能预览接受 .zip（技能包）、.md（Agent Skills）或 .json（技能清单）"
+                f"（收到「{filename or '未命名文件'}」）。"
+            ),
+        )
+    limit = MAX_TOTAL_BYTES + 4 * 1024 * 1024 if suffix == "zip" else _IMPORT_LIMIT_BYTES
+    raw = await file.read(limit + 1)
+    if len(raw) > limit:
+        raise HTTPException(status_code=413, detail=f"「{filename}」超过预览上限，已拒绝。")
+    if not raw:
+        raise HTTPException(status_code=400, detail="技能文件是空的。")
+    try:
+        return _inspect_skill_upload(filename, raw)
+    except SkillPackageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/import", status_code=201)
 async def import_skill(
     file: UploadFile = File(...),
@@ -729,6 +769,13 @@ def _install_parsed(
         capabilities = normalize_capabilities(spec.capabilities)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # V7：包声明的技能依赖必须先核对，缺失/版本不足直接拒绝，不半装。
+    dep_problems = dependency_problems(spec.dependencies, _store())
+    if dep_problems:
+        raise HTTPException(
+            status_code=400,
+            detail="依赖未满足，已拒绝安装：" + "；".join(dep_problems),
+        )
     capability_index, _ = _load_capability_index()
     missing = [cap for cap in capabilities if cap not in capability_index]
     risk = "low" if not missing else "unknown"
@@ -746,6 +793,8 @@ def _install_parsed(
                 description=spec.description,
                 source="imported",
                 version=spec.version,
+                author=spec.author,
+                dependencies=spec.dependencies,
                 capabilities=capabilities,
                 declared_permissions=spec.permissions,
                 declared_risk=spec.declared_risk,
@@ -935,6 +984,19 @@ def delete_skill(
                 f"技能「{record.get('name')}」仍绑定 {len(in_use)} 位员工："
                 f"{'、'.join(in_use)}。请先在技能中心解除绑定，"
                 "或先停用该技能，再删除。"
+            ),
+        )
+    # V7：被别的技能声明为依赖时同样不许静默删除，点名依赖方。
+    dependents = find_dependents(
+        str(record.get("name") or ""), _store(), exclude_skill_id=skill_id
+    )
+    if dependents:
+        names = "、".join(str(row.get("name") or "") for row in dependents)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"技能「{record.get('name')}」被这些技能声明为依赖：{names}。"
+                "请先卸载或升级它们，再删除本技能。"
             ),
         )
     store = _store()
@@ -1474,11 +1536,36 @@ async def upgrade_skill(
     try:
         with stage_upload(filename, raw) as staged:
             try:
-                spec = parse_upload(filename, staged.read_text())
+                # V7 修复：原先传上传文件名（pkg.zip），parse_upload 按后缀
+                # 分派会把 zip 包误判为不支持格式——zip 升级此前实际不可用。
+                # 与 import 一致，传暂存区的清单名。
+                spec = parse_upload(staged.manifest_name, staged.read_text())
             except McpConfigDetected as exc:
                 raise HTTPException(status_code=415, detail=str(exc)) from exc
             except SkillImportError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # V7：升级同样先核对新版依赖，并校验包名与技能一致（换错包不许装）。
+            if str(spec.name or "").casefold() != str(
+                record.get("name") or ""
+            ).casefold():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"升级包的名字是「{spec.name}」，与技能「{record.get('name')}」"
+                        "不一致；升级只能换同一个技能的新版本。"
+                    ),
+                )
+            dep_problems = dependency_problems(
+                spec.dependencies, _store(), exclude_skill_id=skill_id
+            )
+            if dep_problems:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "新版依赖未满足，已拒绝升级（旧版保持不变）："
+                        + "；".join(dep_problems)
+                    ),
+                )
             entrypoints = list((spec.runtime or {}).get("entrypoints") or [])
             staged.finalize(entrypoints)
             install_dir = staged.commit(skill_id, overwrite=True)
@@ -1497,6 +1584,14 @@ async def upgrade_skill(
                     },
                     "installed_at": record.get("updated_at") or record.get("created_at"),
                 },
+            )
+            # V7：注册表里的版本/作者/依赖跟着新包走，否则列表显示旧版本。
+            _store().update_package_fields(
+                skill_id,
+                version=spec.version,
+                author=spec.author,
+                dependencies=spec.dependencies,
+                description=spec.description,
             )
     except SkillInstallError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
