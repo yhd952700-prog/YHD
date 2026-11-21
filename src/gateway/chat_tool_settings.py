@@ -202,6 +202,16 @@ CHAT_TOOL_GRADES: Dict[str, Dict[str, Any]] = {
         "source_kind": "builtin",
         "default_enabled": False,
     },
+    # 云备份快照（大升级第二季 V10）：口令加密、可带走的快照，恢复是
+    # 高影响写操作——与 backup_now 同为 B 档默认关，工具内 restore/delete
+    # 还要用户亲口确认（confirm=true）；口令不保存、不回显。
+    "liuhao.backup.cloud": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
     # 用量查询（大升级 U1）：纯只读、只看本人账本，A 档默认开——
     # 「这个月用了多少」是用户最自然的一句问话，不该还要先去技能页开开关。
     "liuhao.usage.report": {
@@ -243,6 +253,42 @@ CHAT_TOOL_GRADES: Dict[str, Dict[str, Any]] = {
         "source_kind": "builtin",
         "default_enabled": False,
     },
+    # 主动管家补完（第二季 V2）：简报语音播报会起后台合成并出声（写），
+    # B 档默认关；Web Push 含写与联网（订阅/发送），B 档默认关，且推送
+    # 本体另有总开关（默认关）双重把关。
+    "liuhao.briefing.broadcast": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    "liuhao.push.notifications": {
+        "grade": "B",
+        "permissions": ["write", "network"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    # 团队编排（第二季 V8）：一次触发多位成员 Bot 的模型调用（写 + 联网 +
+    # 实际花费），B 档默认关；工具内另有两步口径——不带 confirm 只出计划
+    # 预览，用户确认后才真跑。
+    "liuhao.team.orchestrate": {
+        "grade": "B",
+        "permissions": ["write", "network"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    # 成本智能路由（第二季 V9）：账号级开关写入（改设置），B 档默认关；
+    # 路由本体另有「未配映射不生效 + 价格护栏」双重把关。
+    "liuhao.cost.routing": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
     # 多端同步（大升级 U5）：含写与联网（登记对端/发起同步），B 档默认关；
     # 同步本体另有总开关（默认关）与配对令牌双重把关。
     "liuhao.sync.manage": {
@@ -254,6 +300,15 @@ CHAT_TOOL_GRADES: Dict[str, Dict[str, Any]] = {
     },
     # 语音状态（大升级 U3）：纯只读状态查询，A 档默认开。
     "liuhao.voice.status": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
+    # 安卓 App 状态（大升级第二季 V3）：纯只读状态查询（读 manifest 与套件
+    # 配置文件，不联网、不碰密钥），A 档默认开。
+    "liuhao.twa.status": {
         "grade": "A",
         "permissions": ["read"],
         "confirm": "none",
@@ -283,6 +338,45 @@ CHAT_TOOL_GRADES: Dict[str, Dict[str, Any]] = {
     "liuhao.skill.run": {
         "grade": "B",
         "permissions": ["exec"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    # 技能包生态（大升级第二季 V7）：列表/预览是只读，A 档默认开；
+    # 安装/升级/卸载是写操作，B 档默认关，Owner 在技能页开了才进聊天
+    # 工具集，且工具内还有 confirm=true 二次校验（用户亲口确认才执行，
+    # 与 apply_update 同口径）。
+    "liuhao.skill.list_packages": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
+    "liuhao.skill.inspect_package": {
+        "grade": "A",
+        "permissions": ["read"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": True,
+    },
+    "liuhao.skill.install_package": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    "liuhao.skill.upgrade_package": {
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+        "default_enabled": False,
+    },
+    "liuhao.skill.uninstall_package": {
+        "grade": "B",
+        "permissions": ["write"],
         "confirm": "none",
         "source_kind": "builtin",
         "default_enabled": False,
