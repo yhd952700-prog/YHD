@@ -17,6 +17,13 @@ Two layers live here:
   computed from deterministic token-hash vectors, but they measure token
   overlap, not meaning. Callers must label it honestly (``semantic=False``)
   and never present its scores as semantic similarity.
+* :class:`~src.knowledge.local_embedding.LocalOnnxEmbedder` — the in-process
+  ONNX semantic engine (V6): a small local model (bge-small-zh-v1.5) that
+  needs no daemon, no Key and no network at run time. In the fallback chain
+  it sits **between** the real providers and the hashing fallback: a plain
+  install with the engine component and the model downloaded gets true
+  semantic retrieval; only when the model is absent does the lexical
+  hashing fallback take over.
 
 **Switching provider or model is not a free change.** The relevance gate
 (``abstention``) is tuned against the cosine-score distribution of a specific
@@ -539,18 +546,22 @@ def local_embedding_fallback_enabled() -> bool:
 
 
 def build_embedding_provider_with_local_fallback() -> object:
-    """Live knowledge-base embedder: real provider first, local hashing second.
+    """Live knowledge-base embedder: real provider, local ONNX, then hashing.
 
     Tries :func:`build_embedding_provider` unchanged (explicit choice, Ollama
     auto-detect, cloud only when explicitly chosen). When that raises
     :class:`EmbeddingUnavailableError` -- i.e. there is no usable external
-    embedding service at all -- returns a :class:`LocalHashingEmbedder`
-    instead of failing, so ingest and search keep working on a plain install.
+    embedding service at all -- tries the in-process local ONNX semantic
+    engine (:mod:`src.knowledge.local_embedding`) next, and only when that
+    is unavailable too (engine component missing or model not downloaded)
+    returns a :class:`LocalHashingEmbedder` instead of failing, so ingest
+    and search keep working on a plain install.
 
     The returned object always tells the truth about itself:
     ``getattr(embedder, "local_fallback", False)`` is True and
-    ``getattr(embedder, "semantic", True)`` is False exactly for the fallback.
-    Status surfaces must surface those two flags (see
+    ``getattr(embedder, "semantic", True)`` is False exactly for the hashing
+    fallback; the ONNX engine carries ``local_model=True`` / ``semantic=True``.
+    Status surfaces must surface those flags (see
     ``KnowledgeDocumentService.status``). Set
     ``LIUHAO_KNOWLEDGE_LOCAL_FALLBACK=0`` to get the old fail-closed error
     back instead.
@@ -562,22 +573,37 @@ def build_embedding_provider_with_local_fallback() -> object:
             raise
         import logging
 
-        logging.getLogger("liuhao.knowledge.embedding").warning(
-            "no external embedding provider (%s); using local hashing vectors "
-            "(lexical, not semantic) so the knowledge base stays usable",
+        logger = logging.getLogger("liuhao.knowledge.embedding")
+        try:
+            from .local_embedding import build_local_embedder
+
+            embedder = build_local_embedder()
+        except EmbeddingUnavailableError as local_exc:
+            logger.warning(
+                "no external embedding provider (%s); local ONNX engine "
+                "unavailable (%s); using local hashing vectors "
+                "(lexical, not semantic) so the knowledge base stays usable",
+                exc,
+                local_exc,
+            )
+            return LocalHashingEmbedder()
+        logger.info(
+            "no external embedding provider (%s); using the local ONNX "
+            "semantic model so the knowledge base stays fully semantic",
             exc,
         )
-        return LocalHashingEmbedder()
+        return embedder
 
 
 def build_embedding_provider() -> object:
     """Build the real embedder from env, or raise ``EmbeddingUnavailableError``.
 
     ``LIUHAO_EMBEDDING_PROVIDER`` selects explicitly (``openai`` / ``ollama`` /
-    ``mock``). ``auto`` (the default) **never** goes to the cloud: it only uses
-    a local Ollama, so merely having ``OPENAI_API_KEY`` in the environment can
-    no longer ship knowledge-base text to ``api.openai.com``. Cloud embedding
-    requires an explicit ``openai`` / ``openai_compatible`` choice.
+    ``local`` / ``mock``). ``auto`` (the default) **never** goes to the cloud:
+    it only uses a local Ollama or the in-process local ONNX engine, so merely
+    having ``OPENAI_API_KEY`` in the environment can no longer ship
+    knowledge-base text to ``api.openai.com``. Cloud embedding requires an
+    explicit ``openai`` / ``openai_compatible`` choice.
     """
     choice = (os.environ.get(EMBEDDING_PROVIDER_ENV) or "auto").strip().lower()
     model = (os.environ.get(EMBEDDING_MODEL_ENV) or "").strip()
@@ -589,6 +615,17 @@ def build_embedding_provider() -> object:
                 "LIUHAO_ENV=development and LIUHAO_KNOWLEDGE_ALLOW_MOCK=1"
             )
         return MockEmbedder()
+
+    if choice == "local":
+        from .local_embedding import MODEL_NAME as _LOCAL_MODEL_NAME
+        from .local_embedding import build_local_embedder
+
+        if model and model != _LOCAL_MODEL_NAME:
+            raise EmbeddingUnavailableError(
+                f"本地向量引擎目前只支持模型 {_LOCAL_MODEL_NAME}，"
+                f"当前 LIUHAO_EMBEDDING_MODEL={model}；请改回默认或换 provider"
+            )
+        return build_local_embedder()
 
     openai_base = (
         os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
@@ -621,29 +658,49 @@ def build_embedding_provider() -> object:
     # 纯安装、没有导出任何变量的场景：用 config/*.yaml 里已经声明的本机
     # Ollama（聊天也用它），先探测再启用。生产环境保持 fail-closed：部署方
     # 必须显式声明 provider，而不是继承开发机的默认值。
+    # ``auto`` 下探测失败不再立刻抛：先记下 Ollama 的原因，再给进程内本地
+    # ONNX 引擎一个机会（见下）；本地也不可用时仍抛 Ollama 的原因，保持
+    # 既有报错口径。显式 ``ollama`` 则照旧当场抛。
+    ollama_probe_error: Optional[EmbeddingUnavailableError] = None
     if choice in {"ollama", "auto"} and not _production():
         config_base, config_model = local_ollama_settings()
         model_name = model or config_model
         installed = _installed_ollama_models(config_base)
         if installed is None:
-            raise EmbeddingUnavailableError(
+            ollama_probe_error = EmbeddingUnavailableError(
                 "知识库未启用：没有可用的 embedding provider。本机 Ollama "
                 f"（{config_base}）未运行，无法自动启用；请启动 Ollama，或设置 "
                 "LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址"
             )
-        if not _model_available(installed, model_name):
+            if choice == "ollama":
+                raise ollama_probe_error
+        elif not _model_available(installed, model_name):
             available = "、".join(installed) if installed else "无"
-            raise EmbeddingUnavailableError(
+            ollama_probe_error = EmbeddingUnavailableError(
                 f"知识库未启用：本机 Ollama 缺少 embedding 模型 '{model_name}'"
                 f"（已安装：{available}）。请执行 `ollama pull {model_name}`，"
                 "或设置 LIUHAO_EMBEDDING_MODEL"
             )
-        return OllamaEmbedder(model=model_name, base_url=config_base)
+            if choice == "ollama":
+                raise ollama_probe_error
+        else:
+            return OllamaEmbedder(model=model_name, base_url=config_base)
 
     if choice == "ollama":
         raise EmbeddingUnavailableError(
             "LIUHAO_EMBEDDING_PROVIDER=ollama but OLLAMA_BASE_URL is not set"
         )
+
+    # 本地 ONNX 语义引擎：引擎组件与模型文件都已在本机时，``auto`` 直接
+    # 启用（不联网、不出本机，是操作员已落位到数据目录的本地资产）。
+    if choice == "auto":
+        from .local_embedding import build_local_embedder
+
+        try:
+            return build_local_embedder()
+        except EmbeddingUnavailableError:
+            if ollama_probe_error is not None:
+                raise ollama_probe_error
 
     raise EmbeddingUnavailableError(
         "知识库未启用：没有可用的 embedding provider（设置 "
