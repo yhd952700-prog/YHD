@@ -612,6 +612,165 @@ def _chat_provider_chain(
     return FailoverProvider(providers, labels=labels)
 
 
+def _registry_price(model_name: Optional[str]) -> Optional[float]:
+    """模型注册表里的每 1K token 估算价（与用量账本同一个价格源）。
+
+    未定价/注册表不可用返回 None——调用方必须按「价格未知」处理，
+    绝不拿 0 元当便宜（与 account_usage 的 BUDGET_GUARD 口径一致）。
+    """
+    if not model_name:
+        return None
+    try:
+        from src.models.registry import get_model_registry
+
+        metadata = get_model_registry().get_model(str(model_name))
+        if metadata is None:
+            return None
+        return float(metadata.estimated_cost_per_1k)
+    except Exception:  # noqa: BLE001 - 注册表故障按未定价处理
+        return None
+
+
+def light_mapping_status(
+    *,
+    visible_to: Optional[List[str]] = None,
+    allow_unowned: bool = False,
+    allow_owners: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """第二季 V9：chat_light 省档映射现状（不建 provider，只查事实）。
+
+    映射生效三条件：给 ``chat_light`` 任务指派了模型、该模型在当前可见的
+    聊天候选里、且注册表价格确实比默认模型便宜（任一价格未知都不启用——
+    防止把更贵的模型配成「省档」，见设计 §3 价格护栏）。
+    """
+    out: Dict[str, Any] = {
+        "configured": False,
+        "light_model": None,
+        "light_record_id": None,
+        "default_model": None,
+        "light_price": None,
+        "default_price": None,
+        "price_ok": False,
+        "reason": "",
+    }
+    try:
+        from src.ai.model_config import get_model_config_store
+
+        store = get_model_config_store()
+        records = _chat_chain_records(
+            store,
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
+        )
+    except Exception:  # noqa: BLE001
+        out["reason"] = "模型配置读取失败"
+        return out
+    if not records:
+        out["reason"] = "还没有配置任何模型"
+        return out
+    out["default_model"] = str(records[0].get("model") or "")
+    out["default_price"] = _registry_price(out["default_model"])
+    try:
+        result = route_task_from_store(
+            "chat_light",
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
+        )
+    except NoModelAvailableError:
+        out["reason"] = "未给 chat_light 指派模型（省档路由不生效）"
+        return out
+    light_id = result.selected_model.model_id
+    record = next((r for r in records if str(r.get("id") or "") == light_id), None)
+    if record is None:
+        out["reason"] = "省档模型不在当前可见的聊天候选里"
+        return out
+    out["configured"] = True
+    out["light_record_id"] = light_id
+    out["light_model"] = str(record.get("model") or result.selected_model.model_name or "")
+    out["light_price"] = _registry_price(out["light_model"])
+    if out["light_price"] is None or out["default_price"] is None:
+        out["reason"] = "有模型未定价，无法确认省档更便宜（映射不启用）"
+    elif out["light_price"] >= out["default_price"]:
+        out["reason"] = "省档模型并不比默认模型便宜（映射不启用）"
+    else:
+        out["price_ok"] = True
+        out["reason"] = "ok"
+    return out
+
+
+def resolve_light_first_chain(
+    *,
+    visible_to: Optional[List[str]] = None,
+    allow_unowned: bool = False,
+    allow_owners: Optional[List[str]] = None,
+) -> Optional[BaseProvider]:
+    """第二季 V9：省档优先链 = [chat_light 选型] + [原聊天链]。
+
+    映射未配/价格护栏不过/省档就是默认模型时返回 None（调用方回落原链，
+    行为与未启用路由逐字一致）。构建逐项沿用 ``_chat_provider_chain`` 的
+    可见性与 resolve 路径，不绕 Key 归属视角；省档或默认模型不可解析时
+    返回 None，让原链按它自己的语义报错/回落，绝不静默换模型。
+    """
+    status = light_mapping_status(
+        visible_to=visible_to,
+        allow_unowned=allow_unowned,
+        allow_owners=allow_owners,
+    )
+    if not (status["configured"] and status["price_ok"]):
+        logger.info("cost routing inactive: %s", status["reason"])
+        return None
+    try:
+        from src.ai.model_config import ModelConfigError, get_model_config_store
+
+        store = get_model_config_store()
+        records = _chat_chain_records(
+            store,
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not records:
+        return None
+    light_id = status["light_record_id"]
+    if str(records[0].get("id") or "") == light_id:
+        logger.info("cost routing inactive: light model is already the default")
+        return None
+
+    providers_by_id: Dict[str, BaseProvider] = {}
+    labels_by_id: Dict[str, str] = {}
+    for record in records:
+        record_id = str(record.get("id") or "")
+        try:
+            cfg = store.resolve(
+                record["id"],
+                visible_to=visible_to,
+                allow_unowned=allow_unowned,
+                allow_owners=allow_owners,
+            )
+        except ModelConfigError:
+            logger.info("cost routing: skipping unresolvable model %s", record_id)
+            continue
+        if not cfg:
+            continue
+        providers_by_id[record_id] = provider_from_config(cfg)
+        labels_by_id[record_id] = _chat_chain_labels(record)
+
+    if light_id not in providers_by_id or str(records[0].get("id") or "") not in providers_by_id:
+        return None
+    ordered_ids = [light_id] + [str(r.get("id") or "") for r in records
+                                if str(r.get("id") or "") != light_id]
+    providers = [providers_by_id[i] for i in ordered_ids if i in providers_by_id]
+    labels = [labels_by_id[i] for i in ordered_ids if i in labels_by_id]
+    if len(providers) < 2:
+        return None
+    logger.info("cost routing: light-first chain: %s", " -> ".join(labels))
+    return FailoverProvider(providers, labels=labels)
+
+
 def provider_for_task(
     task_type: Optional[str] = None,
     *,
@@ -620,6 +779,7 @@ def provider_for_task(
     allow_unowned: bool = False,
     allow_owners: Optional[List[str]] = None,
     allow_env_fallback: bool = True,
+    light_first: bool = False,
 ) -> BaseProvider:
     """Provider for a **live** call, routed through model management.
 
@@ -658,6 +818,18 @@ def provider_for_task(
     # 以前这里走 ``prefer_tier=CLOUD``，会把用户设为默认的本地 Ollama 排到
     # 云端模型之后（且失败后不回落），"设为默认"因此成了装饰。
     if _is_chat_task(task_type):
+        # 第二季 V9：调用方已判定本轮为 light 且路由开关开时，省档模型
+        # 抢先、原聊天链作链尾（轻模型失败自动升档回默认）。light_first
+        # 只由 gateway 在「开关开 + 本轮分级为 light」时传入；映射未配或
+        # 价格护栏不过时 resolve 返回 None，逐字回落原链。
+        if light_first and not _routing_disabled():
+            light_chain = resolve_light_first_chain(
+                visible_to=visible_to,
+                allow_unowned=allow_unowned,
+                allow_owners=allow_owners,
+            )
+            if light_chain is not None:
+                return light_chain
         chained = _chat_provider_chain(
             visible_to=visible_to,
             allow_unowned=allow_unowned,
