@@ -619,6 +619,388 @@ def make_tools(
         )
     )
 
+    # ============ 云备份快照（大升级第二季 V10） ============
+    # 与 backup_now 的分工：backup_now 是本机机器绑定归档（带不走）；
+    # cloud_backup 是口令加密快照——数据面与加密信封复用账号凭据包，
+    # 换机/灾难恢复靠它。口令只在本次调用的内存里用，工具不保存、不回显；
+    # 恢复与删除是不可逆动作，沿用 apply_update 的口径：用户亲口确认后
+    # 带 confirm=true 才执行。云端上传默认关，status 里如实说明。
+    def cloud_backup(
+        action: str = "",
+        passphrase: str = "",
+        snapshot_id: str = "",
+        label: str = "",
+        scope: str = "",
+        retention: int = 0,
+        confirm: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        """云备份快照：status / list / create / restore / set_retention / delete。"""
+        from src.gateway import cloud_backup as _cb
+        from src.kernels.identity import _accounts as _acct
+        from src.kernels.identity import get_identity_manager
+
+        account = _account()
+        try:
+            verb = str(action or "").strip().lower()
+            if verb in ("", "status"):
+                status = _cb.cloud_backup_status()
+                status["snapshots"] = [
+                    _cb._public_meta(meta) for meta in _cb.list_snapshots()
+                ]
+                return _serialize({"status": "ok", **status})
+            if verb == "list":
+                return _serialize({
+                    "status": "ok",
+                    "snapshots": [
+                        _cb._public_meta(meta) for meta in _cb.list_snapshots()
+                    ],
+                    "retention": _cb.effective_retention(),
+                })
+            if verb == "create":
+                if not str(passphrase or ""):
+                    return _serialize({
+                        "status": "needs_passphrase",
+                        "error": (
+                            "做云备份快照需要一个备份口令（至少 8 个字符）："
+                            "请用户亲口给出，口令只用来加密这份快照，"
+                            "不会保存、不会写进任何记录；丢了口令快照打不开。"
+                        ),
+                    })
+                manager = get_identity_manager()
+                node = manager.get_account(account)
+                is_root = bool(node and node.is_root)
+                wanted_scope = str(scope or "").strip().lower() or (
+                    "all" if is_root else "self"
+                )
+                result = _cb.create_snapshot(
+                    actor=account,
+                    scope=wanted_scope,
+                    passphrase=str(passphrase),
+                    is_root=is_root,
+                    label=str(label or ""),
+                )
+                snap = result["snapshot"]
+                return _serialize({
+                    "status": "ok",
+                    "snapshot_id": snap["snapshot_id"],
+                    "created_at": snap["created_at"],
+                    "members": snap["members"],
+                    "files": snap["files"],
+                    "pruned": result.get("pruned") or [],
+                    "note": (
+                        "加密快照已存到本机（口令加密，没口令打不开）；"
+                        "云端上传默认关，想防丢可把快照文件拷进云盘。"
+                        "备份里不带模型 Key，换机恢复后要重填一次。"
+                    ),
+                })
+            if verb == "restore":
+                if confirm is not True:
+                    return _serialize({
+                        "status": "refused",
+                        "error": (
+                            "恢复快照会把数据合回本机（已有数据不覆盖、不删除），"
+                            "请先向用户说明要恢复哪一份快照，用户亲口确认后"
+                            "再带 confirm=true 调用。"
+                        ),
+                    })
+                if not str(passphrase or ""):
+                    return _serialize({
+                        "status": "needs_passphrase",
+                        "error": "恢复需要这份快照的备份口令，请用户亲口给出；口令不会保存。",
+                    })
+                target = str(snapshot_id or "").strip()
+                if target in ("", "latest", "最新"):
+                    metas = _cb.list_snapshots()
+                    if not metas:
+                        return _serialize({
+                            "status": "failed", "error": "本机还没有任何云备份快照。"
+                        })
+                    target = str(metas[0]["snapshot_id"])
+                result = _cb.restore_snapshot(
+                    snapshot_id=target,
+                    passphrase=str(passphrase),
+                    actor=account,
+                )
+                return _serialize({
+                    "status": "ok",
+                    "snapshot_id": target,
+                    "restore_mode": result.get("restore_mode"),
+                    "notice": result.get("notice") or "恢复完成。",
+                })
+            if verb == "set_retention":
+                value = _cb.set_retention(int(retention or 0))
+                return _serialize({
+                    "status": "ok",
+                    "retention": value,
+                    "note": f"云备份快照保留份数已改为 {value} 份（下次做快照时按新数修剪）。",
+                })
+            if verb == "delete":
+                if confirm is not True:
+                    return _serialize({
+                        "status": "refused",
+                        "error": (
+                            "删快照不可恢复：请先向用户说明要删哪一份，"
+                            "用户亲口确认后再带 confirm=true 调用。"
+                        ),
+                    })
+                result = _cb.delete_snapshot(
+                    actor=account, snapshot_id=str(snapshot_id or "")
+                )
+                return _serialize({"status": "ok", **result})
+            return _serialize({
+                "status": "failed",
+                "error": f"未知动作 {verb}；可用：status / list / create / restore / set_retention / delete。",
+            })
+        except _acct.AccountError as exc:
+            return _serialize({"status": "failed", "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - 失败如实回，不许假报完成
+            return _serialize({
+                "status": "failed",
+                "error": f"云备份操作失败：{type(exc).__name__}: {exc}",
+            })
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.backup.cloud",
+            name="cloud_backup",
+            version="1.0.0",
+            description=(
+                "云备份快照（口令加密、可带走）：status 看现状与清单，create 做一份新快照"
+                "（需要用户亲口给备份口令），restore 从快照恢复（须 confirm=true 且要口令），"
+                "set_retention 改保留份数，delete 删一份（须 confirm=true）。"
+                "用户说「做个云备份」「把数据加密备份一份以后换电脑用」「恢复上次的备份」"
+                "时用这个工具；本机同机回滚用 backup_now，不要混。"
+            ),
+            capability="backup.cloud",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "status", "list", "create",
+                            "restore", "set_retention", "delete",
+                        ],
+                    },
+                    "passphrase": {
+                        "type": "string",
+                        "description": "备份口令（create/restore 用，用户亲口给；不保存不回显）",
+                    },
+                    "snapshot_id": {
+                        "type": "string",
+                        "description": "快照编号（restore/delete 用；restore 可填 latest）",
+                    },
+                    "label": {"type": "string", "description": "快照备注（create 用，可选）"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["all", "self", ""],
+                        "description": "导出范围（create 用；缺省主账号 all、成员 self）",
+                    },
+                    "retention": {
+                        "type": "integer",
+                        "description": "保留份数（set_retention 用，1–100）",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "restore/delete 必须为 true（用户亲口确认后）",
+                    },
+                },
+                "required": ["action"],
+            },
+            fn=cloud_backup,
+            risk="HIGH",
+        )
+    )
+
+    # ============ 团队编排（第二季 V8：多 Bot 协作） ============
+    # 主 Bot 把一句话目标分解成子任务、按岗位派给群聊成员 Bot 执行、汇总
+    # 回主线。成员执行走 gateway.chat 的同一条内部路径（去重/用量上限/
+    # 知识注入/记账全继承，不另起炉灶）；分解与选择规则在
+    # src/ai/orchestration.py。两步口径：不带 confirm 只出计划预览
+    # （拆几件、派给谁），用户确认后带 confirm=true 才真跑——编排一跑
+    # 就是多路模型调用，先让用户看见规模（设计 R1）。
+    def team_orchestrate(
+        goal: str = "",
+        group_chat_id: str = "",
+        confirm: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        """团队编排：preview（默认）/ run（confirm=true）。"""
+        try:
+            from src.ai.goal_task_graph import GoalDefinition, GoalTaskGraph
+            from src.ai.orchestration import MemberCapReached, TeamOrchestrator
+            from src.workbench.store import get_workbench_store
+
+            account = _account()
+            store = get_workbench_store()
+            goal_text = str(goal or "").strip()
+            if not goal_text:
+                return _serialize({"status": "failed", "error": "请先说清要让团队一起做的目标。"})
+            chats = store.list_group_chats([account])
+            chat_row = None
+            if group_chat_id:
+                chat_row = next((c for c in chats if c.get("id") == group_chat_id), None)
+                if chat_row is None:
+                    return _serialize({"status": "failed", "error": "找不到这个群聊，先用 manage_bots 看一下团队。"})
+            elif len(chats) == 1:
+                chat_row = chats[0]
+            elif not chats:
+                return _serialize({
+                    "status": "failed",
+                    "error": "还没有团队群聊。先建一个群、把要协作的 Bot 拉进来，再让我派活。",
+                })
+            else:
+                return _serialize({
+                    "status": "needs_group",
+                    "error": "有多个团队群聊，请指明在哪一个群里派活（group_chat_id）。",
+                    "group_chats": [{"id": c.get("id"), "name": c.get("name")} for c in chats],
+                })
+            members = []
+            for bot_id in chat_row.get("member_bot_ids") or []:
+                bot = store.get_bot([account], bot_id)
+                if bot is not None:
+                    members.append(bot)
+            if not members:
+                return _serialize({
+                    "status": "failed",
+                    "error": "这个群里还没有成员 Bot。先把要协作的 Bot 拉进群，再让我派活。",
+                })
+
+            graph = GoalTaskGraph(goal=GoalDefinition(id="", description=goal_text))
+            tasks = graph.decompose_goal()
+            if not tasks:
+                return _serialize({"status": "failed", "error": "这个目标没能拆成子任务，换个说法再试。"})
+
+            def _runner(bot_id: str, brief: str, *, idempotency_key: str) -> str:
+                from fastapi import HTTPException
+
+                from src.gateway.chat import ChatRequest
+                from src.gateway.chat import chat as _chat_handler
+
+                try:
+                    resp = _chat_handler(
+                        ChatRequest(session_id=f"workbench-{bot_id}", message=brief),
+                        principal=principal,
+                        idempotency_key=idempotency_key,
+                    )
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {}
+                    if detail.get("code") == "usage_cap_reached":
+                        raise MemberCapReached(
+                            str(detail.get("message") or "已达用量上限")
+                        ) from exc
+                    raise RuntimeError(
+                        str(detail.get("message") or f"成员调用失败（HTTP {exc.status_code}）")
+                    ) from exc
+                if resp.status != "completed":
+                    raise RuntimeError(resp.error or resp.reason or "成员没有完成这轮任务")
+                return resp.reply
+
+            def _cap_status(bot_id: str) -> Dict[str, Any]:
+                from src.gateway.a2a import bot_cap_status
+
+                return bot_cap_status(bot_id)
+
+            def _notify(kind: str, result: Dict[str, Any]) -> None:
+                from src.gateway.a2a import report_done, report_stuck
+
+                title = f"团队编排：{goal_text[:40]}"
+                if kind == "done":
+                    report_done(title, "聊天 · 团队编排", owner=account)
+                else:
+                    failed_items = [i for i in result.get("items", []) if i["status"] != "completed"]
+                    missing = "；".join(
+                        f"{i.get('bot_name') or i['task_id']}：{i.get('error') or i['status']}"
+                        for i in failed_items
+                    )
+                    report_stuck(title, missing or "部分任务未完成", owner=account)
+
+            from src.common.engines import data_dir
+
+            state_path = str(
+                data_dir() / "orchestration" / f"{graph.goal.id}.json"
+            )
+            orch = TeamOrchestrator(
+                graph,
+                members,
+                _runner,
+                cap_status=_cap_status,
+                notify=_notify,
+                state_path=state_path,
+            )
+            if confirm is not True:
+                plan = orch.plan(graph.goal.id)
+                return _serialize({
+                    "status": "plan",
+                    "note": (
+                        f"计划预览（还没开跑）：共 {plan['task_count']} 件子任务，"
+                        f"派给 {plan['member_count']} 位成员。确认要跑，"
+                        "再带 confirm=true 调用一次。"
+                    ),
+                    **plan,
+                })
+            result = orch.run(graph.goal.id)
+            return _serialize({
+                "status": result["status"],
+                "synthesis": result.get("synthesis"),
+                "synthesis_error": result.get("synthesis_error"),
+                "completed": result["completed"],
+                "failed": result["failed"],
+                "skipped": result["skipped"],
+                "items": [
+                    {
+                        "task_id": i["task_id"],
+                        "bot_name": i.get("bot_name"),
+                        "status": i["status"],
+                        "error": i.get("error"),
+                    }
+                    for i in result["items"]
+                ],
+                "usage_note": result.get("usage_note"),
+                "note": (
+                    "把 synthesis 原样答复用户；status 为 partial/failed 时"
+                    "先如实说明哪几项没成、为什么，不许说成全部完成。"
+                ),
+            })
+        except Exception as exc:  # noqa: BLE001 - 失败如实回，不许假报
+            return _serialize({
+                "status": "failed",
+                "error": f"团队编排失败：{type(exc).__name__}: {exc}",
+            })
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.team.orchestrate",
+            name="team_orchestrate",
+            version="1.0.0",
+            description=(
+                "团队编排：把一个目标分解成子任务、按岗位派给某个团队群聊里的成员 Bot "
+                "并行/串行执行、收齐后汇总。不带 confirm 只返回计划预览（拆几件、派给谁）；"
+                "用户确认后带 confirm=true 才真正执行。用户说「让团队一起做…」「派活给"
+                "群里的 Bot」时用这个工具。成员失败会如实报部分完成，不许假装全成。"
+            ),
+            capability="team.orchestrate",
+            schema={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "要让团队一起完成的目标（一句话）"},
+                    "group_chat_id": {
+                        "type": "string",
+                        "description": "团队群聊 id（只有一个群时可省略；多个群时必填）",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "true 才真正执行；缺省只出计划预览",
+                    },
+                },
+                "required": ["goal"],
+            },
+            fn=team_orchestrate,
+            risk="HIGH",
+        )
+    )
+
     # ============ 用量/花费查询（大升级 U1：多模型容灾的记账面） ============
     # 用量账本（gateway/account_usage）此前只有设置页与接口能看，聊天里
     # 问「这个月用了多少」无工具可答。按精而简补这条只读通路：口径与
@@ -662,6 +1044,68 @@ def make_tools(
                     "total_tokens": item.get("total_tokens"),
                     "cost": item.get("cost"),
                 })
+            # 第二季 V9：按路由分级拆账 + 省档节省估算（同一批明细行聚合）。
+            # 节省 = 省档行按「默认模型价 − 实际应答模型价」× token 估算；
+            # 任一省档行未定价 → savings_complete=False 只报已计部分，
+            # 绝不给一个干脆的总数（设计 R2）。
+            routing_block = None
+            try:
+                from src.ai.model_router import light_mapping_status
+
+                events = []
+                offset = 0
+                truncated = False
+                for _page in range(5):
+                    page = usage_events(
+                        account, owners=[account],
+                        since=since, until=until,
+                        limit=200, offset=offset,
+                    )
+                    events.extend(page.get("events") or [])
+                    if not page.get("has_more"):
+                        break
+                    offset += 200
+                else:
+                    truncated = True
+                light_events = [e for e in events if e.get("route_grade") == "light"]
+                if light_events:
+                    status = light_mapping_status()
+                    default_price = status.get("default_price")
+                    saved = 0.0
+                    savings_complete = default_price is not None
+                    light_cost = 0.0
+                    for e in light_events:
+                        if e.get("cost") is None:
+                            savings_complete = False
+                            continue
+                        light_cost += float(e["cost"])
+                        model_price = None
+                        if default_price is not None:
+                            from src.gateway.account_usage import _price_table
+
+                            model_price = _price_table([e.get("model") or ""]).get(
+                                e.get("model") or ""
+                            )
+                        if model_price is None:
+                            savings_complete = False
+                            continue
+                        saved += (float(default_price) - float(model_price)) * (
+                            int(e.get("total_tokens") or 0) / 1000.0
+                        )
+                    routing_block = {
+                        "light_calls": len(light_events),
+                        "hard_calls": sum(1 for e in events if e.get("route_grade") == "hard"),
+                        "light_cost_estimate": round(light_cost, 6),
+                        "saved_estimate": round(saved, 6) if savings_complete else None,
+                        "savings_complete": savings_complete,
+                        "events_truncated": truncated,
+                        "note": (
+                            "节省为按价格表的估算（与账本同一价格口径）；"
+                            "有未定价模型参与时只报已计部分，不给总数。"
+                        ),
+                    }
+            except Exception:  # noqa: BLE001 - 分级拆账失败不拖垮用量主报表
+                routing_block = None
             return _serialize({
                 "status": "ok",
                 "month": label,
@@ -670,6 +1114,7 @@ def make_tools(
                 "cost_complete": result.get("cost_complete", True),
                 "unknown_models": result.get("unknown_models") or [],
                 "by_model": by_model,
+                "cost_routing": routing_block,
                 "note": (
                     "费用为按价格表估算；unknown_models 里的模型暂无价格、"
                     "未计入费用（不是 0 元）。"
@@ -788,6 +1233,34 @@ def make_tools(
                     "last_turn": (status.get("session") or {}).get("last_turn"),
                 },
                 "note": "引擎没装时把 install_hint 原样告诉用户，不要假装能语音。",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    # ============ 安卓 App 状态（大升级第二季 V3：TWA 套件自查面） ============
+    def android_app_status(**kwargs: Any) -> str:
+        """安卓 App（TWA）到哪一步了：PWA 底子、打包套件、还差什么。"""
+        try:
+            from src.twa.status import twa_status
+
+            status = twa_status()
+            return _serialize({
+                "status": "ok",
+                "pwa_ready": status["pwa"]["ready"],
+                "pwa_missing": status["pwa"]["missing"],
+                "kit_present": status["kit"]["present"],
+                "package_id": status["kit"]["package_id"],
+                "host": status["kit"]["host"],
+                "host_configured": status["kit"]["host_configured"],
+                "assetlinks_filled": status["kit"]["assetlinks_filled"],
+                "keystore_present": status["kit"]["keystore_present"],
+                "ready_to_build": status["ready_to_build"],
+                "next_steps": status["next_steps"],
+                "guide": status["guide"],
+                "note": (
+                    "把 next_steps 原样翻成人话告诉用户；真机出包/安装还没验过"
+                    "就直说真机待验，不要假装手机已经能装。"
+                ),
             })
         except Exception as exc:  # noqa: BLE001
             return _serialize({"status": "failed", "error": str(exc)})
@@ -1074,6 +1547,24 @@ def make_tools(
 
     tools.append(
         Tool(
+            tool_id="liuhao.twa.status",
+            name="android_app_status",
+            version="1.0.0",
+            description=(
+                "查看安卓 App（把贾维斯网页版包成真 App 的 TWA 方案）到哪一步了："
+                "PWA 底子齐不齐、打包套件配好没有、还差什么步骤。"
+                "用户问「安卓 App 能装了吗 / 怎么把贾维斯装到安卓手机上 / "
+                "TWA 打包到哪一步了」时用这个工具。"
+            ),
+            capability="twa.status",
+            schema={"type": "object", "properties": {}},
+            fn=android_app_status,
+            risk="LOW",
+        )
+    )
+
+    tools.append(
+        Tool(
             tool_id="liuhao.upgrade.check",
             name="check_update",
             version="1.0.0",
@@ -1135,6 +1626,86 @@ def make_tools(
             },
             fn=usage_report,
             risk="LOW",
+        )
+    )
+
+    # ============ 成本智能路由开关（第二季 V9） ============
+    # 一句话开关：账号设置 cost_routing_enabled（默认关）。status 如实报
+    # 映射现状：未给 chat_light 指派模型/价格护栏不过时，明说「开了也不
+    # 生效」及原因，不许只报「已开启」冒充在省钱。
+    def cost_routing(action: str = "status", **kwargs: Any) -> str:
+        """成本智能路由：status / enable / disable。"""
+        try:
+            from src.ai.model_router import light_mapping_status
+            from src.gateway.a2a import get_account_settings, set_account_settings
+
+            account = _account()
+            verb = str(action or "status").strip().lower()
+            if verb in ("enable", "disable"):
+                enabled = verb == "enable"
+                set_account_settings(account, cost_routing_enabled=enabled)
+                settings = get_account_settings(account)
+                mapping = light_mapping_status()
+                return _serialize({
+                    "status": "ok",
+                    "enabled": bool(settings.get("cost_routing_enabled")),
+                    "mapping": mapping,
+                    "note": (
+                        "已开启。" if enabled else "已关闭，全部对话走原模型链。"
+                    ) + (
+                        ""
+                        if (not enabled or (mapping["configured"] and mapping["price_ok"]))
+                        else f"注意：现在开了也不生效——{mapping['reason']}。"
+                    ),
+                })
+            if verb == "status":
+                settings = get_account_settings(account)
+                mapping = light_mapping_status()
+                return _serialize({
+                    "status": "ok",
+                    "enabled": bool(settings.get("cost_routing_enabled")),
+                    "mapping": mapping,
+                    "note": (
+                        "省档路由"
+                        + ("已开启" if settings.get("cost_routing_enabled") else "未开启（默认）")
+                        + (
+                            f"；省档模型：{mapping['light_model']}（默认模型 {mapping['default_model']}）。"
+                            if mapping["configured"] and mapping["price_ok"]
+                            else f"；映射现状：{mapping['reason']}。"
+                        )
+                    ),
+                })
+            return _serialize({
+                "status": "failed",
+                "error": f"未知 action: {verb}（可用 status/enable/disable）",
+            })
+        except Exception as exc:  # noqa: BLE001 - 失败如实回
+            return _serialize({"status": "failed", "error": str(exc)})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.cost.routing",
+            name="cost_routing",
+            version="1.0.0",
+            description=(
+                "成本智能路由（把明确的轻活交给更便宜的模型、硬活永远走原模型）："
+                "status 看开关与省档映射现状，enable/disable 开关（账号级，默认关）。"
+                "用户说「开启省钱模式/成本路由」「轻活走便宜模型」时用这个工具；"
+                "开了但没配省档映射时必须如实说明不生效的原因。"
+            ),
+            capability="cost.routing",
+            schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "enable", "disable"],
+                    },
+                },
+                "required": ["action"],
+            },
+            fn=cost_routing,
+            risk="MEDIUM",
         )
     )
 
@@ -1368,6 +1939,292 @@ def make_tools(
             },
             fn=run_skill,
             risk="MEDIUM",
+        )
+    )
+
+    # ============ 技能包生态（大升级第二季 V7：聊天管生命周期） ============
+    # 以前装/卸/升级技能只能开技能页点，聊天里说一句话办不了——违反
+    # 「精而简：一句话可达」。这里补齐五个工具，全部走
+    # ``src/gateway/skill_packages`` 服务层（与 HTTP 面同一套语义）：
+    #   * list / inspect 只读：inspect 只解析并摊开权限声明，不安装；
+    #   * install / upgrade / uninstall 是写操作：不带 confirm=true 时
+    #     只返回"待确认 + 权限声明"，把声明转告用户、等他亲口确认后
+    #     才许带 confirm=true 真执行（与 apply_update 同口径）。
+    #   * 安装的技能默认未启用，脚本首次运行仍走 run_skill 的审批流，
+    #     聊天安装不会给任何包绕过授权的机会。
+    def list_skill_packages(**kwargs: Any) -> str:
+        """列出已登记技能与已装包（只读）。"""
+        try:
+            from src.gateway.skill_packages import list_packages
+
+            return _serialize({"status": "ok", "skills": list_packages()})
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": f"技能列表读取失败：{exc}"})
+
+    def inspect_skill_package(path: str = "", **kwargs: Any) -> str:
+        """预览一个技能包的声明（名称/版本/作者/入口/权限/依赖），不安装。"""
+        target = (path or kwargs.get("package_path") or "").strip()
+        if not target:
+            return _serialize(
+                {"status": "failed", "error": "请提供技能包的本机路径（目录或 .zip/.md/.json）。"}
+            )
+        try:
+            from src.gateway.skill_packages import (
+                SkillPackageError,
+                inspect_path,
+            )
+
+            try:
+                summary = inspect_path(target)
+            except SkillPackageError as exc:
+                return _serialize({"status": "failed", "error": str(exc)})
+            return _serialize(
+                {
+                    "status": "preview",
+                    "package": summary,
+                    "message": (
+                        "这只是预览，没有安装。请把权限声明转告用户；"
+                        "用户确认安装后再用 install_skill_package 并传 confirm=true。"
+                    ),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": f"技能包预览失败：{exc}"})
+
+    def install_skill_package(
+        path: str = "", confirm: bool = False, **kwargs: Any
+    ) -> str:
+        """安装技能包（须用户亲口确认；未确认时只返回权限声明）。"""
+        target = (path or kwargs.get("package_path") or "").strip()
+        if not target:
+            return _serialize(
+                {"status": "failed", "error": "请提供技能包的本机路径（目录或 .zip/.md/.json）。"}
+            )
+        try:
+            from src.gateway.skill_packages import (
+                SkillPackageError,
+                inspect_path,
+                install_from_path,
+            )
+
+            if confirm is not True:
+                try:
+                    summary = inspect_path(target)
+                except SkillPackageError as exc:
+                    return _serialize({"status": "failed", "error": str(exc)})
+                return _serialize(
+                    {
+                        "status": "pending_confirmation",
+                        "package": summary,
+                        "message": (
+                            "尚未安装。请先把这个包的权限声明（声明权限、能力、"
+                            "可执行入口、依赖）转告用户，用户亲口说「确认安装」后"
+                            "再带 confirm=true 调用。"
+                        ),
+                    }
+                )
+            try:
+                result = install_from_path(target, principal=principal)
+            except SkillPackageError as exc:
+                return _serialize({"status": "failed", "error": str(exc)})
+            return _serialize({"status": "installed", **result})
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": f"技能包安装失败：{exc}"})
+
+    def upgrade_skill_package(
+        skill_id: str = "", path: str = "", confirm: bool = False, **kwargs: Any
+    ) -> str:
+        """升级一个已装技能（须用户亲口确认；未确认时只返回新版声明）。"""
+        sid = (skill_id or kwargs.get("skill") or "").strip()
+        target = (path or kwargs.get("package_path") or "").strip()
+        if not sid or not target:
+            return _serialize(
+                {"status": "failed", "error": "请提供 skill_id 与新版技能包的本机路径。"}
+            )
+        try:
+            from src.gateway.skill_packages import (
+                SkillPackageError,
+                inspect_path,
+                upgrade_from_path,
+            )
+
+            if confirm is not True:
+                try:
+                    summary = inspect_path(target)
+                except SkillPackageError as exc:
+                    return _serialize({"status": "failed", "error": str(exc)})
+                return _serialize(
+                    {
+                        "status": "pending_confirmation",
+                        "package": summary,
+                        "message": (
+                            "尚未升级。请把新版的权限声明转告用户，用户亲口说"
+                            "「确认升级」后再带 confirm=true 调用。"
+                        ),
+                    }
+                )
+            try:
+                result = upgrade_from_path(sid, target, principal=principal)
+            except SkillPackageError as exc:
+                return _serialize({"status": "failed", "error": str(exc)})
+            return _serialize({"status": "upgraded", **result})
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": f"技能升级失败：{exc}"})
+
+    def uninstall_skill_package(
+        skill_id: str = "", confirm: bool = False, **kwargs: Any
+    ) -> str:
+        """卸载一个技能（须用户亲口确认；被绑定/被依赖时拒绝并点名）。"""
+        sid = (skill_id or kwargs.get("skill") or "").strip()
+        if not sid:
+            return _serialize(
+                {"status": "failed", "error": "请提供要卸载的 skill_id。"}
+            )
+        try:
+            from src.gateway.skill_packages import (
+                SkillPackageError,
+                uninstall_package,
+            )
+            from src.gateway.skill_store import SkillNotFound, SkillStore
+
+            if confirm is not True:
+                try:
+                    record = SkillStore().get(sid)
+                except SkillNotFound:
+                    return _serialize(
+                        {"status": "failed", "error": f"没有这个技能：{sid}。"}
+                    )
+                return _serialize(
+                    {
+                        "status": "pending_confirmation",
+                        "skill_id": sid,
+                        "name": record.get("name"),
+                        "message": (
+                            "尚未卸载。请向用户确认要卸载的是这个技能，"
+                            "用户亲口说「确认卸载」后再带 confirm=true 调用。"
+                        ),
+                    }
+                )
+            try:
+                result = uninstall_package(sid, principal=principal)
+            except SkillPackageError as exc:
+                return _serialize({"status": "failed", "error": str(exc)})
+            return _serialize({"status": "uninstalled", **result})
+        except Exception as exc:  # noqa: BLE001
+            return _serialize({"status": "failed", "error": f"技能卸载失败：{exc}"})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.skill.list_packages",
+            name="list_skill_packages",
+            version="1.0.0",
+            description=(
+                "列出已登记的技能与已安装的技能包（名称/版本/作者/是否启用/"
+                "依赖）。只读。用户问「装了哪些技能/技能包」时用它，不要凭记忆回答。"
+            ),
+            capability="skill.manage",
+            schema={"type": "object", "properties": {}},
+            fn=list_skill_packages,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.skill.inspect_package",
+            name="inspect_skill_package",
+            version="1.0.0",
+            description=(
+                "预览一个本机技能包（目录或 .zip/.md/.json）：解析清单并摊开"
+                "名称/版本/作者/可执行入口/声明权限/依赖核对结果。只预览，"
+                "不安装、不产生任何授权。安装任何包之前必须先用它看声明。"
+            ),
+            capability="skill.manage",
+            schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+            fn=inspect_skill_package,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.skill.install_package",
+            name="install_skill_package",
+            version="1.0.0",
+            description=(
+                "从本机路径安装技能包。写操作：不带 confirm 时只返回权限声明"
+                "供转告用户；只有用户亲口说「确认安装」后才可传 confirm=true。"
+                "安装后技能默认未启用，脚本首次运行仍须单独审批。"
+            ),
+            capability="skill.manage",
+            schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "用户已明确确认安装时传 true，否则 false",
+                    },
+                },
+                "required": ["path", "confirm"],
+            },
+            fn=install_skill_package,
+            risk="HIGH",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.skill.upgrade_package",
+            name="upgrade_skill_package",
+            version="1.0.0",
+            description=(
+                "用本机路径的新包升级一个已装技能（保留技能 id 与员工绑定，"
+                "版本/作者/依赖同步更新，旧的运行授权自动失效）。写操作："
+                "只有用户亲口说「确认升级」后才可传 confirm=true。"
+            ),
+            capability="skill.manage",
+            schema={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "用户已明确确认升级时传 true，否则 false",
+                    },
+                },
+                "required": ["skill_id", "path", "confirm"],
+            },
+            fn=upgrade_skill_package,
+            risk="HIGH",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.skill.uninstall_package",
+            name="uninstall_skill_package",
+            version="1.0.0",
+            description=(
+                "卸载一个技能（连同已装包与已记住的运行授权）。仍绑定员工或"
+                "被别的技能声明为依赖时会拒绝并点名。写操作：只有用户亲口说"
+                "「确认卸载」后才可传 confirm=true。"
+            ),
+            capability="skill.manage",
+            schema={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "用户已明确确认卸载时传 true，否则 false",
+                    },
+                },
+                "required": ["skill_id", "confirm"],
+            },
+            fn=uninstall_skill_package,
+            risk="HIGH",
         )
     )
 
