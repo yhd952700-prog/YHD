@@ -163,9 +163,10 @@ def test_grouped_egress_covers_every_real_host_exactly_once() -> None:
     }
 
     assert listing["total"] == len(EGRESS_REGISTRY)
-    # 43 = 0.4.6 登记表 egress=True 条数（0.4.4 时代写死的 36 已随新集成/
-    # 语音模块扩容过期；2026-11-17 补缺口补登记 alphacephei.com 后为 43）。
-    assert listing["egress_count"] == len(expected) == 43
+    # 44 = 0.4.6 登记表 egress=True 条数（0.4.4 时代写死的 36 已随新集成/
+    # 语音模块扩容过期；2026-11-17 补缺口补登记 alphacephei.com 后为 43；
+    # 2026-11-18 第二季 V6 补登记 huggingface.co（知识库本地向量模型下载）后为 44）。
+    assert listing["egress_count"] == len(expected) == 44
     assert listing["placeholder_count"] == listing["total"] - listing["egress_count"]
     assert len(flat) == len(set(flat)), "同一主机不能在多个功能组里重复出现"
     assert set(flat) == expected, "分组后漏掉了真实出站主机"
