@@ -119,6 +119,29 @@ def _normalize_str_list(values: Any) -> List[str]:
     return out
 
 
+def normalize_dependencies(values: Any) -> List[Dict[str, str]]:
+    """收敛技能的依赖声明（V7 包格式）：``[{name, version}]``，形状不对的条目丢弃。
+
+    解析期的严格校验在 ``skill_import.normalize_dependencies``；这里是落盘前
+    的最后一道形状收敛，保证注册表里永远只有干净结构。
+    """
+    if not isinstance(values, (list, tuple)):
+        return []
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        out.append(
+            {"name": name, "version": str(item.get("version") or "").strip()}
+        )
+    return out[:20]
+
+
 class SkillStore:
     """技能清单的读写。实例很轻，每个请求 new 一个即可（无进程级缓存）。"""
 
@@ -237,6 +260,8 @@ class SkillStore:
         description: Any = "",
         source: str = "user",
         version: Any = "",
+        author: Any = "",
+        dependencies: Any = None,
         capabilities: Any = None,
         declared_permissions: Iterable[str] = (),
         declared_risk: Any = "",
@@ -282,6 +307,8 @@ class SkillStore:
                     "description": clean_description,
                     "source": source,
                     "version": str(version or "").strip(),
+                    "author": str(author or "").strip()[:80],
+                    "dependencies": normalize_dependencies(dependencies),
                     "capabilities": clean_caps,
                     "declared_permissions": _normalize_str_list(declared_permissions),
                     "declared_risk": str(declared_risk or "").strip().lower(),
@@ -339,6 +366,40 @@ class SkillStore:
                                 f"已经存在同名技能「{other.get('name')}」，请换个名字。"
                             )
                     record["name"] = clean_name
+                if description is not None:
+                    record["description"] = normalize_description(description)
+                record["updated_at"] = _now()
+                document["skills"][skill_id] = record
+                self._write_document(document)
+                return dict(record)
+
+    def update_package_fields(
+        self,
+        skill_id: str,
+        *,
+        version: Any = None,
+        author: Any = None,
+        dependencies: Any = None,
+        description: Any = None,
+    ) -> Dict[str, Any]:
+        """升级后同步包级字段（版本/作者/依赖/说明）。
+
+        升级换的是包内容，注册表里的版本与依赖声明必须跟着换，否则列表里
+        显示的还是旧版本、依赖核对也会对着旧声明做。只动这四个字段，
+        名字/开关/绑定一律不碰。
+        """
+        with _PROCESS_WRITE_LOCK:
+            with self._lock:
+                document = self._load_document()
+                record = document["skills"].get(skill_id)
+                if not isinstance(record, dict):
+                    raise SkillNotFound(skill_id)
+                if version is not None:
+                    record["version"] = str(version or "").strip()
+                if author is not None:
+                    record["author"] = str(author or "").strip()[:80]
+                if dependencies is not None:
+                    record["dependencies"] = normalize_dependencies(dependencies)
                 if description is not None:
                     record["description"] = normalize_description(description)
                 record["updated_at"] = _now()
