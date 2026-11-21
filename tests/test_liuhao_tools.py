@@ -61,6 +61,11 @@ def test_make_tools_builtin_set_is_exact():
         "check_update",
         "voice_status",
         "morning_briefing",
+        # 第二季 V7 新增 A 档（技能包只读查询，默认开）：
+        "list_skill_packages",
+        "inspect_skill_package",
+        # 大升级第二季 V3 新增 A 档（只读状态，默认开）：
+        "android_app_status",
     }
     assert {t.name for t in tools} == expected
 
@@ -82,17 +87,34 @@ def test_make_tools_full_set_is_exact_with_disabled_included():
         # （apply_update 高风险正式确认 / routine_templates / device_sync）：
         "usage_report", "check_update", "voice_status", "morning_briefing",
         "apply_update", "routine_templates", "device_sync",
+        # 第二季 V2 新增（B 档默认关）：简报语音播报 / Web Push 管理。
+        "briefing_broadcast", "push_notifications",
+        # 第二季 V7 新增：读 2 个 A 档默认开（见默认集断言）、写 3 个 B 档默认关。
+        "list_skill_packages", "inspect_skill_package",
+        "install_skill_package", "upgrade_skill_package", "uninstall_skill_package",
+        # 第二季 V10 新增（B 档默认关）：加密云备份。
+        "cloud_backup",
+        # 大升级第二季 V3 新增 A 档（默认开，全集里同样在册）：
+        "android_app_status",
+        # 第二季 V6 新增（B 档默认关，写本地知识库）：聊天一句话存文档。
+        "knowledge_ingest",
+        # 第二季 V8 新增（B 档默认关）：团队编排（多 Bot 派活，工具内确认门）。
+        "team_orchestrate",
+        # 第二季 V9 新增（B 档默认关）：成本智能路由开关。
+        "cost_routing",
     }
     assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    # 15 = 0.4.6 A 档默认集（3 内置 + 7 插件安全子集 + system_status）
+    # 16 = 0.4.6 A 档默认集（3 内置 + 7 插件安全子集 + system_status）
     # + 大升级新增 A 档 4 个（usage_report / check_update / voice_status /
     # morning_briefing），见 test_make_tools_builtin_set_is_exact。
+    # + 第二季 V7 新增 A 档 2 个（list_skill_packages / inspect_skill_package）
+    # + 第二季 V3 新增 A 档 1 个（android_app_status）。
     # B 档默认关，不进注册表。
-    assert len(a._tool_list) == 15
+    assert len(a._tool_list) == 18
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 
