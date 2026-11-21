@@ -3,14 +3,16 @@
 The vector store is the process-level singleton, so a restart keeps the
 corpus: SQLite locally by default (``PersistentVectorStore``), Qdrant when
 one is reachable and selected (see ``vector_store.select_vector_backend``).
-The embedding provider is the configured one when available; when no external
-embedding service is reachable the service falls back to deterministic local
-hash vectors (``embedding.build_embedding_provider_with_local_fallback``) and
-says so in :meth:`KnowledgeDocumentService.status` (``embedding_mode`` /
-``semantic`` / ``vector_backend``) -- the fallback is lexical, not semantic,
-and must never be presented as a semantic model. Set
-``LIUHAO_KNOWLEDGE_LOCAL_FALLBACK=0`` to restore the old fail-closed
-behaviour (no provider -> "未启用").
+The embedding provider is the configured one when available; with no
+external embedding service the chain tries the in-process local ONNX
+semantic engine next (``embedding.build_embedding_provider_with_local_fallback``;
+``semantic=True``, ``embedding_mode="local_model"``), and only when that is
+unavailable too does the service fall back to deterministic local
+hash vectors and say so in :meth:`KnowledgeDocumentService.status`
+(``embedding_mode`` / ``semantic`` / ``vector_backend``) -- the hashing
+fallback is lexical, not semantic, and must never be presented as a
+semantic model. Set ``LIUHAO_KNOWLEDGE_LOCAL_FALLBACK=0`` to restore the
+old fail-closed behaviour (no provider -> "未启用").
 """
 
 from __future__ import annotations
@@ -407,20 +409,24 @@ class KnowledgeDocumentService:
         * ``qdrant_reachable`` -- whether a Qdrant server answers at the
           configured address right now (cached 60 s);
         * ``embedding_mode`` -- ``"configured"`` for a real embedding
-          provider, ``"local_hashing_fallback"`` when no external service is
-          reachable and the deterministic local hash embedder is in use;
+          provider, ``"local_model"`` for the in-process local ONNX
+          semantic engine, ``"local_hashing_fallback"`` when no external
+          service is reachable and the deterministic local hash embedder
+          is in use;
         * ``semantic`` -- False for the hashing fallback (lexical token
           overlap, not meaning) and for the dev-only mock; True for a real
-          embedding model.
+          embedding model (including the local ONNX engine).
         """
         provider = None
         model = None
         local_fallback = False
+        local_model = False
         try:
             embedder = self._embedding()
             provider = getattr(embedder, "name", type(embedder).__name__)
             model = getattr(embedder, "model", None)
             local_fallback = bool(getattr(embedder, "local_fallback", False))
+            local_model = bool(getattr(embedder, "local_model", False))
         except EmbeddingUnavailableError as exc:
             reason = str(exc)
         else:
@@ -441,9 +447,12 @@ class KnowledgeDocumentService:
             reason = reason or f"向量库不可用：{type(exc).__name__}"
 
         qdrant_reachable = vector_store_module.probe_qdrant_cached()
-        embedding_mode = (
-            "local_hashing_fallback" if local_fallback else "configured"
-        )
+        if local_fallback:
+            embedding_mode = "local_hashing_fallback"
+        elif local_model:
+            embedding_mode = "local_model"
+        else:
+            embedding_mode = "configured"
         semantic = (not local_fallback) and provider != "mock"
 
         # MEM-008：库级记录模型与维度；不一致时直接禁用并给中文原因，不让
@@ -482,6 +491,11 @@ class KnowledgeDocumentService:
                 )
             elif local_fallback:
                 message = "知识库已启用（本地向量：哈希向量，非语义模型）"
+            elif local_model:
+                message = (
+                    f"知识库已启用（本地语义模型 {model}："
+                    "向量在本机生成，不出本机）"
+                )
             elif vector_backend == "qdrant":
                 message = "知识库已启用（向量库：Qdrant）"
             else:
