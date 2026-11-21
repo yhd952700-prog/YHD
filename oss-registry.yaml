@@ -1963,6 +1963,46 @@ components:
       时按需下载一次，不随包带走；实测 16kHz 合成正样本检出 23/24、
       负样本 0/31，真人声还没验证（见 src/voice/wake.py）。
     action: 保持；语音 extra，唤醒词 KWS 模型；用户首次打开唤醒词时下载。
+  - name: onnxruntime
+    import_name: onnxruntime
+    license: MIT
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      2026-11-18 核实（第二季 V6 引入）：微软 onnxruntime，MIT 许可
+      （GitHub 仓库 LICENSE 与 PyPI 元数据一致）。此前只作为 sherpa-onnx
+      的原生库随行，没有 Python 包面；V6 知识库本地向量引擎需要直接
+      以 Python 包导入，故单独登记。补的缺口：进程内 ONNX 推理运行时。
+    action: 保持；knowledge extra，知识库本地语义向量引擎；导入探测、缺失诚实降级。
+  - name: tokenizers
+    import_name: tokenizers
+    license: Apache-2.0
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      2026-11-18 核实（第二季 V6 引入）：Hugging Face tokenizers，
+      Apache-2.0（GitHub 仓库 LICENSE 与 PyPI 元数据一致）。补的缺口：
+      bge-small-zh-v1.5 的 WordPiece 分词（tokenizer.json 直载，不经
+      huggingface_hub 下载通道）。
+    action: 保持；knowledge extra，知识库本地语义向量引擎的分词器。
+  - name: bge-small-zh-v1.5
+    import_name: bge-small-zh-v1.5
+    license: MIT
+    category: model
+    used: "guarded"
+    risk: low
+    acknowledged: >
+      2026-11-18 核实（第二季 V6 引入）：BAAI/bge-small-zh-v1.5 权重为
+      MIT（HF 模型页 license 字段）；本项目用 Qdrant 官方 ONNX 导出
+      （Qdrant/bge-small-zh-v1.5，量化 model_optimized.onnx，512 维）。
+      模型文件合计 95,332,206 字节，逐文件大小与 SHA-256 已钉在
+      src/knowledge/local_embedding.py（实测下载校验全对）。模型不随包
+      带走：落 <数据目录>/knowledge/embedding/，用户显式下载一次。
+      评测证据（产品评测集 34 篇/30 问）：recall@5 0.8966、MRR 0.8575、
+      弃答 1.0、误弃 0（见 upgrade2-evidence/v6-eval-local.json）。
+    action: 保持；knowledge extra，知识库本地语义向量模型；用户显式下载。
   - name: icalendar
     import_name: icalendar
     license: BSD-2-Clause
