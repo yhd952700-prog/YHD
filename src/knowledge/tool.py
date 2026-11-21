@@ -20,6 +20,46 @@ class KnowledgeSearchUnavailable(RuntimeError):
     """The knowledge base cannot answer because no embedding provider exists."""
 
 
+def knowledge_ingest_text(
+    text: str,
+    title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ingest a block of text into the persisted knowledge index.
+
+    The chat-side twin of the HTTP upload path for plain text: the caller
+    hands over already-extracted text, the service chunks / embeds / stores
+    it under the caller's document id (derived from ``title`` when given).
+    When embeddings are not configured the result is ``available=False``
+    with the honest reason -- nothing is silently dropped or faked.
+    """
+    clean_text = (text or "").strip()
+    if not clean_text:
+        raise ValueError("knowledge_ingest_text requires non-empty text")
+
+    service = get_knowledge_service()
+    try:
+        outcome = service.ingest(
+            clean_text,
+            doc_id=(title or None),
+            metadata={"source": "chat", "title": title or ""},
+        )
+    except EmbeddingUnavailableError as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "document_id": None,
+            "chunks": 0,
+        }
+    return {
+        "available": True,
+        "reason": None,
+        "document_id": outcome.get("document_id"),
+        "chunks": outcome.get("chunks"),
+        "vectors": outcome.get("vectors"),
+        "deduplicated": bool(outcome.get("deduplicated")),
+    }
+
+
 def knowledge_search(
     query: str,
     top_k: int = 4,
@@ -67,4 +107,8 @@ def knowledge_search(
     }
 
 
-__all__ = ["KnowledgeSearchUnavailable", "knowledge_search"]
+__all__ = [
+    "KnowledgeSearchUnavailable",
+    "knowledge_ingest_text",
+    "knowledge_search",
+]
