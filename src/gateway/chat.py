@@ -226,11 +226,11 @@ def LiuHaoAssistant(*args, **kwargs):  # noqa: N802 - 保持原类名以兼容�
     return _impl(*args, **kwargs)
 
 
-def provider_for_task(task_type: str, *, model_id=None, key_scope=None):
+def provider_for_task(task_type: str, *, model_id=None, key_scope=None, light_first: bool = False):
     from ..ai.model_router import provider_for_task as _impl
 
     if key_scope is None:
-        return _impl(task_type, model_id=model_id)
+        return _impl(task_type, model_id=model_id, light_first=light_first)
     return _impl(
         task_type,
         model_id=model_id,
@@ -238,6 +238,7 @@ def provider_for_task(task_type: str, *, model_id=None, key_scope=None):
         allow_unowned=key_scope.allow_unowned,
         allow_owners=list(key_scope.allow_owners),
         allow_env_fallback=key_scope.is_root,
+        light_first=light_first,
     )
 
 
@@ -393,6 +394,7 @@ def get_assistant(
     principal: Optional[str] = None,
     model_id: Optional[str] = None,
     key_scope=None,
+    light_first: bool = False,
 ) -> LiuHaoAssistant:
     """获取或创建会话实例（线程安全，按主体隔离）。
 
@@ -416,7 +418,7 @@ def get_assistant(
     # “指定 → 默认 → 其余已配模型”的顺序换下一个，每次失败都记日志；
     # 全部失败才把原始错误抛回，绝不编造一个能用的 provider。
     try:
-        provider = provider_for_task("chat", model_id=model_id, key_scope=key_scope)
+        provider = provider_for_task("chat", model_id=model_id, key_scope=key_scope, light_first=light_first)
     except Exception:
         from .a2a import resolve_provider_with_fallback
 
@@ -673,14 +675,72 @@ class ChatResponse(BaseModel):
     notice: Optional[str] = None
     #: 本轮发生静默切换时，实际应答模型之前尝试过的模型标签。
     fell_back_from: Optional[List[str]] = None
+    #: 第二季 V9：本轮路由分级回写（grade/model/escalated）。前端只在
+    #: grade=light 时显示一行脚注小字（省档/升档），其余情况可忽略。
+    route: Optional[Dict[str, object]] = None
+
+
+# 第二季 V9：上一轮是否用过工具（按会话复合键记一笔近似信号）。
+# 来源 = 上一轮计量快照的 provider 调用数（>=2 通常意味着工具循环或
+# 多步调用）；误判方向是「按硬任务处理」，是安全侧。仅作分级输入，
+# 不进账本、不展示。
+_session_prev_tool_use: Dict[str, bool] = {}
+
+
+def _route_decision(req: "ChatRequest", principal: str) -> tuple:
+    """第二季 V9 分级决策：返回 (grade, light_first_active)。
+
+    grade 由 src/ai/cost_routing.grade_turn 按 G0–G5 判定（确定性、调用前
+    可判）；light_first 只在 grade=light 且账号开关已开时为 True——映射
+    是否存在/价格护栏由 model_router 在建链时再核，任一不过逐字回落原链。
+    """
+    from ..ai.context_budget import estimate_tokens
+    from ..ai.cost_routing import grade_turn
+
+    session_id = req.session_id or "default"
+    key = _session_key(principal, session_id)
+    context_tokens = estimate_tokens(req.message)
+    with _sessions_lock:
+        cached = _sessions.get(key)
+    if cached is not None:
+        try:
+            history = getattr(cached, "history", []) or []
+            context_tokens += sum(
+                estimate_tokens(m.get("content", "")) for m in history[-50:]
+            )
+        except Exception:  # noqa: BLE001 - 历史估算失败只用本轮消息
+            pass
+    grade = grade_turn(
+        explicit_model=bool(req.model_id),
+        member_task=session_id.startswith("workbench-"),
+        prev_turn_used_tools=bool(_session_prev_tool_use.get(key)),
+        message=req.message,
+        context_tokens=context_tokens,
+    )
+    active = False
+    if grade == "light":
+        try:
+            from .a2a import get_account_settings
+
+            # 与聊天工具侧 _account() 同一推导（principal 偶以 user- 前缀
+            # 传入时不至于查错账号的设置）。
+            account = principal[len("user-"):] if str(principal).startswith("user-") else str(principal)
+            active = bool(
+                get_account_settings(account).get("cost_routing_enabled")
+            )
+        except Exception:  # noqa: BLE001 - 设置读不到按未开启（默认关语义）
+            active = False
+    return grade, active
 
 
 def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
     """按账号 Key 作用域构造会话；越级/冒用在此转成稳定错误码。"""
     scope = key_scope_for(principal=principal)
+    _grade, light_first = _route_decision(req, principal)
     try:
         assistant = get_assistant(
-            req.session_id, principal, req.model_id, key_scope=scope
+            req.session_id, principal, req.model_id, key_scope=scope,
+            light_first=light_first,
         )
     except ModelConfigError as exc:
         # 请求级 correlation id：写进 key.use 审计并回给客户端，失败的 HTTP
@@ -732,6 +792,7 @@ def _record_chat_usage(
     tokens_out: int,
     correlation_id: str,
     estimated: bool = False,
+    route_grade: str = "",
 ) -> bool:
     """记一行用量：账单归 ``key_owner``，用量归真实 actor。
 
@@ -760,6 +821,7 @@ def _record_chat_usage(
         session_id=req.session_id,
         correlation_id=correlation_id,
         estimated=estimated,
+        route_grade=route_grade,
     )
     if not recorded:
         logger.error(
@@ -1142,6 +1204,9 @@ def chat(
     try:
         # 用量上限门禁（本轮 item 6）：到上限就 429 拦截，不调用模型、不记用量。
         _enforce_usage_caps(req, principal)
+        # 第二季 V9：本轮路由分级（与 _assistant_for 内部同口径再算一次，
+        # 供记账与响应回写；判定是确定性纯函数，两次结果一致）。
+        route_grade, _route_active = _route_decision(req, principal)
         # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
         try:
             assistant = _assistant_for(req, principal)
@@ -1183,6 +1248,12 @@ def chat(
                             raise
 
                     usage = snapshot(meter)
+                    # V9 分级输入：记下本轮是否多步调用，供下一轮 G2 判定。
+                    if len(_session_prev_tool_use) > 512:
+                        _session_prev_tool_use.clear()
+                    _session_prev_tool_use[
+                        _session_key(principal, req.session_id or "default")
+                    ] = int(usage.get("calls") or 0) >= 2
                 finally:
                     _end_turn(assistant)
             if result.get("status") == "completed":
@@ -1204,6 +1275,7 @@ def chat(
                     tokens_out=tokens_out,
                     correlation_id=str(result.get("correlation_id") or ""),
                     estimated=estimated,
+                    route_grade=route_grade,
                 )
                 _mark_served_model_verified(assistant, principal)
         if result.get("status") == "denied":
@@ -1239,6 +1311,18 @@ def chat(
                 list(getattr(assistant.provider, "last_fell_back_from", []) or [])
                 or None
             ),
+            route={
+                "grade": route_grade,
+                "model": str(
+                    getattr(assistant.provider, "last_served_model", "")
+                    or getattr(assistant.provider, "model", "")
+                    or ""
+                ),
+                "escalated": bool(
+                    route_grade == "light"
+                    and (getattr(assistant.provider, "last_fell_back_from", None) or [])
+                ),
+            },
         )
     except BaseException:
         # 异常（含客户端取消）不保留占位：重试必须能真实执行。
@@ -1284,6 +1368,8 @@ def chat_stream(
     try:
         # 用量上限门禁（本轮 item 6）：到上限就 429 拦截，不建流、不调用模型。
         _enforce_usage_caps(req, principal)
+        # 第二季 V9：本轮路由分级（与非流式同口径，供记账落盘）。
+        route_grade, _route_active = _route_decision(req, principal)
         assistant = _assistant_for(req, principal)
         # 授权闸门必须在 build_knowledge_context / StreamingResponse 之前：
         # 被拒绝的请求不该先做检索，更不该先拿到 200 + SSE 再被告知拒绝。
@@ -1375,6 +1461,12 @@ def chat_stream(
             # 记账必须放在 finally：客户端断开时生成器被关闭，走不到 finally
             # 之后的代码，但 provider 已经真实消耗了 token（且可能已上报 usage）。
             usage = snapshot(meter)
+            # V9 分级输入（与非流式同口径）：记下本轮是否多步调用。
+            if len(_session_prev_tool_use) > 512:
+                _session_prev_tool_use.clear()
+            _session_prev_tool_use[
+                _session_key(principal, req.session_id or "default")
+            ] = int(usage.get("calls") or 0) >= 2
             turn_status = (
                 str(getattr(assistant, "last_turn_status", "") or "completed")
                 if finished
@@ -1402,6 +1494,7 @@ def chat_stream(
                     tokens_out=tokens_out,
                     correlation_id=correlation_id,
                     estimated=estimated,
+                    route_grade=route_grade,
                 )
             elif (
                 not finished
@@ -1426,6 +1519,7 @@ def chat_stream(
                     tokens_out=tokens_out,
                     correlation_id=correlation_id,
                     estimated=estimated,
+                    route_grade=route_grade,
                 )
         if cancel_token.cancelled:
             # 客户端已断开：没有人接收，补帧会失败；审计已按 interrupted 落好。
