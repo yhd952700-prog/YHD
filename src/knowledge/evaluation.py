@@ -524,6 +524,31 @@ def build_provider(
             "hashing", HashingEmbedder(), HashingEmbedder.model, "builtin"
         )
 
+    if key == "local":
+        from .local_embedding import (
+            MODEL_NAME as LOCAL_MODEL_NAME,
+        )
+        from .local_embedding import (
+            LocalOnnxEmbedder,
+            local_embedding_unavailable_reason,
+        )
+
+        resolved = model or LOCAL_MODEL_NAME
+        if resolved != LOCAL_MODEL_NAME:
+            raise EmbeddingUnavailableError(
+                f"本地向量引擎目前只支持模型 {LOCAL_MODEL_NAME}，收到 {resolved!r}"
+            )
+        reason = local_embedding_unavailable_reason()
+        if reason is not None:
+            raise EmbeddingUnavailableError(reason)
+        return ProviderSpec(
+            "local",
+            LocalOnnxEmbedder(),
+            resolved,
+            "local",
+            note="in-process ONNX (no daemon, no network)",
+        )
+
     if key == "ollama":
         base = ollama_base_url(base_url)
         resolved = model or _env("LIUHAO_EMBEDDING_MODEL") or DEFAULT_OLLAMA_MODEL
@@ -572,23 +597,38 @@ def build_provider(
         )
 
     raise EmbeddingUnavailableError(
-        f"未知 embedding provider {provider!r}；可选 hashing / ollama / "
+        f"未知 embedding provider {provider!r}；可选 hashing / local / ollama / "
         "openai / auto / all"
     )
 
 
 def detect_providers(base_url: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     """Probe what this machine can actually use (no fabricated availability)."""
+    from .local_embedding import (
+        MODEL_NAME as LOCAL_MODEL_NAME,
+    )
+    from .local_embedding import (
+        local_embedding_unavailable_reason,
+    )
+
     base = ollama_base_url(base_url)
     models = probe_ollama(base)
     ollama_model = _env("LIUHAO_EMBEDDING_MODEL") or DEFAULT_OLLAMA_MODEL
     key = openai_api_key()
+    local_reason = local_embedding_unavailable_reason()
     return {
         "hashing": {
             "available": True,
             "model": HashingEmbedder.model,
             "source": "builtin",
             "semantic": False,
+        },
+        "local": {
+            "available": local_reason is None,
+            "model": LOCAL_MODEL_NAME,
+            "source": "local",
+            "semantic": True,
+            "reason": local_reason,
         },
         "ollama": {
             "available": models is not None,
@@ -1095,7 +1135,7 @@ def _expand_providers(
             if name == "all":
                 candidates = ["hashing"] + [
                     key
-                    for key in ("ollama", "openai")
+                    for key in ("local", "ollama", "openai")
                     if detection.get(key, {}).get("available")
                 ]
             else:
@@ -1265,7 +1305,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         help=(
-            "hashing / ollama / openai / auto / all，可用逗号分隔多个；"
+            "hashing / local / ollama / openai / auto / all，可用逗号分隔多个；"
             "不指定时只跑 hashing 基线"
         ),
     )
