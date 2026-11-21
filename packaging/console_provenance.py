@@ -1,8 +1,15 @@
 """控制台构建产物的来源指纹与构建记录。
 
-目的：升级包里的 ``console/`` 必须能证明"是由当前前端源码构建出来的"，
-而不是上一版遗留的 dist 重新盖章。打包端读取 ``console/console-build.json``
-并与仓库内前端源码指纹、产物文件指纹对照；不一致直接拒绝出包。
+目的：升级包里的 ``console/`` 必须能证明自己的来历，且产物未被替换。
+两种口径（见 ``provenance_kind``）：
+
+* ``source-build``（历史）：由 apps 前端源码构建，记录与仓库内前端源码
+  指纹、产物文件指纹对照；
+* ``canonical-dist``（现行发布口径）：前端两代对齐裁决后，随包控制台是
+  仓库根 ``console/`` 的 wb 世代正典 dist 原样复制，记录与正典树文件
+  指纹对照。
+
+任一口径下不一致都直接拒绝出包。
 """
 
 from __future__ import annotations
@@ -17,6 +24,14 @@ import subprocess
 
 BUILD_META_RELPATH = "console/console-build.json"
 BUILD_META_SCHEMA = "liuhao.console-build/1"
+
+#: 来源记录的两种口径。``source-build`` 是历史口径：控制台由 apps 前端源码
+#: 构建，记录锚 = 源码指纹。``canonical-dist`` 是前端两代对齐裁决（见
+#: docs/spec 与《JARVIS-前端两代对齐审计》）后的发布口径：随包控制台就是
+#: 仓库根 ``console/`` 的 wb 世代正典 dist，**不从 apps 源码重建**，记录锚
+#: = 正典树自身的文件指纹，打包端逐字节对锚。
+PROVENANCE_KIND_SOURCE_BUILD = "source-build"
+PROVENANCE_KIND_CANONICAL_DIST = "canonical-dist"
 
 _SOURCE_SKIP_DIRS = {
     "node_modules",
@@ -126,6 +141,63 @@ def write_build_metadata(
         "command": command,
         "node": _tool_version("node"),
         "npm": _tool_version("npm"),
+    }
+    meta_path = dest_dir / "console-build.json"
+    meta_path.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return meta
+
+
+def canonical_dist_fingerprint(canonical_dir: Path) -> str:
+    """正典 dist 树的文件指纹（与打包端、构建端同一算法）。"""
+    return console_files_fingerprint(collect_console_files(Path(canonical_dir)))
+
+
+def write_canonical_dist_metadata(
+    dest_dir: Path,
+    *,
+    canonical_dir: Path,
+    version: str,
+) -> Dict[str, Any]:
+    """给「正典 dist 原样入包」的 payload 控制台写来源记录。
+
+    前提：``dest_dir`` 是 ``canonical_dir`` 的忠实副本（stage_payload 复制后
+    调用）。记录锚 ``source_sha256`` = 正典树文件指纹；打包端会把包内文件
+    指纹同时对 ``files_sha256`` 与仓库内正典树复算值，任一不一致拒绝出包。
+    这样「不重建 dist」的裁决与「产物未被替换」的防篡改证明可以同时成立。
+    """
+    dest_dir = Path(dest_dir)
+    canonical_dir = Path(canonical_dir)
+    if not (dest_dir / "index.html").is_file():
+        raise FileNotFoundError(f"正典控制台副本缺少 index.html：{dest_dir}")
+    if not (canonical_dir / "index.html").is_file():
+        raise FileNotFoundError(f"正典控制台目录缺少 index.html：{canonical_dir}")
+    files = collect_console_files(dest_dir)
+    canonical_files = collect_console_files(canonical_dir)
+    if files != canonical_files:
+        only_dest = sorted(set(files) - set(canonical_files))
+        only_src = sorted(set(canonical_files) - set(files))
+        changed = sorted(
+            rel for rel in set(files) & set(canonical_files)
+            if files[rel] != canonical_files[rel]
+        )
+        raise ValueError(
+            "payload 控制台不是正典 dist 的忠实副本，拒绝写来源记录："
+            f"多出 {only_dest[:3]}、缺失 {only_src[:3]}、内容不同 {changed[:3]}"
+        )
+    meta: Dict[str, Any] = {
+        "schema": BUILD_META_SCHEMA,
+        "version": version,
+        "provenance_kind": PROVENANCE_KIND_CANONICAL_DIST,
+        "source": "console (tracked canonical dist, wb generation)",
+        "source_sha256": canonical_dist_fingerprint(canonical_dir),
+        "files_sha256": console_files_fingerprint(files),
+        "file_count": len(files),
+        "built_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "command": "canonical dist copied verbatim (no rebuild from apps source)",
+        "node": "n/a",
+        "npm": "n/a",
     }
     meta_path = dest_dir / "console-build.json"
     meta_path.write_text(
