@@ -3047,6 +3047,14 @@ def get_app() -> FastAPI:
     app.include_router(account_backup_router)
     _startup_mark("路由：account_backup（已有账号合并导入）完成")
 
+    # 云备份快照（大升级第二季 V10，/v1/accounts/cloud-backup）：与
+    # account_backup 同一挂载口径——端点内逐个依赖 require_account_principal；
+    # 快照本体复用凭据包的收集与加密，恢复分发回既有两条恢复路径。
+    from .cloud_backup import router as cloud_backup_router
+
+    app.include_router(cloud_backup_router)
+    _startup_mark("路由：cloud_backup（云备份快照）完成")
+
     # TOTP 双重验证 + 备用码（查看/重新生成）：端点内部逐个依赖
     # ``require_account_principal``，ViewAs 只读视角一律拒绝；不挂全局
     # 人类闸门之外的额外闸门，与 accounts 同一挂载口径。
