@@ -463,6 +463,30 @@
       img.alt = "小铁 · 贾维斯";
       mark.appendChild(img);
     });
+    /* L-01 勘误补修（0.5.1 干净室验包发现）：内部统计（已登记账号 N ·
+       可登录 N · 会话有效期 N 小时）除了侧栏 .os-login-status 块之外，
+       还以裸文本形式重复渲染在 .os-login-foot 里（同意句后 <br> 跟随的
+       文本节点，无类名可挂 CSS）。原验收只验了状态块、漏了页脚这份。
+       修法：不动节点结构（React 持有这些节点），把统计段的文本节点
+       逐个清空、<br> 隐藏——最终渲染里这行字不出现。向导页与登录页
+       共用同一 .os-login 外壳，一处修两处。 */
+    var foot = login.querySelector(".os-login-foot");
+    if (foot && foot.textContent.indexOf("已登记账号") >= 0) {
+      var lastBr = null;
+      var inStats = false;
+      for (var fi = 0; fi < foot.childNodes.length; fi++) {
+        var node = foot.childNodes[fi];
+        if (!inStats && node.nodeType === 1 && node.tagName === "BR") lastBr = node;
+        if (node.nodeType === 3 && node.textContent.indexOf("已登记账号") >= 0) {
+          inStats = true;
+        }
+        if (inStats) {
+          if (node.nodeType === 3) node.textContent = "";
+          else if (node.nodeType === 1) node.style.display = "none";
+        }
+      }
+      if (inStats && lastBr) lastBr.style.display = "none";
+    }
   }
   function fixTopbar() {
     document.querySelectorAll(".os-topbar span, header span").forEach(function (sp) {
@@ -647,6 +671,23 @@
     card.innerHTML = "<h3>恢复码是什么</h3><p>恢复码是你忘了密码时把账号找回来的唯一凭证，" +
       "创建账号时只显示一次。请把它抄在纸上，或存进手机备忘录收好；不要截图发微信——" +
       "截图会同步到云端，别人拿到就能找回你的账号。</p>";
+    host.appendChild(card);
+  }
+  /* V4 补：设置卡口径「关于承接下载桌面版」——顶栏下载钮已在 V1.5 减肥
+     移除，下载入口落到「关于与隐私」页（设置分组地图的关于区）：常驻一行
+     文字链，指向与登录页下载链同一地址（仓库 GitHub Releases 最新版）。 */
+  function fixAbout() {
+    var title = document.querySelector(".os-page-title");
+    if (!title || title.textContent.trim() !== "关于与隐私") return;
+    if (document.getElementById("jt-about-download")) return;
+    var host = title.closest(".os-page") || title.parentElement;
+    if (!host) return;
+    var card = document.createElement("div");
+    card.id = "jt-about-download"; card.className = "jt-recovery-card";
+    card.innerHTML = "<h3>在其他电脑上用贾维斯</h3><p>这台机器上已经装好了。" +
+      "想在另一台 Windows 电脑上用，下载桌面版安装即可，账号与数据用备份迁移带过去。</p>" +
+      "<p><a href=\"https://github.com/yhd952700-prog/YHD/releases/latest\" target=\"_blank\" " +
+      "rel=\"noopener noreferrer\" style=\"text-decoration: underline;\">下载 Windows 桌面版</a></p>";
     host.appendChild(card);
   }
   /* §1-7: on the one-time recovery display, the keep-it-safe guidance
@@ -1043,7 +1084,7 @@
        observer: the console mutates constantly, and each sync re-render
        mutated the DOM again — a self-sustaining ~13 req/s loop that
        tripped the gateway's global rate limit (429s in normal use). */
-    setTimeout(function () { pending = false; ensureGroups(); ensureBoss(); syncBadges(); fixBell(); fixPageTitle(); fixEnterpriseApiLine(); fixLogin(); fixTopbar(); fixTextSwaps(); fixChatKey(); fixSettings(); fixCapability(); fixAccount(); fixRecoveryDialog(); fixAlerts(); ensureMobile(); fixMobilePanel(); }, 120);
+    setTimeout(function () { pending = false; ensureGroups(); ensureBoss(); syncBadges(); fixBell(); fixPageTitle(); fixEnterpriseApiLine(); fixLogin(); fixTopbar(); fixTextSwaps(); fixChatKey(); fixSettings(); fixCapability(); fixAccount(); fixAbout(); fixRecoveryDialog(); fixAlerts(); ensureMobile(); fixMobilePanel(); }, 120);
   });
   /* ---------- V2(b) 简报播报播放器 ----------
    * 聊天里说「播报简报」后，后端合成语音并置 ready；这里轮询待播，
