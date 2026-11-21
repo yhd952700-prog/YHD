@@ -240,6 +240,15 @@ EGRESS_REGISTRY: Dict[str, EgressEntry] = {
         default_state="关闭（未显式下载前不请求）",
         disclosed_in=_OPS_DISCLOSURE,
     ),
+    # ── 知识库本地向量模型下载（第二季 V6 新增 src/knowledge/local_embedding.py） ──
+    "huggingface.co": EgressEntry(
+        feature="知识库本地向量模型下载（bge-small-zh-v1.5 ONNX）",
+        trigger="用户显式启动本地向量模型下载（start_local_model_download）；运行时推理全在本机，不请求",
+        fields="GET 模型文件路径；User-Agent: Jarvis/knowledge-embedding（不带任何用户数据）",
+        personal_data="否",
+        default_state="关闭（未显式下载前不请求）",
+        disclosed_in=_OPS_DISCLOSURE,
+    ),
     # ── 第三方集成（只有用户主动连接后才会请求） ─────────────────────────
     "api.airtable.com": EgressEntry(
         feature="Airtable 集成", trigger="用户连接 Airtable 并执行动作",
