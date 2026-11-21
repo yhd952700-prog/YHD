@@ -461,7 +461,7 @@ Example output format:
         return ready
 
     @observe("goal_task_graph.execute_task")
-    def execute_task(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
+    def execute_task(self, task_id: str, agent_executor: Callable, *, pass_task: bool = False) -> Dict[str, Any]:
         """
         Execute a single task via the audited ``@kernel_action`` path.
 
@@ -470,11 +470,16 @@ Example output format:
         ``@kernel_action("ai.execute_planner_task")`` so the planner's
         task-execution loop is now covered by the audit (previously it called
         ``agent_executor`` directly and was orphaned from the audited path).
+
+        ``pass_task`` (第二季 V8): when True the executor is called as
+        ``agent_executor(agent_id, description, task)`` so orchestration
+        executors can read the task's dependencies/metadata (upstream results,
+        member binding). Default False keeps every existing caller untouched.
         """
-        return self._execute_task_audited(task_id, agent_executor)
+        return self._execute_task_audited(task_id, agent_executor, pass_task=pass_task)
 
     @kernel_action("ai.execute_planner_task")
-    def _execute_task_audited(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
+    def _execute_task_audited(self, task_id: str, agent_executor: Callable, *, pass_task: bool = False) -> Dict[str, Any]:
         """
         Audited core of a single task's execution.
 
@@ -506,7 +511,21 @@ Example output format:
             from src.ai.usage_meter import label_scope
 
             with label_scope(f"task:{task_id}"):
-                result = agent_executor(task.assigned_agent or "default", task.description)
+                if pass_task:
+                    result = agent_executor(task.assigned_agent or "default", task.description, task)
+                else:
+                    result = agent_executor(task.assigned_agent or "default", task.description)
+
+            # 第二季 V8 超时收尾：本任务已被 execute_graph 按超时判失败时，
+            # 迟到的结果直接丢弃——不许覆盖已落盘的失败状态（线程杀不掉，
+            # 任其自然结束，但它的产出不算数，任务行保持超时口径）。
+            if task.metadata.get("_timed_out"):
+                return {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": task.error or "任务超时，迟到结果已丢弃",
+                    "late_result_discarded": True,
+                }
 
             task.result = result
             task.status = TaskStatus.COMPLETED
@@ -538,6 +557,14 @@ Example output format:
             }
 
         except Exception as e:
+            # 同上：已按超时收尾的任务，迟到线程的异常同样不许改写状态。
+            if task.metadata.get("_timed_out"):
+                return {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": task.error or "任务超时，迟到结果已丢弃",
+                    "late_result_discarded": True,
+                }
             task.error = str(e)
             task.status = TaskStatus.FAILED
             task.completed_at = time.time()
@@ -573,6 +600,9 @@ Example output format:
         goal_id: str,
         agent_executor: callable,
         max_parallel: int = 3,
+        *,
+        task_timeout_seconds: Optional[float] = None,
+        pass_task: bool = False,
     ) -> Dict[str, Any]:
         """
         Execute the full task graph for a goal.
@@ -580,7 +610,13 @@ Example output format:
         Args:
             goal_id: Goal ID to execute
             agent_executor: Function(agent_id, task_description) -> result
+                (with ``pass_task=True``: Function(agent_id, description, task))
             max_parallel: Maximum parallel executions
+            task_timeout_seconds: 第二季 V8 新增。单个任务的墙钟上限（同一波
+                任务同时开始，按波次粒度执行）；超时任务按 failed 收尾
+                （原因写明超时、迟到结果丢弃），整图不陪等。None = 不启用
+                （旧行为，其余调用方不受影响）。
+            pass_task: 透传给 execute_task，见其 docstring。
 
         Returns:
             Execution results
@@ -599,63 +635,89 @@ Example output format:
         results = {}
         remaining = set(t.id for t in tasks)
 
-        # Assign agents to tasks (simple round-robin)
+        # Assign agents to tasks (simple round-robin). 第二季 V8：编排层已
+        # 预绑定 assigned_agent（真实成员 Bot）的任务不许被轮换占位覆盖。
         agent_ids = [f"agent_{i}" for i in range(max_parallel)]
         for i, task in enumerate(tasks):
-            task.assigned_agent = agent_ids[i % len(agent_ids)]
+            if not task.assigned_agent:
+                task.assigned_agent = agent_ids[i % len(agent_ids)]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
-            while remaining:
-                # Get ready tasks
-                ready = [t for t in tasks if t.id in remaining and self._is_ready(t.id)]
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel)
+        try:
+                while remaining:
+                    # Get ready tasks
+                    ready = [t for t in tasks if t.id in remaining and self._is_ready(t.id)]
 
-                if not ready:
-                    # No task is ready but work remains => the remaining tasks can
-                    # never become ready. There are exactly two causes, and BOTH
-                    # are terminal:
-                    #   (a) a dependency reached a non-completed terminal state
-                    #       (failed) -- ``_is_ready`` only accepts deps in
-                    #       ``completed_tasks``, so a failed dep blocks forever;
-                    #   (b) a dependency cycle.
-                    # The previous code only handled (b) and otherwise did
-                    # ``time.sleep(0.1); continue`` -- an UNBOUNDED busy-wait that
-                    # never terminates: proven hang (a goal whose first task fails
-                    # while a second task depends on it spins forever at 10Hz,
-                    # holding the thread pool open and the caller never returns).
-                    #
-                    # Note this is a *provable* deadlock, not a race: every future
-                    # submitted in the previous iteration is fully collected by the
-                    # ``as_completed`` loop below before control returns here, so
-                    # "no ready task" can never be a transient in-flight state.
-                    # There is nothing to wait for -- we must terminate honestly.
-                    self._fail_blocked_tasks(
-                        remaining, tasks, results, cycle=self.has_cycle(
-                            [t for t in tasks if t.id in remaining]
+                    if not ready:
+                        # No task is ready but work remains => the remaining tasks can
+                        # never become ready. There are exactly two causes, and BOTH
+                        # are terminal:
+                        #   (a) a dependency reached a non-completed terminal state
+                        #       (failed) -- ``_is_ready`` only accepts deps in
+                        #       ``completed_tasks``, so a failed dep blocks forever;
+                        #   (b) a dependency cycle.
+                        # The previous code only handled (b) and otherwise did
+                        # ``time.sleep(0.1); continue`` -- an UNBOUNDED busy-wait that
+                        # never terminates: proven hang (a goal whose first task fails
+                        # while a second task depends on it spins forever at 10Hz,
+                        # holding the thread pool open and the caller never returns).
+                        #
+                        # Note this is a *provable* deadlock, not a race: every future
+                        # submitted in the previous iteration is fully collected by the
+                        # ``as_completed`` loop below before control returns here, so
+                        # "no ready task" can never be a transient in-flight state.
+                        # There is nothing to wait for -- we must terminate honestly.
+                        self._fail_blocked_tasks(
+                            remaining, tasks, results, cycle=self.has_cycle(
+                                [t for t in tasks if t.id in remaining]
+                            )
                         )
-                    )
-                    break
+                        break
 
-                # Submit ready tasks
-                future_to_task = {}
-                for task in ready[:max_parallel]:
-                    remaining.remove(task.id)
-                    # 线程池不继承 ContextVar；复制当前上下文，让任务内 provider
-                    # 上报的真实 usage 回到本次 Goal 的记账作用域。
-                    ctx = contextvars.copy_context()
-                    future = executor.submit(
-                        ctx.run, self.execute_task, task.id, agent_executor
-                    )
-                    future_to_task[future] = task.id
+                    # Submit ready tasks
+                    future_to_task = {}
+                    for task in ready[:max_parallel]:
+                        remaining.remove(task.id)
+                        # 线程池不继承 ContextVar；复制当前上下文，让任务内 provider
+                        # 上报的真实 usage 回到本次 Goal 的记账作用域。
+                        ctx = contextvars.copy_context()
+                        future = executor.submit(
+                            ctx.run, self.execute_task, task.id, agent_executor,
+                            pass_task=pass_task,
+                        )
+                        future_to_task[future] = task.id
 
-                # Collect results
-                for future in concurrent.futures.as_completed(future_to_task):
-                    tid = future_to_task[future]
+                    # Collect results（V8：启用超时时按波次上限收，超时任务
+                    # 走 _fail_task_timeout 收尾，未完成的 future 尽力 cancel；
+                    # 已在跑的线程杀不掉，其迟到结果由 _execute_task_audited
+                    # 的 _timed_out 守卫丢弃）。
+                    collected: Set[str] = set()
                     try:
-                        result = future.result()
-                        results[tid] = result
-                    except Exception as e:
-                        results[tid] = {"task_id": tid, "status": "failed", "error": str(e)}
+                        wave_iter = concurrent.futures.as_completed(
+                            future_to_task,
+                            timeout=task_timeout_seconds if task_timeout_seconds else None,
+                        )
+                        for future in wave_iter:
+                            tid = future_to_task[future]
+                            collected.add(tid)
+                            try:
+                                result = future.result()
+                                results[tid] = result
+                            except Exception as e:
+                                results[tid] = {"task_id": tid, "status": "failed", "error": str(e)}
+                    except concurrent.futures.TimeoutError:
+                        for future, tid in future_to_task.items():
+                            if tid in collected:
+                                continue
+                            future.cancel()
+                            task_obj = self.tasks.get(tid)
+                            if task_obj is not None:
+                                self._fail_task_timeout(task_obj, results, task_timeout_seconds)
 
+        finally:
+            # wait=False：超时收尾后不许陪等迟到线程（其结果已被丢弃）；
+            # 正常路径下所有 future 已收齐，wait 与否无差别。
+            executor.shutdown(wait=False)
         # Determine overall status
         completed_count = sum(1 for r in results.values() if r.get("status") == "completed")
         failed_count = sum(1 for r in results.values() if r.get("status") == "failed")
@@ -685,6 +747,33 @@ Example output format:
             "failed": failed_count,
             "results": results,
             "execution_order": [t.id for t in self.get_execution_order(tasks)],
+        }
+
+    def _fail_task_timeout(
+        self,
+        task: TaskNode,
+        results: Dict[str, Any],
+        timeout_seconds: Optional[float],
+    ) -> None:
+        """第二季 V8：把一个超时未归的任务按 failed 终局收尾。
+
+        置 ``_timed_out`` 标记后，迟到线程无论成功失败都不许改写本任务的
+        状态/结果（守卫在 ``_execute_task_audited`` 的写回路径上）。
+        """
+        limit = int(timeout_seconds) if timeout_seconds else 0
+        task.metadata["_timed_out"] = True
+        task.status = TaskStatus.FAILED
+        task.error = (
+            f"任务超时（超过 {limit} 秒未完成），已按失败收尾；"
+            "迟到的结果会被丢弃，不计入汇总。"
+        )
+        task.completed_at = time.time()
+        self.failed_tasks.add(task.id)
+        results[task.id] = {
+            "task_id": task.id,
+            "status": "failed",
+            "error": task.error,
+            "timed_out": True,
         }
 
     def _fail_blocked_tasks(
