@@ -50,7 +50,103 @@ _SCRIPT_REF_RE = re.compile(
 )
 
 #: frontmatter 里**已映射**到内部字段的键；其余键一律进 import_report。
-_MAPPED_KEYS = ("name", "description", "license", "allowed-tools", "metadata", "runtime")
+_MAPPED_KEYS = (
+    "name", "description", "license", "allowed-tools", "metadata", "runtime",
+    "author", "dependencies",
+)
+
+#: 技能包最多声明多少条依赖（V7 包格式）；超出多半是把能力清单误填进依赖。
+MAX_DEPENDENCIES = 20
+
+#: 依赖版本约束只支持 ``>=x.y.z``（最低版本）或空（任意版本）。
+_DEP_CONSTRAINT_RE = re.compile(r"^>=\s*(\d+(?:\.\d+){0,3})$")
+_DEP_TEXT_RE = re.compile(r"^([^<>=\s][^<>]*?)\s*(?:>=\s*(\d+(?:\.\d+){0,3}))?$")
+
+
+def parse_version_parts(value: str) -> Optional[Tuple[int, ...]]:
+    """把 ``1.2.0`` 解析成可比较的元组；解析不了返回 None（不猜）。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts: List[int] = []
+    for chunk in text.split("."):
+        if not chunk.isdigit():
+            return None
+        parts.append(int(chunk))
+    return tuple(parts)
+
+
+def version_satisfies(installed: str, constraint: str) -> Optional[bool]:
+    """已装版本是否满足 ``>=`` 约束。任一侧解析不了返回 None（未知，不装作满足）。"""
+    want = _DEP_CONSTRAINT_RE.match(str(constraint or "").strip())
+    if not want:
+        return None if str(constraint or "").strip() else True
+    have_parts = parse_version_parts(installed)
+    want_parts = parse_version_parts(want.group(1))
+    if have_parts is None or want_parts is None:
+        return None
+    width = max(len(have_parts), len(want_parts))
+    have_parts = have_parts + (0,) * (width - len(have_parts))
+    want_parts = want_parts + (0,) * (width - len(want_parts))
+    return have_parts >= want_parts
+
+
+def normalize_dependencies(raw: Any) -> List[Dict[str, str]]:
+    """把清单里的依赖声明收敛成 ``[{name, version}]``（version 为 ``>=x`` 或空）。
+
+    接受三种写法：``"技能名"``、``"技能名>=1.2.0"``、
+    ``{"name": "技能名", "version": ">=1.2.0"}``（version 也可写 min_version）。
+    形状不对直接报错：依赖解析不了就等于没法核对，绝不静默丢弃或放行。
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise SkillImportError("技能清单的 dependencies 必须是列表。")
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for item in raw:
+        name = ""
+        constraint = ""
+        if isinstance(item, str):
+            match = _DEP_TEXT_RE.match(item.strip())
+            if not match:
+                raise SkillImportError(f"依赖声明无法解析：「{item}」。")
+            name = match.group(1).strip()
+            if match.group(2):
+                constraint = f">={match.group(2)}"
+        elif isinstance(item, dict):
+            name = _as_text(item.get("name"))
+            raw_version = _as_text(item.get("version")) or _as_text(
+                item.get("min_version")
+            )
+            if raw_version:
+                if raw_version.startswith(">="):
+                    constraint = raw_version
+                elif parse_version_parts(raw_version) is not None:
+                    constraint = f">={raw_version}"
+                else:
+                    raise SkillImportError(
+                        f"依赖「{name}」的版本约束无法解析：「{raw_version}」"
+                        "（只支持 >=最低版本）。"
+                    )
+        else:
+            raise SkillImportError(f"依赖声明无法解析：{item!r}。")
+        if not name:
+            raise SkillImportError("依赖声明缺少技能名。")
+        if constraint and not _DEP_CONSTRAINT_RE.match(constraint):
+            raise SkillImportError(
+                f"依赖「{name}」的版本约束无法解析：「{constraint}」（只支持 >=最低版本）。"
+            )
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "version": constraint})
+    if len(out) > MAX_DEPENDENCIES:
+        raise SkillImportError(
+            f"依赖声明过多（{len(out)} 条，上限 {MAX_DEPENDENCIES} 条）。"
+        )
+    return out
 
 #: 脚本运行默认上限。执行时以 ``runtime.limits`` 覆盖，但不会超过上限。
 DEFAULT_LIMITS: Dict[str, int] = {
@@ -97,6 +193,8 @@ class ImportedSkill:
     name: str
     description: str = ""
     version: str = ""
+    author: str = ""
+    dependencies: List[Dict[str, str]] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
     permissions: List[str] = field(default_factory=list)
     declared_risk: str = ""
@@ -528,6 +626,32 @@ def parse_agent_skill(filename: str, text: str) -> ImportedSkill:
             note="Agent Skills 扩展字段：本机只存原文，不理解其语义。",
         )
 
+    # V7 包格式：作者与依赖。顶层键优先，其次 metadata 里的同名键。
+    author = _as_text(frontmatter.get("author")) or _as_text(metadata.get("author"))
+    deps_raw = frontmatter.get("dependencies")
+    if deps_raw is None:
+        deps_raw = metadata.get("dependencies")
+    dependencies = normalize_dependencies(deps_raw)
+    if author:
+        _report(
+            report,
+            field_name="author",
+            value=author,
+            status="mapped",
+            note="作者声明，已保存展示；不做身份核验。",
+        )
+    if dependencies:
+        _report(
+            report,
+            field_name="dependencies",
+            value=dependencies,
+            status="mapped",
+            note=(
+                f"声明依赖 {len(dependencies)} 个已装技能；安装时逐条核对，"
+                "缺失或版本不足会拒绝安装。"
+            ),
+        )
+
     runtime = normalize_runtime(frontmatter.get("runtime"))
     if runtime:
         entrypoints = runtime.get("entrypoints") or []
@@ -575,6 +699,8 @@ def parse_agent_skill(filename: str, text: str) -> ImportedSkill:
         name=name,
         description=description,
         version=_as_text(frontmatter.get("version")),
+        author=author,
+        dependencies=dependencies,
         content=text,
         format="agent-skill",
         origin=filename,
@@ -646,7 +772,7 @@ def parse_json_manifest(filename: str, text: str) -> ImportedSkill:
     known = {
         "name", "description", "version", "capabilities", "permissions", "risk",
         "license", "allowed-tools", "allowed_tools", "metadata", "runtime",
-        "scripts", "mcpServers",
+        "scripts", "mcpServers", "author", "dependencies",
     }
     for key, value in document.items():
         if key in known:
@@ -688,6 +814,32 @@ def parse_json_manifest(filename: str, text: str) -> ImportedSkill:
             note="原样保存，未参与风险/能力判定。",
         )
 
+    # V7 包格式：作者与依赖（顶层键，其次 metadata 同名键）。
+    author = _as_text(document.get("author")) or _as_text(metadata.get("author"))
+    deps_raw = document.get("dependencies")
+    if deps_raw is None:
+        deps_raw = metadata.get("dependencies")
+    dependencies = normalize_dependencies(deps_raw)
+    if author:
+        _report(
+            report,
+            field_name="author",
+            value=author,
+            status="mapped",
+            note="作者声明，已保存展示；不做身份核验。",
+        )
+    if dependencies:
+        _report(
+            report,
+            field_name="dependencies",
+            value=dependencies,
+            status="mapped",
+            note=(
+                f"声明依赖 {len(dependencies)} 个已装技能；安装时逐条核对，"
+                "缺失或版本不足会拒绝安装。"
+            ),
+        )
+
     runtime = normalize_runtime(document.get("runtime"))
     if runtime:
         entrypoints = runtime.get("entrypoints") or []
@@ -706,6 +858,8 @@ def parse_json_manifest(filename: str, text: str) -> ImportedSkill:
         name=name,
         description=description,
         version=str(version),
+        author=author,
+        dependencies=dependencies,
         capabilities=list(capabilities) if isinstance(capabilities, (list, tuple)) else [],
         permissions=list(permissions) if isinstance(permissions, (list, tuple)) else [],
         declared_risk=declared_risk,
