@@ -545,6 +545,10 @@ OUTWARD_SURFACE_FILES = (
     # like one in TUTORIAL.md. It scans clean today (0 findings), so listing it
     # closes the root-*.md blind spot without widening the claim semantics.
     "RELEASE-RUNBOOK.md",
+    # FRONTEND-CANON.md is the root-level canonical-frontend registry (Season 2
+    # V4); its release claims are read like the runbook's, so it joins the scan
+    # surface together with the doc-lint workflow paths.
+    "FRONTEND-CANON.md",
 )
 
 # Directory trees that are never walked (third-party / generated / VCS).
