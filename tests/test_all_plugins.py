@@ -24,8 +24,24 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# 必须把仓库根强制置顶：pytest 已把仓库根放进 sys.path 但排在 src/ 之后，
+# 原写法（不在才插入）永远轮不到前移，plugins 会被 src/plugins 遮蔽。
+if str(ROOT) in sys.path:
+    sys.path.remove(str(ROOT))
+sys.path.insert(0, str(ROOT))
+
+# 仓库根 plugins/ 与 src/plugins/ 同名碰撞（src/ai/tools/plugin_tools.py
+# 注释有同一说明）：pytest 下 conftest 把 src/ 排在仓库根之前，别的模块
+# 可能已先把 src/plugins 作为 ``plugins`` 导入并缓存进 sys.modules，
+# 本文件的导入遂被遮蔽——是否中招取决于同批模块构成（测试隔离缺陷，
+# 与被测代码无关）。导入前逐出解析到非仓库根的缓存项，保证 plugins
+# 恒绑定仓库根目录；生产代码不以裸名 plugins 依赖 src/plugins，不受影响。
+_cached_plugins = sys.modules.get("plugins")
+if _cached_plugins is not None:
+    _cached_paths = [str(p) for p in getattr(_cached_plugins, "__path__", [])]
+    if str(ROOT / "plugins") not in _cached_paths:
+        for _mod_name in [m for m in sys.modules if m == "plugins" or m.startswith("plugins.")]:
+            del sys.modules[_mod_name]
 
 from plugins.plugin_base import BasePlugin, PluginStatus  # noqa: E402
 from src.ai.providers import MockProvider  # noqa: E402
