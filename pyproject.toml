@@ -1,6 +1,6 @@
 [project]
 name = "liuhao-ai-os"
-version = "0.5.0"
+version = "0.6.0"
 description = "Jarvis · 贾维斯 - Y1 Implementation"
 readme = "README.md"
 # 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
@@ -352,6 +352,18 @@ ocr = [
 calendar = [
     "icalendar>=7.3.0",
     "caldav>=3.7.0",
+]
+# 第二季 V6（知识库本地语义向量）：**可选 extra**，不进运行期依赖。
+# 进程内 ONNX 嵌入引擎（src/knowledge/local_embedding.py）：无守护进程、
+# 无 Key、向量不出本机；缺了时知识库诚实降级（Ollama/云端 provider 或
+# 哈希词法回落），不编结果。许可证（已核实，见 oss-registry.yaml）：
+#   onnxruntime MIT；tokenizers Apache-2.0；模型 BAAI/bge-small-zh-v1.5
+#   量化 ONNX 为 MIT（Qdrant 官方导出）。模型文件不进代码仓、不随包
+#   带走：落 <数据目录>/knowledge/embedding/，用户显式下载一次（约
+#   95MB，逐文件 SHA-256 校验，见 local_embedding.py 的下载器）。
+knowledge = [
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
 ]
 
 [project.scripts]
