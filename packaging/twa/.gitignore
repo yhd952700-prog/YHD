@@ -1,0 +1,13 @@
+# 签名密钥与构建产物绝不进 git：keystore 在本机生成后只在本机/备份介质保管，
+# 丢了它这个 App 永远无法再更新。见 README.md「签名密钥」一节。
+*.keystore
+*.jks
+app-release-signed.apk
+app-release-bundle.aab
+app-release-unsigned.apk
+.gradle/
+android/
+gradle/
+gradlew
+gradlew.bat
+local.properties
