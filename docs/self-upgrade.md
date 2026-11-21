@@ -338,6 +338,16 @@ python -m src.selfmod list
 3. 确需固定哈希（离线/受控环境）时，更新成**当前这份清单**的整文件 SHA256，不要保留旧值；
 4. 不要用“删 `manifest-trust.json`”去绕过与之无关的 `sequence` 回退——那是防重放，删除等于重新引导。
 
+#### 2.2.11 默认源（GitHub 发布）落地步骤（V5 转正，2026-11-18）
+
+客户端默认源固定为 `https://github.com/yhd952700-prog/YHD/releases/latest/download/release-manifest.json`（见 `src/upgrade/update_check.py`）。让它真正生效只需发布侧按 2.2.9 做完签名后，多走三步：
+
+1. 在 GitHub 仓库建一个 Release（tag 与版本号对应，如 `v0.5.1`），并设为 latest；
+2. 上传三个资产：发布包 ZIP（`packaging/make_release.py` 的实际产物名 `jarvis-<版本>-upgrade.zip`，清单 `artifact` 已与之同名）、签名后的 `LIUHAO_RELEASE.json`，以及**同一份签名清单字节**另存的 `release-manifest.json`——默认 URL 按这个资产名取文件，两个名字内容必须逐字节相同，不要分别生成；
+3. 在一台只配置了 `LIUHAO_UPGRADE_PUBLIC_KEY`（发布公钥）的干净环境执行 `python -m src.upgrade check`，应返回 `update_available` 指向新版本；返回「无法检查更新」即发布未落地（资产名/权限问题），不要当作「已是最新」。
+
+注意：`make_release.py` 的产物名只含版本号，因此**同一版本号只许构建发布一次**；任何重构建都必须先升版本号（版本单一真源 `src/version.py`），满足 2.2.1 的文件名不复用约定。
+
 ### 2.3 离线语义（重要）
 
 | 情况 | 状态 | 用户看到的文字 |
