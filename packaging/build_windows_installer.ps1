@@ -1,23 +1,28 @@
 # Jarvis · 贾维斯 —— Windows 安装包一键构建
 #
-# 一条命令完成：前端构建 → 后端 payload 组装（含离线 Python 运行时）
+# 一条命令完成：正典控制台校验 → 后端 payload 组装（含离线 Python 运行时）
 #              → 冒烟验证 → 升级发布包 ZIP+清单 → Inno Setup 编译
 #              → 产物 SHA256/体积
 #
 # 用法（在仓库根执行）：
 #   powershell -ExecutionPolicy Bypass -File packaging\build_windows_installer.ps1
-#   powershell ... -Version 0.1.1 -SkipSmoke
+#   powershell ... -Version 0.5.1 -SkipSmoke
 #
 # 前置条件：
-#   * Node.js + npm（构建 apps/console/console）
 #   * .venv（Python 3.12，已装项目依赖）
 #   * Inno Setup 6 的 ISCC.exe（可选；缺失时只出 payload 与安装脚本，不伪造 exe）
+#   * Node.js + npm（仅 -BuildFrontendFromSource 时需要，见下）
+#
+# 前端口径（前端两代对齐裁决）：随包控制台默认取仓库根 console\ 的 wb 世代
+# 正典 dist 原样入包，**不从 apps 源码重建**（重建会替换正典并使两套主题
+# 失效）。-BuildFrontendFromSource 是对齐完成前的禁用档：显式打开才会走
+# apps 源码构建，且产物按 source-build 口径验锚——不要在正式发布中使用。
 #
 # 产物（全部在 dist\，已被 .gitignore 忽略，不提交）：
 #   dist\payload\app\              安装内容
 #   dist\payload\manifest.json     内容清单
 #   dist\smoke-report.json         冒烟结果
-#   dist\release\jarvis-<版本>.zip 升级用发布包
+#   dist\release\jarvis-<版本>-upgrade.zip 升级用发布包
 #   dist\release\LIUHAO_RELEASE.json  升级发布清单（规范见 docs/self-upgrade.md §2.2）
 #   dist\installer\Jarvis-Setup-*.exe   安装包（仅在 ISCC 可用时）
 #   dist\installer\SHA256SUMS.txt  校验和
@@ -40,6 +45,9 @@ param(
     # 推导结果落系统盘时安装器直接拒绝，不会静默装到 C 盘、也不退回数据目录。
     [string]$UpgradeBackupRoot = "",
     [switch]$SkipFrontend,
+    # 显式从 apps 源码重建前端（os 世代）。前端两代对齐完成前禁用：默认关，
+    # 打开时脚本会大声警告；正式发布不要使用（见文件头前端口径）。
+    [switch]$BuildFrontendFromSource,
     [switch]$SkipSmoke,
     [switch]$SkipInstaller,
     [switch]$SkipRelease,
@@ -139,12 +147,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---------------------------------------------------------------- 1. 前端
-if ($SkipFrontend) {
-    Write-Step "跳过前端构建（-SkipFrontend）"
-    if (-not (Test-Path (Join-Path $Root "apps\console\console\dist\index.html"))) {
-        throw "跳过前端构建，但 apps\console\console\dist\index.html 不存在。"
-    }
-} else {
+# 默认口径：正典 dist（仓库根 console\）原样入包，只验在位，不构建。
+# stage_payload 会把正典指纹写进 payload 的来源记录，打包端逐字节验锚。
+$ConsoleDistForStage = Join-Path $Root "console"
+if ($BuildFrontendFromSource) {
+    Write-Host ""
+    Write-Host "!! 警告：-BuildFrontendFromSource 将从 apps 源码重建前端（os 世代），" -ForegroundColor Red
+    Write-Host "!! 产物会替换 wb 世代正典并使经典/未来两套主题失效。前端两代对齐" -ForegroundColor Red
+    Write-Host "!! 完成前不要用这个产物正式发布。" -ForegroundColor Red
     Write-Step "构建驾驶舱（npm run build）"
     $consoleDir = Join-Path $Root "apps\console\console"
     # npm/vite 会把体积告警写到 stderr；本脚本 EAP=Stop 时会被当成终止错误。
@@ -169,11 +179,21 @@ if ($SkipFrontend) {
         --source $consoleDir --dest (Join-Path $consoleDir "dist") `
         --version $Version --skip-build
     if ($LASTEXITCODE -ne 0) { throw "控制台构建来源记录写入失败（exit $LASTEXITCODE）" }
+    $ConsoleDistForStage = Join-Path $consoleDir "dist"
+} else {
+    Write-Step "前端：使用仓库根 console\ 正典 dist（不重建）"
+    if ($SkipFrontend) {
+        Write-Host "  （-SkipFrontend 在正典口径下与默认行为相同：本就没有任何构建动作）"
+    }
+    if (-not (Test-Path (Join-Path $ConsoleDistForStage "index.html"))) {
+        throw "正典控制台缺失：$ConsoleDistForStage\index.html 不存在（仓库根 console\ 应随仓库一起检出）。"
+    }
+    Write-Host "  正典 dist 在位：$ConsoleDistForStage"
 }
 
 # ------------------------------------------------------- 2. payload 组装
 Write-Step "组装 payload（源码 + 配置 + 驾驶舱 + 离线运行时）"
-& $Python (Join-Path $Root "packaging\stage_payload.py") --out $PayloadRoot --version $Version
+& $Python (Join-Path $Root "packaging\stage_payload.py") --out $PayloadRoot --version $Version --console-dist $ConsoleDistForStage
 if ($LASTEXITCODE -ne 0) { throw "payload 组装失败（exit $LASTEXITCODE）" }
 
 Write-Step "安装树入口完整性（升级会删掉新版缺失的旧文件）"
@@ -278,7 +298,7 @@ if ($SkipRelease) {
     if ($Version) { $releaseArgs += @("--version", $Version) }
     & $Python @releaseArgs
     if ($LASTEXITCODE -ne 0) { throw "发布包生成失败（exit $LASTEXITCODE）" }
-    $releaseZip = Get-ChildItem (Join-Path $releaseDir "liuhao-*.zip") |
+    $releaseZip = Get-ChildItem (Join-Path $releaseDir "jarvis-*-upgrade.zip") |
         Sort-Object LastWriteTime | Select-Object -Last 1
     $releaseManifest = Join-Path $releaseDir "LIUHAO_RELEASE.json"
 }
@@ -414,13 +434,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup 编译失败（exit $LASTEXITCODE），详见 $iscc 输出。"
 }
 
-# ------------------------------------------------------------ 5. 产物信息
+# ------------------------------------------------------------ 7. 产物信息
 Write-Step "产物信息"
 $setup = Get-ChildItem (Join-Path $InstallerOut "Jarvis-Setup-*.exe") |
     Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $setup) { throw "编译成功但找不到 Jarvis-Setup-*.exe" }
 
-# ------------------------------------------------------- 5.1 代码签名（自签名）
+# ------------------------------------------------------- 7.1 代码签名（自签名）
 # 必须在计算 SHA256 之前签名：签名会改写 PE 校验和与附加数据，先算哈希再签名
 # 会让清单里的哈希与实际文件对不上。没有证书时不静默跳过，明确打印后继续。
 $signCode = 3
