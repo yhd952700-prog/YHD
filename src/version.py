@@ -5,6 +5,6 @@
 （见 ``tests/test_version_consistency.py``）。
 """
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 
 __all__ = ["APP_VERSION"]
