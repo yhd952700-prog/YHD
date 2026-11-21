@@ -9,7 +9,7 @@
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File packaging\sign_installer.ps1
-#   ... -InstallerPath dist\installer\Jarvis-Setup-0.1.1.exe
+#   ... -InstallerPath dist\installer\Jarvis-Setup-<版本>.exe
 #   ... -Check      # 只判断证书是否可用：0=可用，3=不可用
 #
 # 退出码：
