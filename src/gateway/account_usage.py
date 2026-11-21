@@ -104,6 +104,18 @@ def _connect() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     if not _initialised.get(path):
         connection.execute(_SCHEMA)
+        # 第二季 V9：route_grade 列（路由分级落盘，老库自动补列；先例同
+        # workbench bots 表的 avatar_url 补列）。DEFAULT '' = 未分级/旧行。
+        columns = {
+            str(row[1]) for row in connection.execute(
+                "PRAGMA table_info(account_usage_events)"
+            ).fetchall()
+        }
+        if "route_grade" not in columns:
+            connection.execute(
+                "ALTER TABLE account_usage_events "
+                "ADD COLUMN route_grade TEXT NOT NULL DEFAULT ''"
+            )
         # 按 correlation_id 查重（同一轮对话只允许一行用量）；非唯一索引，
         # 兼容历史库里可能已存在的重复行，不在打开库时让迁移失败。
         connection.execute(
@@ -125,6 +137,7 @@ def record_usage(
     session_id: str = "",
     correlation_id: str = "",
     estimated: bool = True,
+    route_grade: str = "",
 ) -> bool:
     """写一条用量事件。失败只记日志，**不阻断**对话主链路。"""
     actor_id = str(actor or "").strip()
@@ -155,8 +168,8 @@ def record_usage(
             connection.execute(
                 "INSERT INTO account_usage_events "
                 "(created_at, actor, key_owner, model, tokens_in, tokens_out, "
-                " estimated, session_id, correlation_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " estimated, session_id, correlation_id, route_grade) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     utc_now().isoformat(),
                     actor_id,
@@ -167,6 +180,7 @@ def record_usage(
                     1 if estimated else 0,
                     str(session_id or ""),
                     correlation,
+                    str(route_grade or ""),
                 ),
             )
         _note_write_success()
@@ -285,15 +299,15 @@ def usage_summary(
         scope_owners = tuple(dict.fromkeys(str(item) for item in owners if item))
     with _lock, _connect() as connection:
         if scope_owners is None:
-            sql = "SELECT actor, key_owner, model, tokens_in, tokens_out FROM account_usage_events"
+            sql = "SELECT actor, key_owner, model, tokens_in, tokens_out, route_grade FROM account_usage_events"
             params: tuple = ()
         elif not scope_owners:
-            sql = "SELECT actor, key_owner, model, tokens_in, tokens_out FROM account_usage_events WHERE 0"
+            sql = "SELECT actor, key_owner, model, tokens_in, tokens_out, route_grade FROM account_usage_events WHERE 0"
             params = ()
         else:
             placeholders = ",".join(["?"] * len(scope_owners))
             sql = (
-                "SELECT actor, key_owner, model, tokens_in, tokens_out "
+                "SELECT actor, key_owner, model, tokens_in, tokens_out, route_grade "
                 f"FROM account_usage_events WHERE key_owner IN ({placeholders})"
             )
             params = scope_owners
@@ -313,6 +327,24 @@ def usage_summary(
     }
     summary["total_tokens"] = summary["tokens_in"] + summary["tokens_out"]
     summary["by_key_owner"] = _aggregate(rows, "key_owner")
+    # 第二季 V9：按路由分级拆账（light/hard/pinned/''=未分级旧行），每档带
+    # 与总量同一口径的成本字段；未定价模型 cost=None 如实透传。
+    by_route: List[Dict[str, Any]] = []
+    for bucket in _aggregate(rows, "route_grade"):
+        grade_rows = [r for r in rows if str(r["route_grade"] or "") == bucket["route_grade"]]
+        bucket.update(
+            _cost_fields(
+                _billing_report(
+                    (str(r["model"] or "") for r in grade_rows),
+                    (
+                        (str(r["model"] or "unknown"), int(r["tokens_in"] or 0), int(r["tokens_out"] or 0))
+                        for r in grade_rows
+                    ),
+                )
+            )
+        )
+        by_route.append(bucket)
+    summary["by_route"] = by_route
     if include_callers:
         # 调用者身份只对根账号可见；成员响应里连这个键都不出现。
         summary["by_actor"] = _aggregate(rows, "actor")
@@ -472,6 +504,7 @@ def usage_events(
                 "estimated": bool(row["estimated"]),
                 "session_id": str(row["session_id"] or ""),
                 "correlation_id": str(row["correlation_id"] or ""),
+                "route_grade": str(row["route_grade"] or "") if "route_grade" in row.keys() else "",
                 "cost": None if cost is None else round(float(cost), 6),
                 "pricing_status": "unknown" if cost is None else "priced",
                 "message": BillingEngine.UNKNOWN_COST_MESSAGE if cost is None else "",
