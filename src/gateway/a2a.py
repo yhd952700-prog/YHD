@@ -265,6 +265,7 @@ def get_account_settings(account_id: str) -> Dict[str, Any]:
         "language": str(stored.get("language") or DEFAULT_LANGUAGE),
         "timezone": str(stored.get("timezone") or DEFAULT_TIMEZONE),
         "daily_digest_enabled": bool(stored.get("daily_digest_enabled", True)),
+        "cost_routing_enabled": bool(stored.get("cost_routing_enabled", False)),
         "theme": theme if theme in ("light", "dark") else None,
         "notifications_read": _clean_read_keys(stored.get("notifications_read")),
         "version": int(stored.get("version") or 0),
@@ -290,6 +291,10 @@ def set_account_settings(account_id: str, **fields: Any) -> Dict[str, Any]:
         current["timezone"] = str(fields["timezone"]).strip() or DEFAULT_TIMEZONE
     if "daily_digest_enabled" in fields and fields["daily_digest_enabled"] is not None:
         current["daily_digest_enabled"] = bool(fields["daily_digest_enabled"])
+    if "cost_routing_enabled" in fields and fields["cost_routing_enabled"] is not None:
+        # 第二季 V9：成本智能路由开关，默认关（与 daily_digest 的默认开相反——
+        # 省档会改变应答模型，必须机主显式打开才生效）。
+        current["cost_routing_enabled"] = bool(fields["cost_routing_enabled"])
     if "theme" in fields:
         # None = 清掉手动主题（回到跟随形态）；其它值只认 light/dark。
         if fields["theme"] is None:
@@ -1585,6 +1590,7 @@ class SettingsBody(BaseModel):
     language: Optional[str] = None
     timezone: Optional[str] = None
     daily_digest_enabled: Optional[bool] = None
+    cost_routing_enabled: Optional[bool] = None
     theme: Any = _SETTING_UNSET
     notifications_read: Optional[List[str]] = None
     expected_version: Optional[int] = None
@@ -1640,6 +1646,7 @@ def put_settings(body: SettingsBody, context=Depends(_principal)) -> Dict[str, A
             language=body.language,
             timezone=body.timezone,
             daily_digest_enabled=body.daily_digest_enabled,
+            cost_routing_enabled=body.cost_routing_enabled,
             **({"theme": body.theme} if body.theme is not _SETTING_UNSET else {}),
             notifications_read=body.notifications_read,
             expected_version=body.expected_version,
