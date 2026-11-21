@@ -27,8 +27,10 @@
 
 仓库根模式（不带 --app-root）已停用：它不会把根级 ``error_types.py`` /
 ``capability-registry.yaml`` 打进包，安装后自检会失败并回滚。安装树由
-``packaging/stage_payload.py`` 生成；控制台必须先由
-``packaging/build_console.py`` 按当前源码构建并写入来源记录。
+``packaging/stage_payload.py`` 生成；控制台来源二选一：现行发布口径为仓库根
+``console/`` 正典 dist 原样入包（stage_payload 写 canonical-dist 来源记录），
+或由 ``packaging/build_console.py`` 按 apps 源码构建并写入来源记录
+（source-build 口径）。两种口径都在本工具里验锚，不一致拒绝出包。
 """
 
 from __future__ import annotations
@@ -558,7 +560,12 @@ def _run_cli_check(root: Path, out_dir: Path) -> Tuple[int, str]:
 
 
 def _verify_console_provenance(entries, version: str) -> None:
-    """校验包内控制台确实由当前前端源码构建，且产物未被替换。"""
+    """校验包内控制台的来源记录：版本、产物指纹与来源锚三者一致才放行。
+
+    两种口径（``provenance_kind``）：缺省 ``source-build`` 锚 = apps 前端
+    源码指纹（历史口径）；``canonical-dist`` 锚 = 仓库根 ``console/`` 正典
+    dist 的文件指纹（前端两代对齐裁决后的发布口径，不从 apps 源码重建）。
+    """
     console_bytes = {
         rel: path.read_bytes() for rel, path in entries if rel.startswith("console/")
     }
@@ -566,30 +573,15 @@ def _verify_console_provenance(entries, version: str) -> None:
     if meta_rel not in console_bytes:
         raise BuildError(
             "升级包里的控制台缺少 console/console-build.json 构建来源记录："
-            "无法证明界面来自当前源码，升级后可能仍是旧界面。请先执行 "
+            "无法证明界面来历，升级后可能仍是旧界面。请先执行 "
             "packaging/build_console.py --dest <安装树>/console "
-            f"--version {version} 再重新打包。"
+            f"--version {version}（源码构建口径），或由 stage_payload 按正典 "
+            "dist 口径组装安装树，再重新打包。"
         )
     try:
         meta = json.loads(console_bytes[meta_rel].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise BuildError(f"控制台构建来源记录无法解析：{exc}") from exc
-
-    source_dir = REPO_ROOT / "apps" / "console" / "console"
-    if not source_dir.is_dir():
-        raise BuildError(
-            f"无法校验控制台来源：前端源码目录不存在（{source_dir}）。"
-            "请在完整仓库内打包，或先恢复 apps/console/console。"
-        )
-    expected_source = console_provenance.frontend_source_fingerprint(source_dir)
-    recorded_source = str(meta.get("source_sha256") or "")
-    if recorded_source != expected_source:
-        raise BuildError(
-            "包内控制台不是由当前前端源码构建的："
-            f"源码指纹 {expected_source[:12]}…，构建记录 {recorded_source[:12] or '<缺失>'}…。"
-            "升级后界面仍是旧版，拒绝出包。请重新执行 packaging/build_console.py "
-            f"--version {version}。"
-        )
 
     recorded_version = str(meta.get("version") or "")
     if recorded_version != version:
@@ -610,6 +602,43 @@ def _verify_console_provenance(entries, version: str) -> None:
             "包内控制台文件在构建后被改动："
             f"文件指纹 {actual_fp[:12]}…，构建记录 {recorded_files[:12] or '<缺失>'}…。"
             "拒绝出包；请重新构建控制台。"
+        )
+
+    kind = str(meta.get("provenance_kind") or console_provenance.PROVENANCE_KIND_SOURCE_BUILD)
+    if kind == console_provenance.PROVENANCE_KIND_CANONICAL_DIST:
+        canonical_dir = REPO_ROOT / "console"
+        if not canonical_dir.is_dir():
+            raise BuildError(
+                f"无法校验正典控制台来源：仓库根正典 dist 不存在（{canonical_dir}）。"
+            )
+        expected_source = console_provenance.canonical_dist_fingerprint(canonical_dir)
+        recorded_source = str(meta.get("source_sha256") or "")
+        if recorded_source != expected_source:
+            raise BuildError(
+                "包内控制台与仓库正典 dist 不一致："
+                f"正典指纹 {expected_source[:12]}…，构建记录 {recorded_source[:12] or '<缺失>'}…。"
+                "正典口径下控制台必须与仓库根 console/ 逐字节一致，拒绝出包。"
+            )
+        _log(
+            f"  控制台  正典 dist 指纹 {expected_source[:12]}… 与仓库 console/ 一致，"
+            f"产物 {len(actual_files)} 个文件（{actual_fp[:12]}…）"
+        )
+        return
+
+    source_dir = REPO_ROOT / "apps" / "console" / "console"
+    if not source_dir.is_dir():
+        raise BuildError(
+            f"无法校验控制台来源：前端源码目录不存在（{source_dir}）。"
+            "请在完整仓库内打包，或先恢复 apps/console/console。"
+        )
+    expected_source = console_provenance.frontend_source_fingerprint(source_dir)
+    recorded_source = str(meta.get("source_sha256") or "")
+    if recorded_source != expected_source:
+        raise BuildError(
+            "包内控制台不是由当前前端源码构建的："
+            f"源码指纹 {expected_source[:12]}…，构建记录 {recorded_source[:12] or '<缺失>'}…。"
+            "升级后界面仍是旧版，拒绝出包。请重新执行 packaging/build_console.py "
+            f"--version {version}。"
         )
     _log(
         f"  控制台  来源指纹 {expected_source[:12]}… 与当前源码一致，"
@@ -669,7 +698,8 @@ def build(args: argparse.Namespace) -> int:
         raise BuildError(
             "安装树缺少驾驶舱构建产物 console/index.html："
             "此包升级后界面不会更新，且可能与新后端接口错配，拒绝产出。"
-            "请先在 apps/console/console 执行 npm install && npm run build，再重建安装树。"
+            "请先用 packaging/stage_payload.py 组装安装树（默认取仓库根 console/ "
+            "正典 dist），再重新打包。"
         )
     _verify_console_provenance(entries, version)
     total_bytes = sum(path.stat().st_size for _rel, path in entries)
