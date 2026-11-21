@@ -170,6 +170,18 @@ PLUGIN_TOOL_CATALOG: List[Dict[str, Any]] = [
         "source_kind": "builtin",
     },
     {
+        "id": "liuhao.knowledge.ingest",
+        "name": "knowledge_ingest",
+        "source": "src/ai/tools/builtin.py:KnowledgeIngestTool",
+        "description": "把一段文字存进本地知识库（分块+向量化+入库）；没配 embedding 时诚实报错",
+        "permission": "写本地知识库，无网络",
+        "available": True,
+        "grade": "B",
+        "permissions": ["write"],
+        "confirm": "none",
+        "source_kind": "builtin",
+    },
+    {
         "id": "liuhao.web.search",
         "name": "web_search",
         "source": "src/ai/tools/builtin.py:WebResearchTool",
@@ -386,6 +398,21 @@ def knowledge_search(query: str = "", top_k: int = 4, **kwargs: Any) -> str:
     return _dump(result.output)
 
 
+def knowledge_ingest(text: str = "", title: str = "", **kwargs: Any) -> str:
+    """把文字存进本地知识库；没配 embedding 时诚实报错，不假装存好。"""
+    from .builtin import KnowledgeIngestTool
+
+    body = text or kwargs.get("content") or ""
+    if not str(body).strip():
+        return "请提供 text 参数（要存进知识库的文字）。"
+    result = KnowledgeIngestTool().execute(
+        text=str(body), title=(str(title).strip() or None)
+    )
+    if not result.ok:
+        return f"知识库存入不可用：{result.error}"
+    return _dump(result.output)
+
+
 def web_search(query: str = "", max_results: int = 6, **kwargs: Any) -> str:
     """联网查东西；未开启或检索失败时诚实说明，不编来源。"""
     from .builtin import WebResearchTool
@@ -495,6 +522,16 @@ def build_plugin_tools() -> List[Tool]:
             knowledge_search,
         ),
         (
+            "liuhao.knowledge.ingest", "knowledge_ingest", "1.0.0",
+            "把一段文字存进本地知识库（分块+向量化+入库）；没配 embedding 时诚实报错，不假装存好",
+            "knowledge.ingest",
+            {"type": "object", "properties": {
+                "text": {"type": "string"},
+                "title": {"type": "string"},
+            }, "required": ["text"]},
+            knowledge_ingest,
+        ),
+        (
             "liuhao.web.search", "web_search", "1.0.0",
             "联网查东西（Hacker News / GitHub / arXiv，返回带来源与时间的真实结果）；未开启时诚实报错",
             "web.search",
@@ -531,6 +568,7 @@ __all__ = [
     "make_slug",
     "roman_numeral",
     "timezone_time",
+    "knowledge_ingest",
     "knowledge_search",
     "web_search",
 ]
