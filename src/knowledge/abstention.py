@@ -121,6 +121,8 @@ embedder decides (``resolve_abstention_config``):
   lexical baseline);
 * ``ollama:nomic-embed-text`` -> ``0.65 / 0.05 / 0.85`` (the measured real
   model profile);
+* ``local:bge-small-zh-v1.5`` -> ``0.45 / 0.05 / 0.85`` (the measured
+  in-process ONNX profile, V6; evidence in ``CALIBRATED_PROFILES``);
 * ``mock`` (dev-only zero vectors) -> the hashing profile, but the degenerate
   branch below stays in charge;
 * any other provider/model (for example an OpenAI-compatible embedding the
@@ -234,6 +236,13 @@ CALIBRATED_PROFILES: Dict[str, AbstentionConfig] = {
     "hashing:sha256-bigram-512": AbstentionConfig(0.08, 0.05, 0.85),
     "mock": AbstentionConfig(0.08, 0.05, 0.85),
     "ollama:nomic-embed-text": AbstentionConfig(0.65, 0.05, 0.85),
+    # 2026-11-18 实测（本机进程内 ONNX，bge-small-zh-v1.5 量化版，512 维，
+    # 同一 34 篇 / 30 问评测集）：answerable recall@5 0.8966、@10 0.9310、
+    # MRR 0.8575、section_hit@5 1.0；no-answer abstained 1.0、false
+    # abstention 0/29。sweep 推荐 0.45 / 0.05 / 0.85（holds_abstention=true），
+    # 余量见 observed_scores：可答 top 最低 0.4991 vs 不可答 top 最高
+    # 0.4338。证据：upgrade2-evidence/v6-eval-local.json（第二季 V6）。
+    "local:bge-small-zh-v1.5": AbstentionConfig(0.45, 0.05, 0.85),
 }
 
 
