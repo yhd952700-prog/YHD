@@ -584,6 +584,16 @@ components:
       - file
       title: Body_import_skill_v1_skills_import_post
       type: object
+    Body_inspect_skill_v1_skills_inspect_post:
+      properties:
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_inspect_skill_v1_skills_inspect_post
+      type: object
     Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post:
       properties:
         allow_low_quality:
@@ -1278,6 +1288,12 @@ components:
         reply:
           title: Reply
           type: string
+        route:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Route
         status:
           title: Status
           type: string
@@ -1474,6 +1490,11 @@ components:
     CreateReminderRequest:
       description: 两种创建方式二选一：自然语言 text，或表单 title + run_at_local。
       properties:
+        lead_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lead Minutes
         repeat:
           default: once
           title: Repeat
@@ -1796,6 +1817,15 @@ components:
       required:
       - enabled
       title: EnableIn
+      type: object
+    EnabledRequest:
+      properties:
+        enabled:
+          title: Enabled
+          type: boolean
+      required:
+      - enabled
+      title: EnabledRequest
       type: object
     EstopRequest:
       properties:
@@ -3688,6 +3718,11 @@ components:
       type: object
     SettingsBody:
       properties:
+        cost_routing_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Cost Routing Enabled
         daily_digest_enabled:
           anyOf:
           - type: boolean
@@ -3963,6 +3998,23 @@ components:
       required:
       - status
       title: StepStatusRequest
+      type: object
+    SubscriptionRequest:
+      properties:
+        endpoint:
+          maxLength: 2048
+          minLength: 10
+          title: Endpoint
+          type: string
+        keys:
+          additionalProperties:
+            type: string
+          title: Keys
+          type: object
+      required:
+      - endpoint
+      - keys
+      title: SubscriptionRequest
       type: object
     SyncBody:
       properties:
@@ -4649,9 +4701,25 @@ components:
       - note
       title: UnassignedMemoryResponse
       type: object
+    UnsubscribeRequest:
+      properties:
+        endpoint:
+          maxLength: 2048
+          minLength: 10
+          title: Endpoint
+          type: string
+      required:
+      - endpoint
+      title: UnsubscribeRequest
+      type: object
     UpdateReminderRequest:
       description: 两种改法二选一：自然语言 text，或表单 title/run_at_local/repeat。
       properties:
+        lead_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lead Minutes
         repeat:
           anyOf:
           - type: string
@@ -4856,6 +4924,25 @@ components:
           type: string
       title: WrapUpIn
       type: object
+    _CreateSnapshotRequest:
+      properties:
+        label:
+          default: ''
+          title: Label
+          type: string
+        passphrase:
+          maxLength: 256
+          minLength: 8
+          title: Passphrase
+          type: string
+        scope:
+          default: all
+          title: Scope
+          type: string
+      required:
+      - passphrase
+      title: _CreateSnapshotRequest
+      type: object
     _ExistingImportRequest:
       properties:
         bundle:
@@ -4871,6 +4958,30 @@ components:
       - bundle
       - passphrase
       title: _ExistingImportRequest
+      type: object
+    _RestoreSnapshotRequest:
+      properties:
+        passphrase:
+          maxLength: 256
+          minLength: 8
+          title: Passphrase
+          type: string
+        snapshot_id:
+          title: Snapshot Id
+          type: string
+      required:
+      - snapshot_id
+      - passphrase
+      title: _RestoreSnapshotRequest
+      type: object
+    _RetentionRequest:
+      properties:
+        retention:
+          title: Retention
+          type: integer
+      required:
+      - retention
+      title: _RetentionRequest
       type: object
     src__api__routes__knowledge__SearchRequest:
       properties:
@@ -5187,7 +5298,7 @@ info:
     \ most `/v1/*` paths require a human token.\n  A path's presence here does NOT mean it is safe to\
     \ call unauthenticated."
   title: Jarvis · 贾维斯 Gateway API
-  version: 0.5.0
+  version: 0.6.0
 openapi: 3.1.0
 paths:
   /knowledge/documents:
@@ -11858,6 +11969,223 @@ paths:
       summary: Import Existing Backup
       tags:
       - accounts
+  /v1/accounts/cloud-backup:
+    get:
+      description: 云备份现状 + 快照清单（已登录）。
+      operationId: cloud_backup_overview_v1_accounts_cloud_backup_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Cloud Backup Overview V1 Accounts Cloud Backup Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cloud Backup Overview
+      tags:
+      - accounts
+  /v1/accounts/cloud-backup/restore:
+    post:
+      description: 从本地快照合并恢复到当前账号（全新实例认领走登录页的导入入口）。
+      operationId: cloud_backup_restore_v1_accounts_cloud_backup_restore_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_RestoreSnapshotRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Cloud Backup Restore V1 Accounts Cloud Backup Restore Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cloud Backup Restore
+      tags:
+      - accounts
+  /v1/accounts/cloud-backup/retention:
+    put:
+      operationId: cloud_backup_retention_v1_accounts_cloud_backup_retention_put
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_RetentionRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Cloud Backup Retention V1 Accounts Cloud Backup Retention Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cloud Backup Retention
+      tags:
+      - accounts
+  /v1/accounts/cloud-backup/snapshots:
+    post:
+      description: 做一份加密快照。敏感度与凭据包导出相同：默认只接受本机来源。
+      operationId: cloud_backup_create_v1_accounts_cloud_backup_snapshots_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_CreateSnapshotRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Cloud Backup Create V1 Accounts Cloud Backup Snapshots Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cloud Backup Create
+      tags:
+      - accounts
+  /v1/accounts/cloud-backup/snapshots/{snapshot_id}:
+    delete:
+      operationId: cloud_backup_delete_v1_accounts_cloud_backup_snapshots__snapshot_id__delete
+      parameters:
+      - in: path
+        name: snapshot_id
+        required: true
+        schema:
+          title: Snapshot Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Cloud Backup Delete V1 Accounts Cloud Backup Snapshots  Snapshot Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cloud Backup Delete
+      tags:
+      - accounts
   /v1/accounts/export/all:
     post:
       description: 一键导出「我的全部数据」：普通人可直接打开的 ZIP（明文，仅自己）。
@@ -14569,6 +14897,249 @@ paths:
       summary: Automation Status
       tags:
       - automation
+  /v1/briefing/broadcast:
+    post:
+      operationId: start_broadcast_v1_briefing_broadcast_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Start Broadcast V1 Briefing Broadcast Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Start Broadcast
+      tags:
+      - briefing
+  /v1/briefing/broadcast/pending:
+    get:
+      operationId: broadcast_pending_v1_briefing_broadcast_pending_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Broadcast Pending V1 Briefing Broadcast Pending Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Broadcast Pending
+      tags:
+      - briefing
+  /v1/briefing/broadcast/status:
+    get:
+      operationId: broadcast_status_v1_briefing_broadcast_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Broadcast Status V1 Briefing Broadcast Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Broadcast Status
+      tags:
+      - briefing
+  /v1/briefing/broadcast/stop:
+    post:
+      operationId: stop_broadcast_v1_briefing_broadcast_stop_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Stop Broadcast V1 Briefing Broadcast Stop Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Stop Broadcast
+      tags:
+      - briefing
+  /v1/briefing/broadcast/{broadcast_id}/audio/{index}:
+    get:
+      operationId: broadcast_audio_v1_briefing_broadcast__broadcast_id__audio__index__get
+      parameters:
+      - in: path
+        name: broadcast_id
+        required: true
+        schema:
+          title: Broadcast Id
+          type: string
+      - in: path
+        name: index
+        required: true
+        schema:
+          title: Index
+          type: integer
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Broadcast Audio
+      tags:
+      - briefing
+  /v1/briefing/broadcast/{broadcast_id}/played:
+    post:
+      operationId: broadcast_played_v1_briefing_broadcast__broadcast_id__played_post
+      parameters:
+      - in: path
+        name: broadcast_id
+        required: true
+        schema:
+          title: Broadcast Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Broadcast Played V1 Briefing Broadcast  Broadcast Id  Played Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Broadcast Played
+      tags:
+      - briefing
   /v1/calendar/caldav/sync:
     post:
       description: 从用户自己的 CalDAV 服务拉日程（密码只用于本次连接，不存储）。
@@ -27412,6 +27983,264 @@ paths:
       summary: Restore Project
       tags:
       - projects
+  /v1/push/enabled:
+    post:
+      operationId: push_set_enabled_v1_push_enabled_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnabledRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Push Set Enabled V1 Push Enabled Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Push Set Enabled
+      tags:
+      - push
+  /v1/push/status:
+    get:
+      operationId: push_status_v1_push_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Push Status V1 Push Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Push Status
+      tags:
+      - push
+  /v1/push/subscriptions:
+    delete:
+      operationId: push_unsubscribe_v1_push_subscriptions_delete
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnsubscribeRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Push Unsubscribe V1 Push Subscriptions Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Push Unsubscribe
+      tags:
+      - push
+    post:
+      operationId: push_subscribe_v1_push_subscriptions_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Push Subscribe V1 Push Subscriptions Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Push Subscribe
+      tags:
+      - push
+  /v1/push/sw.js:
+    get:
+      description: 推送 SW 脚本：公开（脚本本身不含任何密钥），带作用域放行头。
+      operationId: push_service_worker_v1_push_sw_js_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Push Service Worker
+      tags:
+      - push
+  /v1/push/test:
+    post:
+      operationId: push_test_v1_push_test_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Push Test V1 Push Test Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Push Test
+      tags:
+      - push
+  /v1/push/vapid-key:
+    get:
+      operationId: push_vapid_key_v1_push_vapid_key_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Push Vapid Key V1 Push Vapid Key Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Push Vapid Key
+      tags:
+      - push
   /v1/reminders:
     get:
       operationId: list_reminders_v1_reminders_get
@@ -29565,6 +30394,56 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Import Skill
+      tags:
+      - skills
+  /v1/skills/inspect:
+    post:
+      description: '安装前预览（V7）：解析包并摊开权限声明与依赖核对结果，**不安装**。
+
+
+        给 Boss 在点"安装"之前看清楚：这个包是谁写的、声明要哪些权限、有没有
+
+        可执行入口、依赖的技能装没装。预览不落盘、不建记录、不产生任何授权。'
+      operationId: inspect_skill_v1_skills_inspect_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_inspect_skill_v1_skills_inspect_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Inspect Skill V1 Skills Inspect Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Inspect Skill
       tags:
       - skills
   /v1/skills/install/local:
