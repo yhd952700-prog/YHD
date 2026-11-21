@@ -44,7 +44,12 @@ from typing import Any, Dict, Iterable, List, Set, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "dist" / "payload"
+#: 历史口径：apps 前端源码的构建产物（os 世代）。前端两代对齐裁决后不再
+#: 作为默认来源——从它重建会替换掉随包的 wb 世代正典并使两套主题失效。
 CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
+#: 现行发布口径：仓库根 ``console/`` 就是随包发布的 wb 世代正典 dist
+#: （含主题叠加层），组装时原样复制并写入 canonical-dist 来源记录。
+CANONICAL_CONSOLE_DIST = REPO_ROOT / "console"
 APP_ICON_ICO = REPO_ROOT / "packaging" / "assets" / "liuhao-app.ico"
 LICENSES_DIR = REPO_ROOT / "packaging" / "licenses"
 
@@ -1472,8 +1477,16 @@ def _write_ico(source: Path, out: Path) -> bool:
     return True
 
 
-def build(out_dir: Path, version: str, prune: bool = True) -> int:
+def build(out_dir: Path, version: str, prune: bool = True,
+          console_dist: Path | None = None) -> int:
     app_dir = out_dir / "app"
+    # 控制台来源：默认仓库根正典 dist；显式 --console-dist 才换源（例如
+    # 对齐完成后的源码构建产物）。来源决定来源记录口径，见下方 [3/5]。
+    console_src = (
+        Path(console_dist).expanduser().resolve()
+        if console_dist
+        else CANONICAL_CONSOLE_DIST
+    )
     _reset_out(out_dir)
 
     print("=" * 66)
@@ -1512,13 +1525,30 @@ def build(out_dir: Path, version: str, prune: bool = True) -> int:
         print(f"      {name} -> 1 个文件")
 
     print("[3/5] 复制驾驶舱构建产物与脚本")
-    if not (CONSOLE_DIST / "index.html").is_file():
+    if not (console_src / "index.html").is_file():
         raise SystemExit(
-            f"驾驶舱构建产物缺失：{CONSOLE_DIST}/index.html\n"
-            "先执行：cd apps/console/console && npm install && npm run build"
+            f"驾驶舱构建产物缺失：{console_src}/index.html\n"
+            "默认来源是仓库根 console/ 正典 dist；如需换源请用 --console-dist 指定。"
         )
-    console_count = _copy_tree(CONSOLE_DIST, app_dir / "console")
-    print(f"      console  -> {console_count} 个文件")
+    console_count = _copy_tree(console_src, app_dir / "console")
+    print(f"      console  -> {console_count} 个文件（来源 {console_src}）")
+    if console_src == CANONICAL_CONSOLE_DIST:
+        # 正典口径：给 payload 副本写 canonical-dist 来源记录，打包端据此
+        # 对仓库正典树逐字节验锚。跟踪树本身不写任何文件。
+        packaging_dir = str(Path(__file__).resolve().parent)
+        if packaging_dir not in sys.path:
+            sys.path.insert(0, packaging_dir)
+        import console_provenance
+
+        meta = console_provenance.write_canonical_dist_metadata(
+            app_dir / "console",
+            canonical_dir=CANONICAL_CONSOLE_DIST,
+            version=version,
+        )
+        print(
+            "      console 来源记录 -> canonical-dist，"
+            f"正典指纹 {meta['source_sha256'][:12]}…"
+        )
     backend_contract = read_backend_contract_from_source(
         (app_dir / "src" / "gateway" / "contract.py").read_text(encoding="utf-8")
     )
@@ -1666,12 +1696,19 @@ def main(argv: List[str] | None = None) -> int:
         help="关闭 A1–A13 剪枝（回滚用）：保留 pythonwin/rich/tests 等全部候选文件，"
              "也不写导入守卫。等价于 LIUHAO_PAYLOAD_PRUNE=0。",
     )
+    parser.add_argument(
+        "--console-dist",
+        default="",
+        help="驾驶舱产物目录（默认仓库根 console/ 正典 dist，wb 世代）；"
+             "仅在前端两代对齐完成后才应指向源码构建产物。",
+    )
     args = parser.parse_args(argv)
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     return build(
         Path(args.out).expanduser().resolve(),
         args.version or _project_version(),
         prune=not args.no_prune,
+        console_dist=Path(args.console_dist) if args.console_dist else None,
     )
 
 
