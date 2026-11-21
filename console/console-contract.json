@@ -2,7 +2,7 @@
   "schema": "liuhao.console-contract/1",
   "api_contract": "1",
   "frontend_version": "0.4.6",
-  "console_fingerprint": "5ac5f4d4e571940c92f10948635f72e609cf3c75f1531a401b56a937c059b108",
-  "console_files": 54,
-  "built_at": "2026-11-16T12:52:17Z"
+  "console_fingerprint": "f8009c58108bb67fae0ae39476e85ade8044aae2de81eed2ddcfc4e3524f6c7c",
+  "console_files": 71,
+  "built_at": "2026-11-18T23:09:10Z"
 }
