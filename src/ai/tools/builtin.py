@@ -311,6 +311,59 @@ class KnowledgeSearchTool(BaseTool):
         }
 
 
+class KnowledgeIngestTool(BaseTool):
+    """Store text into the *real* knowledge base (chunk + embed + index).
+
+    Delegates to :func:`src.knowledge.tool.knowledge_ingest_text`, which
+    goes through :class:`KnowledgeDocumentService`. When no embedding
+    provider is configured the tool fails explicitly (\"知识库未启用\")
+    instead of pretending the text was saved.
+    """
+
+    name = "knowledge_ingest"
+    description = (
+        "Store a piece of text into the local knowledge base so it can be "
+        "found later with knowledge_search. Use when the user says things "
+        "like '把这段存进知识库'."
+    )
+    category = ToolCategory.INFORMATION
+    parameters = [
+        ParameterSchema(
+            name="text",
+            type=str,
+            description="The text to store",
+            required=True,
+            min_length=1,
+            max_length=200000,
+        ),
+        ParameterSchema(
+            name="title",
+            type=str,
+            description="Optional document title / name for the stored text",
+            required=False,
+            default=None,
+        ),
+    ]
+
+    def _execute(self, text: str, title: Optional[str] = None) -> Any:
+        from src.knowledge.tool import (
+            KnowledgeSearchUnavailable,
+            knowledge_ingest_text,
+        )
+
+        payload = knowledge_ingest_text(text, title=title)
+        if not payload["available"]:
+            raise KnowledgeSearchUnavailable(
+                f"{payload['reason'] or '知识库不可用'}"
+            )
+        return {
+            "document_id": payload["document_id"],
+            "chunks": payload["chunks"],
+            "knowledge_vectors": payload["vectors"],
+            "deduplicated": payload["deduplicated"],
+        }
+
+
 # ======================================================================
 # Code Runner Tool
 # ======================================================================
